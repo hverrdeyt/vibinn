@@ -383,7 +383,7 @@ async function fetchGooglePlaceSuggestions(input: string) {
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat,suggestions.placePrediction.primaryType,suggestions.placePrediction.types',
+      'X-Goog-FieldMask': 'suggestions.placePrediction.place,suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat',
     },
     body: JSON.stringify({
       input,
@@ -392,7 +392,8 @@ async function fetchGooglePlaceSuggestions(input: string) {
   });
 
   if (!response.ok) {
-    throw new Error(`Google Places autocomplete failed with ${response.status}`);
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(`Google Places autocomplete failed with ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
   }
 
   const data = await response.json() as {
@@ -404,8 +405,6 @@ async function fetchGooglePlaceSuggestions(input: string) {
           mainText?: { text?: string };
           secondaryText?: { text?: string };
         };
-        primaryType?: string;
-        types?: string[];
       };
     }>;
   };
