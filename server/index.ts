@@ -964,6 +964,37 @@ function placeMatchesDiscoverySearch(place: ReturnType<typeof mapCachedPlaceForD
   return tokens.every((token) => searchableText.includes(token));
 }
 
+function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
+  return {
+    id: place.id,
+    name: place.name,
+    location: place.location,
+    address: '',
+    description: place.description,
+    hook: '',
+    image: place.image,
+    images: place.images?.length ? place.images : [place.image],
+    tags: place.tags ?? [],
+    attitudeLabel: '',
+    bestTime: '',
+    similarityStat: place.similarityStat ?? 0,
+    whyYoullLikeIt: place.whyYoullLikeIt ?? [],
+    rating: 0,
+    priceRange: place.priceRange ?? '',
+    category: place.category ?? '',
+  };
+}
+
+function getFallbackDiscoveryPlaces(locationLabel: string, searchQuery?: string) {
+  const normalizedLocation = locationLabel.trim().toLowerCase();
+  const locationMatches = MOCK_PLACES.filter((place) => place.location.toLowerCase().includes(normalizedLocation));
+  const basePlaces = locationMatches.length > 0 ? locationMatches : MOCK_PLACES;
+  const mappedPlaces = basePlaces.map(mapMockPlaceForDiscovery);
+  const normalizedSearchQuery = normalizeDiscoverySearchQuery(searchQuery);
+
+  return mappedPlaces.filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery));
+}
+
 async function seedDiscoverySearchCandidates(
   locationLabel: string,
   locationType: string | undefined,
@@ -1098,33 +1129,43 @@ async function getDiscoveryPlacesForUser(options: {
   const page = Math.max(1, options.page ?? 1);
   const limit = Math.max(1, Math.min(options.limit ?? 10, 20));
   const normalizedSearchQuery = normalizeDiscoverySearchQuery(options.searchQuery);
+  let places: Awaited<ReturnType<typeof getCachedDiscoveryPlacesByLocation>> = [];
 
-  await ensureLocationCandidatePool(
-    options.locationLabel,
-    options.locationType,
-    selectedInterests,
-    selectedVibe,
-  );
-
-  if (normalizedSearchQuery) {
-    const cachedSearchMatches = (await getCachedDiscoveryPlacesByLocation(
+  try {
+    await ensureLocationCandidatePool(
       options.locationLabel,
       options.locationType,
-    )).filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery));
+      selectedInterests,
+      selectedVibe,
+    );
 
-    if (cachedSearchMatches.length < DISCOVERY_SEARCH_MIN_CANDIDATES) {
-      await seedDiscoverySearchCandidates(
+    if (normalizedSearchQuery) {
+      const cachedSearchMatches = (await getCachedDiscoveryPlacesByLocation(
         options.locationLabel,
         options.locationType,
-        normalizedSearchQuery,
-      );
+      )).filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery));
+
+      if (cachedSearchMatches.length < DISCOVERY_SEARCH_MIN_CANDIDATES) {
+        await seedDiscoverySearchCandidates(
+          options.locationLabel,
+          options.locationType,
+          normalizedSearchQuery,
+        );
+      }
     }
+
+    places = await getCachedDiscoveryPlacesByLocation(
+      options.locationLabel,
+      options.locationType,
+    );
+  } catch (error) {
+    console.error('Discovery places fallback activated', error);
+    places = getFallbackDiscoveryPlaces(options.locationLabel, normalizedSearchQuery);
   }
 
-  const places = await getCachedDiscoveryPlacesByLocation(
-    options.locationLabel,
-    options.locationType,
-  );
+  if (places.length === 0) {
+    places = getFallbackDiscoveryPlaces(options.locationLabel, normalizedSearchQuery);
+  }
 
   const context = options.userId
     ? await getUserRecommendationContext(options.userId)
