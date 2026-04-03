@@ -2,6 +2,60 @@ import { Place, User } from './types';
 
 export const MOCK_PLACES: Place[] = [
   {
+    id: 'p-bos-1',
+    name: 'Beacon Hill Bookshop',
+    location: 'Boston, USA',
+    description: 'Cozy shelves, soft light, and a lowkey corner for disappearing offline.',
+    image: 'https://images.unsplash.com/photo-1526243741027-444d633d7365?auto=format&fit=crop&w=800&q=80',
+    images: [
+      'https://images.unsplash.com/photo-1526243741027-444d633d7365?auto=format&fit=crop&w=800&q=80',
+    ],
+    tags: ['bookstore', 'cozy', 'hidden-gem'],
+    similarityStat: 88,
+    whyYoullLikeIt: [
+      'great for solo afternoons',
+      'quiet neighborhood energy',
+    ],
+    priceRange: '$',
+    category: 'Bookstore / Cafe'
+  },
+  {
+    id: 'p-bos-2',
+    name: 'Harborwalk Lookout',
+    location: 'Boston, USA',
+    description: 'Waterside skyline pause with enough breeze to reset the day.',
+    image: 'https://images.unsplash.com/photo-1500375592092-40eb2168fd21?auto=format&fit=crop&w=800&q=80',
+    images: [
+      'https://images.unsplash.com/photo-1500375592092-40eb2168fd21?auto=format&fit=crop&w=800&q=80',
+    ],
+    tags: ['waterfront', 'scenic', 'photo-stop'],
+    similarityStat: 86,
+    whyYoullLikeIt: [
+      'easy city reset by the water',
+      'best when the harbor light softens',
+    ],
+    priceRange: 'Free',
+    category: 'Waterfront Walk'
+  },
+  {
+    id: 'p-bos-3',
+    name: 'South End Coffee Counter',
+    location: 'Boston, USA',
+    description: 'Compact neighborhood coffee stop with strong espresso and slower energy.',
+    image: 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=800&q=80',
+    images: [
+      'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?auto=format&fit=crop&w=800&q=80',
+    ],
+    tags: ['coffee', 'local-pick', 'easy-pause'],
+    similarityStat: 83,
+    whyYoullLikeIt: [
+      'fits a slower coffee-stop mood',
+      'good first stop before wandering the neighborhood',
+    ],
+    priceRange: '$',
+    category: 'Cafe'
+  },
+  {
     id: 'p1',
     name: 'TeamLab Borderless',
     location: 'Tokyo, Japan',
