@@ -10,6 +10,7 @@ services:
     runtime: node
     plan: free
     buildCommand: npm install && npm run prisma:generate
+    preDeployCommand: npm run prisma:migrate:deploy
     startCommand: npm run start:server
     autoDeploy: true
     envVars:

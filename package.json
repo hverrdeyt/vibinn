@@ -11,6 +11,7 @@
     "build:server": "tsc --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "tsx prisma/seed.ts",
     "ai:regenerate-place-enrichment": "tsx scripts/regenerate-place-enrichment.ts",
     "ai:retry-place-enrichment-failures": "tsx scripts/retry-place-enrichment-failures.ts",
