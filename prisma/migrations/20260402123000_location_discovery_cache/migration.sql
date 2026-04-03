@@ -1,6 +1,4 @@
-ALTER TABLE "Location"
-ADD COLUMN IF NOT EXISTS "discoverySeededAt" TIMESTAMP(3),
-ADD COLUMN IF NOT EXISTS "discoveryLastGoogleSyncAt" TIMESTAMP(3),
-ADD COLUMN IF NOT EXISTS "discoveryCandidateCount" INTEGER NOT NULL DEFAULT 0,
-ADD COLUMN IF NOT EXISTS "discoverySeedVersion" TEXT,
-ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+-- No-op.
+-- This migration was originally created before the base init migration and would
+-- fail on a fresh database because the "Location" table did not exist yet.
+-- The safe additive ALTER now runs in a later migration after init.
