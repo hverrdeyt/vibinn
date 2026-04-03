@@ -1,0 +1,49 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-accent: #CCFF00; /* Neon Green */
+  --color-electric-blue: #007AFF; /* Apple Blue */
+  --color-soft-purple: #BF5AF2; /* Apple Purple */
+  --color-dark: #000000;
+  --color-app-dark: #09090B;
+  --color-surface-dark: #18181B;
+  --color-surface-dark-soft: #27272A;
+  --color-gray-soft: #F2F2F7; /* Apple Gray */
+  --color-gray-mid: #D1D1D6;
+  --color-notion-border: #E9E9E7;
+}
+
+@layer base {
+  body {
+    @apply bg-zinc-950 text-white font-sans antialiased overflow-x-hidden selection:bg-accent selection:text-dark;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-accent text-dark px-6 py-3 rounded-xl font-semibold transition-all hover:brightness-105 active:scale-[0.98] disabled:opacity-30;
+  }
+  .btn-accent {
+    @apply bg-white text-dark px-6 py-3 rounded-xl font-bold transition-all hover:bg-white/90 active:scale-[0.98];
+  }
+  .card-notion {
+    @apply bg-zinc-900 rounded-xl border border-white/10 shadow-sm overflow-hidden transition-shadow hover:shadow-md;
+  }
+  .input-apple {
+    @apply w-full bg-white/6 border border-white/10 rounded-xl px-4 py-3.5 text-white focus:ring-2 focus:ring-white/10 outline-none font-medium placeholder:text-white/35;
+  }
+  .tag {
+    @apply px-2.5 py-1 rounded-md text-[11px] font-bold uppercase tracking-wider border border-white/10 bg-white/8 text-white/70;
+  }
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}

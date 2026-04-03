@@ -1,0 +1,453 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AuthProvider {
+  MANUAL
+  GOOGLE
+}
+
+enum LocationType {
+  CITY
+  PROVINCE
+  COUNTRY
+}
+
+enum Visibility {
+  PUBLIC
+  PRIVATE
+  FOLLOWERS
+}
+
+enum VisitType {
+  SOLO
+  COUPLE
+  FRIENDS
+  FAMILY
+}
+
+enum TimeOfDay {
+  MORNING
+  AFTERNOON
+  SUNSET
+  NIGHT
+}
+
+enum RevisitIntent {
+  YES
+  NOT_SURE
+  NOT_INTERESTED
+}
+
+enum NotificationType {
+  PLACE_MATCH
+  TRAVELER_OVERLAP
+  COMMENT
+  VIBIN
+  FOLLOW
+  SYSTEM
+}
+
+enum TargetType {
+  PROFILE
+  MOMENT
+  PLACE
+  PLACE_VISIT
+  COLLECTION
+}
+
+model User {
+  id                String               @id @default(cuid())
+  username          String               @unique
+  displayName       String?
+  email             String               @unique
+  passwordHash      String?
+  bio               String
+  avatarUrl         String
+  authProvider      AuthProvider         @default(MANUAL)
+  emailVerifiedAt   DateTime?
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+
+  badges            UserBadge[]
+  flags             UserFlag[]
+  savedLocations    UserSavedLocation[]
+  preferences       UserPreference?
+  accountSettings   UserAccountSettings?
+  notificationPrefs UserNotificationSettings?
+  privacySettings   UserPrivacySettings?
+  bookmarks         Bookmark[]
+  dismissedPlaces   DismissedPlace[]
+  collections       Collection[]
+  moments           Moment[]
+  notifications     Notification[]       @relation("NotificationRecipient")
+  actors            Notification[]       @relation("NotificationActor")
+  comments          Comment[]
+  vibinsSent        Vibin[]              @relation("VibinSender")
+  vibinsReceived    Vibin[]              @relation("VibinReceiver")
+  followsGiven      Follow[]             @relation("FollowSource")
+  followsReceived   Follow[]             @relation("FollowTarget")
+  travelerScores    TravelerSimilarity[] @relation("TravelerScoreOwner")
+  travelerMatches   TravelerSimilarity[] @relation("TravelerScoreMatch")
+  placeScores       UserPlaceScore[]
+  shares            Share[]
+  sessions          Session[]
+}
+
+model Session {
+  id         String   @id @default(cuid())
+  token      String   @unique
+  userId     String
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserBadge {
+  id        String   @id @default(cuid())
+  userId    String
+  label     String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserFlag {
+  id        String   @id @default(cuid())
+  userId    String
+  emoji     String
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserPreference {
+  id                  String   @id @default(cuid())
+  userId              String   @unique
+  selectedInterests   String[]
+  selectedVibe        String?
+  onboardingCompleted Boolean  @default(false)
+  skippedPreferences  Boolean  @default(false)
+  updatedAt           DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserAccountSettings {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserNotificationSettings {
+  id                    String   @id @default(cuid())
+  userId                String   @unique
+  pushEnabled           Boolean  @default(true)
+  emailEnabled          Boolean  @default(true)
+  recommendationEnabled Boolean  @default(true)
+  updatedAt             DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserPrivacySettings {
+  id                String     @id @default(cuid())
+  userId            String     @unique
+  profileVisibility Visibility @default(PUBLIC)
+  momentVisibility  Visibility @default(PUBLIC)
+  updatedAt         DateTime   @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Location {
+  id              String              @id @default(cuid())
+  name            String
+  type            LocationType
+  countryCode     String?
+  latitude        Float?
+  longitude       Float?
+  googlePlaceId   String?             @unique
+  discoverySeededAt DateTime?
+  discoveryLastGoogleSyncAt DateTime?
+  discoveryCandidateCount Int         @default(0)
+  discoverySeedVersion String?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  savedByUsers    UserSavedLocation[]
+  places          Place[]
+}
+
+model UserSavedLocation {
+  id         String   @id @default(cuid())
+  userId     String
+  locationId String
+  sortOrder  Int      @default(0)
+  isDefault  Boolean  @default(false)
+  createdAt  DateTime @default(now())
+
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  location Location @relation(fields: [locationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, locationId])
+}
+
+model Place {
+  id                String             @id @default(cuid())
+  googlePlaceId     String?            @unique
+  locationId        String?
+  name              String
+  address           String?
+  city              String?
+  country           String?
+  category          String
+  latitude          Float?
+  longitude         Float?
+  rating            Float?
+  priceLevel        Int?
+  primaryImageUrl   String?
+  mapsEmbedUrl      String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  location          Location?          @relation(fields: [locationId], references: [id], onDelete: SetNull)
+  media             PlaceMedia[]
+  aiEnrichment      PlaceAiEnrichment?
+  userScores        UserPlaceScore[]
+  bookmarks         Bookmark[]
+  dismissedByUsers  DismissedPlace[]
+  moments           Moment[]
+  collectionPlaces  CollectionPlace[]
+}
+
+model PlaceMedia {
+  id           String   @id @default(cuid())
+  placeId      String
+  mediaType    String
+  url          String
+  thumbnailUrl String?
+  source       String?
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+
+  place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
+}
+
+model PlaceAiEnrichment {
+  id             String   @id @default(cuid())
+  placeId         String   @unique
+  hook            String
+  description     String?
+  vibeTags        String[]
+  attitudeLabel   String?
+  bestTime        String?
+  updatedAt       DateTime @updatedAt
+
+  place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
+}
+
+model UserPlaceScore {
+  id                   String   @id @default(cuid())
+  userId               String
+  placeId              String
+  matchScore           Int?
+  similarityPercentage Int?
+  recommendationReason String
+  distanceKm           Float?
+  sourceVersion        String?
+  updatedAt            DateTime @updatedAt
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, placeId])
+}
+
+model Bookmark {
+  id        String   @id @default(cuid())
+  userId    String
+  placeId   String
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, placeId])
+}
+
+model DismissedPlace {
+  id        String   @id @default(cuid())
+  userId    String
+  placeId   String
+  reason    String?
+  createdAt DateTime @default(now())
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, placeId])
+}
+
+model Follow {
+  id         String   @id @default(cuid())
+  sourceUserId String
+  targetUserId String
+  createdAt  DateTime @default(now())
+
+  sourceUser User @relation("FollowSource", fields: [sourceUserId], references: [id], onDelete: Cascade)
+  targetUser User @relation("FollowTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceUserId, targetUserId])
+}
+
+model TravelerSimilarity {
+  id               String   @id @default(cuid())
+  userId           String
+  travelerId       String
+  matchScore       Int
+  relevanceReason  String
+  updatedAt        DateTime @updatedAt
+
+  user     User @relation("TravelerScoreOwner", fields: [userId], references: [id], onDelete: Cascade)
+  traveler User @relation("TravelerScoreMatch", fields: [travelerId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, travelerId])
+}
+
+model Moment {
+  id             String         @id @default(cuid())
+  userId         String
+  placeId        String
+  visitedAt      DateTime
+  caption        String
+  rating         Int
+  budgetLevel    String
+  visitType      VisitType
+  timeOfDay      TimeOfDay
+  privacy        Visibility    @default(PUBLIC)
+  wouldRevisit   RevisitIntent
+  vibeTags       String[]
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+
+  user           User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place          Place          @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  media          MomentMedia[]
+  comments       Comment[]
+  vibins         Vibin[]
+  collectionMoments CollectionMoment[]
+}
+
+model MomentMedia {
+  id           String   @id @default(cuid())
+  momentId      String
+  mediaType     String
+  url           String
+  thumbnailUrl  String?
+  sortOrder     Int      @default(0)
+  createdAt     DateTime @default(now())
+
+  moment Moment @relation(fields: [momentId], references: [id], onDelete: Cascade)
+}
+
+model Collection {
+  id          String             @id @default(cuid())
+  userId      String
+  title       String
+  description String?
+  coverImageUrl String?
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  places        CollectionPlace[]
+  moments       CollectionMoment[]
+}
+
+model CollectionPlace {
+  id           String   @id @default(cuid())
+  collectionId String
+  placeId      String
+  sortOrder    Int      @default(0)
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  place      Place      @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, placeId])
+}
+
+model CollectionMoment {
+  id           String   @id @default(cuid())
+  collectionId String
+  momentId     String
+  sortOrder    Int      @default(0)
+
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  moment     Moment     @relation(fields: [momentId], references: [id], onDelete: Cascade)
+
+  @@unique([collectionId, momentId])
+}
+
+model Comment {
+  id            String     @id @default(cuid())
+  userId        String
+  momentId      String?
+  targetType    TargetType
+  targetId      String
+  body          String
+  createdAt     DateTime   @default(now())
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  moment Moment? @relation(fields: [momentId], references: [id], onDelete: SetNull)
+}
+
+model Vibin {
+  id             String     @id @default(cuid())
+  senderUserId   String
+  receiverUserId String?
+  momentId       String?
+  targetType     TargetType
+  targetId       String
+  createdAt      DateTime   @default(now())
+
+  sender   User   @relation("VibinSender", fields: [senderUserId], references: [id], onDelete: Cascade)
+  receiver User?  @relation("VibinReceiver", fields: [receiverUserId], references: [id], onDelete: SetNull)
+  moment   Moment? @relation(fields: [momentId], references: [id], onDelete: SetNull)
+}
+
+model Share {
+  id         String     @id @default(cuid())
+  userId      String
+  targetType  TargetType
+  targetId    String
+  channel     String?
+  createdAt   DateTime   @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Notification {
+  id              String           @id @default(cuid())
+  userId          String
+  actorUserId     String?
+  type            NotificationType
+  targetType      TargetType?
+  targetId        String?
+  title           String
+  body            String
+  readAt          DateTime?
+  createdAt       DateTime         @default(now())
+
+  user      User  @relation("NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actorUser User? @relation("NotificationActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+}
