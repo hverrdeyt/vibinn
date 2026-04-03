@@ -988,8 +988,7 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
 function getFallbackDiscoveryPlaces(locationLabel: string, searchQuery?: string) {
   const normalizedLocation = locationLabel.trim().toLowerCase();
   const locationMatches = MOCK_PLACES.filter((place) => place.location.toLowerCase().includes(normalizedLocation));
-  const basePlaces = locationMatches.length > 0 ? locationMatches : MOCK_PLACES;
-  const mappedPlaces = basePlaces.map(mapMockPlaceForDiscovery);
+  const mappedPlaces = locationMatches.map(mapMockPlaceForDiscovery);
   const normalizedSearchQuery = normalizeDiscoverySearchQuery(searchQuery);
 
   return mappedPlaces.filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery));
