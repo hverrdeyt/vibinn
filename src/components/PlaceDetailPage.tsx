@@ -332,7 +332,13 @@ export default function PlaceDetailPage({
                       <div className="absolute inset-0 bg-gradient-to-t from-black/70 to-transparent" />
                       <div className="absolute inset-x-3 bottom-3 flex items-center gap-2">
                         <div className="h-8 w-8 overflow-hidden rounded-full border border-white/15">
-                          <img src={moment.travelerAvatar} alt={moment.travelerUsername} className="h-full w-full object-cover" />
+                          <img
+                            src={moment.travelerAvatar}
+                            alt={moment.travelerUsername}
+                            className="h-full w-full object-cover"
+                            referrerPolicy="no-referrer"
+                            onError={(event) => handleAvatarImageError(event, moment.travelerUsername)}
+                          />
                         </div>
                         <div className="truncate text-xs font-black text-white">@{moment.travelerUsername}</div>
                       </div>

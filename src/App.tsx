@@ -515,7 +515,7 @@ function buildAuthenticatedUserDraft(payload?: { id?: string; name?: string; use
     username: payload?.username || payload?.email?.split('@')[0] || 'traveler',
     displayName,
     bio: '',
-    avatar: '',
+    avatar: getAvatarFallbackUrl(displayName),
     badges: [],
     flags: [],
     stats: {
@@ -5172,6 +5172,7 @@ function TravelerDiscovery({
                       alt={original.username}
                       className="h-full w-full rounded-full object-cover"
                       referrerPolicy="no-referrer"
+                      onError={(event) => handleAvatarImageError(event, original.username)}
                     />
                   </div>
                   <div className="mt-2 max-w-20 truncate text-xs font-bold text-white/75">
