@@ -1053,7 +1053,6 @@ async function ensureLocationCandidatePool(
     where: buildLocationWhere(locationLabel, locationType),
   });
 
-  const hasPreferences = selectedInterests.length > 0 || Boolean(selectedVibe);
   const seededRecently = location.discoveryLastGoogleSyncAt
     ? (Date.now() - location.discoveryLastGoogleSyncAt.getTime()) < DISCOVERY_RESEED_INTERVAL_MS
     : false;
@@ -1073,7 +1072,7 @@ async function ensureLocationCandidatePool(
     return;
   }
 
-  if (!hasPreferences || seededRecently) {
+  if (seededRecently) {
     if (location.discoveryCandidateCount !== cachedCount) {
       await prisma.location.update({
         where: { id: location.id },
