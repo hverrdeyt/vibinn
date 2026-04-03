@@ -451,80 +451,83 @@ async function fetchGoogleTextSearch(textQuery: string) {
 }
 
 async function getPlaceSuggestions(input: string) {
-  const googlePredictions = await fetchGooglePlaceSuggestions(input).catch((error) => {
-    console.error(error);
-    return null;
-  });
+  try {
+    const googlePredictions = await fetchGooglePlaceSuggestions(input).catch((error) => {
+      console.error(error);
+      return null;
+    });
 
-  if (googlePredictions && googlePredictions.length > 0) {
-    const filteredPredictions = googlePredictions.filter((prediction) =>
-      isRelevantPredictionType(prediction.primaryType ?? prediction.types?.[0]),
-    );
+    if (googlePredictions && googlePredictions.length > 0) {
+      const filteredPredictions = googlePredictions;
 
-    if (filteredPredictions.length > 0) {
-      const places = await Promise.all(
-        filteredPredictions.map(async (prediction) => {
-        const mainText = prediction.structuredFormat?.mainText?.text ?? prediction.text?.text ?? 'Unnamed place';
-        const secondaryText = prediction.structuredFormat?.secondaryText?.text ?? '';
-        const locationBits = parseLocationBits(secondaryText);
-        const category = (prediction.primaryType ?? prediction.types?.[0] ?? 'recommended spot').replace(/_/g, ' ');
+      if (filteredPredictions.length > 0) {
+        const places = await Promise.all(
+          filteredPredictions.map(async (prediction) => {
+            const mainText = prediction.structuredFormat?.mainText?.text ?? prediction.text?.text ?? 'Unnamed place';
+            const secondaryText = prediction.structuredFormat?.secondaryText?.text ?? '';
+            const locationBits = parseLocationBits(secondaryText);
+            const category = 'recommended spot';
 
-        const place = await prisma.place.upsert({
-          where: { googlePlaceId: prediction.placeId },
-          update: {
-            name: mainText,
-            city: locationBits.city,
-            country: locationBits.country,
-            category,
-          },
-          create: {
-            googlePlaceId: prediction.placeId,
-            name: mainText,
-            city: locationBits.city,
-            country: locationBits.country,
-            category,
-          },
-        });
+            const place = await prisma.place.upsert({
+              where: { googlePlaceId: prediction.placeId },
+              update: {
+                name: mainText,
+                city: locationBits.city,
+                country: locationBits.country,
+                category,
+              },
+              create: {
+                googlePlaceId: prediction.placeId,
+                name: mainText,
+                city: locationBits.city,
+                country: locationBits.country,
+                category,
+              },
+            });
 
-        return {
-          id: place.id,
-          name: mainText,
-          location: locationBits.location || 'Unknown location',
-          description: '',
-          image: 'https://placehold.co/800x1000/111111/ffffff?text=Place',
-          images: ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
-          tags: [category],
-          similarityStat: 82,
-          whyYoullLikeIt: [],
-          priceRange: '$$',
-          category,
-        };
-        }),
+            return {
+              id: place.id,
+              name: mainText,
+              location: locationBits.location || 'Unknown location',
+              description: '',
+              image: 'https://placehold.co/800x1000/111111/ffffff?text=Place',
+              images: ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
+              tags: [category],
+              similarityStat: 82,
+              whyYoullLikeIt: [],
+              priceRange: '$$',
+              category,
+            };
+          }),
+        );
+
+        return places;
+      }
+    }
+
+    const searchResults = await fetchGoogleTextSearch(input).catch((error) => {
+      console.error(error);
+      return null;
+    });
+
+    if (searchResults?.places?.length) {
+      const mappedPlaces = await Promise.all(
+        searchResults.places
+          .filter((place) => isRelevantPredictionType(place.primaryType ?? place.types?.[0]))
+          .slice(0, 6)
+          .map((place) => mapGoogleSearchPlaceToInternalPlace(place)),
       );
 
-      return places;
+      if (mappedPlaces.length > 0) {
+        return mappedPlaces;
+      }
     }
+
+    return MOCK_PLACES.filter((place) => `${place.name} ${place.location}`.toLowerCase().includes(input.toLowerCase().trim()));
+  } catch (error) {
+    console.error('Falling back to mock place suggestions', error);
+    return MOCK_PLACES.filter((place) => `${place.name} ${place.location}`.toLowerCase().includes(input.toLowerCase().trim()));
   }
-
-  const searchResults = await fetchGoogleTextSearch(input).catch((error) => {
-    console.error(error);
-    return null;
-  });
-
-  if (searchResults?.places?.length) {
-    const mappedPlaces = await Promise.all(
-      searchResults.places
-        .filter((place) => isRelevantPredictionType(place.primaryType ?? place.types?.[0]))
-        .slice(0, 6)
-        .map((place) => mapGoogleSearchPlaceToInternalPlace(place)),
-    );
-
-    if (mappedPlaces.length > 0) {
-      return mappedPlaces;
-    }
-  }
-
-  return MOCK_PLACES.filter((place) => `${place.name} ${place.location}`.toLowerCase().includes(input.toLowerCase().trim()));
 }
 
 const INITIAL_LOCATION_FALLBACKS = [
