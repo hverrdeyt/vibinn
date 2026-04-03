@@ -335,6 +335,61 @@ function handleAvatarImageError(event: { currentTarget: HTMLImageElement }, labe
   event.currentTarget.src = fallbackUrl;
 }
 
+function handleOnboardingImageError(event: { currentTarget: HTMLImageElement }, label?: string | null) {
+  const fallbackLabel = (label?.trim() || 'Vibe').replace(/\s+/g, '+');
+  const fallbackUrl = `https://placehold.co/1200x1600/111111/D3FF48?text=${encodeURIComponent(fallbackLabel)}`;
+  if (event.currentTarget.src === fallbackUrl) return;
+  event.currentTarget.src = fallbackUrl;
+}
+
+const COUNTRY_FLAG_BY_KEYWORD: Array<[string, string]> = [
+  ['united states', '🇺🇸'],
+  ['usa', '🇺🇸'],
+  ['boston', '🇺🇸'],
+  ['new york', '🇺🇸'],
+  ['massachusetts', '🇺🇸'],
+  ['japan', '🇯🇵'],
+  ['tokyo', '🇯🇵'],
+  ['kyoto', '🇯🇵'],
+  ['indonesia', '🇮🇩'],
+  ['jakarta', '🇮🇩'],
+  ['bali', '🇮🇩'],
+  ['france', '🇫🇷'],
+  ['paris', '🇫🇷'],
+  ['south korea', '🇰🇷'],
+  ['korea', '🇰🇷'],
+  ['seoul', '🇰🇷'],
+  ['thailand', '🇹🇭'],
+  ['bangkok', '🇹🇭'],
+  ['singapore', '🇸🇬'],
+  ['taiwan', '🇹🇼'],
+  ['hong kong', '🇭🇰'],
+  ['malaysia', '🇲🇾'],
+  ['italy', '🇮🇹'],
+  ['greece', '🇬🇷'],
+  ['uae', '🇦🇪'],
+];
+
+function inferFlagFromLabel(label?: string | null) {
+  const normalized = label?.trim().toLowerCase();
+  if (!normalized) return null;
+  for (const [keyword, flag] of COUNTRY_FLAG_BY_KEYWORD) {
+    if (normalized.includes(keyword)) return flag;
+  }
+  return null;
+}
+
+function deriveFlagsFromTravelHistory(travelHistory: User['travelHistory']) {
+  return Array.from(
+    new Set(
+      travelHistory
+        .flatMap((history) => [history.country, ...history.cities])
+        .map((label) => inferFlagFromLabel(label))
+        .filter(Boolean) as string[],
+    ),
+  ).slice(0, 5);
+}
+
 function getEditorialLabel(place: Place, index = 0) {
   const specificOrClean = getDisplayAttitudeLabel(place);
   if (specificOrClean) return specificOrClean;
@@ -1141,6 +1196,7 @@ export default function App() {
           <Profile
             user={user}
             bookmarkedPlaces={bookmarkedPlaces}
+            savedLocations={savedLocations}
             onNavigate={(s) => setCurrentScreen(s)}
             onSavePlace={(placeToSave, nextActive) => syncBookmarkState(placeToSave, nextActive)}
             onSelectPlace={(p) => {
@@ -1801,53 +1857,42 @@ function Onboarding({
           </button>
         </div>
 
-        <p className="mt-auto text-center text-white/25 text-xs font-mono uppercase tracking-widest">
-          Hint for the desperate: VIBE2026
-        </p>
+        <div className="mt-auto" />
       </div>
     );
   }
 
   if (stage === 'choice') {
     return (
-      <div className="relative min-h-screen bg-white">
-        <div className="absolute inset-0 overflow-hidden">
-          <img
-            src="https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1200&q=80"
-            alt="Travel background"
-            className="h-full w-full object-cover"
-            referrerPolicy="no-referrer"
-          />
-          <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-black/10" />
+      <div className="p-10 pt-32 flex flex-col h-screen bg-zinc-950 text-white">
+        <div className="mb-16">
+          <div className="w-14 h-14 bg-white/8 rounded-2xl mb-8 flex items-center justify-center shadow-lg border border-white/10">
+            <Sparkles className="text-accent" size={28} />
+          </div>
+          <h1 className="text-5xl font-extrabold tracking-tighter mb-6 leading-[0.9]">
+            Sharpen the feed <br />before you start.
+          </h1>
+          <p className="text-white/60 text-xl font-medium leading-snug">
+            Your interest picks and vibe choice both shape which places and events get ranked into the feed.
+          </p>
         </div>
 
-        <div className="relative z-10 flex min-h-screen flex-col justify-end px-6 pb-10 pt-10">
-          <div className="mb-6 text-white">
-            <h1 className="text-4xl font-black leading-[0.92] tracking-[-0.05em]">
-              Personalize your feed?
-            </h1>
-            <p className="mt-3 max-w-sm text-sm font-medium leading-relaxed text-white/78">
-              Choosing your preferences helps AI recommend places and people that feel more relevant to your vibe.
-            </p>
-          </div>
+        <div className="space-y-4">
+          <button
+            type="button"
+            onClick={startPreferenceFlow}
+            className="w-full btn-primary py-5 text-lg"
+          >
+            Choose preferences
+          </button>
 
-          <div className="grid gap-3">
-            <button
-              type="button"
-              onClick={startPreferenceFlow}
-              className="w-full btn-primary py-5 text-lg"
-            >
-              Choose preferences
-            </button>
-
-            <button
-              type="button"
-              onClick={onComplete}
-              className="w-full rounded-xl bg-white/14 px-6 py-5 text-lg font-semibold text-white backdrop-blur-sm transition-all hover:bg-white/18 active:scale-[0.98]"
-            >
-              Skip
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={onComplete}
+            className="w-full rounded-xl border border-white/10 bg-white/6 px-6 py-5 text-lg font-semibold text-white transition-all hover:bg-white/10 active:scale-[0.98]"
+          >
+            Skip for now
+          </button>
         </div>
       </div>
     );
@@ -1942,6 +1987,7 @@ function SwipeCard({ card, isTop, onSwipe }: { card: any, isTop: boolean, onSwip
           alt={card.title} 
           className="w-full h-full object-cover" 
           referrerPolicy="no-referrer"
+          onError={(event) => handleOnboardingImageError(event, card.title)}
         />
         
         {/* Gradient Overlay */}
@@ -3009,6 +3055,7 @@ function AddCollectionScreen({
 function Profile({
   user,
   bookmarkedPlaces,
+  savedLocations,
   onNavigate,
   onSavePlace,
   onSelectPlace,
@@ -3019,6 +3066,7 @@ function Profile({
 }: {
   user: User;
   bookmarkedPlaces: Place[];
+  savedLocations: SavedLocationOption[];
   onNavigate: (s: Screen) => void;
   onSavePlace: (place: Place, nextActive: boolean) => Promise<boolean>;
   onSelectPlace: (place: Place) => void;
@@ -3041,6 +3089,10 @@ function Profile({
     allPlaces.findIndex((candidate) => candidate.id === place.id) === index
   ));
   const travelerSummary = `${ownPlaces.length} places • ${user.stats.cities} cities • ${user.stats.countries} countries`;
+  const displayFlags = (user.flags?.length ? user.flags : [
+    ...deriveFlagsFromTravelHistory(user.travelHistory),
+    ...savedLocations.map((location) => inferFlagFromLabel(location.label)).filter(Boolean) as string[],
+  ].filter((flag, index, list) => list.indexOf(flag) === index)).slice(0, 5);
   const momentCollections = customCollections.filter((collection) => collection.places.length > 0);
   const cityCollections = user.travelHistory.filter((history) => (history.places ?? []).length > 0);
   const groupedByTime = Object.values(
@@ -3129,7 +3181,7 @@ function Profile({
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/35">{travelerSummary}</p>
 
             <div className="mt-3 flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-              {user.flags?.map((flag, i) => (
+              {displayFlags.map((flag, i) => (
                 <span key={i} className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-lg shadow-sm">
                   {flag}
                 </span>
@@ -5873,6 +5925,7 @@ function TravelerProfile({
     ? `${user.matchScore}% match`
     : '';
   const travelerSummary = `${diaryPlaces.length} places • ${user.stats.cities} cities • ${user.stats.countries} countries`;
+  const displayFlags = (user.flags?.length ? user.flags : deriveFlagsFromTravelHistory(user.travelHistory)).slice(0, 5);
   const momentCollections: Array<{ label: string; places: Place[] }> = [];
   const cityCollections = user.travelHistory.filter((history) => (history.places ?? []).length > 0);
   const groupedByTime = Object.values(
@@ -5986,7 +6039,7 @@ function TravelerProfile({
             <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/35">{travelerSummary}</p>
 
             <div className="mt-3 flex gap-2 overflow-x-auto pb-1 no-scrollbar">
-              {user.flags?.map((flag, i) => (
+              {displayFlags.map((flag, i) => (
                 <span key={i} className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-lg shadow-sm">
                   {flag}
                 </span>
