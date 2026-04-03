@@ -42,8 +42,9 @@ services:
       - key: R2_PUBLIC_URL
         sync: false
 
-  - type: static
+  - type: web
     name: vibecheck-web
+    runtime: static
     buildCommand: npm install && npm run build
     staticPublishPath: dist
     pullRequestPreviewsEnabled: false
