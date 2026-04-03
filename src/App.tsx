@@ -508,6 +508,25 @@ function getPlaceInteractionPayload(place: Place) {
   };
 }
 
+function buildAuthenticatedUserDraft(payload?: { id?: string; name?: string; username?: string; email?: string }): User {
+  const displayName = payload?.name?.trim() || payload?.username || payload?.email?.split('@')[0] || 'Traveler';
+  return {
+    id: payload?.id || 'auth-user',
+    username: payload?.username || payload?.email?.split('@')[0] || 'traveler',
+    displayName,
+    bio: '',
+    avatar: '',
+    badges: [],
+    flags: [],
+    stats: {
+      countries: 0,
+      cities: 0,
+      trips: 0,
+    },
+    travelHistory: [],
+  };
+}
+
 export default function App() {
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
   const [currentScreen, setCurrentScreen] = useState<Screen>('onboarding');
@@ -780,16 +799,14 @@ export default function App() {
     }
   };
 
-  const completeAuth = (payload?: { id?: string; name?: string; username?: string; email?: string }) => {
+  const completeAuth = async (payload?: { id?: string; name?: string; username?: string; email?: string }) => {
     setIsAuthenticated(true);
-    if (payload?.name || payload?.email || payload?.username || payload?.id) {
-      setUser((current) => ({
-        ...current,
-        id: payload.id || current.id,
-        displayName: payload.name?.trim() || current.displayName,
-        username: payload.username || payload.name?.trim() || payload.email?.split('@')[0] || current.username,
-        bio: payload.email ? `${current.bio.split(' Currently')[0]}. ${payload.email}` : current.bio,
-      }));
+    setUser(buildAuthenticatedUserDraft(payload));
+
+    try {
+      await refreshOwnProfile();
+    } catch {
+      // refreshOwnProfile already handles the user-facing toast
     }
 
     const pendingAction = pendingAuthActionRef.current;
@@ -957,8 +974,8 @@ export default function App() {
     if (!api.getStoredAuthToken()) return;
 
     void api.getAuthSession()
-      .then((response) => {
-        completeAuth({
+      .then(async (response) => {
+        await completeAuth({
           id: response.user.id,
           name: response.user.displayName,
           username: response.user.username,
