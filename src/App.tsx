@@ -1371,6 +1371,21 @@ export default function App() {
     const nextSelectedInterests = override?.selectedInterests ?? selectedInterests;
     const nextSelectedVibe = override?.selectedVibe ?? selectedVibe;
     const shouldShowPostPreferencesIntro = nextSelectedInterests.length > 0 || Boolean(nextSelectedVibe);
+    const skippedPreferences = nextSelectedInterests.length === 0 && !nextSelectedVibe;
+
+    if (skippedPreferences) {
+      trackEvent('Skip Onboarding', {
+        entry_mode: onboardingEntryMode,
+      });
+    } else {
+      trackEvent('Complete Onboarding', {
+        entry_mode: onboardingEntryMode,
+        selected_interests: nextSelectedInterests,
+        selected_vibe: nextSelectedVibe,
+        selected_interests_count: nextSelectedInterests.length,
+        full_selection: nextSelectedInterests.length === 5 && Boolean(nextSelectedVibe),
+      });
+    }
 
     setSelectedInterests(nextSelectedInterests);
     setSelectedVibe(nextSelectedVibe ?? null);
@@ -1434,6 +1449,12 @@ export default function App() {
   };
 
   const openPlaceDetail = (place: Place, returnScreen: Screen = 'discover-places') => {
+    trackEvent('View Place', {
+      place_id: place.id,
+      place_name: place.name,
+      location: place.location,
+      source_screen: returnScreen,
+    });
     setPlaceDetailReturnScreen(returnScreen);
     setSelectedPlace(place);
     setCurrentScreen('place-detail');
@@ -1898,6 +1919,11 @@ export default function App() {
   };
 
   const openTravelerProfile = async (traveler: User) => {
+    trackEvent('View Traveler Detail', {
+      traveler_id: traveler.id,
+      username: traveler.username,
+      source_screen: currentScreen,
+    });
     setSelectedTraveler(traveler);
     setCurrentScreen('traveler-profile');
 
@@ -2215,6 +2241,25 @@ export default function App() {
       active_location_id: activeLocationId,
     });
   }, [currentScreen, publicProfileUsername, selectedPlace?.id, selectedEvent?.id, selectedTraveler?.id, activeLocationId]);
+
+  useEffect(() => {
+    if (currentScreen === 'landing') {
+      trackEvent('View Landing Page');
+      return;
+    }
+
+    if (currentScreen === 'discover-travelers') {
+      trackEvent('View Discovery Traveler');
+      return;
+    }
+
+    if (currentScreen === 'profile') {
+      trackEvent('View My Profile', {
+        user_id: user.id,
+        username: user.username,
+      });
+    }
+  }, [currentScreen, user.id, user.username]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -3386,7 +3431,10 @@ function LandingPage({
             <div className="text-sm font-black uppercase tracking-[0.22em] text-accent">Vibinn</div>
             <button
               type="button"
-              onClick={onOpenApp}
+              onClick={() => {
+                trackEvent('Click Try Now', { placement: 'landing_header' });
+                onOpenApp();
+              }}
               className="rounded-full bg-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.14em] text-black transition hover:brightness-105"
             >
               Try now
@@ -3457,7 +3505,10 @@ function LandingPage({
           </div>
           <button
             type="button"
-            onClick={onOpenApp}
+            onClick={() => {
+              trackEvent('Click Try Now', { placement: 'landing_floating' });
+              onOpenApp();
+            }}
             className="rounded-full bg-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.14em] text-black transition hover:brightness-105"
           >
             Try now
@@ -3649,6 +3700,9 @@ function Onboarding({
           <button
             type="button"
             onClick={() => {
+              trackEvent('Enter Waitlist', {
+                action: showWaitlistForm ? 'hide' : 'show',
+              });
               setShowWaitlistForm((current) => !current);
               setWaitlistError(null);
               setWaitlistMessage(null);
@@ -3692,6 +3746,9 @@ function Onboarding({
                   setWaitlistMessage(null);
                   try {
                     await api.joinWaitlist({ email: waitlistEmail, source: 'invite-gate' });
+                    trackEvent('Submit Waitlist', {
+                      source: 'invite-gate',
+                    });
                     setWaitlistMessage(`You're on the list.`);
                     setWaitlistEmail('');
                   } catch (error) {
@@ -6112,6 +6169,21 @@ function PlaceDiscovery({
     observer.observe(node);
     return () => observer.disconnect();
   }, [hasMore, isLoading, isLoadingMore, isRefreshing, onLoadMore, visiblePlaces.length]);
+
+  useEffect(() => {
+    if (!hasMore || isLoading || isLoadingMore || isRefreshing) return;
+
+    const handleWindowScroll = () => {
+      if (isLoading || isLoadingMore || isRefreshing || !hasMore) return;
+      const remaining = document.documentElement.scrollHeight - (window.innerHeight + window.scrollY);
+      if (remaining < 520) {
+        onLoadMore();
+      }
+    };
+
+    window.addEventListener('scroll', handleWindowScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleWindowScroll);
+  }, [hasMore, isLoading, isLoadingMore, isRefreshing, onLoadMore]);
 
   const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
     if (typeof window !== 'undefined' && window.scrollY <= 0) {
