@@ -9,7 +9,6 @@ import {
   Sparkles,
   Star,
   X,
-  Zap,
 } from 'lucide-react';
 import DetailActionBar from './DetailActionBar';
 
@@ -89,13 +88,11 @@ interface PlaceDetailPageProps {
   data: PlaceDetailData;
   isSaved?: boolean;
   isBeenThere?: boolean;
-  isVibed?: boolean;
   locationPermission?: 'unknown' | 'granted' | 'denied' | 'unsupported';
   onBack?: () => void;
   onSave?: (place: PlaceDetailData) => void;
   onBeenThere?: (place: PlaceDetailData) => void;
   onShare?: (place: PlaceDetailData) => void;
-  onVibe?: (place: PlaceDetailData) => void;
   onRequestLocation?: () => void;
   onSelectRelatedPlace?: (placeId: string) => void;
   onSelectFallbackTraveler?: (travelerId: string) => void;
@@ -122,13 +119,11 @@ export default function PlaceDetailPage({
   data,
   isSaved = false,
   isBeenThere = false,
-  isVibed = false,
   locationPermission = 'unknown',
   onBack,
   onSave,
   onBeenThere,
   onShare,
-  onVibe,
   onRequestLocation,
   onSelectRelatedPlace,
   onSelectFallbackTraveler,
@@ -147,6 +142,11 @@ export default function PlaceDetailPage({
   const visibleReasons = data.whyYoullLike.slice(0, 4);
   const activeMedia = mediaItems[activeImageIndex] ?? mediaItems[0];
   const hasTravelerMoments = Boolean(data.travelerMoments?.length);
+  const visibleFallbackTravelers = (data.fallbackTravelers ?? []).filter((traveler) => (traveler.matchScore ?? 0) >= 80);
+  const shortAddress = data.address?.split(',')[0]?.trim() || data.city;
+  const heroMeta = typeof data.distanceFromUserKm === 'number'
+    ? `${shortAddress} • ${data.distanceFromUserKm} km away`
+    : shortAddress;
 
   return (
     <div className="min-h-screen bg-zinc-950 pb-32 text-white">
@@ -170,16 +170,6 @@ export default function PlaceDetailPage({
               aria-label="Share place"
             >
               <Share2 size={18} />
-            </button>
-            <button
-              type="button"
-              onClick={() => onVibe?.(data)}
-              className={`rounded-full p-3 transition ${
-                isVibed ? 'bg-accent text-dark' : 'bg-white/8 text-white hover:bg-white/12'
-              }`}
-              aria-label="Vibe with this place"
-            >
-              <Zap size={18} />
             </button>
           </div>
         </div>
@@ -233,9 +223,8 @@ export default function PlaceDetailPage({
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-white/80">
                 <MapPin size={14} />
-                <span className="text-xs font-bold uppercase tracking-[0.2em]">
-                  {data.city}, {data.country}
-                  {typeof data.distanceFromUserKm === 'number' ? ` • ${data.distanceFromUserKm} km away` : ''}
+                <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/72">
+                  {heroMeta}
                 </span>
               </div>
               <h1 className="text-4xl font-black tracking-[-0.05em] text-white">
@@ -278,13 +267,13 @@ export default function PlaceDetailPage({
           </section>
         ) : null}
 
-        <section className="rounded-[28px] bg-dark p-5 text-white shadow-[0_18px_40px_rgba(15,23,42,0.18)]">
+        <section className="rounded-[28px] border border-accent/25 bg-[radial-gradient(circle_at_top_left,rgba(211,255,72,0.22),rgba(211,255,72,0.08),rgba(24,24,27,0.94))] p-5 text-white shadow-[0_18px_40px_rgba(120,160,20,0.18)]">
           {/* This block intentionally stands out because the page's job is to explain relevance. */}
           <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.2em] text-accent">
             <Sparkles size={14} />
             Why this is showing up for you
           </div>
-          <p className="mt-3 text-lg font-black leading-tight tracking-[-0.03em]">
+          <p className="mt-3 text-base font-medium leading-relaxed tracking-[-0.01em] text-white/88">
             {data.recommendationReason}
           </p>
 
@@ -349,7 +338,7 @@ export default function PlaceDetailPage({
               </div>
             </div>
           </section>
-        ) : (data.fallbackTravelers?.length || onExploreTravelers || onExploreMoreLikeThis) ? (
+        ) : visibleFallbackTravelers.length > 0 ? (
           <section className="rounded-[28px] border border-white/10 bg-white/6 p-5">
             <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
               <Sparkles size={14} />
@@ -375,10 +364,10 @@ export default function PlaceDetailPage({
               ))}
             </div>
 
-            {data.fallbackTravelers?.length ? (
+            {visibleFallbackTravelers.length ? (
               <div className="-mx-5 mt-5 overflow-x-auto px-5 pb-2 no-scrollbar">
                 <div className="flex gap-3">
-                  {data.fallbackTravelers.map((traveler) => (
+                  {visibleFallbackTravelers.map((traveler) => (
                     <button
                       key={traveler.id}
                       type="button"

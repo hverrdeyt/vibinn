@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { useState, useEffect, useRef, type TouchEvent, type ChangeEvent } from 'react';
+import { useState, useEffect, useRef, type ReactNode, type TouchEvent, type ChangeEvent } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   User as UserIcon, 
@@ -45,7 +45,7 @@ import PlaceCard, { PlaceCardData } from './components/PlaceCard';
 import PlaceDetailPage, { PlaceDetailData } from './components/PlaceDetailPage';
 import TravelerCard, { TravelerCardData } from './components/TravelerCard';
 import DetailActionBar from './components/DetailActionBar';
-import { api, ApiError } from './lib/api';
+import { api, ApiError, resolveApiAssetUrl } from './lib/api';
 
 declare global {
   interface Window {
@@ -131,6 +131,8 @@ function screenToAppPath(screen: Screen) {
   switch (screen) {
     case 'discover-places':
       return APP_BASE_PATH;
+    case 'post-preferences-intro':
+      return `${APP_BASE_PATH}/ready`;
     case 'discover-travelers':
       return `${APP_BASE_PATH}/travelers`;
     case 'bookmarks':
@@ -195,6 +197,8 @@ function parseAppRoute(pathname: string): { screen: Screen; publicProfileUsernam
       return { screen: 'login' };
     case 'register':
       return { screen: 'register' };
+    case 'ready':
+      return { screen: 'post-preferences-intro' };
     case 'travelers':
       return { screen: 'discover-travelers' };
     case 'bookmarks':
@@ -736,9 +740,9 @@ function getDisplayPlaceCategory(place: Pick<Place, 'category' | 'tags'>) {
 
 function getDisplayEventCategory(event: Pick<EventItem, 'category' | 'tags'>) {
   const trimmedCategory = event.category?.trim();
-  if (trimmedCategory) return trimmedCategory;
+  if (trimmedCategory && trimmedCategory.toLowerCase() !== 'undefined') return trimmedCategory;
 
-  const firstTag = event.tags.find((tag) => tag?.trim());
+  const firstTag = event.tags.find((tag) => tag?.trim() && tag.trim().toLowerCase() !== 'undefined');
   if (firstTag) return firstTag.replace(/[_-]+/g, ' ');
 
   return 'live event';
@@ -881,10 +885,15 @@ export default function App() {
   const [currentScreen, setCurrentScreen] = useState<Screen>(() => {
     if (typeof window === 'undefined') return 'landing';
     const route = parseAppRoute(window.location.pathname);
+    const placeIdFromShareLink = new URLSearchParams(window.location.search).get('place');
     const hasAccess = hasStoredInviteAccess() || hasStoredOnboardingCompletion();
 
     if (route.screen === 'landing' || route.screen === 'public-profile') {
       return route.screen;
+    }
+
+    if (placeIdFromShareLink) {
+      return 'place-detail';
     }
 
     return hasAccess ? route.screen : 'onboarding';
@@ -909,6 +918,8 @@ export default function App() {
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
   const [selectedTraveler, setSelectedTraveler] = useState<User | null>(null);
+  const [placeDetailReturnScreen, setPlaceDetailReturnScreen] = useState<Screen>('discover-places');
+  const [discoverTravelersTab, setDiscoverTravelersTab] = useState<'similar' | 'following'>('following');
   const [isTravelerProfileLoading, setIsTravelerProfileLoading] = useState(false);
   const [placeTravelerMoments, setPlaceTravelerMoments] = useState<Array<{
     id: string;
@@ -923,12 +934,16 @@ export default function App() {
   const [placeDetailInteraction, setPlaceDetailInteraction] = useState({
     isSaved: false,
     isBeenThere: false,
-    isVibed: false,
   });
   const [bookmarkedPlaceIds, setBookmarkedPlaceIds] = useState<string[]>([]);
   const [bookmarkedPlaces, setBookmarkedPlaces] = useState<Place[]>([]);
   const [dismissedPlaceIds, setDismissedPlaceIds] = useState<string[]>([]);
   const [actionToast, setActionToast] = useState<string | null>(null);
+  const [shareSheetState, setShareSheetState] = useState<null | {
+    title: string;
+    text: string;
+    url: string;
+  }>(null);
   const [savedLocations, setSavedLocations] = useState<SavedLocationOption[]>(INITIAL_SAVED_LOCATIONS);
   const [activeLocationId, setActiveLocationId] = useState<string>(INITIAL_SAVED_LOCATIONS[0].id);
   const [deviceLocation, setDeviceLocation] = useState<DeviceLocation | null>(null);
@@ -950,6 +965,8 @@ export default function App() {
   const [isDiscoveryEventsLoading, setIsDiscoveryEventsLoading] = useState(false);
   const [isDiscoveryEventsError, setIsDiscoveryEventsError] = useState(false);
   const [isPreferenceTransitionLoading, setIsPreferenceTransitionLoading] = useState(false);
+  const [showDiscoveryGestureDemo, setShowDiscoveryGestureDemo] = useState(false);
+  const postPreferencesIntroTimerRef = useRef<number | null>(null);
   const [isFloatingNavHidden, setIsFloatingNavHidden] = useState(false);
   const [selectedCollection, setSelectedCollection] = useState<{ label: string; places: Place[] } | null>(null);
   const [customCollections, setCustomCollections] = useState<{ label: string; places: Place[] }[]>([]);
@@ -1015,6 +1032,12 @@ export default function App() {
         return;
       }
 
+      if (getSharedPlaceIdFromUrl()) {
+        setPublicProfileUsername(null);
+        setCurrentScreen('place-detail');
+        return;
+      }
+
       if (route.screen === 'landing') {
         setCurrentScreen('landing');
         return;
@@ -1027,6 +1050,20 @@ export default function App() {
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
   }, []);
+
+  useEffect(() => {
+    const sharedPlaceId = getSharedPlaceIdFromUrl();
+    if (currentScreen !== 'place-detail' || selectedPlace || !sharedPlaceId) return;
+
+    void api.getPlaceDetails(sharedPlaceId)
+      .then((response) => {
+        setSelectedPlace(response.place as Place);
+      })
+      .catch(() => {
+        showActionToast('Could not load that shared place right now');
+        setCurrentScreen('landing');
+      });
+  }, [currentScreen, selectedPlace]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1138,6 +1175,7 @@ export default function App() {
   const completeOnboarding = async (override?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null }) => {
     const nextSelectedInterests = override?.selectedInterests ?? selectedInterests;
     const nextSelectedVibe = override?.selectedVibe ?? selectedVibe;
+    const shouldShowPostPreferencesIntro = nextSelectedInterests.length > 0 || Boolean(nextSelectedVibe);
 
     setSelectedInterests(nextSelectedInterests);
     setSelectedVibe(nextSelectedVibe ?? null);
@@ -1161,7 +1199,16 @@ export default function App() {
     setIsPreferenceTransitionLoading(true);
     setOnboardingEntryMode('invite');
     suppressNextDiscoveryAutoloadRef.current = true;
-    setCurrentScreen('discover-places');
+    setCurrentScreen(shouldShowPostPreferencesIntro ? 'post-preferences-intro' : 'discover-places');
+    setShowDiscoveryGestureDemo(shouldShowPostPreferencesIntro);
+    if (postPreferencesIntroTimerRef.current) {
+      window.clearTimeout(postPreferencesIntroTimerRef.current);
+    }
+    if (shouldShowPostPreferencesIntro) {
+      postPreferencesIntroTimerRef.current = window.setTimeout(() => {
+        setCurrentScreen('discover-places');
+      }, 4200);
+    }
     await Promise.allSettled([
       loadDiscoveryPlaces(1, 'reset', { refresh: true, preferencesOverride: { selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe } }),
       loadDiscoveryEvents({ selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe }),
@@ -1189,6 +1236,12 @@ export default function App() {
   const openPublicProfile = (username?: string) => {
     setPublicProfileUsername(username ?? user.username);
     setCurrentScreen('public-profile');
+  };
+
+  const openPlaceDetail = (place: Place, returnScreen: Screen = 'discover-places') => {
+    setPlaceDetailReturnScreen(returnScreen);
+    setSelectedPlace(place);
+    setCurrentScreen('place-detail');
   };
 
   const requestDeviceLocation = () => {
@@ -1249,6 +1302,77 @@ export default function App() {
     setAuthPrompt(message);
     setAuthReturnScreen(currentScreen === 'login' || currentScreen === 'register' ? 'discover-places' : currentScreen);
     setCurrentScreen(mode);
+  };
+
+  const getSharedPlaceIdFromUrl = () => {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('place');
+  };
+
+  const buildPlaceShareUrl = (placeId: string) => {
+    if (typeof window === 'undefined') return `${APP_BASE_PATH}?place=${encodeURIComponent(placeId)}`;
+    const url = new URL(`${window.location.origin}${APP_BASE_PATH}`);
+    url.searchParams.set('place', placeId);
+    return url.toString();
+  };
+
+  const openShareSheet = (input: { url: string; title: string; text: string }) => {
+    setShareSheetState(input);
+  };
+
+  const copyText = async (value: string) => {
+    if (typeof window === 'undefined' || typeof document === 'undefined') return false;
+
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return true;
+      } catch {
+        // Fall back to manual copy below.
+      }
+    }
+
+    try {
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      textarea.style.pointerEvents = 'none';
+      document.body.appendChild(textarea);
+      textarea.focus();
+      textarea.select();
+      textarea.setSelectionRange(0, textarea.value.length);
+      const copied = document.execCommand('copy');
+      document.body.removeChild(textarea);
+      return copied;
+    } catch {
+      return false;
+    }
+  };
+
+  const shareUrl = async (input: { url: string; title: string; text: string; successToast: string }) => {
+    if (typeof window !== 'undefined' && navigator.share) {
+      try {
+        await navigator.share({
+          url: input.url,
+          title: input.title,
+          text: input.text,
+        });
+        showActionToast(input.successToast);
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : '';
+        if (message.includes('abort') || message.includes('cancel')) return;
+      }
+    }
+
+    if (await copyText(input.url)) {
+      showActionToast('Link copied');
+      return;
+    }
+
+    showActionToast(input.url);
   };
 
   const resetCreateMomentDraft = () => {
@@ -1575,7 +1699,6 @@ export default function App() {
         setPlaceDetailInteraction({
           isSaved: response.bookmarkedPlaceIds.includes(selectedPlace.id),
           isBeenThere: response.beenTherePlaceIds.includes(selectedPlace.id),
-          isVibed: response.vibedPlaceIds.includes(selectedPlace.id),
         });
       })
       .catch(() => undefined);
@@ -1608,7 +1731,7 @@ export default function App() {
         const deduped = combined.filter(
           (traveler, index, list) => list.findIndex((item) => item.id === traveler.id) === index,
         );
-        setPlaceFallbackTravelers(deduped.slice(0, 8));
+        setPlaceFallbackTravelers(deduped.filter((traveler) => (traveler.matchScore ?? 0) >= 80).slice(0, 8));
       })
       .catch(() => {
         setPlaceFallbackTravelers([]);
@@ -1629,6 +1752,14 @@ export default function App() {
         setRelatedPlaces([]);
       });
   }, [isAuthenticated, currentScreen, selectedPlace?.id]);
+
+  useEffect(() => {
+    return () => {
+      if (postPreferencesIntroTimerRef.current) {
+        window.clearTimeout(postPreferencesIntroTimerRef.current);
+      }
+    };
+  }, []);
 
   const renderScreen = () => {
     const resolvedPublicProfileUser = publicProfileUser ?? resolvePublicProfileUser(publicProfileUsername, user);
@@ -1656,6 +1787,8 @@ export default function App() {
             onComplete={completeOnboarding}
           />
         );
+      case 'post-preferences-intro':
+        return <PostPreferencesIntro />;
       case 'login':
         return (
           <LoginScreen
@@ -1714,13 +1847,6 @@ export default function App() {
           <NotificationsScreen
             onBack={() => setCurrentScreen('discover-places')}
             onOpenPlace={(place) => {
-              if (!isAuthenticated) {
-                openAuthGate('Log in to open places from your notifications.', 'login', () => {
-                  setSelectedPlace(place);
-                  setCurrentScreen('place-detail');
-                });
-                return;
-              }
               setSelectedPlace(place);
               setCurrentScreen('place-detail');
             }}
@@ -1814,13 +1940,6 @@ export default function App() {
           <BookmarksScreen
             bookmarkedPlaces={bookmarkedPlaces}
             onSelectPlace={(place) => {
-              if (!isAuthenticated) {
-                openAuthGate('Log in to open saved places and interact with them.', 'login', () => {
-                  setSelectedPlace(place);
-                  setCurrentScreen('place-detail');
-                });
-                return;
-              }
               setSelectedPlace(place);
               setCurrentScreen('place-detail');
             }}
@@ -1883,6 +2002,8 @@ export default function App() {
             hasError={isDiscoveryPlacesError}
             hasEventsError={isDiscoveryEventsError}
             bookmarkedPlaceIds={bookmarkedPlaceIds}
+            showGestureDemo={showDiscoveryGestureDemo}
+            onFinishGestureDemo={() => setShowDiscoveryGestureDemo(false)}
             onRefresh={() => {
               if (isDiscoveryPlacesLoading || isDiscoveryPlacesLoadingMore || isDiscoveryPlacesRefreshing) return;
               void loadDiscoveryPlaces(1, 'reset', { refresh: true });
@@ -1914,13 +2035,6 @@ export default function App() {
               showActionToast('Removed from recommendations');
             }}
             onSelectPlace={(p) => {
-              if (!isAuthenticated) {
-                openAuthGate('Log in to open place details and keep your discoveries synced.', 'login', () => {
-                  setSelectedPlace(p);
-                  setCurrentScreen('place-detail');
-                });
-                return;
-              }
               setSelectedPlace(p);
               setCurrentScreen('place-detail');
             }}
@@ -1973,17 +2087,11 @@ export default function App() {
         return (
           <TravelerDiscovery
             isAuthenticated={isAuthenticated}
+            activeTab={discoverTravelersTab}
+            onTabChange={setDiscoverTravelersTab}
             onRequireAuth={(message, action) => openAuthGate(message, 'login', action)}
-            onSelectPlace={(p) => {
-              if (!isAuthenticated) {
-                openAuthGate('Log in to open places shared by travelers you follow.', 'login', () => {
-                  setSelectedPlace(p);
-                  setCurrentScreen('place-detail');
-                });
-                return;
-              }
-              setSelectedPlace(p);
-              setCurrentScreen('place-detail');
+            onSelectPlace={(p, returnScreen) => {
+              openPlaceDetail(p, returnScreen ?? 'discover-places');
             }}
             onSelectTraveler={(t) => {
               if (!isAuthenticated) {
@@ -2039,6 +2147,7 @@ export default function App() {
         return selectedPlace ? (
           <PlaceDetail 
             place={selectedPlace} 
+            hasCompatibilityScore={selectedInterests.length > 0 || !!selectedVibe}
             savedLocations={savedLocations}
             activeLocationId={activeLocationId}
             deviceLocation={deviceLocation}
@@ -2046,9 +2155,13 @@ export default function App() {
             relatedPlaces={relatedPlaces}
             travelerMoments={placeTravelerMoments}
             fallbackTravelers={placeFallbackTravelers}
-            onBack={() => setCurrentScreen('discover-places')} 
+            onBack={() => setCurrentScreen(placeDetailReturnScreen)} 
             interactionState={placeDetailInteraction}
             onSavePlace={async (placeToSave, nextActive) => {
+              if (!isAuthenticated) {
+                openAuthGate('Log in to save places to your bookmarks.', 'login');
+                return false;
+              }
               const updated = await syncBookmarkState(placeToSave, nextActive);
               if (updated) {
                 setPlaceDetailInteraction((prev) => ({ ...prev, isSaved: nextActive }));
@@ -2056,20 +2169,22 @@ export default function App() {
               return updated;
             }}
             onMarkBeenThere={async () => {
+              if (!isAuthenticated) {
+                openAuthGate('Log in to track places you have been to and post a moment.', 'login');
+                return;
+              }
               setPlaceDetailInteraction((prev) => ({ ...prev, isBeenThere: true }));
               setCreateMomentInitialPlace(selectedPlace);
               setCreateMomentInitialVisitedDate(new Date().toISOString().split('T')[0]);
               setCreateMomentReturnScreen('place-detail');
               setCurrentScreen('create-moment');
             }}
-            onToggleVibe={async () => {
-              try {
-                const response = await api.toggleVibin({ targetType: 'PLACE', targetId: selectedPlace.id });
-                setPlaceDetailInteraction((prev) => ({ ...prev, isVibed: response.active }));
-                showActionToast(response.active ? 'Sent vibin' : 'Removed vibin');
-              } catch {
-                showActionToast('Could not update vibin right now');
-              }
+            onShare={() => {
+              openShareSheet({
+                url: buildPlaceShareUrl(selectedPlace.id),
+                title: selectedPlace.name,
+                text: `Found a place you might like on Vibinn: ${selectedPlace.name}`,
+              });
             }}
             onRequestDeviceLocation={requestDeviceLocation}
             onExploreTravelers={() => {
@@ -2081,12 +2196,10 @@ export default function App() {
             onSelectPlace={(p) => {
               void api.getPlaceDetails(p.id)
                 .then((response) => {
-                  setSelectedPlace(response.place as Place);
-                  setCurrentScreen('place-detail');
+                  openPlaceDetail(response.place as Place, placeDetailReturnScreen);
                 })
                 .catch(() => {
-                  setSelectedPlace(p);
-                  setCurrentScreen('place-detail');
+                  openPlaceDetail(p, placeDetailReturnScreen);
                 });
             }}
             onSelectTraveler={(travelerId) => {
@@ -2103,8 +2216,8 @@ export default function App() {
         return selectedEvent ? (
           <EventDetail
             event={selectedEvent}
+            hasCompatibilityScore={selectedInterests.length > 0 || !!selectedVibe}
             isSaved={savedEventIds.includes(selectedEvent.id)}
-            isVibed={vibedEventIds.includes(selectedEvent.id)}
             onBack={() => setCurrentScreen('discover-places')}
             onSave={() => {
               const isActive = savedEventIds.includes(selectedEvent.id);
@@ -2112,14 +2225,13 @@ export default function App() {
               showActionToast(isActive ? 'Removed save' : 'Saved event');
             }}
             onShare={() => {
-              const isActive = sharedEventIds.includes(selectedEvent.id);
-              setSharedEventIds((prev) => isActive ? prev.filter((id) => id !== selectedEvent.id) : [...prev, selectedEvent.id]);
-              showActionToast(isActive ? 'Removed share' : 'Shared event');
-            }}
-            onVibe={() => {
-              const isActive = vibedEventIds.includes(selectedEvent.id);
-              setVibedEventIds((prev) => isActive ? prev.filter((id) => id !== selectedEvent.id) : [...prev, selectedEvent.id]);
-              showActionToast(isActive ? 'Removed vibin' : 'Sent vibin');
+              const nextActive = !sharedEventIds.includes(selectedEvent.id);
+              setSharedEventIds((prev) => nextActive ? [...prev, selectedEvent.id] : prev.filter((id) => id !== selectedEvent.id));
+              openShareSheet({
+                url: typeof window !== 'undefined' ? window.location.href : `${APP_BASE_PATH}`,
+                title: selectedEvent.name,
+                text: `Thought you'd want this one on Vibinn: ${selectedEvent.name}`,
+              });
             }}
           />
         ) : null;
@@ -2256,6 +2368,76 @@ export default function App() {
           >
             {actionToast}
           </motion.div>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {shareSheetState ? (
+          <>
+            <motion.button
+              type="button"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShareSheetState(null)}
+              className="fixed inset-0 z-[60] bg-black/70"
+            />
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', stiffness: 280, damping: 30 }}
+              className="fixed inset-x-0 bottom-0 z-[70] mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-950 px-4 pb-8 pt-4 shadow-[0_-20px_60px_rgba(0,0,0,0.45)]"
+            >
+              <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
+              <div className="mt-5">
+                <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">Share</div>
+                <div className="mt-2 text-xl font-black tracking-[-0.04em] text-white">{shareSheetState.title}</div>
+                <p className="mt-2 text-sm font-medium leading-relaxed text-white/58">
+                  Send the link out, or copy it for later.
+                </p>
+              </div>
+
+              <div className="mt-6 space-y-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void shareUrl({
+                      ...shareSheetState,
+                      successToast: 'Share sheet opened',
+                    }).finally(() => setShareSheetState(null));
+                  }}
+                  className="flex w-full items-center justify-center rounded-[20px] bg-accent px-4 py-4 text-sm font-black text-black transition hover:brightness-105"
+                >
+                  Share now
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    void copyText(shareSheetState.url)
+                      .then((copied) => {
+                        if (copied) {
+                          showActionToast('Link copied');
+                        } else {
+                          showActionToast(shareSheetState.url);
+                        }
+                      })
+                      .finally(() => setShareSheetState(null));
+                  }}
+                  className="flex w-full items-center justify-center rounded-[20px] border border-white/10 bg-white/8 px-4 py-4 text-sm font-black text-white transition hover:bg-white/12"
+                >
+                  Copy link
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShareSheetState(null)}
+                  className="flex w-full items-center justify-center rounded-[20px] border border-white/10 bg-transparent px-4 py-4 text-sm font-black text-white/70 transition hover:bg-white/6"
+                >
+                  Cancel
+                </button>
+              </div>
+            </motion.div>
+          </>
         ) : null}
       </AnimatePresence>
     </div>
@@ -2506,12 +2688,12 @@ function LandingPage({
   ];
 
   return (
-    <div className="relative h-screen overflow-hidden bg-zinc-950 text-white">
+    <div className="relative h-[100svh] overflow-hidden bg-zinc-950 text-white">
       <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-64 bg-[radial-gradient(circle_at_top,_rgba(210,255,92,0.16),_transparent_62%)]" />
       <div className="pointer-events-none absolute left-[-6rem] top-[18%] h-40 w-40 rounded-full bg-pink-400/10 blur-3xl" />
       <div className="pointer-events-none absolute right-[-5rem] top-[42%] h-44 w-44 rounded-full bg-sky-300/10 blur-3xl" />
-      <div ref={scrollContainerRef} className="h-screen snap-y snap-mandatory overflow-y-auto scroll-smooth">
-        <section className="relative flex min-h-screen snap-start flex-col justify-between overflow-hidden px-6 pb-24 pt-8">
+      <div ref={scrollContainerRef} className="h-[100svh] snap-y snap-mandatory overflow-y-auto scroll-smooth">
+        <section className="relative flex min-h-[100svh] snap-start flex-col justify-between overflow-hidden px-6 pb-24 pt-8">
           <div className="mx-auto flex w-full max-w-6xl items-center justify-between rounded-full border border-white/10 bg-black/50 px-4 py-3 backdrop-blur-xl">
             <div className="text-sm font-black uppercase tracking-[0.22em] text-accent">Vibinn</div>
             <button
@@ -2550,7 +2732,7 @@ function LandingPage({
         {featureSections.map((section) => (
           <section
             key={section.eyebrow}
-            className="relative flex min-h-screen snap-start items-center overflow-hidden px-6 py-16"
+            className="relative flex min-h-[100svh] snap-start items-center overflow-hidden px-6 py-16"
           >
             <div className={`absolute inset-0 bg-gradient-to-b ${section.accent}`} />
             <div className="relative mx-auto grid w-full max-w-6xl gap-10 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
@@ -2612,7 +2794,7 @@ function Onboarding({
   onComplete 
 }: any) {
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
-  const choiceTitle = 'Can I know you first?';
+  const choiceTitle = 'Can I get to know you first?';
   const [stage, setStage] = useState<'invite' | 'unlock' | 'choice' | 'swipe'>(
     entryMode === 'preferences' ? 'swipe' : isInviteValid ? 'choice' : 'invite',
   );
@@ -2731,7 +2913,7 @@ function Onboarding({
 
   if (stage === 'invite') {
     return (
-      <div className="h-screen overflow-y-auto bg-zinc-950 px-10 pb-10 pt-24 text-white">
+      <div className="h-[100svh] overflow-y-auto bg-zinc-950 px-10 pb-10 pt-24 text-white">
         <div className="mb-12">
           <div className="w-14 h-14 bg-white/8 rounded-2xl mb-8 flex items-center justify-center shadow-lg border border-white/10">
             <Lock className="text-accent" size={28} />
@@ -2854,7 +3036,7 @@ function Onboarding({
     const isChoiceIntroReady = typedChoiceTitle.length === choiceTitle.length;
 
     return (
-      <div className="p-10 pt-32 flex flex-col h-screen bg-zinc-950 text-white">
+      <div className="flex h-[100svh] flex-col bg-zinc-950 p-10 pt-32 text-white">
         <div className="mb-16">
           <div className="w-14 h-14 bg-white/8 rounded-2xl mb-8 flex items-center justify-center shadow-lg border border-white/10">
             <Sparkles className="text-accent" size={28} />
@@ -2872,7 +3054,7 @@ function Onboarding({
                 transition={{ duration: 0.28, ease: 'easeOut' }}
                 className="text-white/60 text-xl font-medium leading-snug"
               >
-                Swipe a few picks and we&apos;ll start recommending places and events that fit your vibe.
+                Just swipe a few picks and we&apos;ll recommend places and events that fit your vibe.
               </motion.p>
             ) : null}
           </AnimatePresence>
@@ -2895,13 +3077,13 @@ function Onboarding({
                 Start now
               </button>
 
-              <button
-                type="button"
-                onClick={onComplete}
-                className="w-full rounded-xl border border-white/10 bg-white/6 px-6 py-5 text-lg font-semibold text-white transition-all hover:bg-white/10 active:scale-[0.98]"
-              >
-                Skip
-              </button>
+                <button
+                  type="button"
+                  onClick={() => onComplete({ selectedInterests, selectedVibe })}
+                  className="w-full rounded-xl border border-white/10 bg-white/6 px-6 py-5 text-lg font-semibold text-white transition-all hover:bg-white/10 active:scale-[0.98]"
+                >
+                  Skip
+                </button>
             </motion.div>
           ) : null}
         </AnimatePresence>
@@ -2931,7 +3113,7 @@ function Onboarding({
       }));
 
     return (
-      <div className="relative flex h-screen flex-col items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(211,255,72,0.22),_transparent_30%),linear-gradient(160deg,#120f1f_0%,#101820_42%,#071014_100%)] px-10 text-center text-white">
+      <div className="relative flex h-[100svh] flex-col items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(211,255,72,0.22),_transparent_30%),linear-gradient(160deg,#120f1f_0%,#101820_42%,#071014_100%)] px-10 text-center text-white">
         <div className="pointer-events-none absolute -left-16 top-20 h-40 w-40 rounded-full bg-pink-400/18 blur-3xl" />
         <div className="pointer-events-none absolute -right-12 top-24 h-44 w-44 rounded-full bg-sky-300/18 blur-3xl" />
         <div className="pointer-events-none absolute bottom-12 left-1/2 h-56 w-56 -translate-x-1/2 rounded-full bg-accent/12 blur-3xl" />
@@ -2984,7 +3166,7 @@ function Onboarding({
   }
 
   return (
-    <div className="h-screen bg-dark overflow-hidden flex flex-col">
+    <div className="flex h-[100svh] flex-col overflow-hidden bg-dark">
       <div className="p-6 pt-12 flex flex-col gap-4 z-20">
         <div className="flex justify-between items-center">
           <div className="flex gap-1.5">
@@ -3011,7 +3193,7 @@ function Onboarding({
             </p>
           </div>
           <button
-            onClick={onComplete}
+            onClick={() => onComplete({ selectedInterests, selectedVibe })}
             className="text-[10px] font-bold uppercase tracking-widest text-white/30 hover:text-white transition-colors pb-1"
           >
             Skip setup
@@ -3107,6 +3289,49 @@ function SwipeCard({ card, isTop, onSwipe }: { card: any, isTop: boolean, onSwip
         </div>
       </div>
     </motion.div>
+  );
+}
+
+function PostPreferencesIntro() {
+  const title = "You're all set! Happy hunting!";
+  const [typedTitle, setTypedTitle] = useState('');
+
+  useEffect(() => {
+    let currentIndex = 0;
+    setTypedTitle('');
+
+    const intervalId = window.setInterval(() => {
+      currentIndex += 1;
+      setTypedTitle(title.slice(0, currentIndex));
+      if (currentIndex >= title.length) {
+        window.clearInterval(intervalId);
+      }
+    }, 45);
+
+    return () => window.clearInterval(intervalId);
+  }, []);
+
+  return (
+    <div className="relative flex h-[100svh] flex-col items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(211,255,72,0.18),_transparent_28%),linear-gradient(160deg,#120f1f_0%,#101820_38%,#071014_100%)] px-8 text-center text-white">
+      <div className="pointer-events-none absolute -left-16 top-20 h-40 w-40 rounded-full bg-pink-400/18 blur-3xl" />
+      <div className="pointer-events-none absolute -right-12 top-24 h-44 w-44 rounded-full bg-sky-300/18 blur-3xl" />
+      <div className="pointer-events-none absolute bottom-12 left-1/2 h-56 w-56 -translate-x-1/2 rounded-full bg-accent/12 blur-3xl" />
+
+      <div className="relative z-10 mx-auto max-w-sm">
+        <h1 className="min-h-[6.4rem] text-4xl font-black tracking-tighter sm:text-5xl">
+          {typedTitle}
+          <span className="ml-1 inline-block h-[0.9em] w-[0.08em] animate-pulse bg-accent align-[-0.08em]" />
+        </h1>
+        <motion.p
+          initial={{ opacity: 0, y: 14 }}
+          animate={{ opacity: typedTitle.length === title.length ? 1 : 0, y: typedTitle.length === title.length ? 0 : 14 }}
+          transition={{ duration: 0.28, ease: 'easeOut' }}
+          className="mt-3 text-base font-medium leading-relaxed text-white/68"
+        >
+          We&apos;re locking in your first feed now.
+        </motion.p>
+      </div>
+    </div>
   );
 }
 
@@ -4170,6 +4395,7 @@ function Profile({
   const [savedPlaceIds, setSavedPlaceIds] = useState<string[]>([]);
   const [vibedPlaceIds, setVibedPlaceIds] = useState<string[]>([]);
   const [sharedPlaceIds, setSharedPlaceIds] = useState<string[]>([]);
+  const [profileCommentCounts, setProfileCommentCounts] = useState<Record<string, number>>({});
   const [profileToast, setProfileToast] = useState<string | null>(null);
   const ownPlaces = user.travelHistory.flatMap((history) => history.places || []);
   const uniqueBookmarkedPlaces = bookmarkedPlaces.filter((place, index, allPlaces) => (
@@ -4411,17 +4637,13 @@ function Profile({
                   </div>
                   <div className="space-y-4">
                     {group.places.map((place, index) => (
-                      <div key={`${group.key}-${place.id}`} className="overflow-hidden rounded-[28px] border border-white/10 bg-zinc-900 shadow-[0_18px_40px_rgba(0,0,0,0.28)]">
-                        <PlaceCard
-                          data={{
-                            ...mapPlaceToCardData(place, index),
-                            visitedByFollowingAvatars: [],
-                            contextNote: momentsFilter === 'city' ? 'visited here in March 2026' : `visited in ${group.label}`,
-                          }}
-                          className="rounded-b-none border-0 shadow-none hover:translate-y-0 hover:shadow-none"
-                          onClick={() => onSelectPlace(place)}
-                        />
-                        <div className="space-y-3 px-4 pb-4 pt-3">
+                      <div key={`${group.key}-${place.id}`}>
+                        <MomentEntryCard
+                          place={place}
+                          contextNote={momentsFilter === 'city' ? `Visited on ${place.visitedDate ?? 'your trip'}` : `Visited in ${group.label}`}
+                          onOpenPlace={() => onSelectPlace(place)}
+                          footer={(
+                        <div className="space-y-3">
                           <div className="flex flex-wrap gap-2">
                             <button
                               type="button"
@@ -4510,11 +4732,13 @@ function Profile({
                                   </div>
                                 ))
                               ) : (
-                                <div className="text-sm text-white/45">Comments load when you open this thread.</div>
+                                <div className="text-sm text-white/45">No comments yet.</div>
                               )}
                             </div>
                           </div>
                         </div>
+                          )}
+                        />
                       </div>
                     ))}
                   </div>
@@ -4605,6 +4829,10 @@ function Profile({
                         momentId: commentsPlace.momentId,
                       });
                       setComments((prev) => [response.comment, ...prev]);
+                      setProfileCommentCounts((prev) => ({
+                        ...prev,
+                        [getPlaceInteractionTargetId(commentsPlace)]: response.count,
+                      }));
                       setCommentDraft('');
                       showProfileToast('Comment sent');
                     } catch {
@@ -4637,60 +4865,355 @@ function Profile({
 }
 
 function buildTravelerCardData(traveler: User, index: number, isFollowing = false): TravelerCardData {
+  const previewPlaces = traveler.travelHistory
+    .flatMap((trip) => trip.places ?? [])
+    .flatMap((place) => {
+      const mediaItems = (place.momentMedia?.map((item, mediaIndex) => ({
+        id: `${place.id}-${place.momentId ?? 'place'}-${mediaIndex}`,
+        imageUrl: item.url,
+        label: place.name,
+      })) ?? []).filter((item) => item.imageUrl);
+
+      if (mediaItems.length > 0) {
+        return mediaItems;
+      }
+
+      const fallbackImage = place.images?.[0] ?? place.image;
+      return fallbackImage ? [{
+        id: `${place.id}-${place.momentId ?? 'place'}`,
+        imageUrl: fallbackImage,
+        label: place.name,
+      }] : [];
+    })
+    .slice(0, 5);
+
   return {
     id: traveler.id,
+    displayName: traveler.displayName,
     username: traveler.username,
     avatarUrl: traveler.avatar,
     bio: traveler.bio,
     countriesCount: traveler.stats.countries,
     citiesCount: traveler.stats.cities,
-    countryFlags: (traveler.flags ?? []).slice(0, 5).map((flag, flagIndex) => {
-      const palettes = ['FFD60A', 'FF375F', '30D158', '0A84FF', 'BF5AF2'];
-      return `https://placehold.co/80x80/${palettes[flagIndex % palettes.length]}/111111?text=${encodeURIComponent(flag)}`;
-    }),
-    // AI-generated descriptor and relevance lines stay short so the card remains scan-friendly.
+    countryFlags: ((traveler.flags?.length ? traveler.flags : deriveFlagsFromTravelHistory(traveler.travelHistory)) ?? []).slice(0, 6),
     badges: traveler.badges?.slice(0, 3) ?? [],
     descriptor: traveler.descriptor ?? '',
     relevanceReason: traveler.relevanceReason ?? '',
     matchScore: traveler.matchScore ?? 0,
     recentLocation: traveler.travelHistory[0]?.cities[0],
+    recentPlaceName: traveler.travelHistory[0]?.places?.[0]?.name,
     placesCount: traveler.travelHistory.flatMap((trip) => trip.places ?? []).length,
     vibinCount: traveler.vibinCount ?? 0,
-    previewPlaces: traveler.travelHistory.flatMap((trip) => trip.places ?? []).slice(0, 3).map((place) => ({
-      id: place.id,
-      imageUrl: place.image,
-    })),
+    previewPlaces,
     isFollowing,
   };
 }
 
+function isVideoUrl(url: string) {
+  return /\.(mp4|mov|webm|m4v)(\?|#|$)/i.test(url);
+}
+
+function isRenderableAssetUrl(url?: string | null) {
+  if (!url) return false;
+  return /^(https?:)?\/\//i.test(url) || url.startsWith('/') || url.startsWith('data:') || url.startsWith('blob:');
+}
+
+function handleMediaImageError(event: { currentTarget: HTMLImageElement }, label?: string | null) {
+  const fallbackUrl = getAvatarFallbackUrl(label);
+  if (event.currentTarget.src === fallbackUrl) return;
+  event.currentTarget.src = fallbackUrl;
+}
+
+function MomentMediaScroller({
+  media,
+  label,
+  onOpen,
+}: {
+  media: Array<{ url: string; mediaType: 'image' | 'video' }>;
+  label: string;
+  onOpen: (index: number) => void;
+}) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const [activeIndex, setActiveIndex] = useState(0);
+
+  const updateActiveIndex = () => {
+    const container = scrollerRef.current;
+    if (!container) return;
+    const items = Array.from(container.querySelectorAll('[data-media-slide="true"]')) as HTMLElement[];
+    if (items.length === 0) return;
+    const containerCenter = container.scrollLeft + container.clientWidth / 2;
+    let nextIndex = 0;
+    let bestDistance = Number.POSITIVE_INFINITY;
+    items.forEach((item, index) => {
+      const itemCenter = item.offsetLeft + item.clientWidth / 2;
+      const distance = Math.abs(containerCenter - itemCenter);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        nextIndex = index;
+      }
+    });
+    setActiveIndex(nextIndex);
+  };
+
+  return (
+    <div className="overflow-hidden">
+      <div
+        ref={scrollerRef}
+        onScroll={updateActiveIndex}
+        className="overflow-x-auto snap-x snap-mandatory no-scrollbar"
+      >
+      <div className="flex gap-0">
+        {media.map((item, index) => (
+          <button
+            key={`${item.url}-${index}`}
+            type="button"
+            onClick={() => onOpen(index)}
+            data-media-slide="true"
+            className="w-full shrink-0 snap-start snap-always overflow-hidden bg-white/6"
+          >
+            {item.mediaType === 'video' ? (
+              <video
+                src={item.url}
+                className="block max-h-[30rem] min-h-[14rem] w-full bg-black object-contain"
+                autoPlay={activeIndex === index}
+                playsInline
+                muted
+                loop
+              />
+            ) : (
+              <img
+                src={item.url}
+                alt={`${label} ${index + 1}`}
+                className="block max-h-[30rem] min-h-[14rem] w-full bg-black object-contain"
+                referrerPolicy="no-referrer"
+                onError={(event) => handleMediaImageError(event, label)}
+              />
+            )}
+          </button>
+        ))}
+      </div>
+      </div>
+      {media.length > 1 ? (
+        <div className="px-4 pb-2 pt-2">
+          <div className="flex items-center gap-1">
+            {media.map((item, index) => (
+              <div
+                key={`${item.url}-progress-${index}`}
+                className={`transition ${
+                  index === activeIndex ? 'h-0.5 w-4 rounded-full bg-white' : 'h-1.5 w-1.5 rounded-full bg-white/22'
+                }`}
+              />
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function MomentEntryCard({
+  place,
+  contextNote,
+  onOpenPlace,
+  onOpenTraveler,
+  footer,
+  matchScore,
+  traveler,
+}: {
+  place: Place;
+  contextNote: string;
+  onOpenPlace: () => void;
+  onOpenTraveler?: () => void;
+  footer?: ReactNode;
+  matchScore?: number;
+  traveler?: { username: string; avatar: string };
+}) {
+  const media = (place.images?.length ? place.images : [place.image]).filter((url) => isRenderableAssetUrl(url)).map((url) => resolveApiAssetUrl(url));
+  const validMomentMedia = (place.momentMedia ?? []).filter((item) => isRenderableAssetUrl(item.url));
+  const normalizedMedia = (validMomentMedia.length > 0
+    ? validMomentMedia
+    : media.map((url) => ({ url, mediaType: isVideoUrl(url) ? 'video' as const : 'image' as const }))).map((item) => ({
+      ...item,
+      url: resolveApiAssetUrl(item.url),
+    }));
+  const primaryMeta = [
+    place.momentTimeOfDay,
+    place.momentVisitType,
+    typeof place.momentRating === 'number' ? `${place.momentRating}/5` : null,
+    place.momentWouldRevisit === 'yes'
+      ? 'would revisit'
+      : place.momentWouldRevisit === 'not_sure'
+        ? 'maybe again'
+        : place.momentWouldRevisit === 'not_interested'
+          ? 'one-time stop'
+          : null,
+  ].filter(Boolean);
+  const vibeTags = (place.momentVibeTags ?? []).filter(Boolean).slice(0, 3);
+  const [isViewerOpen, setIsViewerOpen] = useState(false);
+  const [activeMediaIndex, setActiveMediaIndex] = useState(0);
+
+  return (
+    <>
+      <div className="overflow-hidden rounded-[28px] border border-white/10 bg-zinc-900 shadow-[0_18px_40px_rgba(0,0,0,0.28)]">
+        {traveler ? (
+          <button
+            type="button"
+            onClick={onOpenTraveler}
+            className="flex w-full items-center gap-3 border-b border-white/8 px-4 py-4 text-left transition hover:bg-white/5"
+          >
+            <img
+              src={resolveApiAssetUrl(traveler.avatar)}
+              alt={traveler.username}
+              className="h-11 w-11 rounded-full object-cover"
+              referrerPolicy="no-referrer"
+              onError={(event) => handleAvatarImageError(event, traveler.username)}
+            />
+            <div className="min-w-0">
+              <div className="truncate text-sm font-black text-white">@{traveler.username}</div>
+              <div className="truncate text-xs font-medium text-white/45">{contextNote}</div>
+            </div>
+          </button>
+        ) : null}
+      <button
+        type="button"
+        onClick={onOpenPlace}
+        className="w-full px-4 pb-4 pt-4 text-left"
+      >
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            {traveler ? (
+              <div className="mb-2 text-[10px] font-black uppercase tracking-[0.18em] text-white/30">
+                Place
+              </div>
+            ) : null}
+            <div className="text-lg font-black leading-tight text-white">{place.name}</div>
+            {place.category ? (
+              <div className="mt-2">
+                <span className="rounded-full bg-white/8 px-3 py-1 text-[10px] font-bold uppercase tracking-[0.16em] text-white/55">
+                  {place.category}
+                </span>
+              </div>
+            ) : null}
+            {!traveler ? <div className="mt-1 text-xs font-medium text-white/45">{contextNote}</div> : null}
+          </div>
+          <div className="flex shrink-0 items-center gap-2 self-start pt-0.5">
+            {typeof matchScore === 'number' ? (
+              <span className="rounded-full bg-accent px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-dark">
+                {Math.min(matchScore, 98)}%
+              </span>
+            ) : null}
+          </div>
+        </div>
+      </button>
+
+      <MomentMediaScroller
+        media={normalizedMedia}
+        label={place.name}
+        onOpen={(index) => {
+          setActiveMediaIndex(index);
+          setIsViewerOpen(true);
+        }}
+      />
+
+      <div className="border-t border-white/8 px-4 pb-4 pt-4">
+        {traveler ? (
+          <div className="mb-3 text-[10px] font-black uppercase tracking-[0.18em] text-white/30">
+            Moment
+          </div>
+        ) : null}
+        <div className="space-y-3">
+        {place.momentCaption ? (
+          <p className="text-sm font-medium leading-relaxed text-white/82">{place.momentCaption}</p>
+        ) : null}
+
+        {primaryMeta.length > 0 || vibeTags.length > 0 ? (
+          <div className="space-y-1 text-xs font-medium text-white/42">
+            {primaryMeta.length > 0 ? (
+              <div>{primaryMeta.join(' • ')}</div>
+            ) : null}
+            {vibeTags.length > 0 ? (
+              <div>{vibeTags.map((tag) => `#${tag}`).join('  ')}</div>
+            ) : null}
+          </div>
+        ) : null}
+
+        {footer}
+        </div>
+      </div>
+      </div>
+
+      {isViewerOpen ? (
+        <div className="fixed inset-0 z-[90] bg-black">
+          <button
+            type="button"
+            onClick={() => setIsViewerOpen(false)}
+            className="absolute right-4 top-6 z-[100] rounded-full bg-black/60 p-3 text-white backdrop-blur-md"
+            aria-label="Close full-screen media"
+          >
+            <X size={18} />
+          </button>
+          <div className="h-full overflow-y-auto snap-y snap-mandatory">
+            {normalizedMedia.map((item, index) => (
+              <div
+                key={`${item.url}-${index}`}
+                className="relative flex min-h-screen snap-start items-center justify-center bg-black px-3 py-20"
+              >
+                {item.mediaType === 'video' ? (
+                  <video
+                    src={item.url}
+                    autoPlay={index === activeMediaIndex}
+                    muted
+                    loop
+                    controls
+                    playsInline
+                    className="max-h-full w-full rounded-[24px] object-contain"
+                  />
+                ) : (
+                  <img
+                    src={item.url}
+                    alt={`${place.name} media ${index + 1}`}
+                    className="max-h-full w-full rounded-[24px] object-contain"
+                    onError={(event) => handleMediaImageError(event, place.name)}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
 function TravelerPlaceCard({
   place,
-  cardData,
   contextNote,
   vibed,
   saved,
   shared,
   commentsCount = 0,
+  matchScore,
   onOpenPlace,
   onToggleVibin,
   onToggleSave,
   onToggleShare,
   onOpenComments,
+  onOpenTraveler,
   traveler,
 }: {
   place: Place;
-  cardData: PlaceCardData;
   contextNote: string;
   vibed: boolean;
   saved: boolean;
   shared: boolean;
   commentsCount?: number;
+  matchScore?: number;
   onOpenPlace: () => void;
   onToggleVibin: () => void;
   onToggleSave: () => void;
   onToggleShare: () => void;
   onOpenComments: () => void;
+  onOpenTraveler?: () => void;
   traveler?: { username: string; avatar: string };
 }) {
   const actionClass = (active: boolean) =>
@@ -4699,68 +5222,41 @@ function TravelerPlaceCard({
     }`;
 
   return (
-    <div className="overflow-hidden rounded-[28px] border border-white/10 bg-zinc-900 shadow-[0_18px_40px_rgba(0,0,0,0.28)]">
-      {traveler ? (
-        <button
-          type="button"
-          onClick={onOpenPlace}
-          className="flex w-full items-center gap-3 border-b border-white/10 px-4 py-3 text-left"
-        >
-          <div className="h-10 w-10 overflow-hidden rounded-full border border-white/10">
-            <img
-              src={traveler.avatar}
-              alt={traveler.username}
-              className="h-full w-full object-cover"
-              referrerPolicy="no-referrer"
-              onError={(event) => handleAvatarImageError(event, traveler.username)}
-            />
-          </div>
-          <div className="min-w-0">
-            <div className="truncate text-sm font-black text-white">@{traveler.username}</div>
-            <div className="text-xs font-medium text-white/45">{contextNote}</div>
-          </div>
-        </button>
-      ) : null}
-
-      <PlaceCard
-        data={{ ...cardData, visitedByFollowingAvatars: [], contextNote }}
-        className="rounded-b-none border-0 shadow-none hover:translate-y-0 hover:shadow-none"
-        onClick={onOpenPlace}
-      />
-
-      <div className="space-y-3 px-4 pb-4 pt-3">
-        <div className="flex flex-wrap gap-2">
-          <button type="button" onClick={onToggleVibin} className={actionClass(vibed)}>
-            <Zap size={14} />
-            <span>{vibed ? 1 : 0}</span>
-          </button>
-          <button type="button" onClick={onOpenComments} className={actionClass(false)}>
-            <MessageCircle size={14} />
-            <span>{commentsCount}</span>
-          </button>
-          <button type="button" onClick={onToggleSave} className={actionClass(saved)}>
-            <Bookmark size={14} />
-            <span>{saved ? 1 : 0}</span>
-          </button>
-          <button type="button" onClick={onToggleShare} className={actionClass(shared)}>
-            <Share2 size={14} />
-            <span>{shared ? 1 : 0}</span>
-          </button>
-        </div>
-
-        <div className="w-full rounded-[20px] border border-white/10 bg-white/6 px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-xs font-black text-white/75">{commentsCount} comments</div>
-            <button type="button" onClick={onOpenComments} className="text-xs font-black text-accent">
-              Write a comment
+    <MomentEntryCard
+      place={place}
+      contextNote={contextNote}
+      onOpenPlace={onOpenPlace}
+      onOpenTraveler={onOpenTraveler}
+      matchScore={matchScore}
+      traveler={traveler}
+      footer={(
+        <>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={onToggleVibin} className={actionClass(vibed)}>
+              <Zap size={14} />
+              <span>{vibed ? 1 : 0}</span>
+            </button>
+            <button type="button" onClick={onOpenComments} className={actionClass(false)}>
+              <MessageCircle size={14} />
+              <span>{commentsCount}</span>
+            </button>
+            <button type="button" onClick={onToggleSave} className={actionClass(saved)}>
+              <Bookmark size={14} />
+              <span>{saved ? 1 : 0}</span>
             </button>
           </div>
-          <div className="mt-2 space-y-1">
-            <div className="text-sm text-white/45">Comments load when you open this thread.</div>
+
+          <div className="w-full rounded-[20px] border border-white/10 bg-white/6 px-4 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-xs font-black text-white/75">{commentsCount} comments</div>
+              <button type="button" onClick={onOpenComments} className="text-xs font-black text-accent">
+                Write a comment
+              </button>
+            </div>
           </div>
-        </div>
-      </div>
-    </div>
+        </>
+      )}
+    />
   );
 }
 
@@ -4789,6 +5285,8 @@ function PlaceDiscovery({
   hasError,
   hasEventsError,
   bookmarkedPlaceIds,
+  showGestureDemo,
+  onFinishGestureDemo,
   onRefresh,
   onLoadMore,
   onBookmarkPlace,
@@ -4820,6 +5318,8 @@ function PlaceDiscovery({
   hasError: boolean,
   hasEventsError: boolean,
   bookmarkedPlaceIds: string[],
+  showGestureDemo: boolean,
+  onFinishGestureDemo: () => void,
   onRefresh: () => void,
   onLoadMore: () => void,
   onBookmarkPlace: (p: Place) => void,
@@ -4958,12 +5458,6 @@ function PlaceDiscovery({
         </div>
 
         <div className="flex items-center gap-2">
-          <div className="rounded-full border border-white/10 bg-white/6 px-3 py-2 text-right">
-            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/40">For you</div>
-            <div className="text-xs font-semibold text-white/75">
-              {selectedVibe ? `${selectedVibe} picks` : 'AI-ranked picks'}
-            </div>
-          </div>
           <button
             type="button"
             onClick={() => setIsSearchOpen((current) => !current)}
@@ -4985,10 +5479,6 @@ function PlaceDiscovery({
             <Bell size={18} />
           </button>
         </div>
-      </div>
-
-      <div className="mb-4 text-[11px] font-bold uppercase tracking-[0.18em] text-white/35">
-        Swipe right to save. Swipe left to hide.
       </div>
 
       {!hasPreferences ? (
@@ -5106,11 +5596,11 @@ function PlaceDiscovery({
         <>
           <div className="grid grid-cols-2 items-start gap-3">
             <div className="flex flex-col gap-3">
-              <AnimatePresence>
+              <AnimatePresence initial={false}>
                 {leftColumnItems.map((item, columnIndex) => {
                   const index = columnIndex * 2;
                   return (
-                    <div key={`${item.type}-${item.id}`} className="min-w-0">
+                    <div key={`${item.type}-${item.id}`} className={`min-w-0 ${showGestureDemo && index === 0 ? 'relative z-30' : ''}`}>
                       {item.type === 'place' ? (
                         <PlaceDiscoveryTile
                           place={item.place}
@@ -5118,6 +5608,8 @@ function PlaceDiscovery({
                           selectedInterests={selectedInterests}
                           selectedVibe={selectedVibe}
                           isBookmarked={bookmarkedPlaceIds.includes(item.place.id)}
+                          gestureDemo={showGestureDemo && index === 0}
+                          onGestureDemoComplete={onFinishGestureDemo}
                           onBookmark={() => onBookmarkPlace(item.place)}
                           onDismiss={() => onDismissPlace(item.place)}
                           onOpen={() => onSelectPlace(item.place)}
@@ -5134,14 +5626,19 @@ function PlaceDiscovery({
                     </div>
                   );
                 })}
+                {isLoadingMore ? (
+                  <div key="left-loading-placeholder" className="min-w-0">
+                    <div className="h-[21rem] w-full animate-pulse rounded-[28px] border border-white/10 bg-white/6" />
+                  </div>
+                ) : null}
               </AnimatePresence>
             </div>
             <div className="flex flex-col gap-3">
-              <AnimatePresence>
+              <AnimatePresence initial={false}>
                 {rightColumnItems.map((item, columnIndex) => {
                   const index = columnIndex * 2 + 1;
                   return (
-                    <div key={`${item.type}-${item.id}`} className="min-w-0">
+                    <div key={`${item.type}-${item.id}`} className={`min-w-0 ${showGestureDemo && index === 0 ? 'relative z-30' : ''}`}>
                       {item.type === 'place' ? (
                         <PlaceDiscoveryTile
                           place={item.place}
@@ -5149,6 +5646,8 @@ function PlaceDiscovery({
                           selectedInterests={selectedInterests}
                           selectedVibe={selectedVibe}
                           isBookmarked={bookmarkedPlaceIds.includes(item.place.id)}
+                          gestureDemo={showGestureDemo && index === 0}
+                          onGestureDemoComplete={onFinishGestureDemo}
                           onBookmark={() => onBookmarkPlace(item.place)}
                           onDismiss={() => onDismissPlace(item.place)}
                           onOpen={() => onSelectPlace(item.place)}
@@ -5165,6 +5664,11 @@ function PlaceDiscovery({
                     </div>
                   );
                 })}
+                {isLoadingMore ? (
+                  <div key="right-loading-placeholder" className="min-w-0">
+                    <div className="h-[24rem] w-full animate-pulse rounded-[28px] border border-white/10 bg-white/6" />
+                  </div>
+                ) : null}
               </AnimatePresence>
             </div>
           </div>
@@ -5214,6 +5718,8 @@ function PlaceDiscoveryTile({
   selectedInterests,
   selectedVibe,
   isBookmarked,
+  gestureDemo = false,
+  onGestureDemoComplete,
   onBookmark,
   onDismiss,
   onOpen,
@@ -5223,12 +5729,16 @@ function PlaceDiscoveryTile({
   selectedInterests: Interest[],
   selectedVibe: Vibe | null,
   isBookmarked: boolean,
+  gestureDemo?: boolean,
+  onGestureDemoComplete?: () => void,
   onBookmark: () => void,
   onDismiss: () => void,
   onOpen: () => void,
 }) {
   const suppressClickRef = useRef(false);
-  const match = Math.min(place.similarityStat ?? (selectedVibe ? 74 : 68), 98);
+  const gestureDemoFinishedRef = useRef(false);
+  const hasCompatibilityScore = selectedInterests.length > 0 || !!selectedVibe;
+  const match = hasCompatibilityScore ? Math.min(place.similarityStat ?? 74, 98) : null;
   const editorialLabel = getEditorialLabel(place, index);
   const preferenceDebugLabels = getPlacePreferenceDebugMatches(place, selectedInterests, selectedVibe);
   const tileHeightClass =
@@ -5237,8 +5747,22 @@ function PlaceDiscoveryTile({
       : index % 4 === 1
         ? 'h-[26rem]'
         : index % 4 === 2
-          ? 'h-[18rem]'
-          : 'h-[22.5rem]';
+        ? 'h-[18rem]'
+        : 'h-[22.5rem]';
+
+  useEffect(() => {
+    if (!gestureDemo) {
+      gestureDemoFinishedRef.current = false;
+    }
+  }, [gestureDemo]);
+
+  const demoAnimation =
+    gestureDemo
+      ? {
+          x: [0, 58, 0, 0, -58, 0],
+          rotate: [0, 4, 0, 0, -4, 0],
+        }
+      : undefined;
 
   return (
     <motion.button
@@ -5275,7 +5799,27 @@ function PlaceDiscoveryTile({
       }}
       whileDrag={{ scale: 1.02, rotate: 4 }}
       initial={{ opacity: 0, y: 18 }}
-      animate={{ opacity: 1, y: 0 }}
+      animate={
+        gestureDemo
+          ? { opacity: 1, y: 0, ...(demoAnimation ?? {}) }
+          : { opacity: 1, y: 0 }
+      }
+      transition={
+        gestureDemo
+          ? {
+              opacity: { duration: 0.2 },
+              y: { duration: 0.2 },
+              x: { duration: 4.8, times: [0, 0.16, 0.36, 0.52, 0.76, 1], ease: 'easeInOut' },
+              rotate: { duration: 4.8, times: [0, 0.16, 0.36, 0.52, 0.76, 1], ease: 'easeInOut' },
+            }
+          : undefined
+      }
+      onAnimationComplete={() => {
+        if (gestureDemo && !gestureDemoFinishedRef.current) {
+          gestureDemoFinishedRef.current = true;
+          onGestureDemoComplete?.();
+        }
+      }}
       exit={{ opacity: 0, scale: 0.92, y: 20 }}
       className={`group relative inline-block w-full overflow-hidden rounded-[28px] bg-zinc-900 text-left shadow-[0_18px_50px_rgba(0,0,0,0.28)] ${tileHeightClass}`}
     >
@@ -5286,13 +5830,31 @@ function PlaceDiscoveryTile({
         referrerPolicy="no-referrer"
       />
       <div className="absolute inset-0 bg-gradient-to-t from-black via-black/18 to-black/8" />
-      <div className="absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1.5 text-[11px] font-black tracking-[0.14em] text-accent backdrop-blur-md">
-        {match}%
-      </div>
+      <CompatibilityBadge match={match} />
       {isBookmarked ? (
         <div className="absolute right-3 top-3 rounded-full bg-white px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-black">
           Saved
         </div>
+      ) : null}
+      {gestureDemo ? (
+        <>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: [0, 1, 1, 1, 0, 0, 0] }}
+            transition={{ duration: 4.8, times: [0, 0.06, 0.18, 0.34, 0.42, 0.43, 1] }}
+            className="pointer-events-none absolute right-3 top-1/2 z-40 -translate-y-1/2 rounded-full bg-accent px-3 py-3 text-[10px] font-black uppercase tracking-[0.14em] text-black shadow-[0_18px_40px_rgba(211,255,72,0.28)]"
+          >
+            Swipe right to save
+          </motion.div>
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: [0, 0, 0, 0, 1, 1, 1, 0] }}
+            transition={{ duration: 4.8, times: [0, 0.56, 0.57, 0.62, 0.72, 0.84, 0.92, 1] }}
+            className="pointer-events-none absolute left-3 top-1/2 z-40 -translate-y-1/2 rounded-full bg-white/92 px-3 py-3 text-[10px] font-black uppercase tracking-[0.14em] text-zinc-950 shadow-[0_18px_40px_rgba(255,255,255,0.14)]"
+          >
+            Swipe left to skip
+          </motion.div>
+        </>
       ) : null}
       <div className="absolute inset-x-0 bottom-0 p-4">
         {import.meta.env.DEV && preferenceDebugLabels.length > 0 ? (
@@ -5332,6 +5894,8 @@ function EventDiscoveryTile({
 }) {
   const visualLabel = (event.tags?.[0] ?? getDisplayEventCategory(event)).toLowerCase();
   const preferenceDebugLabels = getEventPreferenceDebugMatches(event, selectedInterests, selectedVibe);
+  const hasCompatibilityScore = selectedInterests.length > 0 || !!selectedVibe;
+  const match = hasCompatibilityScore ? Math.min(event.compatibilityScore, 98) : null;
   const tileHeightClass =
     index % 4 === 0
       ? 'h-[20.5rem]'
@@ -5358,9 +5922,7 @@ function EventDiscoveryTile({
         referrerPolicy="no-referrer"
       />
       <div className="absolute inset-0 bg-gradient-to-t from-black via-black/18 to-black/8" />
-      <div className="absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1.5 text-[11px] font-black tracking-[0.14em] text-accent backdrop-blur-md">
-        {Math.min(event.compatibilityScore, 98)}%
-      </div>
+      <CompatibilityBadge match={match} />
       <div className="absolute inset-x-0 bottom-0 p-4">
         {import.meta.env.DEV && preferenceDebugLabels.length > 0 ? (
           <div className="mb-2 flex flex-wrap gap-1.5">
@@ -5379,6 +5941,26 @@ function EventDiscoveryTile({
         </p>
       </div>
     </motion.button>
+  );
+}
+
+function CompatibilityBadge({ match }: { match: number | null }) {
+  return (
+    <div className="absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1.5 text-[11px] font-black tracking-[0.14em] text-accent backdrop-blur-md">
+      {typeof match === 'number' ? (
+        `${match}%`
+      ) : (
+        <motion.span
+          animate={{ opacity: [0.28, 1, 0.28] }}
+          transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
+          className="inline-flex items-center gap-1"
+        >
+          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
+        </motion.span>
+      )}
+    </div>
   );
 }
 
@@ -6208,16 +6790,19 @@ function CreateMomentScreen({
 
 function TravelerDiscovery({
   isAuthenticated,
+  activeTab,
+  onTabChange,
   onRequireAuth,
   onSelectPlace,
   onSelectTraveler,
 }: {
   isAuthenticated: boolean;
+  activeTab: 'similar' | 'following';
+  onTabChange: (tab: 'similar' | 'following') => void;
   onRequireAuth: (message: string, action: () => void) => void;
-  onSelectPlace: (p: Place) => void,
+  onSelectPlace: (p: Place, returnScreen?: Screen) => void,
   onSelectTraveler: (t: User) => void,
 }) {
-  const [tab, setTab] = useState<'similar' | 'following'>('following');
   const [vibedFollowingPlaceIds, setVibedFollowingPlaceIds] = useState<string[]>([]);
   const [savedFollowingPlaceIds, setSavedFollowingPlaceIds] = useState<string[]>([]);
   const [sharedFollowingPlaceIds, setSharedFollowingPlaceIds] = useState<string[]>([]);
@@ -6231,12 +6816,13 @@ function TravelerDiscovery({
     followedTravelers: User[];
     similarTravelers: User[];
   }>({
-    followedTravelers: SIMILAR_TRAVELERS.slice(0, 2),
-    similarTravelers: SIMILAR_TRAVELERS,
+    followedTravelers: [],
+    similarTravelers: [],
   });
+  const followedTravelerIds = new Set(discoveryTravelers.followedTravelers.map((traveler) => traveler.id));
   const similarTravelers = discoveryTravelers.similarTravelers.map((traveler, index) => ({
     original: traveler,
-    card: buildTravelerCardData(traveler, index, false),
+    card: buildTravelerCardData(traveler, index, followedTravelerIds.has(traveler.id)),
   }));
   const followedTravelers = discoveryTravelers.followedTravelers.map((traveler, index) => ({
     original: traveler,
@@ -6245,8 +6831,8 @@ function TravelerDiscovery({
   const fallbackSimilarTravelers = [...similarTravelers, ...followedTravelers].filter(
     (traveler, index, list) => list.findIndex((item) => item.original.id === traveler.original.id) === index,
   );
-  const isSimilarFallback = tab === 'similar' && similarTravelers.length === 0;
-  const visibleTravelers = tab === 'similar' ? similarTravelers : followedTravelers;
+  const isSimilarFallback = activeTab === 'similar' && similarTravelers.length === 0;
+  const visibleTravelers = activeTab === 'similar' ? similarTravelers : followedTravelers;
   const latestFollowedPlaces = followedTravelers.flatMap(({ original }) => {
     const latestTrip = original.travelHistory[0];
     const latestPlaces = (latestTrip?.places ?? []).slice(0, 2);
@@ -6257,7 +6843,7 @@ function TravelerDiscovery({
       traveler: original,
       cityLabel: latestTrip?.cities[0] ?? place.location,
       visitedTime: index === 0 ? '2 days ago' : 'last week',
-      compatibility: Math.min((place.similarityStat ?? 72) + 10, 98),
+      compatibility: typeof place.similarityStat === 'number' ? Math.min(place.similarityStat, 98) : undefined,
     }));
   });
   const hasFollowingFeed = followedTravelers.length > 0 && latestFollowedPlaces.length > 0;
@@ -6270,7 +6856,13 @@ function TravelerDiscovery({
   };
 
   useEffect(() => {
-    if (!isAuthenticated) return;
+    if (!isAuthenticated) {
+      setDiscoveryTravelers({
+        followedTravelers: [],
+        similarTravelers: [],
+      });
+      return;
+    }
     void api.getTravelerDiscovery()
       .then((response) => {
         setDiscoveryTravelers({
@@ -6309,41 +6901,47 @@ function TravelerDiscovery({
 
   return (
     <div className="min-h-screen bg-zinc-950 px-4 pb-28 pt-12 text-white">
-      <div className="mb-6">
-        <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/35">
-          Traveler discovery
-        </p>
-        <h1 className="mt-2 text-3xl font-black tracking-[-0.05em] text-white">
-          {tab === 'following'
-            ? 'Fresh spots from people you follow.'
-            : isSimilarFallback
-              ? 'Community travelers worth exploring.'
-              : 'People picked from your travel taste.'}
-        </h1>
-      </div>
-
       <div className="mb-6 inline-flex rounded-full border border-white/10 bg-white/6 p-1">
         <button
           type="button"
-          onClick={() => setTab('following')}
+          onClick={() => onTabChange('following')}
           className={`rounded-full px-4 py-2 text-sm font-black transition ${
-            tab === 'following' ? 'bg-white text-black' : 'text-white/65'
+            activeTab === 'following' ? 'bg-white text-black' : 'text-white/65'
           }`}
         >
           Following
         </button>
         <button
           type="button"
-          onClick={() => setTab('similar')}
+          onClick={() => onTabChange('similar')}
           className={`rounded-full px-4 py-2 text-sm font-black transition ${
-            tab === 'similar' ? 'bg-white text-black' : 'text-white/65'
+            activeTab === 'similar' ? 'bg-white text-black' : 'text-white/65'
           }`}
         >
           Similar travelers
         </button>
       </div>
 
-      {tab === 'following' && hasFollowingFeed ? (
+      {!isAuthenticated ? (
+        <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5">
+          <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
+            Traveler discovery
+          </div>
+          <div className="mt-2 text-lg font-black text-white">Log in to unlock traveler matches.</div>
+          <p className="mt-2 text-sm font-medium leading-relaxed text-white/60">
+            We only show similar travelers and following activity once your profile and taste graph are attached to an account.
+          </p>
+          <button
+            type="button"
+            onClick={() => onRequireAuth('Log in to unlock traveler matches and following activity.', () => undefined)}
+            className="mt-4 rounded-full bg-white px-4 py-3 text-sm font-black text-black transition hover:bg-white/90"
+          >
+            Log in to continue
+          </button>
+        </div>
+      ) : null}
+
+      {isAuthenticated && activeTab === 'following' && hasFollowingFeed ? (
         <div className="mb-6">
           <div className="mb-5">
             <div className="mb-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
@@ -6384,20 +6982,18 @@ function TravelerDiscovery({
               >
                 <TravelerPlaceCard
                   place={place}
-                  cardData={{
-                    ...mapPlaceToCardData(place, 0),
-                    matchScore: compatibility,
-                  }}
                   contextNote={`${visitedTime} • ${cityLabel}`}
                   traveler={{ username: traveler.username, avatar: traveler.avatar }}
                   vibed={vibedFollowingPlaceIds.includes(getPlaceInteractionTargetId(place))}
                   saved={savedFollowingPlaceIds.includes(place.id)}
                   shared={sharedFollowingPlaceIds.includes(place.id)}
-                  onOpenPlace={() => onSelectPlace(place)}
+                  matchScore={compatibility}
+                  onOpenPlace={() => onSelectPlace(place, 'discover-travelers')}
+                  onOpenTraveler={() => onSelectTraveler(traveler)}
                   commentsCount={
                     followingCommentsPlace?.id === place.id
-                      ? followingComments.length || followingCommentCounts[getPlaceInteractionTargetId(place)] || 24
-                      : followingCommentCounts[getPlaceInteractionTargetId(place)] || 24
+                      ? followingComments.length || followingCommentCounts[getPlaceInteractionTargetId(place)] || 0
+                      : followingCommentCounts[getPlaceInteractionTargetId(place)] || 0
                   }
                   onToggleVibin={async () => {
                     if (!isAuthenticated) {
@@ -6448,7 +7044,7 @@ function TravelerDiscovery({
             ))}
           </div>
         </div>
-      ) : tab === 'following' ? (
+      ) : isAuthenticated && activeTab === 'following' ? (
         <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5">
           <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
             Following
@@ -6459,15 +7055,15 @@ function TravelerDiscovery({
           </p>
           <button
             type="button"
-            onClick={() => setTab('similar')}
+            onClick={() => onTabChange('similar')}
             className="mt-4 rounded-full bg-white px-4 py-3 text-sm font-black text-black transition hover:bg-white/90"
           >
-            Find travelers to follow
+            See travelers
           </button>
         </div>
       ) : null}
 
-      {tab === 'similar' ? (
+      {isAuthenticated && activeTab === 'similar' ? (
         <div className="space-y-4">
           {similarTravelers.length === 0 ? (
             <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5">
@@ -6495,6 +7091,22 @@ function TravelerDiscovery({
                     : card
                 }
                 onClick={() => onSelectTraveler(original)}
+                onToggleFollow={async () => {
+                  try {
+                    const response = await api.toggleFollow({ targetUserId: original.id });
+                    setDiscoveryTravelers((current) => ({
+                      followedTravelers: response.active
+                        ? current.followedTravelers.some((traveler) => traveler.id === original.id)
+                          ? current.followedTravelers
+                          : [original, ...current.followedTravelers]
+                        : current.followedTravelers.filter((traveler) => traveler.id !== original.id),
+                      similarTravelers: current.similarTravelers,
+                    }));
+                    showFollowingToast(response.active ? 'Followed traveler' : 'Unfollowed traveler');
+                  } catch {
+                    showFollowingToast('Could not update follow right now');
+                  }
+                }}
               />
             </div>
           ))}
@@ -6510,32 +7122,29 @@ function TravelerDiscovery({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setFollowingCommentsPlace(null)}
-              className="fixed inset-0 z-40 bg-black/60"
+              className="fixed inset-0 z-[70] bg-black/60"
             />
             <motion.div
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', stiffness: 280, damping: 30 }}
-              className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pb-8 pt-4"
+              className="fixed inset-x-0 bottom-0 z-[80] mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pb-8 pt-4"
             >
               <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
               <div className="mt-4 text-center text-lg font-black text-white">Comments on {followingCommentsPlace.name}</div>
               <div className="mt-5 space-y-4">
-                {[
-                  ...(followingComments.length > 0
-                    ? followingComments.map((comment) => `${comment.user}:::${comment.body}`)
-                    : [
-                        'friend1:::saved this because of your post and it was so worth it',
-                        'friend2:::the lighting here is unreal',
-                      ])
-                ].map((body, idx) => {
-                  const [username, text] = body.split(':::');
-                  return (
-                  <div key={idx} className="rounded-[20px] border border-white/10 bg-white/6 p-4 text-sm text-white/72">
-                    <span className="font-black text-white">@{username}</span> {text}
+                {followingComments.length > 0 ? (
+                  followingComments.map((comment) => (
+                    <div key={comment.id} className="rounded-[20px] border border-white/10 bg-white/6 p-4 text-sm text-white/72">
+                      <span className="font-black text-white">@{comment.user}</span> {comment.body}
+                    </div>
+                  ))
+                ) : (
+                  <div className="rounded-[20px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
+                    No comments yet.
                   </div>
-                )})}
+                )}
               </div>
               <div className="mt-5 flex gap-3">
                 <input
@@ -6659,6 +7268,7 @@ function BookmarksScreen({
 // --- PLACE DETAIL SCREEN ---
 function PlaceDetail({
   place,
+  hasCompatibilityScore = true,
   savedLocations,
   activeLocationId,
   deviceLocation,
@@ -6670,7 +7280,7 @@ function PlaceDetail({
   onBack,
   onSavePlace,
   onMarkBeenThere,
-  onToggleVibe,
+  onShare,
   onRequestDeviceLocation,
   onSelectPlace,
   onSelectTraveler,
@@ -6678,6 +7288,7 @@ function PlaceDetail({
   onExplorePlaces,
 }: {
   place: Place,
+  hasCompatibilityScore?: boolean,
   savedLocations: SavedLocationOption[],
   activeLocationId: string | null,
   deviceLocation: DeviceLocation | null,
@@ -6695,12 +7306,11 @@ function PlaceDetail({
   interactionState: {
     isSaved: boolean;
     isBeenThere: boolean;
-    isVibed: boolean;
   },
   onBack: () => void,
   onSavePlace: (place: Place, nextActive: boolean) => Promise<boolean>,
   onMarkBeenThere: () => void,
-  onToggleVibe: () => Promise<void>,
+  onShare: () => void,
   onRequestDeviceLocation: () => void,
   onSelectPlace: (p: Place) => void,
   onSelectTraveler: (travelerId: string) => void,
@@ -6748,14 +7358,16 @@ function PlaceDetail({
     attitudeLabel: getDisplayAttitudeLabel(place) ?? undefined,
 
     // Internal recommendation signals
-    matchScore: place.similarityStat,
-    similarityPercentage: place.similarityStat,
+    matchScore: hasCompatibilityScore ? place.similarityStat : undefined,
+    similarityPercentage: hasCompatibilityScore ? place.similarityStat : undefined,
     recommendationReason: place.recommendationReason ?? buildPlaceRecommendationReason(place, travelerMoments.length),
 
     // Social / behavioral context
     similarTravelerCount: travelerMoments.length > 0 ? travelerMoments.length : undefined,
     travelerMoments,
-    fallbackTravelers: fallbackTravelers.map((traveler) => ({
+    fallbackTravelers: fallbackTravelers
+      .filter((traveler) => (traveler.matchScore ?? 0) >= 80)
+      .map((traveler) => ({
       id: traveler.id,
       username: traveler.username,
       avatarUrl: traveler.avatar,
@@ -6775,14 +7387,11 @@ function PlaceDetail({
       data={detailData}
       isSaved={interactionState.isSaved}
       isBeenThere={interactionState.isBeenThere}
-      isVibed={interactionState.isVibed}
       locationPermission={deviceLocationPermission}
       onBack={onBack}
       onSave={() => onSavePlace(place, !interactionState.isSaved)}
       onBeenThere={onMarkBeenThere}
-      onVibe={() => {
-        void onToggleVibe();
-      }}
+      onShare={() => onShare()}
       onRequestLocation={onRequestDeviceLocation}
       onSelectFallbackTraveler={onSelectTraveler}
       onExploreMoreLikeThis={onExplorePlaces}
@@ -6800,20 +7409,18 @@ function PlaceDetail({
 
 function EventDetail({
   event,
+  hasCompatibilityScore,
   isSaved,
-  isVibed,
   onBack,
   onSave,
   onShare,
-  onVibe,
 }: {
   event: EventItem;
+  hasCompatibilityScore: boolean;
   isSaved: boolean;
-  isVibed: boolean;
   onBack: () => void;
   onSave: () => void;
   onShare: () => void;
-  onVibe: () => void;
 }) {
   const renderChip = (label: string) => (
     <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1.5 text-xs font-bold text-white/82 shadow-sm">
@@ -6828,7 +7435,9 @@ function EventDetail({
     hour: 'numeric',
     minute: '2-digit',
   }).format(new Date(event.startAt));
-  const visibleTags = event.tags.slice(0, 5);
+  const visibleTags = event.tags
+    .filter((tag): tag is string => Boolean(tag && tag.trim() && tag.trim().toLowerCase() !== 'undefined'))
+    .slice(0, 5);
 
   return (
     <div className="min-h-screen bg-zinc-950 pb-32 text-white">
@@ -6851,16 +7460,6 @@ function EventDetail({
             >
               <Share2 size={18} />
             </button>
-            <button
-              type="button"
-              onClick={onVibe}
-              className={`rounded-full p-3 transition ${
-                isVibed ? 'bg-accent text-dark' : 'bg-white/8 text-white hover:bg-white/12'
-              }`}
-              aria-label="Vibe with this event"
-            >
-              <Zap size={18} />
-            </button>
           </div>
         </div>
       </div>
@@ -6877,9 +7476,11 @@ function EventDetail({
             <span className="rounded-full bg-white/90 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.22em] text-dark backdrop-blur-md">
               Event
             </span>
-            <span className="rounded-full bg-accent px-3 py-1.5 text-xs font-black text-dark shadow-lg">
-              {event.compatibilityScore}% match
-            </span>
+            {hasCompatibilityScore ? (
+              <span className="rounded-full bg-accent px-3 py-1.5 text-xs font-black text-dark shadow-lg">
+                {event.compatibilityScore}% match
+              </span>
+            ) : null}
           </div>
           <div className="absolute inset-x-5 bottom-5">
             <div className="space-y-2">
@@ -6898,10 +7499,10 @@ function EventDetail({
       </section>
 
       <main className="space-y-8 px-4 pt-6">
-        {event.category ? (
+        {(event.hook || event.category) ? (
           <section className="space-y-3">
             <h2 className="text-[2rem] font-black leading-[0.95] tracking-[-0.06em] text-white">
-              {event.category}
+              {event.hook || event.category}
             </h2>
             {event.venueName ? (
               <p className="max-w-[34rem] text-base font-medium leading-relaxed text-white/68">
@@ -6911,17 +7512,17 @@ function EventDetail({
           </section>
         ) : null}
 
-        <section className="rounded-[28px] bg-dark p-5 text-white shadow-[0_18px_40px_rgba(15,23,42,0.18)]">
+        <section className="rounded-[28px] border border-accent/25 bg-[radial-gradient(circle_at_top_left,rgba(211,255,72,0.22),rgba(211,255,72,0.08),rgba(24,24,27,0.94))] p-5 text-white shadow-[0_18px_40px_rgba(120,160,20,0.18)]">
           <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.2em] text-accent">
             <Sparkles size={14} />
             Why this is showing up for you
           </div>
-          <p className="mt-3 text-lg font-black leading-tight tracking-[-0.03em]">
+          <p className="mt-3 text-base font-medium leading-relaxed tracking-[-0.01em] text-white/88">
             {event.compatibilityReason}
           </p>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            {renderChip(`${event.compatibilityScore}% event match`)}
+            {hasCompatibilityScore ? renderChip(`${event.compatibilityScore}% event match`) : null}
             {renderChip(formattedDate)}
             {event.venueName ? renderChip(event.venueName) : null}
             {event.priceLabel ? renderChip(event.priceLabel) : null}
@@ -7054,6 +7655,7 @@ function TravelerProfile({
   const [savedProfilePlaceIds, setSavedProfilePlaceIds] = useState<string[]>([]);
   const [sharedPlaceIds, setSharedPlaceIds] = useState<string[]>([]);
   const [placeVibinCounts, setPlaceVibinCounts] = useState<Record<string, number>>({});
+  const [profileCommentCounts, setProfileCommentCounts] = useState<Record<string, number>>({});
   const [profileVibinCount, setProfileVibinCount] = useState(0);
   const [followersCount, setFollowersCount] = useState(0);
   const [comments, setComments] = useState<Array<{ id: string; user: string; body: string; createdAt: string }>>([]);
@@ -7113,6 +7715,7 @@ function TravelerProfile({
         setSavedProfilePlaceIds(response.bookmarkedPlaceIds);
         setVibedPlaceIds([...response.vibedPlaceIds, ...response.vibedMomentIds]);
         setPlaceVibinCounts({ ...response.placeVibinCounts, ...response.momentVibinCounts });
+        setProfileCommentCounts({ ...response.placeCommentCounts, ...response.momentCommentCounts });
         setIsFollowing(response.followedUserIds.includes(user.id));
         setProfileVibed(response.vibedProfileIds.includes(user.id));
         setFollowersCount(response.profileFollowerCounts[user.id] ?? followersCount);
@@ -7333,112 +7936,119 @@ function TravelerProfile({
                   </div>
                   <div className="space-y-4">
                     {group.places.map((place, index) => (
-                      <div key={`${group.key}-${place.id}`} className="overflow-hidden rounded-[28px] border border-white/10 bg-zinc-900 shadow-[0_18px_40px_rgba(0,0,0,0.28)]">
-                        <PlaceCard
-                          data={{
-                            ...mapPlaceToCardData(place, index),
-                            visitedByFollowingAvatars: [],
-                            contextNote: momentsFilter === 'city' ? 'visited here in March 2026' : `visited in ${group.label}`,
-                          }}
-                          className="rounded-b-none border-0 shadow-none hover:translate-y-0 hover:shadow-none"
-                          onClick={() => onSelectPlace(place)}
-                        />
-                        <div className="space-y-3 px-4 pb-4 pt-3">
-                          <div className="flex flex-wrap gap-2">
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const targetId = getPlaceInteractionTargetId(place);
-                                const isActive = vibedPlaceIds.includes(targetId);
-                                try {
-                                  const response = await api.toggleVibin(getPlaceInteractionPayload(place));
-                                  setVibedPlaceIds((prev) => isActive ? prev.filter((id) => id !== targetId) : [...prev, targetId]);
-                                  setPlaceVibinCounts((prev) => ({ ...prev, [targetId]: response.count }));
-                                  showProfileToast(isActive ? 'Removed vibin' : 'Sent vibin');
-                                } catch {
-                                  showProfileToast('Could not update vibin right now');
-                                }
-                              }}
-                              className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition ${
-                                vibedPlaceIds.includes(getPlaceInteractionTargetId(place))
-                                  ? 'border-accent bg-accent text-dark'
-                                  : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
-                              }`}
-                            >
-                              <Zap size={14} />
-                              <span>{placeVibinCounts[getPlaceInteractionTargetId(place)] ?? (vibedPlaceIds.includes(getPlaceInteractionTargetId(place)) ? 1 : 0)}</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => setCommentsPlace(place)}
-                              className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition ${
-                                commentsPlace?.id === place.id
-                                  ? 'border-accent bg-accent text-dark'
-                                  : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
-                              }`}
-                            >
-                              <MessageCircle size={14} />
-                              <span>0</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const isActive = savedProfilePlaceIds.includes(place.id);
-                                const updated = await onSavePlace(place, !isActive);
-                                if (!updated) return;
-                                setSavedProfilePlaceIds((prev) => isActive ? prev.filter((id) => id !== place.id) : [...prev, place.id]);
-                              }}
-                              className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition ${
-                                savedProfilePlaceIds.includes(place.id)
-                                  ? 'border-accent bg-accent text-dark'
-                                  : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
-                              }`}
-                            >
-                              <Bookmark size={14} />
-                              <span>{savedProfilePlaceIds.includes(place.id) ? 1 : 0}</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const isActive = sharedPlaceIds.includes(place.id);
-                                setSharedPlaceIds((prev) => isActive ? prev.filter((id) => id !== place.id) : [...prev, place.id]);
-                                showProfileToast(isActive ? 'Removed share' : 'Shared place');
-                              }}
-                              className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition ${
-                                sharedPlaceIds.includes(place.id)
-                                  ? 'border-accent bg-accent text-dark'
-                                  : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
-                              }`}
-                            >
-                              <Share2 size={14} />
-                              <span>{sharedPlaceIds.includes(place.id) ? 1 : 0}</span>
-                            </button>
-                          </div>
+                      <div key={`${group.key}-${place.id}`}>
+                        <MomentEntryCard
+                          place={place}
+                          contextNote={momentsFilter === 'city' ? `Visited on ${place.visitedDate ?? 'their trip'}` : `Visited in ${group.label}`}
+                          onOpenPlace={() => onSelectPlace(place)}
+                          matchScore={typeof place.similarityStat === 'number' ? Math.min(place.similarityStat, 98) : undefined}
+                          footer={(
+                            <div className="space-y-3">
+                              <div className="flex flex-wrap gap-2">
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const targetId = getPlaceInteractionTargetId(place);
+                                    const isActive = vibedPlaceIds.includes(targetId);
+                                    try {
+                                      const response = await api.toggleVibin(getPlaceInteractionPayload(place));
+                                      setVibedPlaceIds((prev) => isActive ? prev.filter((id) => id !== targetId) : [...prev, targetId]);
+                                      setPlaceVibinCounts((prev) => ({ ...prev, [targetId]: response.count }));
+                                      showProfileToast(isActive ? 'Removed vibin' : 'Sent vibin');
+                                    } catch {
+                                      showProfileToast('Could not update vibin right now');
+                                    }
+                                  }}
+                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition ${
+                                    vibedPlaceIds.includes(getPlaceInteractionTargetId(place))
+                                      ? 'border-accent bg-accent text-dark'
+                                      : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
+                                  }`}
+                                >
+                                  <Zap size={14} />
+                                  <span>{placeVibinCounts[getPlaceInteractionTargetId(place)] ?? (vibedPlaceIds.includes(getPlaceInteractionTargetId(place)) ? 1 : 0)}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setCommentsPlace(place)}
+                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition ${
+                                    commentsPlace?.id === place.id
+                                      ? 'border-accent bg-accent text-dark'
+                                      : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
+                                  }`}
+                                >
+                                  <MessageCircle size={14} />
+                                  <span>
+                                    {commentsPlace?.id === place.id
+                                      ? comments.length || profileCommentCounts[getPlaceInteractionTargetId(place)] || 0
+                                      : profileCommentCounts[getPlaceInteractionTargetId(place)] || 0}
+                                  </span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={async () => {
+                                    const isActive = savedProfilePlaceIds.includes(place.id);
+                                    const updated = await onSavePlace(place, !isActive);
+                                    if (!updated) return;
+                                    setSavedProfilePlaceIds((prev) => isActive ? prev.filter((id) => id !== place.id) : [...prev, place.id]);
+                                  }}
+                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition ${
+                                    savedProfilePlaceIds.includes(place.id)
+                                      ? 'border-accent bg-accent text-dark'
+                                      : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
+                                  }`}
+                                >
+                                  <Bookmark size={14} />
+                                  <span>{savedProfilePlaceIds.includes(place.id) ? 1 : 0}</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const isActive = sharedPlaceIds.includes(place.id);
+                                    setSharedPlaceIds((prev) => isActive ? prev.filter((id) => id !== place.id) : [...prev, place.id]);
+                                    showProfileToast(isActive ? 'Removed share' : 'Shared place');
+                                  }}
+                                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition ${
+                                    sharedPlaceIds.includes(place.id)
+                                      ? 'border-accent bg-accent text-dark'
+                                      : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
+                                  }`}
+                                >
+                                  <Share2 size={14} />
+                                  <span>{sharedPlaceIds.includes(place.id) ? 1 : 0}</span>
+                                </button>
+                              </div>
 
-                          <div className="w-full rounded-[20px] border border-white/10 bg-white/6 px-4 py-3">
-                            <div className="flex items-center justify-between gap-3">
-                                <div className="text-xs font-black text-white/75">{commentsPlace?.id === place.id ? comments.length : 0} comments</div>
-                              <button
-                                type="button"
-                                onClick={() => setCommentsPlace(place)}
-                                className="text-xs font-black text-accent"
-                              >
-                                Write a comment
-                              </button>
-                            </div>
-                            <div className="mt-2 space-y-1">
-                              {commentsPlace?.id === place.id && comments.length > 0 ? (
-                                comments.slice(0, 2).map((comment) => (
-                                  <div key={comment.id} className="text-sm text-white/72">
-                                    <span className="font-black text-white">@{comment.user}</span> {comment.body}
+                              <div className="w-full rounded-[20px] border border-white/10 bg-white/6 px-4 py-3">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-xs font-black text-white/75">
+                                    {commentsPlace?.id === place.id
+                                      ? comments.length || profileCommentCounts[getPlaceInteractionTargetId(place)] || 0
+                                      : profileCommentCounts[getPlaceInteractionTargetId(place)] || 0} comments
                                   </div>
-                                ))
-                              ) : (
-                                <div className="text-sm text-white/45">Comments load when you open this thread.</div>
-                              )}
+                                  <button
+                                    type="button"
+                                    onClick={() => setCommentsPlace(place)}
+                                    className="text-xs font-black text-accent"
+                                  >
+                                    Write a comment
+                                  </button>
+                                </div>
+                                <div className="mt-2 space-y-1">
+                                  {commentsPlace?.id === place.id && comments.length > 0 ? (
+                                    comments.slice(0, 2).map((comment) => (
+                                      <div key={comment.id} className="text-sm text-white/72">
+                                        <span className="font-black text-white">@{comment.user}</span> {comment.body}
+                                      </div>
+                                    ))
+                                  ) : (
+                                    <div className="text-sm text-white/45">No comments yet.</div>
+                                  )}
+                                </div>
+                              </div>
                             </div>
-                          </div>
-                        </div>
+                          )}
+                        />
                       </div>
                     ))}
                   </div>
@@ -7493,7 +8103,11 @@ function TravelerProfile({
                         }`}
                       >
                         <MessageCircle size={14} />
-                        <span>0</span>
+                        <span>
+                          {commentsPlace?.id === place.id
+                            ? comments.length || profileCommentCounts[getPlaceInteractionTargetId(place)] || 0
+                            : profileCommentCounts[getPlaceInteractionTargetId(place)] || 0}
+                        </span>
                       </button>
                         <button
                           type="button"
@@ -7532,7 +8146,11 @@ function TravelerProfile({
 
                     <div className="w-full rounded-[20px] border border-white/10 bg-white/6 px-4 py-3">
                       <div className="flex items-center justify-between gap-3">
-                        <div className="text-xs font-black text-white/75">{commentsPlace?.id === place.id ? comments.length : 0} comments</div>
+                        <div className="text-xs font-black text-white/75">
+                          {commentsPlace?.id === place.id
+                            ? comments.length || profileCommentCounts[getPlaceInteractionTargetId(place)] || 0
+                            : profileCommentCounts[getPlaceInteractionTargetId(place)] || 0} comments
+                        </div>
                         <button
                           type="button"
                           onClick={() => setCommentsPlace(place)}
@@ -7549,7 +8167,7 @@ function TravelerProfile({
                             </div>
                           ))
                         ) : (
-                          <div className="text-sm text-white/45">Comments load when you open this thread.</div>
+                          <div className="text-sm text-white/45">No comments yet.</div>
                         )}
                       </div>
                     </div>
@@ -7574,14 +8192,14 @@ function TravelerProfile({
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               onClick={() => setCommentsPlace(null)}
-              className="fixed inset-0 z-40 bg-black/60"
+              className="fixed inset-0 z-[70] bg-black/60"
             />
             <motion.div
               initial={{ y: '100%' }}
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', stiffness: 280, damping: 30 }}
-              className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pb-8 pt-4"
+              className="fixed inset-x-0 bottom-0 z-[80] mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pb-8 pt-4"
             >
               <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
               <div className="mt-4 text-center text-lg font-black text-white">Comments on {commentsPlace.name}</div>
@@ -7682,6 +8300,7 @@ function CollectionDetailScreen({
 
 // --- PUBLIC PROFILE (WEB VIEW) ---
 function PublicProfile({ user, onOpenApp }: { user: User; onOpenApp: () => void }) {
+  const publicMoments = user.travelHistory.flatMap((item) => item.places ?? []);
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
       {/* Notion-style Header */}
@@ -7748,6 +8367,26 @@ function PublicProfile({ user, onOpenApp }: { user: User; onOpenApp: () => void 
             ))}
           </div>
         </div>
+
+        {publicMoments.length > 0 ? (
+          <div className="mb-16">
+            <h2 className="mb-8 flex items-center gap-3 text-2xl font-black tracking-tight">
+              <ImagePlus size={24} className="text-accent" /> Recent moments.
+            </h2>
+            <div className="space-y-5">
+              {publicMoments.slice(0, 6).map((place, index) => (
+                <div key={`${place.id}-${place.momentId ?? index}`}>
+                  <MomentEntryCard
+                    place={place}
+                    contextNote={place.visitedDate ? `Visited on ${place.visitedDate}` : place.location}
+                    traveler={{ username: user.username, avatar: user.avatar }}
+                    onOpenPlace={onOpenApp}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         <div className="bg-dark text-white p-10 rounded-3xl text-center relative overflow-hidden">
           <div className="absolute top-0 right-0 w-32 h-32 bg-accent/10 rounded-full blur-3xl" />

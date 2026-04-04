@@ -66,6 +66,11 @@ function mapPriceLevel(value?: number | null) {
   return '$'.repeat(Math.min(value, 4));
 }
 
+function isRenderableMediaUrl(url?: string | null) {
+  if (!url) return false;
+  return /^(https?:)?\/\//i.test(url) || url.startsWith('/') || url.startsWith('data:') || url.startsWith('blob:');
+}
+
 function mapPlaceForClient(place: PlaceWithRelations) {
   return {
     id: place.id,
@@ -92,6 +97,13 @@ type ClientPlace = ReturnType<typeof mapPlaceForClient> & {
   momentId?: string;
   ownerUserId?: string;
   visitedDate?: string;
+  momentMedia?: Array<{ url: string; mediaType: 'image' | 'video' }>;
+  momentCaption?: string;
+  momentVibeTags?: string[];
+  momentVisitType?: MomentRecord['visitType'];
+  momentTimeOfDay?: MomentRecord['timeOfDay'];
+  momentWouldRevisit?: MomentRecord['wouldRevisit'];
+  momentRating?: number;
 };
 
 function mapMomentForClient(moment: MomentWithRelations) {
@@ -101,24 +113,41 @@ function mapMomentForClient(moment: MomentWithRelations) {
     visitedDate: moment.visitedAt.toISOString().split('T')[0],
     caption: moment.caption,
     uploadedMedia: moment.media.map((item) => item.url),
+    uploadedMediaItems: moment.media.map((item) => ({
+      url: item.url,
+      mediaType: item.mediaType.toLowerCase().startsWith('video') ? 'video' as const : 'image' as const,
+    })),
     rating: moment.rating,
     budgetLevel: moment.budgetLevel as '$' | '$$' | '$$$',
     visitType: moment.visitType.toLowerCase() as MomentRecord['visitType'],
     timeOfDay: moment.timeOfDay.toLowerCase() as MomentRecord['timeOfDay'],
     privacy: moment.privacy.toLowerCase() as MomentRecord['privacy'],
-    wouldRevisit:
+    wouldRevisit: (
       moment.wouldRevisit === 'NOT_SURE'
         ? 'not_sure'
         : moment.wouldRevisit === 'NOT_INTERESTED'
           ? 'not_interested'
-          : 'yes',
+          : 'yes'
+    ) as MomentRecord['wouldRevisit'],
     vibeTags: moment.vibeTags,
     place: mapPlaceForClient(moment.place),
   };
 }
 
 function buildTravelHistory(
-  moments: Array<{ id: string; visitedDate: string; uploadedMedia: string[]; place: ReturnType<typeof mapPlaceForClient> }>,
+  moments: Array<{
+    id: string;
+    visitedDate: string;
+    uploadedMedia: string[];
+    uploadedMediaItems: Array<{ url: string; mediaType: 'image' | 'video' }>;
+    caption: string;
+    vibeTags: string[];
+    visitType: MomentRecord['visitType'];
+    timeOfDay: MomentRecord['timeOfDay'];
+    wouldRevisit: MomentRecord['wouldRevisit'];
+    rating: number;
+    place: ReturnType<typeof mapPlaceForClient>;
+  }>,
   ownerUserId: string,
 ) {
   const grouped = new Map<string, { country: string; cities: Set<string>; places: ClientPlace[] }>();
@@ -128,14 +157,25 @@ function buildTravelHistory(
     const existing = grouped.get(country) ?? { country, cities: new Set<string>(), places: [] };
     existing.cities.add(city);
     if (!existing.places.some((item) => item.id === moment.place.id && item.momentId === moment.id)) {
-      const mediaImages = moment.uploadedMedia.length > 0 ? moment.uploadedMedia : moment.place.images;
+      const usableUploadedMedia = moment.uploadedMedia.filter((url) => isRenderableMediaUrl(url));
+      const usableUploadedMediaItems = moment.uploadedMediaItems.filter((item) => isRenderableMediaUrl(item.url));
+      const mediaImages = usableUploadedMedia.length > 0 ? usableUploadedMedia : moment.place.images;
       existing.places.push({
         ...moment.place,
         image: mediaImages[0] ?? moment.place.image,
         images: mediaImages.length > 0 ? mediaImages : moment.place.images,
+        momentMedia: usableUploadedMediaItems.length > 0
+          ? usableUploadedMediaItems
+          : (moment.place.images ?? []).map((url) => ({ url, mediaType: 'image' as const })),
         momentId: moment.id,
         ownerUserId,
         visitedDate: moment.visitedDate,
+        momentCaption: moment.caption,
+        momentVibeTags: moment.vibeTags,
+        momentVisitType: moment.visitType,
+        momentTimeOfDay: moment.timeOfDay,
+        momentWouldRevisit: moment.wouldRevisit,
+        momentRating: moment.rating,
       });
     }
     grouped.set(country, existing);

@@ -2363,49 +2363,88 @@ function computeEventCompatibilityScore(event: {
 }
 
 function buildEventCompatibilityReason(event: {
+  name: string;
   category?: string | null;
   tags: string[];
   description?: string | null;
   venueName?: string | null;
   location: string;
   startAt: string;
+  score: number;
 }, input: EventRecommendationContext) {
   const normalizedTags = event.tags.map((tag) => normalizeKeyword(tag));
   const normalizedDescription = normalizeKeyword(event.description ?? '');
+  const normalizedName = normalizeKeyword(event.name);
+  const normalizedCategory = normalizeKeyword(event.category ?? '');
   const startsAt = new Date(event.startAt);
   const daysUntilStart = Number.isNaN(startsAt.getTime())
     ? null
     : Math.round((startsAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+  const scoreLabel = event.score >= 88 ? 'very strong' : event.score >= 78 ? 'strong' : 'solid';
 
-  if (input.selectedInterests.includes('party') && normalizedTags.some((tag) => tag.includes('concert') || tag.includes('festival') || tag.includes('music'))) {
-    return 'it matches the live music and high-energy events your taste profile leans toward';
+  if (input.selectedInterests.includes('party') && (normalizedTags.some((tag) => tag.includes('concert') || tag.includes('festival') || tag.includes('music')) || normalizedName.includes('live') || normalizedCategory.includes('music'))) {
+    return `it looks like a ${scoreLabel} nightlife fit, with live-music energy that lines up with what you usually lean toward`;
   }
 
   if (input.selectedInterests.includes('culture') && normalizedTags.some((tag) => tag.includes('arts') || tag.includes('museum') || tag.includes('theatre') || tag.includes('jazz'))) {
-    return 'it overlaps with the more culture-heavy events that already fit your vibe';
+    return `it reads as a ${scoreLabel} culture pick, with more arts-led energy than the average event in this city`;
   }
 
   if (input.selectedInterests.includes('shopping') && (normalizedTags.some((tag) => tag.includes('market') || tag.includes('fair') || tag.includes('bazaar')) || normalizedDescription.includes('vendor'))) {
-    return 'it matches the browse-first market and pop-up events your picks are leaning toward';
+    return `it feels like a ${scoreLabel} shopping-and-browse pick, especially if you are in the mood for markets, makers, and pop-ups`;
   }
 
   if (input.selectedVibe === 'solo' && normalizedTags.some((tag) => tag.includes('intimate') || tag.includes('acoustic') || tag.includes('classical'))) {
-    return 'it feels like a stronger solo-night fit than a big crowd event';
+    return `it feels like a ${scoreLabel} solo-night match, with a lower-pressure format than a big crowd event`;
   }
 
   if (input.selectedVibe === 'budget' && normalizedTags.some((tag) => tag.includes('festival') || tag.includes('community'))) {
-    return 'it looks like an easier low-commitment pick for your current budget-leaning vibe';
+    return `it looks like a ${scoreLabel} budget-friendly pick for your current vibe, with lighter commitment than most ticketed events`;
+  }
+
+  if (input.selectedVibe === 'aesthetic' && (normalizedTags.some((tag) => tag.includes('fashion') || tag.includes('art') || tag.includes('design')) || normalizedDescription.includes('immersive'))) {
+    return `it has a more visual, curated feel, so it lands as a ${scoreLabel} aesthetic match right now`;
+  }
+
+  if (input.selectedVibe === 'spontaneous' && typeof daysUntilStart === 'number' && daysUntilStart >= 0 && daysUntilStart <= 7) {
+    return `it is happening soon, which makes it a ${scoreLabel} spontaneous pick if you want something timely without overplanning`;
   }
 
   if (typeof daysUntilStart === 'number' && daysUntilStart >= 0 && daysUntilStart <= 7) {
-    return `it is happening soon in ${event.location}, so the timing is unusually strong right now`;
+    return `the timing is unusually strong right now, and that makes it a ${scoreLabel} pick in ${event.location}`;
   }
 
   if (event.venueName) {
-    return `it stands out as a timely pick around ${event.venueName}`;
+    return `it stands out as a ${scoreLabel} fit around ${event.venueName}, even before adding the timing boost`;
   }
 
-  return 'it lines up with the event energy your profile is already responding to';
+  return `it lines up as a ${scoreLabel} fit for the event energy your profile is responding to right now`;
+}
+
+function buildEventHook(event: {
+  name: string;
+  category?: string | null;
+  venueName?: string | null;
+  tags: string[];
+  score: number;
+}) {
+  const normalizedTags = event.tags.map((tag) => normalizeKeyword(tag));
+  const normalizedCategory = normalizeKeyword(event.category ?? '');
+  const scoreLabel = event.score >= 88 ? 'Very your vibe.' : event.score >= 78 ? 'Worth opening.' : 'Worth a look.';
+
+  if (normalizedTags.some((tag) => tag.includes('market') || tag.includes('bazaar') || tag.includes('fair'))) {
+    return `${event.venueName ? `${event.venueName} has` : 'This one has'} market energy. ${scoreLabel}`;
+  }
+
+  if (normalizedTags.some((tag) => tag.includes('concert') || tag.includes('music') || tag.includes('festival')) || normalizedCategory.includes('music')) {
+    return `${event.name} looks like a live-night pick. ${scoreLabel}`;
+  }
+
+  if (normalizedTags.some((tag) => tag.includes('jazz') || tag.includes('theatre') || tag.includes('arts'))) {
+    return `${event.name} leans more culture than generic. ${scoreLabel}`;
+  }
+
+  return `${event.name} fits the current feed better than most. ${scoreLabel}`;
 }
 
 async function getDiscoveryEventsForUser(options: {
@@ -2488,12 +2527,18 @@ async function getDiscoveryEventsForUser(options: {
         source: 'ticketmaster',
         name: event.name ?? 'Untitled event',
         description,
-        hook: '',
+        hook: buildEventHook({
+          name: event.name ?? 'Untitled event',
+          category,
+          venueName: venue?.name,
+          tags,
+          score,
+        }),
         image: event.images?.slice().sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]?.url,
         venueName: venue?.name,
         location,
         category,
-        tags,
+        tags: tags.filter((tag) => tag && tag.trim().toLowerCase() !== 'undefined'),
         startAt,
         endAt: event.dates?.end?.dateTime
           ?? (event.dates?.end?.localDate
@@ -2508,12 +2553,14 @@ async function getDiscoveryEventsForUser(options: {
         currency: priceRange?.currency,
         compatibilityScore: score,
         compatibilityReason: buildEventCompatibilityReason({
+          name: event.name ?? 'Untitled event',
           category,
           tags,
           description,
           venueName: venue?.name,
           location,
           startAt,
+          score,
         }, context),
         status: event.dates?.status?.code,
         _preferenceAffinity: getEventPreferenceAffinity({

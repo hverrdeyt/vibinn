@@ -27,6 +27,13 @@ export interface Place {
   momentId?: string;
   ownerUserId?: string;
   visitedDate?: string;
+  momentMedia?: Array<{ url: string; mediaType: 'image' | 'video' }>;
+  momentCaption?: string;
+  momentVibeTags?: string[];
+  momentVisitType?: 'solo' | 'couple' | 'friends' | 'family';
+  momentTimeOfDay?: 'morning' | 'afternoon' | 'sunset' | 'night';
+  momentWouldRevisit?: 'yes' | 'not_sure' | 'not_interested';
+  momentRating?: number;
 }
 
 export interface User {
@@ -79,6 +86,7 @@ export interface EventItem {
 export type Screen =
   | 'landing'
   | 'onboarding'
+  | 'post-preferences-intro'
   | 'login'
   | 'register'
   | 'profile'

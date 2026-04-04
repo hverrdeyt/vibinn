@@ -17,6 +17,17 @@ export class ApiError extends Error {
 const AUTH_TOKEN_KEY = 'vibecheck_auth_token';
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
 
+export function resolveApiAssetUrl(url?: string | null) {
+  if (!url) return '';
+  if (/^(https?:)?\/\//i.test(url) || url.startsWith('data:') || url.startsWith('blob:')) {
+    return url;
+  }
+  if (url.startsWith('/')) {
+    return `${API_BASE_URL}${url}`;
+  }
+  return url;
+}
+
 function getAuthToken() {
   return typeof window !== 'undefined' ? window.localStorage.getItem(AUTH_TOKEN_KEY) : null;
 }
