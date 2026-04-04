@@ -1192,7 +1192,7 @@ async function getDiscoveryPlacesForUser(options: {
     : [];
   const persistedScoreMap = new Map(persistedScores.map((item) => [item.placeId, item.similarityPercentage ?? item.matchScore ?? null]));
   const shouldUsePersistedScores = !options.forceRefresh;
-  const rankedPlaces = places
+  let rankedPlaces = places
     .filter((place) => !context.dismissedPlaceIds.has(place.id))
     .filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery))
     .map((place) => ({
@@ -1242,6 +1242,35 @@ async function getDiscoveryPlacesForUser(options: {
           ),
     }))
     .sort((a, b) => (b.similarityStat ?? 0) - (a.similarityStat ?? 0));
+
+  if (rankedPlaces.length === 0 && !normalizedSearchQuery) {
+    rankedPlaces = getFallbackDiscoveryPlaces(options.locationLabel)
+      .map((place) => ({
+        ...place,
+        similarityStat: computeRecommendationScore(
+          {
+            id: place.id,
+            tags: place.tags,
+            category: place.category,
+            similarityStat: place.similarityStat,
+            rating: typeof place.rating === 'number' ? place.rating : null,
+          },
+          {
+            selectedInterests,
+            selectedVibe,
+            tasteKeywords: context.tasteKeywords,
+            socialKeywords: context.socialKeywords,
+            isBookmarked: context.bookmarkedPlaceIds.has(place.id),
+            isVisited: context.visitedPlaceIds.has(place.id),
+            isVibed: context.vibedPlaceIds.has(place.id),
+            isCommented: context.commentedPlaceIds.has(place.id),
+            isRecent: context.recentPlaceIds.has(place.id),
+            followedPlaceMatch: context.followedPlaceIds.has(place.id),
+          },
+        ),
+      }))
+      .sort((a, b) => (b.similarityStat ?? 0) - (a.similarityStat ?? 0));
+  }
 
   if (options.userId && places.length > 0 && (options.forceRefresh || page === 1)) {
     void refreshUserPlaceScores(
