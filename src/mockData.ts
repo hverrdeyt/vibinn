@@ -56,6 +56,42 @@ export const MOCK_PLACES: Place[] = [
     category: 'Cafe'
   },
   {
+    id: 'p-bos-4',
+    name: 'North End Vinyl Bar',
+    location: 'Boston, USA',
+    description: 'Dim lights, vinyl-led sets, and cocktails that make late plans feel easy.',
+    image: 'https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?auto=format&fit=crop&w=800&q=80',
+    images: [
+      'https://images.unsplash.com/photo-1516450360452-9312f5e86fc7?auto=format&fit=crop&w=800&q=80',
+    ],
+    tags: ['nightlife', 'live-music', 'cocktails'],
+    similarityStat: 89,
+    whyYoullLikeIt: [
+      'easy after-dark stop with real music energy',
+      'strong fit if your nights lean more bar than club',
+    ],
+    priceRange: '$$',
+    category: 'Cocktail Bar / Music'
+  },
+  {
+    id: 'p-bos-5',
+    name: 'SoWa Market Hall',
+    location: 'Boston, USA',
+    description: 'Design stalls, local makers, and a browse-first shopping stop that never feels generic.',
+    image: 'https://images.unsplash.com/photo-1481437156560-3205f6a55735?auto=format&fit=crop&w=800&q=80',
+    images: [
+      'https://images.unsplash.com/photo-1481437156560-3205f6a55735?auto=format&fit=crop&w=800&q=80',
+    ],
+    tags: ['shopping', 'market', 'design-shop'],
+    similarityStat: 87,
+    whyYoullLikeIt: [
+      'good for local finds over predictable mall loops',
+      'works when you want a shopping stop with personality',
+    ],
+    priceRange: '$$',
+    category: 'Market / Shopping'
+  },
+  {
     id: 'p1',
     name: 'TeamLab Borderless',
     location: 'Tokyo, Japan',

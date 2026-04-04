@@ -77,6 +77,7 @@ export interface EventItem {
 }
 
 export type Screen =
+  | 'landing'
   | 'onboarding'
   | 'login'
   | 'register'

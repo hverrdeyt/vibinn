@@ -671,6 +671,16 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
   };
 }
 
+function normalizePlaceCategory(category?: string | null, tags: string[] = []) {
+  const trimmedCategory = category?.trim();
+  if (trimmedCategory) return trimmedCategory;
+
+  const firstTag = tags.find((tag) => tag?.trim());
+  if (firstTag) return firstTag.replace(/[_-]+/g, ' ');
+
+  return 'recommended spot';
+}
+
 function dedupeQueries(queries: string[]) {
   return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean)));
 }
@@ -893,6 +903,8 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
   };
 }>) {
   const image = place.primaryImageUrl ?? place.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place';
+  const tags = place.aiEnrichment?.vibeTags.length ? place.aiEnrichment.vibeTags : [place.category].filter(Boolean);
+  const category = normalizePlaceCategory(place.category, tags);
   return {
     id: place.id,
     name: place.name,
@@ -902,7 +914,7 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     hook: place.aiEnrichment?.hook ?? '',
     image,
     images: place.media.length > 0 ? place.media.map((item) => item.url) : [image],
-    tags: place.aiEnrichment?.vibeTags.length ? place.aiEnrichment.vibeTags : [place.category].filter(Boolean),
+    tags,
     attitudeLabel: place.aiEnrichment?.attitudeLabel ?? undefined,
     bestTime: place.aiEnrichment?.bestTime ?? undefined,
     similarityStat: 82,
@@ -912,7 +924,7 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     ],
     rating: place.rating ?? undefined,
     priceRange: mapPriceLevel(place.priceLevel),
-    category: place.category,
+    category,
   };
 }
 
@@ -965,6 +977,7 @@ function placeMatchesDiscoverySearch(place: ReturnType<typeof mapCachedPlaceForD
 }
 
 function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
+  const category = normalizePlaceCategory(place.category, place.tags ?? []);
   return {
     id: place.id,
     name: place.name,
@@ -981,7 +994,7 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     whyYoullLikeIt: place.whyYoullLikeIt ?? [],
     rating: 0,
     priceRange: place.priceRange ?? '',
-    category: place.category ?? '',
+    category,
   };
 }
 
@@ -1047,6 +1060,7 @@ async function ensureLocationCandidatePool(
   locationType?: string,
   selectedInterests: string[] = [],
   selectedVibe?: string | null,
+  forceRefresh = false,
 ) {
   const location = await getOrCreateDiscoveryLocation(locationLabel, locationType);
   const cachedCount = await prisma.place.count({
@@ -1058,6 +1072,7 @@ async function ensureLocationCandidatePool(
     : false;
 
   if (
+    !forceRefresh &&
     location.discoverySeededAt &&
     cachedCount >= DISCOVERY_POOL_MIN_CANDIDATES
   ) {
@@ -1072,7 +1087,7 @@ async function ensureLocationCandidatePool(
     return;
   }
 
-  if (seededRecently) {
+  if (!forceRefresh && seededRecently) {
     if (location.discoveryCandidateCount !== cachedCount) {
       await prisma.location.update({
         where: { id: location.id },
@@ -1135,6 +1150,7 @@ async function getDiscoveryPlacesForUser(options: {
       options.locationType,
       selectedInterests,
       selectedVibe,
+      options.forceRefresh,
     );
 
     if (normalizedSearchQuery) {
@@ -1197,6 +1213,19 @@ async function getDiscoveryPlacesForUser(options: {
     .filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery))
     .map((place) => ({
       ...place,
+      _preferenceAffinity: getPlacePreferenceAffinity(
+        {
+          tags: place.tags,
+          category: place.category,
+          hook: place.hook,
+          description: place.description,
+          whyYoullLikeIt: place.whyYoullLikeIt,
+        },
+        {
+          selectedInterests,
+          selectedVibe,
+        },
+      ),
       similarityStat: shouldUsePersistedScores
         ? (persistedScoreMap.get(place.id) ?? computeRecommendationScore(
             {
@@ -1205,6 +1234,9 @@ async function getDiscoveryPlacesForUser(options: {
               category: place.category,
               similarityStat: place.similarityStat,
               rating: typeof place.rating === 'number' ? place.rating : null,
+              hook: place.hook,
+              description: place.description,
+              whyYoullLikeIt: place.whyYoullLikeIt,
             },
             {
               selectedInterests,
@@ -1226,6 +1258,9 @@ async function getDiscoveryPlacesForUser(options: {
               category: place.category,
               similarityStat: place.similarityStat,
               rating: typeof place.rating === 'number' ? place.rating : null,
+              hook: place.hook,
+              description: place.description,
+              whyYoullLikeIt: place.whyYoullLikeIt,
             },
             {
               selectedInterests,
@@ -1241,12 +1276,78 @@ async function getDiscoveryPlacesForUser(options: {
             },
           ),
     }))
-    .sort((a, b) => (b.similarityStat ?? 0) - (a.similarityStat ?? 0));
+    .sort((a, b) => {
+      const affinityA = a._preferenceAffinity.matchedInterestCount + (a._preferenceAffinity.matchedVibe ? 1 : 0);
+      const affinityB = b._preferenceAffinity.matchedInterestCount + (b._preferenceAffinity.matchedVibe ? 1 : 0);
+      if (affinityB !== affinityA) return affinityB - affinityA;
+      return (b.similarityStat ?? 0) - (a.similarityStat ?? 0);
+    });
+
+  if (selectedInterests.length > 0 || selectedVibe) {
+    const matchedPlaces = rankedPlaces.filter((place) =>
+      shouldKeepPlaceForPreferences(
+        {
+          tags: place.tags,
+          category: place.category,
+          hook: place.hook,
+          description: place.description,
+          whyYoullLikeIt: place.whyYoullLikeIt,
+        },
+        {
+          selectedInterests,
+          selectedVibe,
+        },
+      ),
+    );
+    const unmatchedPlaces = rankedPlaces.filter((place) =>
+      !shouldKeepPlaceForPreferences(
+        {
+          tags: place.tags,
+          category: place.category,
+          hook: place.hook,
+          description: place.description,
+          whyYoullLikeIt: place.whyYoullLikeIt,
+        },
+        {
+          selectedInterests,
+          selectedVibe,
+        },
+      ),
+    );
+
+    if (matchedPlaces.length > 0) {
+      rankedPlaces = [...matchedPlaces, ...unmatchedPlaces];
+    }
+  }
+
+  if (!normalizedSearchQuery && page === 1 && selectedInterests.length > 0) {
+    const interestMatchedPlaces = rankedPlaces.filter((place) => place._preferenceAffinity.matchedInterestCount > 0);
+    const nonInterestMatchedPlaces = rankedPlaces.filter((place) => place._preferenceAffinity.matchedInterestCount === 0);
+
+    if (interestMatchedPlaces.length >= Math.min(6, limit)) {
+      rankedPlaces = interestMatchedPlaces;
+    } else {
+      rankedPlaces = [...interestMatchedPlaces, ...nonInterestMatchedPlaces];
+    }
+  }
 
   if (rankedPlaces.length === 0 && !normalizedSearchQuery) {
     rankedPlaces = getFallbackDiscoveryPlaces(options.locationLabel)
       .map((place) => ({
         ...place,
+        _preferenceAffinity: getPlacePreferenceAffinity(
+          {
+            tags: place.tags,
+            category: place.category,
+            hook: place.hook,
+            description: place.description,
+            whyYoullLikeIt: place.whyYoullLikeIt,
+          },
+          {
+            selectedInterests,
+            selectedVibe,
+          },
+        ),
         similarityStat: computeRecommendationScore(
           {
             id: place.id,
@@ -1254,6 +1355,9 @@ async function getDiscoveryPlacesForUser(options: {
             category: place.category,
             similarityStat: place.similarityStat,
             rating: typeof place.rating === 'number' ? place.rating : null,
+            hook: place.hook,
+            description: place.description,
+            whyYoullLikeIt: place.whyYoullLikeIt,
           },
           {
             selectedInterests,
@@ -1282,7 +1386,9 @@ async function getDiscoveryPlacesForUser(options: {
   }
 
   const start = (page - 1) * limit;
-  let pagedPlaces = rankedPlaces.slice(start, start + limit);
+  const pagedPlaces = rankedPlaces
+    .slice(start, start + limit)
+    .map(({ _preferenceAffinity, ...place }) => place);
 
   if (OPENAI_API_KEY && page === 1) {
     const enrichmentCandidates = pagedPlaces
@@ -1464,6 +1570,166 @@ function normalizeKeyword(value: string) {
   return value.toLowerCase().replace(/[_-]+/g, ' ').trim();
 }
 
+const PLACE_INTEREST_MATCHERS: Record<string, string[]> = {
+  nature: ['nature', 'park', 'garden', 'waterfront', 'scenic', 'outdoor', 'green', 'lake', 'trail', 'harbor', 'walk'],
+  cafe: ['cafe', 'coffee', 'espresso', 'bakery', 'brunch', 'pastry', 'tea', 'roastery', 'easy pause'],
+  culture: ['culture', 'museum', 'gallery', 'historic', 'history', 'arts', 'theatre', 'design', 'bookstore', 'library', 'monument'],
+  shopping: ['shopping', 'market', 'boutique', 'concept store', 'mall', 'retail', 'gift', 'design shop', 'bazaar', 'showroom'],
+  party: ['nightlife', 'bar', 'cocktail', 'rooftop', 'live music', 'music', 'dj', 'club', 'late night', 'jazz', 'speakeasy'],
+  adventure: ['adventure', 'walkable', 'viewpoint', 'hike', 'trail', 'outdoor', 'easy stop', 'detour', 'quick escape', 'open air'],
+};
+
+const PLACE_VIBE_MATCHERS: Record<string, string[]> = {
+  aesthetic: ['aesthetic', 'design', 'stylish', 'photo', 'beautiful', 'gallery', 'visual', 'curated'],
+  solo: ['solo', 'quiet', 'low key', 'intimate', 'easy pause', 'bookstore', 'museum', 'slow', 'calm'],
+  luxury: ['luxury', 'premium', 'fine dining', 'hotel', 'exclusive', 'high end', 'polished', 'elevated'],
+  budget: ['budget', 'cheap', 'free', 'casual', 'community', 'street', 'market', 'easy stop'],
+  spontaneous: ['spontaneous', 'walkable', 'easy stop', 'drop in', 'quick escape', 'detour', 'open air', 'last minute'],
+};
+
+function getPlacePreferenceAffinity(place: {
+  tags: string[];
+  category?: string | null;
+  hook?: string | null;
+  description?: string | null;
+  whyYoullLikeIt?: string[] | null;
+}, input: {
+  selectedInterests: string[];
+  selectedVibe?: string | null;
+}) {
+  const normalizedTags = place.tags.map(normalizeKeyword);
+  const normalizedCategory = normalizeKeyword(place.category ?? '');
+  const normalizedHook = normalizeKeyword(place.hook ?? '');
+  const normalizedDescription = normalizeKeyword(place.description ?? '');
+  const normalizedWhyLines = (place.whyYoullLikeIt ?? []).map(normalizeKeyword);
+  const keywordBag = new Set([
+    ...normalizedTags,
+    normalizedCategory,
+    normalizedHook,
+    normalizedDescription,
+    ...normalizedWhyLines,
+  ].filter(Boolean));
+
+  const matchesAnyMatcher = (matchers: string[]) =>
+    matchers.some((matcher) => {
+      const normalizedMatcher = normalizeKeyword(matcher);
+      return Array.from(keywordBag).some((keyword) =>
+        keyword.includes(normalizedMatcher) || normalizedMatcher.includes(keyword),
+      );
+    });
+
+  let matchedInterestCount = 0;
+  for (const interest of input.selectedInterests) {
+    const matchers = PLACE_INTEREST_MATCHERS[interest] ?? [normalizeKeyword(interest)];
+    if (matchesAnyMatcher(matchers)) {
+      matchedInterestCount += 1;
+    }
+  }
+
+  let matchedVibe = false;
+  if (input.selectedVibe) {
+    const matchers = PLACE_VIBE_MATCHERS[input.selectedVibe] ?? [normalizeKeyword(input.selectedVibe)];
+    matchedVibe = matchesAnyMatcher(matchers);
+  }
+
+  return { matchedInterestCount, matchedVibe };
+}
+
+function getPlacePreferenceNoisePenalty(place: {
+  tags: string[];
+  category?: string | null;
+  hook?: string | null;
+  description?: string | null;
+}, input: {
+  selectedInterests: string[];
+}) {
+  if (input.selectedInterests.length === 0) return 0;
+
+  const haystack = [
+    place.category ?? '',
+    place.hook ?? '',
+    place.description ?? '',
+    ...place.tags,
+  ]
+    .map(normalizeKeyword)
+    .join(' ');
+
+  let penalty = 0;
+
+  if (input.selectedInterests.includes('party')) {
+    if (
+      haystack.includes('park') ||
+      haystack.includes('nature preserve') ||
+      haystack.includes('city park') ||
+      haystack.includes('service')
+    ) {
+      penalty += 18;
+    }
+  }
+
+  if (input.selectedInterests.includes('shopping')) {
+    if (
+      haystack.includes('park') ||
+      haystack.includes('nature preserve') ||
+      haystack.includes('city park')
+    ) {
+      penalty += 16;
+    }
+  }
+
+  if (
+    input.selectedInterests.includes('party') &&
+    input.selectedInterests.includes('shopping') &&
+    (haystack.includes('coffee shop') || haystack.includes('cafe'))
+  ) {
+    penalty += 12;
+  }
+
+  return penalty;
+}
+
+function shouldKeepPlaceForPreferences(place: {
+  tags: string[];
+  category?: string | null;
+  hook?: string | null;
+  description?: string | null;
+  whyYoullLikeIt?: string[] | null;
+}, input: {
+  selectedInterests: string[];
+  selectedVibe?: string | null;
+}) {
+  if (input.selectedInterests.length === 0 && !input.selectedVibe) return true;
+
+  const affinity = getPlacePreferenceAffinity(place, input);
+  if (affinity.matchedInterestCount === 0 && !affinity.matchedVibe) {
+    return false;
+  }
+
+  if (input.selectedInterests.length === 1 && input.selectedInterests[0] === 'shopping') {
+    const haystack = [
+      place.category ?? '',
+      place.hook ?? '',
+      place.description ?? '',
+      ...(place.whyYoullLikeIt ?? []),
+      ...place.tags,
+    ]
+      .map(normalizeKeyword)
+      .join(' ');
+
+    if (
+      haystack.includes('coffee') ||
+      haystack.includes('cafe') ||
+      haystack.includes('museum') ||
+      haystack.includes('park') ||
+      haystack.includes('garden')
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function hashScoreSeed(input: string) {
   let hash = 0;
   for (let index = 0; index < input.length; index += 1) {
@@ -1493,6 +1759,9 @@ function computeRecommendationScore(place: {
   category?: string;
   similarityStat?: number;
   rating?: number | null;
+  hook?: string | null;
+  description?: string | null;
+  whyYoullLikeIt?: string[] | null;
 }, input: {
   selectedInterests: string[];
   selectedVibe?: string | null;
@@ -1507,6 +1776,17 @@ function computeRecommendationScore(place: {
 }) {
   const normalizedTags = place.tags.map(normalizeKeyword);
   const normalizedCategory = normalizeKeyword(place.category ?? '');
+  const keywordBag = new Set([
+    ...normalizedTags,
+    normalizedCategory,
+  ].filter(Boolean));
+  const matchesAnyMatcher = (matchers: string[]) =>
+    matchers.some((matcher) => {
+      const normalizedMatcher = normalizeKeyword(matcher);
+      return Array.from(keywordBag).some((keyword) =>
+        keyword.includes(normalizedMatcher) || normalizedMatcher.includes(keyword),
+      );
+    });
   const diversitySeed = hashScoreSeed(`${place.id ?? normalizedCategory}|${normalizedTags.join('|')}`) % 17;
   const tasteKeywords = input.tasteKeywords ?? new Set<string>();
   const socialKeywords = input.socialKeywords ?? new Set<string>();
@@ -1515,27 +1795,20 @@ function computeRecommendationScore(place: {
     score = Math.round((score * 0.76) + (place.similarityStat * 0.24));
   }
 
-  let matchedInterestCount = 0;
-  for (const interest of input.selectedInterests) {
-    const normalizedInterest = normalizeKeyword(interest);
-    if (normalizedTags.some((tag) => tag.includes(normalizedInterest)) || normalizedCategory.includes(normalizedInterest)) {
-      matchedInterestCount += 1;
-      score += 11;
-    }
-  }
+  const affinity = getPlacePreferenceAffinity(place, input);
+  const matchedInterestCount = affinity.matchedInterestCount;
+  score += matchedInterestCount * 15;
 
   if (input.selectedInterests.length > 0 && matchedInterestCount === 0) {
-    score -= 10;
+    score -= 12;
   }
 
-  let matchedVibe = false;
-  if (input.selectedVibe) {
-    const normalizedVibe = normalizeKeyword(input.selectedVibe);
-    if (normalizedTags.some((tag) => tag.includes(normalizedVibe)) || normalizedCategory.includes(normalizedVibe)) {
-      matchedVibe = true;
-      score += 14;
-    }
+  const matchedVibe = affinity.matchedVibe;
+  if (input.selectedVibe && matchedVibe) {
+    score += 18;
   }
+
+  score -= getPlacePreferenceNoisePenalty(place, input);
 
   if (input.selectedVibe && !matchedVibe) {
     score -= 8;
@@ -1786,6 +2059,7 @@ async function fetchTicketmasterEvents(input: {
   locationLabel: string;
   locationType?: string;
   query?: string;
+  selectedInterests?: string[];
   page?: number;
   limit?: number;
 }) {
@@ -1809,8 +2083,18 @@ async function fetchTicketmasterEvents(input: {
     page: String(page - 1),
     sort: 'date,asc',
     locale: '*',
-    classificationName: 'music',
   });
+
+  const selectedInterests = input.selectedInterests ?? [];
+  const shoppingOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'shopping');
+  const natureOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'nature');
+  const cafeOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'cafe');
+  const cultureOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'culture');
+  const partySelected = selectedInterests.includes('party');
+
+  if (!shoppingOnly && !natureOnly && !cafeOnly) {
+    params.set('classificationName', 'music');
+  }
 
   const locationFilters = mapLocationToTicketmasterFilters(input.locationLabel, input.locationType);
   if (locationFilters.city) params.set('city', locationFilters.city);
@@ -1818,6 +2102,16 @@ async function fetchTicketmasterEvents(input: {
 
   if (input.query?.trim()) {
     params.set('keyword', input.query.trim());
+  } else if (shoppingOnly) {
+    params.set('keyword', 'market fair bazaar pop up makers expo');
+  } else if (cultureOnly) {
+    params.set('keyword', 'arts theatre jazz cultural festival exhibition');
+  } else if (natureOnly) {
+    params.set('keyword', 'outdoor garden park festival');
+  } else if (cafeOnly) {
+    params.set('keyword', 'acoustic listening community intimate');
+  } else if (partySelected && selectedInterests.includes('shopping')) {
+    params.set('keyword', 'concert nightlife market pop up');
   }
 
   const response = await fetch(`https://app.ticketmaster.com/discovery/v2/events.json?${params.toString()}`);
@@ -1897,11 +2191,12 @@ function buildEventKeywordBag(event: {
   name: string;
   category?: string | null;
   tags: string[];
+  description?: string | null;
   venueName?: string | null;
   location: string;
 }) {
   return new Set(
-    [event.name, event.category ?? '', event.venueName ?? '', event.location, ...event.tags]
+    [event.name, event.category ?? '', event.description ?? '', event.venueName ?? '', event.location, ...event.tags]
       .join(' ')
       .toLowerCase()
       .replace(/[_-]+/g, ' ')
@@ -1911,11 +2206,97 @@ function buildEventKeywordBag(event: {
   );
 }
 
+function getEventPreferenceAffinity(event: {
+  name: string;
+  category?: string | null;
+  tags: string[];
+  description?: string | null;
+  venueName?: string | null;
+  location: string;
+}, input: EventRecommendationContext) {
+  const keywords = buildEventKeywordBag(event);
+  const normalizedCategory = normalizeKeyword(event.category ?? '');
+
+  const interestMatchers: Record<string, string[]> = {
+    nature: ['outdoor', 'park', 'festival', 'garden'],
+    cafe: ['acoustic', 'intimate', 'coffee', 'community', 'listening'],
+    culture: ['arts', 'museum', 'gallery', 'cultural', 'classical', 'jazz', 'theatre', 'festival'],
+    shopping: ['market', 'fair', 'expo', 'pop up', 'bazaar', 'vendor', 'makers'],
+    party: ['concert', 'music', 'dance', 'dj', 'nightlife', 'festival', 'electronic', 'after dark'],
+    adventure: ['sports', 'outdoor', 'active', 'arena', 'race'],
+  };
+
+  let matchedInterestCount = 0;
+  for (const interest of input.selectedInterests) {
+    const matchers = interestMatchers[interest] ?? [normalizeKeyword(interest)];
+    if (matchers.some((matcher) => Array.from(keywords).some((keyword) => keyword.includes(matcher.replace(/\s+/g, '')) || matcher.includes(keyword)) || normalizedCategory.includes(matcher))) {
+      matchedInterestCount += 1;
+    }
+  }
+
+  const vibeMatchers: Record<string, string[]> = {
+    aesthetic: ['visual', 'immersive', 'art', 'design', 'fashion'],
+    solo: ['intimate', 'acoustic', 'museum', 'classical', 'listening', 'seated'],
+    luxury: ['vip', 'premium', 'gala', 'exclusive'],
+    budget: ['free', 'community', 'festival', 'outdoor'],
+    spontaneous: ['tonight', 'live', 'downtown', 'weekend', 'after dark', 'late'],
+  };
+
+  let matchedVibe = false;
+  if (input.selectedVibe) {
+    matchedVibe = (vibeMatchers[input.selectedVibe] ?? []).some((matcher) =>
+      Array.from(keywords).some((keyword) => keyword.includes(matcher.replace(/\s+/g, '')) || matcher.includes(keyword)) ||
+      normalizedCategory.includes(matcher),
+    );
+  }
+
+  return { matchedInterestCount, matchedVibe };
+}
+
+function shouldKeepEventForPreferences(event: {
+  category?: string | null;
+  tags: string[];
+  description?: string | null;
+  venueName?: string | null;
+  location: string;
+  name: string;
+}, input: EventRecommendationContext) {
+  if (input.selectedInterests.length === 0 && !input.selectedVibe) return true;
+
+  const affinity = getEventPreferenceAffinity(event, input);
+  if (affinity.matchedInterestCount > 0 || affinity.matchedVibe) return true;
+
+  if (input.selectedInterests.includes('shopping')) {
+    return false;
+  }
+
+  if (input.selectedInterests.length > 0) {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeEventCategory(category?: string | null, tags: string[] = [], description?: string | null) {
+  const trimmedCategory = category?.trim();
+  if (trimmedCategory) return trimmedCategory;
+
+  const normalizedDescription = normalizeKeyword(description ?? '');
+  if (normalizedDescription.includes('dj') || normalizedDescription.includes('dance floor')) return 'Nightlife / DJ';
+  if (normalizedDescription.includes('market') || normalizedDescription.includes('vendors')) return 'Market / Pop-up';
+
+  const firstTag = tags.find((tag) => tag?.trim());
+  if (firstTag) return firstTag.replace(/[_-]+/g, ' ');
+
+  return 'Live event';
+}
+
 function computeEventCompatibilityScore(event: {
   id: string;
   name: string;
   category?: string | null;
   tags: string[];
+  description?: string | null;
   venueName?: string | null;
   location: string;
   startAt: string;
@@ -1925,41 +2306,15 @@ function computeEventCompatibilityScore(event: {
   const keywords = buildEventKeywordBag(event);
   const normalizedCategory = normalizeKeyword(event.category ?? '');
   let score = 38 + (hashScoreSeed(`${event.id}|${event.name}|${event.startAt}`) % 14);
-
-  const interestMatchers: Record<string, string[]> = {
-    nature: ['outdoor', 'park', 'festival', 'garden'],
-    cafe: ['acoustic', 'intimate', 'coffee', 'community', 'listening'],
-    culture: ['arts', 'museum', 'gallery', 'cultural', 'classical', 'jazz', 'theatre', 'festival'],
-    shopping: ['market', 'fair', 'expo', 'pop up', 'bazaar'],
-    party: ['concert', 'music', 'dance', 'dj', 'nightlife', 'festival', 'electronic'],
-    adventure: ['sports', 'outdoor', 'active', 'arena', 'race'],
-  };
-
-  let matchedInterestCount = 0;
-  for (const interest of input.selectedInterests) {
-    const matchers = interestMatchers[interest] ?? [normalizeKeyword(interest)];
-    if (matchers.some((matcher) => Array.from(keywords).some((keyword) => keyword.includes(matcher.replace(/\s+/g, '')) || matcher.includes(keyword)) || normalizedCategory.includes(matcher))) {
-      matchedInterestCount += 1;
-      score += 12;
-    }
-  }
+  const affinity = getEventPreferenceAffinity(event, input);
+  const matchedInterestCount = affinity.matchedInterestCount;
+  score += matchedInterestCount * 12;
   if (input.selectedInterests.length > 0 && matchedInterestCount === 0) {
     score -= 10;
   }
 
-  const vibeMatchers: Record<string, string[]> = {
-    aesthetic: ['art', 'design', 'festival', 'gallery', 'orchestra', 'visual'],
-    solo: ['intimate', 'acoustic', 'museum', 'classical', 'listening'],
-    luxury: ['vip', 'premium', 'gala', 'exclusive'],
-    budget: ['free', 'community', 'festival', 'outdoor'],
-    spontaneous: ['tonight', 'live', 'downtown', 'weekend'],
-  };
   if (input.selectedVibe) {
-    const matchedVibe = (vibeMatchers[input.selectedVibe] ?? []).some((matcher) =>
-      Array.from(keywords).some((keyword) => keyword.includes(matcher.replace(/\s+/g, '')) || matcher.includes(keyword)) ||
-      normalizedCategory.includes(matcher),
-    );
-    if (matchedVibe) {
+    if (affinity.matchedVibe) {
       score += 14;
     } else {
       score -= 8;
@@ -2009,11 +2364,13 @@ function computeEventCompatibilityScore(event: {
 function buildEventCompatibilityReason(event: {
   category?: string | null;
   tags: string[];
+  description?: string | null;
   venueName?: string | null;
   location: string;
   startAt: string;
 }, input: EventRecommendationContext) {
   const normalizedTags = event.tags.map((tag) => normalizeKeyword(tag));
+  const normalizedDescription = normalizeKeyword(event.description ?? '');
   const startsAt = new Date(event.startAt);
   const daysUntilStart = Number.isNaN(startsAt.getTime())
     ? null
@@ -2025,6 +2382,10 @@ function buildEventCompatibilityReason(event: {
 
   if (input.selectedInterests.includes('culture') && normalizedTags.some((tag) => tag.includes('arts') || tag.includes('museum') || tag.includes('theatre') || tag.includes('jazz'))) {
     return 'it overlaps with the more culture-heavy events that already fit your vibe';
+  }
+
+  if (input.selectedInterests.includes('shopping') && (normalizedTags.some((tag) => tag.includes('market') || tag.includes('fair') || tag.includes('bazaar')) || normalizedDescription.includes('vendor'))) {
+    return 'it matches the browse-first market and pop-up events your picks are leaning toward';
   }
 
   if (input.selectedVibe === 'solo' && normalizedTags.some((tag) => tag.includes('intimate') || tag.includes('acoustic') || tag.includes('classical'))) {
@@ -2071,6 +2432,7 @@ async function getDiscoveryEventsForUser(options: {
     locationLabel: options.locationLabel,
     locationType: options.locationType,
     query: options.searchQuery,
+    selectedInterests,
     page: options.page,
     limit: options.limit,
   });
@@ -2084,7 +2446,7 @@ async function getDiscoveryEventsForUser(options: {
         socialKeywords: new Set<string>(),
       };
 
-  const events = ticketmasterResponse.events
+  const rankedEvents = ticketmasterResponse.events
     .map((event) => {
       const venue = event._embedded?.venues?.[0];
       const classifications = event.classifications?.[0];
@@ -2095,18 +2457,24 @@ async function getDiscoveryEventsForUser(options: {
         classifications?.type?.name,
         classifications?.subType?.name,
       ].filter(Boolean) as string[];
+      const description = event.info ?? event.pleaseNote ?? '';
       const startAt = event.dates?.start?.dateTime
         ?? (event.dates?.start?.localDate
           ? `${event.dates.start.localDate}T${event.dates?.start?.localTime ?? '19:00:00'}`
           : new Date().toISOString());
       const priceRange = event.priceRanges?.[0];
       const location = [venue?.city?.name, venue?.country?.name].filter(Boolean).join(', ') || options.locationLabel;
-      const category = [classifications?.segment?.name, classifications?.genre?.name].filter(Boolean).join(' / ') || 'Live event';
+      const category = normalizeEventCategory(
+        [classifications?.segment?.name, classifications?.genre?.name].filter(Boolean).join(' / '),
+        tags,
+        description,
+      );
       const score = computeEventCompatibilityScore({
         id: event.id,
         name: event.name ?? 'Untitled event',
         category,
         tags,
+        description,
         venueName: venue?.name,
         location,
         startAt,
@@ -2118,7 +2486,7 @@ async function getDiscoveryEventsForUser(options: {
         id: event.id,
         source: 'ticketmaster',
         name: event.name ?? 'Untitled event',
-        description: event.info ?? event.pleaseNote ?? '',
+        description,
         hook: '',
         image: event.images?.slice().sort((a, b) => (b.width ?? 0) - (a.width ?? 0))[0]?.url,
         venueName: venue?.name,
@@ -2141,17 +2509,55 @@ async function getDiscoveryEventsForUser(options: {
         compatibilityReason: buildEventCompatibilityReason({
           category,
           tags,
+          description,
           venueName: venue?.name,
           location,
           startAt,
         }, context),
         status: event.dates?.status?.code,
+        _preferenceAffinity: getEventPreferenceAffinity({
+          name: event.name ?? 'Untitled event',
+          category,
+          tags,
+          description,
+          venueName: venue?.name,
+          location,
+        }, context),
       };
     })
-    .sort((a, b) => b.compatibilityScore - a.compatibilityScore);
+    .sort((a, b) => {
+      const affinityA = a._preferenceAffinity.matchedInterestCount + (a._preferenceAffinity.matchedVibe ? 1 : 0);
+      const affinityB = b._preferenceAffinity.matchedInterestCount + (b._preferenceAffinity.matchedVibe ? 1 : 0);
+      if (affinityB !== affinityA) return affinityB - affinityA;
+      return b.compatibilityScore - a.compatibilityScore;
+    });
+
+  let events = rankedEvents;
+
+  if (selectedInterests.length > 0 || selectedVibe) {
+    const filteredEvents = events.filter((event) =>
+      shouldKeepEventForPreferences(
+        {
+          name: event.name,
+          category: event.category,
+          tags: event.tags,
+          description: event.description,
+          venueName: event.venueName,
+          location: event.location,
+        },
+        context,
+      ),
+    );
+
+    if (filteredEvents.length > 0 || selectedInterests.includes('shopping')) {
+      events = filteredEvents;
+    }
+  }
+
+  const finalEvents = events.map(({ _preferenceAffinity, ...event }) => event);
 
   return {
-    events,
+    events: finalEvents,
     pagination: ticketmasterResponse.pagination,
   };
 }
@@ -2377,6 +2783,12 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
           tags: place.aiEnrichment?.vibeTags ?? [place.category],
           category: place.category,
           rating: place.rating,
+          hook: place.aiEnrichment?.hook ?? null,
+          description: place.aiEnrichment?.description ?? null,
+          whyYoullLikeIt: [
+            ...(place.aiEnrichment?.description ? [place.aiEnrichment.description] : []),
+            ...(place.aiEnrichment?.bestTime ? [`best at ${place.aiEnrichment.bestTime}`] : []),
+          ],
         },
         {
           selectedInterests: context.selectedInterests,

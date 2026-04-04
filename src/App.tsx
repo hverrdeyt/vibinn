@@ -98,6 +98,112 @@ interface DeviceLocation {
   longitude: number;
 }
 
+const INVITE_UNLOCKED_KEY = 'vibecheck_invite_unlocked';
+const ONBOARDING_COMPLETED_KEY = 'vibecheck_onboarding_completed';
+const REDEEMED_INVITE_CODE_KEY = 'vibecheck_redeemed_invite_code';
+const APP_BASE_PATH = '/app';
+const PUBLIC_PROFILE_BASE_PATH = '/u';
+
+const VALID_INVITE_CODES = [
+  'VIBE2026',
+  'FOUNDINGVIBE',
+  'BOSTONBETA',
+  'FRIENDSOFVIBINN',
+];
+
+function hasStoredInviteAccess() {
+  return typeof window !== 'undefined' && window.localStorage.getItem(INVITE_UNLOCKED_KEY) === '1';
+}
+
+function hasStoredOnboardingCompletion() {
+  return typeof window !== 'undefined' && window.localStorage.getItem(ONBOARDING_COMPLETED_KEY) === '1';
+}
+
+function screenToAppPath(screen: Screen) {
+  switch (screen) {
+    case 'discover-places':
+      return APP_BASE_PATH;
+    case 'discover-travelers':
+      return `${APP_BASE_PATH}/travelers`;
+    case 'bookmarks':
+      return `${APP_BASE_PATH}/bookmarks`;
+    case 'profile':
+      return `${APP_BASE_PATH}/profile`;
+    case 'notifications':
+      return `${APP_BASE_PATH}/notifications`;
+    case 'settings':
+      return `${APP_BASE_PATH}/settings`;
+    case 'settings-account':
+      return `${APP_BASE_PATH}/settings/account`;
+    case 'settings-notifications':
+      return `${APP_BASE_PATH}/settings/notifications`;
+    case 'settings-privacy':
+      return `${APP_BASE_PATH}/settings/privacy`;
+    case 'support':
+      return `${APP_BASE_PATH}/support`;
+    case 'login':
+      return `${APP_BASE_PATH}/login`;
+    case 'register':
+      return `${APP_BASE_PATH}/register`;
+    case 'onboarding':
+      return `${APP_BASE_PATH}/invite`;
+    default:
+      return APP_BASE_PATH;
+  }
+}
+
+function parseAppRoute(pathname: string): { screen: Screen; publicProfileUsername?: string | null } {
+  const normalizedPath = pathname.replace(/\/+$/, '') || '/';
+
+  if (normalizedPath === '/') {
+    return { screen: 'landing' };
+  }
+
+  if (normalizedPath === APP_BASE_PATH) {
+    return { screen: 'discover-places' };
+  }
+
+  if (normalizedPath.startsWith(`${PUBLIC_PROFILE_BASE_PATH}/`)) {
+    const username = decodeURIComponent(normalizedPath.slice(PUBLIC_PROFILE_BASE_PATH.length + 1)).trim();
+    return { screen: 'public-profile', publicProfileUsername: username || null };
+  }
+
+  const appPath = normalizedPath.startsWith(`${APP_BASE_PATH}/`)
+    ? normalizedPath.slice(APP_BASE_PATH.length + 1)
+    : '';
+
+  switch (appPath) {
+    case 'invite':
+      return { screen: 'onboarding' };
+    case 'login':
+      return { screen: 'login' };
+    case 'register':
+      return { screen: 'register' };
+    case 'travelers':
+      return { screen: 'discover-travelers' };
+    case 'bookmarks':
+      return { screen: 'bookmarks' };
+    case 'profile':
+      return { screen: 'profile' };
+    case 'notifications':
+      return { screen: 'notifications' };
+    case 'settings':
+      return { screen: 'settings' };
+    case 'settings/account':
+      return { screen: 'settings-account' };
+    case 'settings/notifications':
+      return { screen: 'settings-notifications' };
+    case 'settings/privacy':
+      return { screen: 'settings-privacy' };
+    case 'support':
+      return { screen: 'support' };
+    default:
+      return normalizedPath.startsWith(APP_BASE_PATH)
+        ? { screen: 'discover-places' }
+        : { screen: 'landing' };
+  }
+}
+
 const INITIAL_SAVED_LOCATIONS: SavedLocationOption[] = [
   { id: 'boston', label: 'Boston', type: 'city' },
 ];
@@ -399,7 +505,13 @@ function getEditorialLabel(place: Place, index = 0) {
   if (normalizedTags.some((tag) => tag.includes('easy pause') || tag.includes('city break'))) return 'coffee stop';
   if (normalizedTags.some((tag) => tag.includes('thoughtful stop') || tag.includes('quiet browse'))) return 'culture fix';
   if (normalizedTags.some((tag) => tag.includes('easy wander'))) return 'easy stroll';
-  return null;
+
+  const fallbackCategory = getDisplayPlaceCategory(place).toLowerCase().trim();
+  if (fallbackCategory && fallbackCategory !== 'recommended spot') {
+    return fallbackCategory;
+  }
+
+  return 'recommended spot';
 }
 
 function getPriceLevel(place: Place) {
@@ -518,6 +630,157 @@ function buildPlaceRecommendationReason(place: Place, travelerMomentCount = 0) {
   return 'it keeps ranking well against the places and signals already shaping your profile';
 }
 
+const PLACE_INTEREST_MATCHERS: Record<Interest, string[]> = {
+  cafe: ['cafe', 'coffee', 'espresso', 'bakery', 'brunch', 'pastry', 'tea', 'roastery', 'easy pause'],
+  nature: ['nature', 'park', 'garden', 'waterfront', 'scenic', 'outdoor', 'green', 'lake', 'trail', 'harbor', 'walk'],
+  party: ['nightlife', 'bar', 'cocktail', 'rooftop', 'live music', 'music', 'dj', 'club', 'late night', 'jazz', 'speakeasy'],
+  culture: ['culture', 'museum', 'gallery', 'historic', 'history', 'arts', 'theatre', 'design', 'bookstore', 'library', 'monument'],
+  shopping: ['shopping', 'market', 'boutique', 'concept store', 'mall', 'retail', 'gift', 'design shop', 'bazaar', 'showroom'],
+  adventure: ['adventure', 'walkable', 'viewpoint', 'hike', 'trail', 'outdoor', 'easy stop', 'detour', 'quick escape', 'open air'],
+};
+
+const PLACE_VIBE_MATCHERS: Record<Vibe, string[]> = {
+  aesthetic: ['aesthetic', 'design', 'stylish', 'photo', 'beautiful', 'gallery', 'visual', 'curated'],
+  solo: ['solo', 'quiet', 'low key', 'intimate', 'easy pause', 'bookstore', 'museum', 'slow', 'calm'],
+  luxury: ['luxury', 'premium', 'fine dining', 'hotel', 'exclusive', 'high end', 'polished', 'elevated'],
+  budget: ['budget', 'cheap', 'free', 'casual', 'community', 'street', 'market', 'easy stop'],
+  spontaneous: ['spontaneous', 'walkable', 'easy stop', 'drop in', 'quick escape', 'detour', 'open air', 'last minute'],
+};
+
+const INTEREST_DEBUG_LABELS: Record<Interest, string> = {
+  cafe: 'Cafe hopping',
+  nature: 'Nature days',
+  party: 'Nightlife & music',
+  culture: 'Culture',
+  shopping: 'Shopping & markets',
+  adventure: 'Spontaneous detours',
+};
+
+const VIBE_DEBUG_LABELS: Record<Vibe, string> = {
+  aesthetic: 'Aesthetic',
+  solo: 'Solo',
+  luxury: 'Luxury',
+  budget: 'Budget',
+  spontaneous: 'Spontaneous',
+};
+
+function matchesDebugTerms(haystack: string, terms: string[]) {
+  return terms.some((term) => {
+    const normalizedTerm = term.toLowerCase().replace(/[_-]+/g, ' ').trim();
+    if (!normalizedTerm) return false;
+    return haystack.includes(normalizedTerm);
+  });
+}
+
+function getPlacePreferenceDebugMatches(place: Place, selectedInterests: Interest[], selectedVibe: Vibe | null) {
+  const haystack = [
+    place.name,
+    place.category,
+    place.hook,
+    place.description,
+    place.recommendationReason,
+    ...(place.tags ?? []),
+    ...(place.whyYoullLikeIt ?? []),
+    place.bestTime,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+
+  const interestMatches = selectedInterests.filter((interest) =>
+    matchesDebugTerms(haystack, PLACE_INTEREST_MATCHERS[interest] ?? []),
+  );
+
+  const vibeMatches = selectedVibe && matchesDebugTerms(haystack, PLACE_VIBE_MATCHERS[selectedVibe] ?? [])
+    ? [selectedVibe]
+    : [];
+
+  const labels = [
+    ...interestMatches.map((interest) => INTEREST_DEBUG_LABELS[interest]),
+    ...vibeMatches.map((vibe) => VIBE_DEBUG_LABELS[vibe]),
+  ].slice(0, 3);
+
+  if (labels.length === 0 && (selectedInterests.length > 0 || selectedVibe)) {
+    return ['No strong match'];
+  }
+
+  return labels;
+}
+
+function getDisplayPlaceCategory(place: Pick<Place, 'category' | 'tags'>) {
+  const trimmedCategory = place.category?.trim();
+  if (trimmedCategory) return trimmedCategory;
+
+  const firstTag = place.tags.find((tag) => tag?.trim());
+  if (firstTag) return firstTag.replace(/[_-]+/g, ' ');
+
+  return 'recommended spot';
+}
+
+function getDisplayEventCategory(event: Pick<EventItem, 'category' | 'tags'>) {
+  const trimmedCategory = event.category?.trim();
+  if (trimmedCategory) return trimmedCategory;
+
+  const firstTag = event.tags.find((tag) => tag?.trim());
+  if (firstTag) return firstTag.replace(/[_-]+/g, ' ');
+
+  return 'live event';
+}
+
+const EVENT_INTEREST_MATCHERS: Record<Interest, string[]> = {
+  cafe: ['acoustic', 'intimate', 'coffee', 'community', 'listening'],
+  nature: ['outdoor', 'park', 'festival', 'garden'],
+  party: ['concert', 'music', 'dance', 'dj', 'nightlife', 'festival', 'electronic'],
+  culture: ['arts', 'museum', 'gallery', 'cultural', 'classical', 'jazz', 'theatre', 'festival'],
+  shopping: ['market', 'fair', 'expo', 'pop up', 'bazaar'],
+  adventure: ['sports', 'outdoor', 'active', 'arena', 'race'],
+};
+
+const EVENT_VIBE_MATCHERS: Record<Vibe, string[]> = {
+  aesthetic: ['visual', 'immersive', 'art', 'design', 'fashion'],
+  solo: ['intimate', 'acoustic', 'seated', 'listening', 'jazz'],
+  luxury: ['vip', 'premium', 'gala', 'exclusive', 'orchestra'],
+  budget: ['free', 'community', 'outdoor', 'festival'],
+  spontaneous: ['tonight', 'late', 'drop in', 'last minute', 'after dark'],
+};
+
+function getEventPreferenceDebugMatches(event: EventItem, selectedInterests: Interest[], selectedVibe: Vibe | null) {
+  const haystack = [
+    event.name,
+    event.category,
+    event.compatibilityReason,
+    event.description,
+    event.hook,
+    event.venueName,
+    event.location,
+    ...(event.tags ?? []),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+
+  const interestMatches = selectedInterests.filter((interest) =>
+    matchesDebugTerms(haystack, EVENT_INTEREST_MATCHERS[interest] ?? []),
+  );
+
+  const vibeMatches = selectedVibe && matchesDebugTerms(haystack, EVENT_VIBE_MATCHERS[selectedVibe] ?? [])
+    ? [selectedVibe]
+    : [];
+
+  const labels = [
+    ...interestMatches.map((interest) => INTEREST_DEBUG_LABELS[interest]),
+    ...vibeMatches.map((vibe) => VIBE_DEBUG_LABELS[vibe]),
+  ].slice(0, 3);
+
+  if (labels.length === 0 && (selectedInterests.length > 0 || selectedVibe)) {
+    return ['No strong match'];
+  }
+
+  return labels;
+}
+
 function mapPlaceToCardData(place: Place, index = 0): PlaceCardData {
   const [city, country] = place.location.split(',').map((part) => part.trim());
   const followedTravelerAvatars = SIMILAR_TRAVELERS.slice(0, 2)
@@ -531,7 +794,7 @@ function mapPlaceToCardData(place: Place, index = 0): PlaceCardData {
     name: place.name,
     city: city ?? place.location,
     country: country ?? '',
-    category: place.category ?? 'recommended spot',
+    category: getDisplayPlaceCategory(place),
     imageUrl: place.image,
     rating: [4.8, 4.7, 4.6][index % 3],
     priceLevel: getPriceLevel(place),
@@ -582,9 +845,38 @@ function buildAuthenticatedUserDraft(payload?: { id?: string; name?: string; use
   };
 }
 
+function resolvePublicProfileUser(username: string | null | undefined, currentUser: User) {
+  const normalizedUsername = username?.trim().toLowerCase();
+  if (!normalizedUsername) return null;
+
+  if (currentUser.username.toLowerCase() === normalizedUsername) {
+    return currentUser;
+  }
+
+  if (MOCK_USER.username.toLowerCase() === normalizedUsername) {
+    return MOCK_USER;
+  }
+
+  return SIMILAR_TRAVELERS.find((traveler) => traveler.username.toLowerCase() === normalizedUsername) ?? null;
+}
+
 export default function App() {
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
-  const [currentScreen, setCurrentScreen] = useState<Screen>('onboarding');
+  const [currentScreen, setCurrentScreen] = useState<Screen>(() => {
+    if (typeof window === 'undefined') return 'landing';
+    const route = parseAppRoute(window.location.pathname);
+    const hasAccess = hasStoredInviteAccess() || hasStoredOnboardingCompletion();
+
+    if (route.screen === 'landing' || route.screen === 'public-profile') {
+      return route.screen;
+    }
+
+    return hasAccess ? route.screen : 'onboarding';
+  });
+  const [publicProfileUsername, setPublicProfileUsername] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return parseAppRoute(window.location.pathname).publicProfileUsername ?? null;
+  });
   const [onboardingEntryMode, setOnboardingEntryMode] = useState<'invite' | 'preferences'>('invite');
   const [user, setUser] = useState<User>(MOCK_USER);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -593,7 +885,7 @@ export default function App() {
   const pendingAuthActionRef = useRef<null | (() => void)>(null);
   const isGoogleScriptLoadedRef = useRef(false);
   const [inviteCode, setInviteCode] = useState('');
-  const [isInviteValid, setIsInviteValid] = useState(false);
+  const [isInviteValid, setIsInviteValid] = useState(() => hasStoredInviteAccess());
   const [selectedInterests, setSelectedInterests] = useState<Interest[]>([]);
   const [selectedVibe, setSelectedVibe] = useState<Vibe | null>(null);
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
@@ -639,6 +931,7 @@ export default function App() {
   const [isDiscoveryPlacesError, setIsDiscoveryPlacesError] = useState(false);
   const [isDiscoveryEventsLoading, setIsDiscoveryEventsLoading] = useState(false);
   const [isDiscoveryEventsError, setIsDiscoveryEventsError] = useState(false);
+  const [isPreferenceTransitionLoading, setIsPreferenceTransitionLoading] = useState(false);
   const [isFloatingNavHidden, setIsFloatingNavHidden] = useState(false);
   const [selectedCollection, setSelectedCollection] = useState<{ label: string; places: Place[] } | null>(null);
   const [customCollections, setCustomCollections] = useState<{ label: string; places: Place[] }[]>([]);
@@ -650,6 +943,8 @@ export default function App() {
   const [createMomentReturnScreen, setCreateMomentReturnScreen] = useState<Screen>('discover-places');
   const previousScreenRef = useRef<Screen>('onboarding');
   const screenScrollPositionsRef = useRef<Partial<Record<Screen, number>>>({});
+  const suppressNextDiscoveryAutoloadRef = useRef(false);
+  const previousPreferenceKeyRef = useRef('');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -690,6 +985,58 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handlePopState = () => {
+      const route = parseAppRoute(window.location.pathname);
+      const hasAccess = hasStoredInviteAccess() || hasStoredOnboardingCompletion();
+
+      if (route.screen === 'public-profile') {
+        setPublicProfileUsername(route.publicProfileUsername ?? null);
+        setCurrentScreen('public-profile');
+        return;
+      }
+
+      if (route.screen === 'landing') {
+        setCurrentScreen('landing');
+        return;
+      }
+
+      setPublicProfileUsername(null);
+      setCurrentScreen(hasAccess ? route.screen : 'onboarding');
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    let nextPath = '/';
+    if (currentScreen === 'public-profile') {
+      const username = publicProfileUsername ?? user.username;
+      nextPath = `${PUBLIC_PROFILE_BASE_PATH}/${encodeURIComponent(username)}`;
+    } else if (currentScreen !== 'landing') {
+      nextPath = screenToAppPath(currentScreen);
+    }
+
+    if (window.location.pathname !== nextPath) {
+      window.history.replaceState({}, '', nextPath);
+    }
+  }, [currentScreen, publicProfileUsername, user.username]);
+
+  useEffect(() => {
+    if (currentScreen === 'landing' || currentScreen === 'public-profile') return;
+
+    const hasAccess = isInviteValid || hasStoredOnboardingCompletion();
+    if (!hasAccess && currentScreen !== 'onboarding') {
+      setOnboardingEntryMode('invite');
+      setCurrentScreen('onboarding');
+    }
+  }, [currentScreen, isInviteValid]);
+
+  useEffect(() => {
     const timeoutId = window.setTimeout(() => {
       setDiscoverySearchQuery(discoverySearchInput.trim());
     }, 250);
@@ -711,23 +1058,49 @@ export default function App() {
 
   // Handle invite submit
   const handleInviteSubmit = () => {
-    if (inviteCode.toUpperCase() === 'VIBE2026') {
+    const normalizedInviteCode = inviteCode.trim().toUpperCase();
+    if (VALID_INVITE_CODES.includes(normalizedInviteCode)) {
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(INVITE_UNLOCKED_KEY, '1');
+        window.localStorage.setItem(REDEEMED_INVITE_CODE_KEY, normalizedInviteCode);
+      }
       setIsInviteValid(true);
     }
   };
 
   // Handle onboarding completion
-  const completeOnboarding = () => {
+  const completeOnboarding = async (override?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null }) => {
+    const nextSelectedInterests = override?.selectedInterests ?? selectedInterests;
+    const nextSelectedVibe = override?.selectedVibe ?? selectedVibe;
+
+    setSelectedInterests(nextSelectedInterests);
+    setSelectedVibe(nextSelectedVibe ?? null);
+
     if (isAuthenticated) {
       void api.savePreferences({
-        selectedInterests,
-        selectedVibe,
-        skippedPreferences: selectedInterests.length === 0 && !selectedVibe,
+        selectedInterests: nextSelectedInterests,
+        selectedVibe: nextSelectedVibe,
+        skippedPreferences: nextSelectedInterests.length === 0 && !nextSelectedVibe,
         onboardingCompleted: true,
       });
     }
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(INVITE_UNLOCKED_KEY, '1');
+      window.localStorage.setItem(ONBOARDING_COMPLETED_KEY, '1');
+    }
+    setDiscoveryPlaces([]);
+    setDiscoveryEvents([]);
+    setDiscoveryPage(1);
+    setDiscoveryHasMore(true);
+    setIsPreferenceTransitionLoading(true);
     setOnboardingEntryMode('invite');
+    suppressNextDiscoveryAutoloadRef.current = true;
     setCurrentScreen('discover-places');
+    await Promise.allSettled([
+      loadDiscoveryPlaces(1, 'reset', { refresh: true, preferencesOverride: { selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe } }),
+      loadDiscoveryEvents({ selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe }),
+    ]);
+    setIsPreferenceTransitionLoading(false);
   };
 
   const showActionToast = (message: string) => {
@@ -735,6 +1108,17 @@ export default function App() {
     window.setTimeout(() => {
       setActionToast((current) => (current === message ? null : current));
     }, 1800);
+  };
+
+  const openApp = () => {
+    const hasAccess = isInviteValid || hasStoredOnboardingCompletion();
+    setPublicProfileUsername(null);
+    setCurrentScreen(hasAccess ? 'discover-places' : 'onboarding');
+  };
+
+  const openPublicProfile = (username?: string) => {
+    setPublicProfileUsername(username ?? user.username);
+    setCurrentScreen('public-profile');
   };
 
   const requestDeviceLocation = () => {
@@ -926,11 +1310,19 @@ export default function App() {
   const loadDiscoveryPlaces = async (
     page: number,
     mode: 'reset' | 'append' = 'reset',
-    options?: { refresh?: boolean },
+    options?: {
+      refresh?: boolean;
+      preferencesOverride?: {
+        selectedInterests?: Interest[];
+        selectedVibe?: Vibe | null;
+      };
+    },
   ) => {
     const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0];
     if (!activeLocation) return;
     const isRefresh = Boolean(options?.refresh) && mode === 'reset';
+    const effectiveSelectedInterests = options?.preferencesOverride?.selectedInterests ?? selectedInterests;
+    const effectiveSelectedVibe = options?.preferencesOverride?.selectedVibe ?? selectedVibe;
 
     if (mode === 'reset' && !isRefresh) {
       setIsDiscoveryPlacesLoading(true);
@@ -946,8 +1338,8 @@ export default function App() {
         activeLocation.label,
         activeLocation.type,
         {
-          selectedInterests,
-          selectedVibe,
+          selectedInterests: effectiveSelectedInterests,
+          selectedVibe: effectiveSelectedVibe,
         },
         {
           page,
@@ -983,9 +1375,14 @@ export default function App() {
     }
   };
 
-  const loadDiscoveryEvents = async () => {
+  const loadDiscoveryEvents = async (preferencesOverride?: {
+    selectedInterests?: Interest[];
+    selectedVibe?: Vibe | null;
+  }) => {
     const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0];
     if (!activeLocation) return;
+    const effectiveSelectedInterests = preferencesOverride?.selectedInterests ?? selectedInterests;
+    const effectiveSelectedVibe = preferencesOverride?.selectedVibe ?? selectedVibe;
 
     setIsDiscoveryEventsLoading(true);
     try {
@@ -994,8 +1391,8 @@ export default function App() {
         activeLocation.label,
         activeLocation.type,
         {
-          selectedInterests,
-          selectedVibe,
+          selectedInterests: effectiveSelectedInterests,
+          selectedVibe: effectiveSelectedVibe,
         },
         {
           page: 1,
@@ -1014,16 +1411,27 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (currentScreen !== 'discover-places') return;
+    if (suppressNextDiscoveryAutoloadRef.current) {
+      suppressNextDiscoveryAutoloadRef.current = false;
+      previousPreferenceKeyRef.current = `${[...selectedInterests].sort().join(',')}|${selectedVibe ?? ''}`;
+      return;
+    }
+
     const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0];
     if (!activeLocation) return;
+    const nextPreferenceKey = `${[...selectedInterests].sort().join(',')}|${selectedVibe ?? ''}`;
+    const shouldRefreshForPreferences =
+      previousPreferenceKeyRef.current.length > 0 && previousPreferenceKeyRef.current !== nextPreferenceKey;
+    previousPreferenceKeyRef.current = nextPreferenceKey;
 
     setDiscoveryPage(1);
     setDiscoveryHasMore(true);
     setDiscoveryPlaces([]);
     setDiscoveryEvents([]);
-    void loadDiscoveryPlaces(1, 'reset');
+    void loadDiscoveryPlaces(1, 'reset', { refresh: shouldRefreshForPreferences });
     void loadDiscoveryEvents();
-  }, [activeLocationId, savedLocations, selectedInterests, selectedVibe, discoverySearchQuery]);
+  }, [currentScreen, activeLocationId, savedLocations, selectedInterests, selectedVibe, discoverySearchQuery]);
 
   useEffect(() => {
     if (!api.getStoredAuthToken()) return;
@@ -1153,7 +1561,16 @@ export default function App() {
   }, [isAuthenticated, currentScreen, selectedPlace?.id]);
 
   const renderScreen = () => {
+    const resolvedPublicProfileUser = resolvePublicProfileUser(publicProfileUsername, user);
+
     switch (currentScreen) {
+      case 'landing':
+        return (
+          <LandingPage
+            hasAppAccess={isInviteValid || hasStoredOnboardingCompletion()}
+            onOpenApp={openApp}
+          />
+        );
       case 'onboarding':
         return (
           <Onboarding 
@@ -1198,6 +1615,7 @@ export default function App() {
             bookmarkedPlaces={bookmarkedPlaces}
             savedLocations={savedLocations}
             onNavigate={(s) => setCurrentScreen(s)}
+            onOpenPublicProfile={() => openPublicProfile(user.username)}
             onSavePlace={(placeToSave, nextActive) => syncBookmarkState(placeToSave, nextActive)}
             onSelectPlace={(p) => {
               setSelectedPlace(p);
@@ -1388,6 +1806,7 @@ export default function App() {
             visiblePlaces={discoveryPlaces.filter((place) => !dismissedPlaceIds.includes(place.id))}
             isLoading={isDiscoveryPlacesLoading}
             isEventsLoading={isDiscoveryEventsLoading}
+            isPreferenceTransitionLoading={isPreferenceTransitionLoading}
             isLoadingMore={isDiscoveryPlacesLoadingMore}
             isRefreshing={isDiscoveryPlacesRefreshing}
             hasMore={discoveryHasMore}
@@ -1635,14 +2054,38 @@ export default function App() {
           />
         ) : null;
       case 'public-profile':
-        return <PublicProfile user={user} />;
+        return resolvedPublicProfileUser ? (
+          <PublicProfile
+            user={resolvedPublicProfileUser}
+            onOpenApp={openApp}
+          />
+        ) : (
+          <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-6 text-center text-white">
+            <div className="rounded-[2rem] border border-white/10 bg-white/6 px-6 py-8">
+              <h1 className="text-2xl font-black tracking-tight">Profile not found</h1>
+              <p className="mt-3 text-sm font-medium leading-relaxed text-white/60">
+                That public travel profile is not available in this local build.
+              </p>
+              <button
+                type="button"
+                onClick={openApp}
+                className="mt-6 rounded-[1.2rem] bg-accent px-5 py-3 text-sm font-black uppercase tracking-[0.14em] text-black transition hover:brightness-105"
+              >
+                Open the app
+              </button>
+            </div>
+          </div>
+        );
       default:
         return null;
     }
   };
 
   return (
-    <div className="max-w-md mx-auto min-h-screen bg-zinc-950 relative overflow-hidden shadow-2xl border-x border-white/8">
+    <div className={currentScreen === 'landing'
+      ? 'min-h-screen bg-zinc-950 relative overflow-hidden'
+      : 'max-w-md mx-auto min-h-screen bg-zinc-950 relative overflow-hidden shadow-2xl border-x border-white/8'}
+    >
       <AnimatePresence mode="wait">
         <motion.div
           key={currentScreen}
@@ -1650,13 +2093,13 @@ export default function App() {
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
-          className="pb-24 min-h-screen"
+          className={currentScreen === 'landing' ? 'min-h-screen' : 'pb-24 min-h-screen'}
         >
           {renderScreen()}
         </motion.div>
       </AnimatePresence>
 
-      {currentScreen !== 'onboarding' && currentScreen !== 'public-profile' && currentScreen !== 'place-detail' && currentScreen !== 'event-detail' && currentScreen !== 'traveler-profile' && currentScreen !== 'location-search' && currentScreen !== 'collection-detail' && currentScreen !== 'create-moment' && currentScreen !== 'login' && currentScreen !== 'register' && currentScreen !== 'settings' && currentScreen !== 'settings-account' && currentScreen !== 'settings-notifications' && currentScreen !== 'settings-privacy' && currentScreen !== 'support' && currentScreen !== 'add-collection' && currentScreen !== 'notifications' && currentScreen !== 'edit-profile' && currentScreen !== 'edit-moment' && !isFloatingNavHidden && (
+      {currentScreen !== 'landing' && currentScreen !== 'onboarding' && currentScreen !== 'public-profile' && currentScreen !== 'place-detail' && currentScreen !== 'event-detail' && currentScreen !== 'traveler-profile' && currentScreen !== 'location-search' && currentScreen !== 'collection-detail' && currentScreen !== 'create-moment' && currentScreen !== 'login' && currentScreen !== 'register' && currentScreen !== 'settings' && currentScreen !== 'settings-account' && currentScreen !== 'settings-notifications' && currentScreen !== 'settings-privacy' && currentScreen !== 'support' && currentScreen !== 'add-collection' && currentScreen !== 'notifications' && currentScreen !== 'edit-profile' && currentScreen !== 'edit-moment' && !isFloatingNavHidden && (
         <nav className="fixed bottom-5 left-1/2 z-50 flex w-[calc(100%-2rem)] max-w-[24rem] -translate-x-1/2 items-center justify-between rounded-full border border-white/10 bg-black/88 px-4 py-3 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
           <button 
             onClick={() => setCurrentScreen('discover-places')}
@@ -1740,6 +2183,264 @@ export default function App() {
   );
 }
 
+function LandingPage({
+  hasAppAccess,
+  onOpenApp,
+}: {
+  hasAppAccess: boolean;
+  onOpenApp: () => void;
+}) {
+  const screenshotPlaceCards = [
+    {
+      name: 'Extra Dirty Cocktail Club',
+      label: 'Underrated Bar',
+      score: 92,
+      image: 'https://lh3.googleusercontent.com/places/ANXAkqFxXALNQct0KbHOq0F_kBOcgVRTuisVkqa8mSyXTTnm0sPR5xmIUaQQDE5cz7x_j4O9QdrcjriYD5CPD3Ocmr5B10qxbf4omvU=s4800-w1200',
+      height: 'h-44',
+    },
+    {
+      name: 'Christopher Columbus Waterfront Park',
+      label: 'Green Reset',
+      score: 88,
+      image: 'https://lh3.googleusercontent.com/place-photos/AL8-SNFfRe4_u6SxVhMXMAVfufUrLe2IeITrBV2mtcExWnHW1IrGrZykvcx9ggpMlk9oqHsqfYyZoPl5hI70p_09KBUvKRsXQ9hNnAjfrGYVjkapW9gEDkFznFbiEyKtgtkd4Kr_wMa0q10y6fmcdIPVElZ2=s4800-w1078',
+      height: 'h-36',
+    },
+    {
+      name: 'Good Dye Young presents',
+      label: 'Nostalgic concert',
+      score: 84,
+      image: 'https://s1.ticketm.net/dam/a/8e0/a85aee98-50e5-471f-9824-e197069578e0_SOURCE',
+      height: 'h-52',
+    },
+  ];
+
+  const renderDashboardMasonryMock = (variant: 'hero' | 'hidden-gems') => (
+    <div className="relative mx-auto w-full max-w-[18.8rem] rounded-[2.3rem] border border-white/10 bg-black/82 p-3 shadow-[0_25px_80px_rgba(0,0,0,0.5)]">
+      <div className="rounded-[1.9rem] bg-zinc-950 p-2.5">
+        <div className="mb-2 px-1">
+          <div className="inline-flex rounded-full bg-white/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-white/72">
+            Boston
+          </div>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="flex flex-col gap-2">
+            {[screenshotPlaceCards[0], screenshotPlaceCards[2]].map((card, index) => (
+              <div key={card.name} className={`group relative overflow-hidden rounded-[1.45rem] bg-zinc-900 shadow-[0_18px_50px_rgba(0,0,0,0.28)] ${index === 0 ? 'h-[12rem]' : 'h-[14rem]'}`}>
+                <img
+                  src={card.image}
+                  alt={card.name}
+                  className="h-full w-full object-cover"
+                  referrerPolicy="no-referrer"
+                />
+                <div className="absolute inset-0 bg-gradient-to-t from-black via-black/18 to-black/8" />
+                <div className="absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1.5 text-[11px] font-black tracking-[0.14em] text-accent backdrop-blur-md">
+                  {card.score}%
+                </div>
+                <div className="absolute inset-x-0 bottom-0 p-4">
+                  <p className="inline-flex rounded-full bg-white/12 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-white/88 backdrop-blur-md">
+                    {card.label}
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className={`flex flex-col ${variant === 'hero' ? 'pt-5' : 'pt-3'} gap-2`}>
+            <div className="group relative h-[16.5rem] overflow-hidden rounded-[1.45rem] bg-zinc-900 shadow-[0_18px_50px_rgba(0,0,0,0.28)]">
+              <img
+                src={screenshotPlaceCards[1].image}
+                alt={screenshotPlaceCards[1].name}
+                className="h-full w-full object-cover"
+                referrerPolicy="no-referrer"
+              />
+              <div className="absolute inset-0 bg-gradient-to-t from-black via-black/18 to-black/8" />
+              <div className="absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1.5 text-[11px] font-black tracking-[0.14em] text-accent backdrop-blur-md">
+                {screenshotPlaceCards[1].score}%
+              </div>
+              <div className="absolute inset-x-0 bottom-0 p-4">
+                <p className="inline-flex rounded-full bg-white/12 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-white/88 backdrop-blur-md">
+                  {screenshotPlaceCards[1].label}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const featureSections = [
+    {
+      eyebrow: 'Find hidden gems',
+      title: <>Find the place you were <span className="text-accent">supposed</span> to find.</>,
+      body: 'Less tourist gravity. More real finds.',
+      accent: 'from-lime-300/22 via-yellow-200/8 to-transparent',
+      screenshot: renderDashboardMasonryMock('hidden-gems'),
+    },
+    {
+      eyebrow: 'AI personalization',
+      title: <>AI reads the vibe. <span className="text-accent">Then</span> it moves the feed.</>,
+      body: 'Your saves, skips, and mood become the ranking system.',
+      accent: 'from-sky-300/24 via-cyan-300/10 to-transparent',
+      screenshot: (
+        <div className="relative mx-auto w-full max-w-[18.5rem] rounded-[2.3rem] border border-white/10 bg-black/80 p-3 shadow-[0_25px_80px_rgba(0,0,0,0.5)]">
+          <div className="rounded-[1.9rem] bg-zinc-950 p-4">
+            <p className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">Tune the feed</p>
+            <h3 className="mt-2 text-xl font-black tracking-tight text-white">Choose preferences</h3>
+            <div className="mt-4 flex flex-wrap gap-2">
+              {['Nightlife & music', 'Shopping & markets', 'Aesthetic'].map((chip, index) => (
+                <span
+                  key={chip}
+                  className={`rounded-full px-3 py-2 text-[11px] font-black uppercase tracking-[0.14em] ${
+                    index === 2 ? 'bg-sky-300 text-zinc-950' : 'bg-white/10 text-white/80'
+                  }`}
+                >
+                  {chip}
+                </span>
+              ))}
+            </div>
+            <div className="mt-5 rounded-[1.5rem] border border-white/10 bg-white/6 p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">Live rerank</p>
+                  <h4 className="mt-1 text-base font-black text-white">Events & places update together</h4>
+                </div>
+                <div className="rounded-full bg-accent/12 px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-accent">
+                  94% fit
+                </div>
+              </div>
+              <div className="mt-4 space-y-2">
+                {['Greenway Artisan Market', 'Night Shift Rooftop Set', 'Shake the Tree'].map((item) => (
+                  <div key={item} className="rounded-[1rem] border border-white/8 bg-black/35 px-3 py-3 text-sm font-bold text-white/82">
+                    {item}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      ),
+    },
+    {
+      eyebrow: 'Connect with travelers like you',
+      title: <>Meet the travelers who just <span className="text-accent">get it</span>.</>,
+      body: 'Taste overlap turns discovery into connection.',
+      accent: 'from-orange-300/22 via-rose-300/10 to-transparent',
+      screenshot: (
+        <div className="relative mx-auto w-full max-w-[18.5rem] rounded-[2.3rem] border border-white/10 bg-black/80 p-3 shadow-[0_25px_80px_rgba(0,0,0,0.5)]">
+          <div className="overflow-hidden rounded-[1.9rem] bg-zinc-950">
+            <div className="h-28 bg-[radial-gradient(circle_at_top,_rgba(210,255,92,0.18),_transparent_60%)]" />
+            <div className="-mt-10 px-4 pb-4">
+              <div className="mx-auto h-20 w-20 overflow-hidden rounded-[1.6rem] border-4 border-zinc-950 bg-white">
+                <img src={MOCK_USER.avatar} alt={MOCK_USER.username} className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+              </div>
+                <div className="mt-3 text-center">
+                  <div className="text-lg font-black text-white">@{MOCK_USER.username}</div>
+                  <div className="mt-1 text-sm font-medium text-white/60">traveler overlap is live</div>
+                </div>
+              <div className="mt-4 grid grid-cols-3 gap-2">
+                {[`${MOCK_USER.stats.countries} countries`, `${MOCK_USER.stats.cities} cities`, `${MOCK_USER.stats.trips} trips`].map((item) => (
+                  <div key={item} className="rounded-[1rem] border border-white/8 bg-white/6 px-2 py-3 text-center text-[10px] font-black uppercase tracking-[0.14em] text-white/75">
+                    {item}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 flex justify-center gap-2">
+                {['🇺🇸', '🇯🇵', '🇫🇷'].map((flag) => (
+                  <span key={flag} className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-lg">
+                    {flag}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      ),
+    },
+  ];
+
+  return (
+    <div className="relative h-screen overflow-hidden bg-zinc-950 text-white">
+      <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-64 bg-[radial-gradient(circle_at_top,_rgba(210,255,92,0.16),_transparent_62%)]" />
+      <div className="pointer-events-none absolute left-[-6rem] top-[18%] h-40 w-40 rounded-full bg-pink-400/10 blur-3xl" />
+      <div className="pointer-events-none absolute right-[-5rem] top-[42%] h-44 w-44 rounded-full bg-sky-300/10 blur-3xl" />
+      <div className="h-screen snap-y snap-mandatory overflow-y-auto scroll-smooth">
+        <section className="relative flex min-h-screen snap-start flex-col justify-between overflow-hidden px-6 pb-24 pt-8">
+          <div className="mx-auto flex w-full max-w-6xl items-center justify-between rounded-full border border-white/10 bg-black/50 px-4 py-3 backdrop-blur-xl">
+            <div className="text-sm font-black uppercase tracking-[0.22em] text-accent">Vibinn</div>
+          </div>
+
+          <div className="mx-auto grid w-full max-w-6xl gap-10 pb-10 pt-10 lg:grid-cols-[1.05fr_0.95fr] lg:items-center">
+            <div>
+              <div className="inline-flex rounded-full border border-accent/30 bg-accent/10 px-4 py-2 text-[11px] font-black uppercase tracking-[0.18em] text-accent">
+                Find your travel vibe
+              </div>
+              <h1 className="mt-6 max-w-3xl text-5xl font-black leading-[0.92] tracking-tighter text-white sm:text-6xl md:text-7xl">
+                Find your next
+                <span className="text-accent"> hidden gem</span>
+                <br />
+                before everyone else does.
+              </h1>
+              <p className="mt-6 max-w-xl text-base font-medium leading-relaxed text-white/68 sm:text-lg">
+                AI-powered discovery for places, events, and travelers that actually match your vibe.
+              </p>
+              <div className="mt-8 flex items-center gap-3 text-[11px] font-black uppercase tracking-[0.18em] text-white/38">
+                <span>Scroll</span>
+                <div className="h-px w-10 bg-white/18" />
+                <span>3 things it does differently</span>
+              </div>
+            </div>
+
+              <div className="relative mx-auto w-full max-w-[21rem]">
+              <div className="absolute -left-8 top-8 h-24 w-24 rounded-full bg-accent/12 blur-3xl" />
+              <div className="absolute -right-10 bottom-10 h-28 w-28 rounded-full bg-fuchsia-300/12 blur-3xl" />
+              {renderDashboardMasonryMock('hero')}
+            </div>
+          </div>
+        </section>
+
+        {featureSections.map((section) => (
+          <section
+            key={section.eyebrow}
+            className="relative flex min-h-screen snap-start items-center overflow-hidden px-6 py-16"
+          >
+            <div className={`absolute inset-0 bg-gradient-to-b ${section.accent}`} />
+            <div className="relative mx-auto grid w-full max-w-6xl gap-10 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
+              <div className="order-2 lg:order-1">{section.screenshot}</div>
+              <div className="order-1 lg:order-2">
+                <div className="inline-flex rounded-full border border-white/10 bg-white/8 px-4 py-2 text-[11px] font-black uppercase tracking-[0.18em] text-white/78">
+                  {section.eyebrow}
+                </div>
+                <h2 className="mt-5 max-w-2xl text-4xl font-black leading-[0.96] tracking-tighter text-white sm:text-5xl">
+                  {section.title}
+                </h2>
+                <p className="mt-5 max-w-xl text-base font-medium leading-relaxed text-white/68 sm:text-lg">
+                  {section.body}
+                </p>
+              </div>
+            </div>
+          </section>
+        ))}
+      </div>
+
+      <div className="pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-5">
+        <div className="pointer-events-auto flex w-full max-w-sm items-center justify-between rounded-full border border-white/10 bg-black/82 px-4 py-3 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+          <div className="min-w-0">
+            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/38">Invite-only beta</div>
+            <div className="truncate text-sm font-black text-white">Try Vibinn now</div>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenApp}
+            className="rounded-full bg-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.14em] text-black transition hover:brightness-105"
+          >
+            Try now
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // --- ONBOARDING SCREEN ---
 function Onboarding({ 
   entryMode,
@@ -1754,7 +2455,7 @@ function Onboarding({
   onComplete 
 }: any) {
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
-  const [stage, setStage] = useState<'invite' | 'choice' | 'swipe'>(
+  const [stage, setStage] = useState<'invite' | 'unlock' | 'choice' | 'swipe'>(
     entryMode === 'preferences' ? 'swipe' : isInviteValid ? 'choice' : 'invite',
   );
   const [step, setStep] = useState<'interests' | 'vibes'>('interests');
@@ -1762,31 +2463,40 @@ function Onboarding({
 
   useEffect(() => {
     if (isInviteValid && stage === 'invite') {
-      setStage('choice');
+      setStage('unlock');
     }
   }, [isInviteValid, stage]);
 
   useEffect(() => {
+    if (stage !== 'unlock') return;
+    const timeoutId = window.setTimeout(() => {
+      setStage('choice');
+    }, 1400);
+    return () => window.clearTimeout(timeoutId);
+  }, [stage]);
+
+  useEffect(() => {
     if (entryMode !== 'preferences') return;
+    setSelectedInterests([]);
+    setSelectedVibe(null);
     setStage('swipe');
     setStep('interests');
     setCurrentCardIndex(0);
-  }, [entryMode]);
+  }, [entryMode, setSelectedInterests, setSelectedVibe]);
 
   const swipeSteps = {
     interests: [
-      { id: 'cafe' as Interest, title: 'Cafe hopping', desc: 'good coffee and better neighborhood energy.', img: 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=800&q=80' },
-      { id: 'culture' as Interest, title: 'Culture spots', desc: 'museums, old streets, and places with a story.', img: 'https://images.unsplash.com/photo-1518998053901-5348d3961a04?auto=format&fit=crop&w=800&q=80' },
+      { id: 'cafe' as Interest, title: 'Cafe hopping', desc: 'good coffee, good light, and better neighborhood energy.', img: 'https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=800&q=80' },
+      { id: 'culture' as Interest, title: 'Culture', desc: 'museums, old streets, and places with a story to tell.', img: 'https://images.unsplash.com/photo-1518998053901-5348d3961a04?auto=format&fit=crop&w=800&q=80' },
       { id: 'nature' as Interest, title: 'Nature days', desc: 'touch grass, reset the brain, keep the camera ready.', img: 'https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80' },
-      { id: 'party' as Interest, title: 'Nightlife', desc: 'city lights, loud rooms, and plans after midnight.', img: 'https://images.unsplash.com/photo-1514525253361-bee8718a74a2?auto=format&fit=crop&w=800&q=80' },
-      { id: 'shopping' as Interest, title: 'Shopping breaks', desc: 'concept stores, hidden racks, and cute receipts.', img: 'https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=800&q=80' },
-      { id: 'adventure' as Interest, title: 'Spontaneous detours', desc: 'the unplanned stop that becomes the whole trip.', img: 'https://images.unsplash.com/photo-1533692328991-08159ff19fca?auto=format&fit=crop&w=800&q=80' },
+      { id: 'party' as Interest, title: 'Nightlife & music', desc: 'city lights, live sets, and plans that start after dark.', img: 'https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=800&q=80' },
+      { id: 'shopping' as Interest, title: 'Shopping & markets', desc: 'concept stores, local markets, and receipts worth keeping.', img: 'https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=800&q=80' },
     ],
     vibes: [
       { id: 'aesthetic' as Vibe, title: 'Aesthetic', desc: 'camera-roll worthy and low effort to love.', img: 'https://images.unsplash.com/photo-1523275335684-37898b6baf30?auto=format&fit=crop&w=800&q=80' },
-      { id: 'solo' as Vibe, title: 'Solo', desc: 'quiet, low-pressure wandering with no group chat chaos.', img: 'https://images.unsplash.com/photo-1501503060443-9e3b97922111?auto=format&fit=crop&w=800&q=80' },
-      { id: 'spontaneous' as Vibe, title: 'Chaotic', desc: 'missed trains, good stories, zero regrets.', img: 'https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?auto=format&fit=crop&w=800&q=80' },
-      { id: 'luxury' as Vibe, title: 'Polished', desc: 'good taste, soft sheets, and not pretending otherwise.', img: 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=800&q=80' },
+      { id: 'solo' as Vibe, title: 'Solo', desc: 'quiet, low-pressure wandering with no group chat chaos.', img: 'https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=800&q=80' },
+      { id: 'spontaneous' as Vibe, title: 'Spontaneous', desc: 'last-minute pivots, easy detours, and stories you did not plan.', img: 'https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?auto=format&fit=crop&w=800&q=80' },
+      { id: 'luxury' as Vibe, title: 'Luxury', desc: 'good taste, soft sheets, and not pretending otherwise.', img: 'https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=800&q=80' },
       { id: 'budget' as Vibe, title: 'Budget', desc: 'great finds without burning the whole wallet.', img: 'https://images.unsplash.com/photo-1527631746610-bca00a040d60?auto=format&fit=crop&w=800&q=80' },
     ],
   };
@@ -1794,15 +2504,19 @@ function Onboarding({
   const currentCards = swipeSteps[step];
   const handleSwipe = (direction: 'right' | 'left', cardId: Interest | Vibe) => {
     const isRight = direction === 'right';
+    const nextSelectedInterests = step === 'interests' && isRight
+      ? (selectedInterests.includes(cardId as Interest) ? selectedInterests : [...selectedInterests, cardId as Interest].slice(-3))
+      : selectedInterests;
+    const nextSelectedVibe = step === 'vibes' && isRight
+      ? cardId as Vibe
+      : selectedVibe;
 
     if (isRight && step === 'interests') {
-      setSelectedInterests((prev: Interest[]) =>
-        prev.includes(cardId as Interest) ? prev : [...prev, cardId as Interest].slice(-3),
-      );
+      setSelectedInterests(nextSelectedInterests);
     }
 
     if (isRight && step === 'vibes') {
-      setSelectedVibe(cardId as Vibe);
+      setSelectedVibe(nextSelectedVibe);
     }
 
     if (currentCardIndex < currentCards.length - 1) {
@@ -1816,10 +2530,15 @@ function Onboarding({
       return;
     }
 
-    onComplete();
+    onComplete({
+      selectedInterests: nextSelectedInterests,
+      selectedVibe: nextSelectedVibe,
+    });
   };
 
   const startPreferenceFlow = () => {
+    setSelectedInterests([]);
+    setSelectedVibe(null);
     setStage('swipe');
     setStep('interests');
     setCurrentCardIndex(0);
@@ -1894,6 +2613,37 @@ function Onboarding({
             Skip for now
           </button>
         </div>
+      </div>
+    );
+  }
+
+  if (stage === 'unlock') {
+    return (
+      <div className="flex h-screen flex-col items-center justify-center bg-zinc-950 px-10 text-center text-white">
+        <motion.div
+          initial={{ scale: 0.88, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          transition={{ duration: 0.35, ease: 'easeOut' }}
+          className="rounded-[2rem] border border-accent/20 bg-accent/10 p-5 shadow-[0_20px_80px_rgba(194,243,104,0.12)]"
+        >
+          <Sparkles size={34} className="text-accent" />
+        </motion.div>
+        <motion.h1
+          initial={{ y: 18, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.12, duration: 0.3 }}
+          className="mt-8 text-4xl font-black tracking-tighter"
+        >
+          Access unlocked.
+        </motion.h1>
+        <motion.p
+          initial={{ y: 18, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ delay: 0.2, duration: 0.3 }}
+          className="mt-3 max-w-sm text-base font-medium leading-relaxed text-white/65"
+        >
+          We&apos;re opening your beta flow, then we&apos;ll let you tune the feed before you land inside the app.
+        </motion.p>
       </div>
     );
   }
@@ -3057,6 +3807,7 @@ function Profile({
   bookmarkedPlaces,
   savedLocations,
   onNavigate,
+  onOpenPublicProfile,
   onSavePlace,
   onSelectPlace,
   onOpenCollection,
@@ -3068,6 +3819,7 @@ function Profile({
   bookmarkedPlaces: Place[];
   savedLocations: SavedLocationOption[];
   onNavigate: (s: Screen) => void;
+  onOpenPublicProfile: () => void;
   onSavePlace: (place: Place, nextActive: boolean) => Promise<boolean>;
   onSelectPlace: (place: Place) => void;
   onOpenCollection: (collection: { label: string; places: Place[] }) => void;
@@ -3148,7 +3900,7 @@ function Profile({
           </button>
           <button
             type="button"
-            onClick={() => onNavigate('public-profile')}
+            onClick={onOpenPublicProfile}
             className="rounded-full p-3 text-white transition hover:bg-white/8"
             aria-label="Share public profile"
           >
@@ -3695,6 +4447,7 @@ function PlaceDiscovery({
   visiblePlaces,
   isLoading,
   isEventsLoading,
+  isPreferenceTransitionLoading,
   isLoadingMore,
   isRefreshing,
   hasMore,
@@ -3725,6 +4478,7 @@ function PlaceDiscovery({
   visiblePlaces: Place[],
   isLoading: boolean,
   isEventsLoading: boolean,
+  isPreferenceTransitionLoading: boolean,
   isLoadingMore: boolean,
   isRefreshing: boolean,
   hasMore: boolean,
@@ -3973,7 +4727,19 @@ function PlaceDiscovery({
         </div>
       ) : null}
 
-      {isLoading ? (
+      {isPreferenceTransitionLoading ? (
+        <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
+          <div className="text-[11px] font-black uppercase tracking-[0.2em] text-accent/80">
+            Tuning your feed
+          </div>
+          <div className="mt-2 text-lg font-black text-white">
+            Curating places and events around your picks...
+          </div>
+          <p className="mt-2 text-sm font-medium text-white/55">
+            We&apos;re re-ranking this city around the interests and vibe you just chose.
+          </p>
+        </div>
+      ) : isLoading ? (
         <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
           <div className="text-lg font-black text-white">
             {isFilteringBySearch ? `Searching places in ${currentCity}...` : `Loading picks for ${currentCity}...`}
@@ -4014,6 +4780,7 @@ function PlaceDiscovery({
                         <PlaceDiscoveryTile
                           place={item.place}
                           index={index}
+                          selectedInterests={selectedInterests}
                           selectedVibe={selectedVibe}
                           isBookmarked={bookmarkedPlaceIds.includes(item.place.id)}
                           onBookmark={() => onBookmarkPlace(item.place)}
@@ -4024,6 +4791,8 @@ function PlaceDiscovery({
                         <EventDiscoveryTile
                           event={item.event}
                           index={index}
+                          selectedInterests={selectedInterests}
+                          selectedVibe={selectedVibe}
                           onOpen={() => onSelectEvent(item.event)}
                         />
                       )}
@@ -4042,6 +4811,7 @@ function PlaceDiscovery({
                         <PlaceDiscoveryTile
                           place={item.place}
                           index={index}
+                          selectedInterests={selectedInterests}
                           selectedVibe={selectedVibe}
                           isBookmarked={bookmarkedPlaceIds.includes(item.place.id)}
                           onBookmark={() => onBookmarkPlace(item.place)}
@@ -4052,6 +4822,8 @@ function PlaceDiscovery({
                         <EventDiscoveryTile
                           event={item.event}
                           index={index}
+                          selectedInterests={selectedInterests}
+                          selectedVibe={selectedVibe}
                           onOpen={() => onSelectEvent(item.event)}
                         />
                       )}
@@ -4104,6 +4876,7 @@ function PlaceDiscovery({
 function PlaceDiscoveryTile({
   place,
   index,
+  selectedInterests,
   selectedVibe,
   isBookmarked,
   onBookmark,
@@ -4112,6 +4885,7 @@ function PlaceDiscoveryTile({
 }: {
   place: Place,
   index: number,
+  selectedInterests: Interest[],
   selectedVibe: Vibe | null,
   isBookmarked: boolean,
   onBookmark: () => void,
@@ -4121,6 +4895,7 @@ function PlaceDiscoveryTile({
   const suppressClickRef = useRef(false);
   const match = Math.min(place.similarityStat ?? (selectedVibe ? 74 : 68), 98);
   const editorialLabel = getEditorialLabel(place, index);
+  const preferenceDebugLabels = getPlacePreferenceDebugMatches(place, selectedInterests, selectedVibe);
   const tileHeightClass =
     index % 4 === 0
       ? 'h-[20.5rem]'
@@ -4184,13 +4959,25 @@ function PlaceDiscoveryTile({
           Saved
         </div>
       ) : null}
-      {editorialLabel ? (
-        <div className="absolute inset-x-0 bottom-0 p-4">
+      <div className="absolute inset-x-0 bottom-0 p-4">
+        {import.meta.env.DEV && preferenceDebugLabels.length > 0 ? (
+          <div className={editorialLabel ? 'mb-2 flex flex-wrap gap-1.5' : 'flex flex-wrap gap-1.5'}>
+            {preferenceDebugLabels.map((label) => (
+              <span
+                key={label}
+                className="inline-flex rounded-full border border-accent/30 bg-black/55 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-accent/90 backdrop-blur-md"
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        ) : null}
+        {editorialLabel ? (
           <p className="inline-flex rounded-full bg-white/12 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-white/88 backdrop-blur-md">
             {editorialLabel}
           </p>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
     </motion.button>
   );
 }
@@ -4198,13 +4985,18 @@ function PlaceDiscoveryTile({
 function EventDiscoveryTile({
   event,
   index,
+  selectedInterests,
+  selectedVibe,
   onOpen,
 }: {
   event: EventItem;
   index: number;
+  selectedInterests: Interest[];
+  selectedVibe: Vibe | null;
   onOpen: () => void;
 }) {
-  const visualLabel = (event.tags?.[0] ?? event.category ?? 'live event').toLowerCase();
+  const visualLabel = (event.tags?.[0] ?? getDisplayEventCategory(event)).toLowerCase();
+  const preferenceDebugLabels = getEventPreferenceDebugMatches(event, selectedInterests, selectedVibe);
   const tileHeightClass =
     index % 4 === 0
       ? 'h-[20.5rem]'
@@ -4235,6 +5027,18 @@ function EventDiscoveryTile({
         {Math.min(event.compatibilityScore, 98)}%
       </div>
       <div className="absolute inset-x-0 bottom-0 p-4">
+        {import.meta.env.DEV && preferenceDebugLabels.length > 0 ? (
+          <div className="mb-2 flex flex-wrap gap-1.5">
+            {preferenceDebugLabels.map((label) => (
+              <span
+                key={label}
+                className="inline-flex rounded-full border border-accent/30 bg-black/55 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-accent/90 backdrop-blur-md"
+              >
+                {label}
+              </span>
+            ))}
+          </div>
+        ) : null}
         <p className="inline-flex rounded-full bg-white/12 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-white/88 backdrop-blur-md">
           {visualLabel}
         </p>
@@ -5586,7 +6390,7 @@ function PlaceDetail({
     country: country ?? '',
     distanceFromUserKm,
     address: place.address ?? `${place.name}, ${place.location}`,
-    category: place.category ?? 'recommended spot',
+    category: getDisplayPlaceCategory(place),
     images: place.images ?? [place.image],
     media: (place.images ?? [place.image]).map((item, index) => ({
       type: index === 1 && place.id === 'p1' ? 'video' as const : 'image' as const,
@@ -5820,7 +6624,7 @@ function EventDetail({
           <div className="grid grid-cols-2 gap-3">
             <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
               <div className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Category</div>
-              <div className="mt-2 text-sm font-black text-white">{event.category ?? 'Live event'}</div>
+              <div className="mt-2 text-sm font-black text-white">{getDisplayEventCategory(event)}</div>
             </div>
 
             {event.priceLabel ? (
@@ -6542,7 +7346,7 @@ function CollectionDetailScreen({
 }
 
 // --- PUBLIC PROFILE (WEB VIEW) ---
-function PublicProfile({ user }: { user: User }) {
+function PublicProfile({ user, onOpenApp }: { user: User; onOpenApp: () => void }) {
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
       {/* Notion-style Header */}
@@ -6615,6 +7419,13 @@ function PublicProfile({ user }: { user: User }) {
           <div className="relative z-10">
             <h3 className="text-3xl font-black mb-4">Want to see where I'm going next?</h3>
             <p className="text-white/60 mb-8 font-medium">Join the exclusive community of vibe-checkers.</p>
+            <button
+              type="button"
+              onClick={onOpenApp}
+              className="rounded-[1.2rem] bg-accent px-6 py-4 text-sm font-black uppercase tracking-[0.14em] text-black transition hover:brightness-105"
+            >
+              Open the app
+            </button>
             <button className="btn-accent px-10 py-5 text-lg flex items-center justify-center gap-3 mx-auto">
               Download VibeCheck <ExternalLink size={20} />
             </button>
