@@ -3458,6 +3458,28 @@ app.get('/api/profiles/:username/public', (req, res) => {
     .catch((error) => handleError(res, error));
 });
 
+app.post('/api/waitlist', async (req, res) => {
+  try {
+    const email = String(req.body?.email ?? '').trim().toLowerCase();
+    const source = String(req.body?.source ?? 'landing-invite').trim() || 'landing-invite';
+
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      res.status(400).json({ error: 'Please enter a valid email address' });
+      return;
+    }
+
+    const entry = await prisma.waitlistEntry.upsert({
+      where: { email },
+      update: { source },
+      create: { email, source },
+    });
+
+    res.status(201).json({ entry });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.patch('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
   void updateProfile(req.authUserId, req.body)
     .then((user) => res.json({ user }))

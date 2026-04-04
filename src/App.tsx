@@ -1178,8 +1178,12 @@ export default function App() {
 
   const openApp = () => {
     const hasAccess = isInviteValid || hasStoredOnboardingCompletion();
+    const targetScreen: Screen = hasAccess ? 'discover-places' : 'onboarding';
     setPublicProfileUsername(null);
-    setCurrentScreen(hasAccess ? 'discover-places' : 'onboarding');
+    if (typeof window !== 'undefined') {
+      window.history.pushState({}, '', screenToAppPath(targetScreen));
+    }
+    setCurrentScreen(targetScreen);
   };
 
   const openPublicProfile = (username?: string) => {
@@ -2608,11 +2612,19 @@ function Onboarding({
   onComplete 
 }: any) {
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
+  const choiceTitle = 'Can I know you first?';
   const [stage, setStage] = useState<'invite' | 'unlock' | 'choice' | 'swipe'>(
     entryMode === 'preferences' ? 'swipe' : isInviteValid ? 'choice' : 'invite',
   );
   const [step, setStep] = useState<'interests' | 'vibes'>('interests');
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+  const [showWaitlistForm, setShowWaitlistForm] = useState(false);
+  const [waitlistEmail, setWaitlistEmail] = useState('');
+  const [isJoiningWaitlist, setIsJoiningWaitlist] = useState(false);
+  const [waitlistMessage, setWaitlistMessage] = useState<string | null>(null);
+  const [waitlistError, setWaitlistError] = useState<string | null>(null);
+  const [typedChoiceTitle, setTypedChoiceTitle] = useState('');
 
   useEffect(() => {
     if (isInviteValid && stage === 'invite') {
@@ -2624,7 +2636,7 @@ function Onboarding({
     if (stage !== 'unlock') return;
     const timeoutId = window.setTimeout(() => {
       setStage('choice');
-    }, 1400);
+    }, 5000);
     return () => window.clearTimeout(timeoutId);
   }, [stage]);
 
@@ -2636,6 +2648,26 @@ function Onboarding({
     setStep('interests');
     setCurrentCardIndex(0);
   }, [entryMode, setSelectedInterests, setSelectedVibe]);
+
+  useEffect(() => {
+    if (stage !== 'choice') {
+      setTypedChoiceTitle('');
+      return;
+    }
+
+    let currentIndex = 0;
+    setTypedChoiceTitle('');
+
+    const intervalId = window.setInterval(() => {
+      currentIndex += 1;
+      setTypedChoiceTitle(choiceTitle.slice(0, currentIndex));
+      if (currentIndex >= choiceTitle.length) {
+        window.clearInterval(intervalId);
+      }
+    }, 45);
+
+    return () => window.clearInterval(intervalId);
+  }, [choiceTitle, stage]);
 
   const swipeSteps = {
     interests: [
@@ -2699,16 +2731,16 @@ function Onboarding({
 
   if (stage === 'invite') {
     return (
-      <div className="p-10 pt-32 flex flex-col h-screen bg-zinc-950 text-white">
-        <div className="mb-16">
+      <div className="h-screen overflow-y-auto bg-zinc-950 px-10 pb-10 pt-24 text-white">
+        <div className="mb-12">
           <div className="w-14 h-14 bg-white/8 rounded-2xl mb-8 flex items-center justify-center shadow-lg border border-white/10">
             <Lock className="text-accent" size={28} />
           </div>
           <h1 className="text-5xl font-extrabold tracking-tighter mb-6 leading-[0.9]">
-            If you&apos;re here, <br />you know.
+            If you know, <br />you know.
           </h1>
           <p className="text-white/60 text-xl font-medium leading-snug">
-            Enter the code, then we&apos;ll decide how personalized your first feed should be.
+            We&apos;re still running a beta testing. If you have an invite, input the code below.
           </p>
         </div>
 
@@ -2717,85 +2749,235 @@ function Onboarding({
             type="text"
             placeholder="INVITE CODE"
             value={inviteCode}
-            onChange={(e) => setInviteCode(e.target.value.toUpperCase())}
+            onChange={(e) => {
+              setInviteCode(e.target.value.replace(/\s+/g, '').toUpperCase());
+              setInviteError(null);
+            }}
             className="w-full rounded-xl border border-white/10 bg-white/6 px-5 py-5 text-xl font-mono uppercase tracking-widest text-white outline-none transition-all focus:ring-2 focus:ring-white/10"
           />
           <button
-            onClick={onInviteSubmit}
+            onClick={() => {
+              const normalizedInviteCode = inviteCode.trim().replace(/\s+/g, '').toUpperCase();
+              if (!VALID_INVITE_CODES.includes(normalizedInviteCode)) {
+                setInviteError('That invite code does not look right.');
+                return;
+              }
+              setInviteError(null);
+              onInviteSubmit();
+            }}
             disabled={!inviteCode}
             className="w-full btn-primary py-5 text-lg flex items-center justify-center gap-2"
           >
             Verify Access <ArrowRight size={20} />
           </button>
-        </div>
+          {inviteError ? (
+            <div className="rounded-[1rem] border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm font-semibold text-red-200">
+              {inviteError}
+            </div>
+          ) : null}
 
-        <div className="mt-auto" />
+          <button
+            type="button"
+            onClick={() => {
+              setShowWaitlistForm((current) => !current);
+              setWaitlistError(null);
+              setWaitlistMessage(null);
+            }}
+            className="w-full rounded-xl border border-white/10 bg-white/6 px-6 py-4 text-sm font-black uppercase tracking-[0.14em] text-white transition-all hover:bg-white/10 active:scale-[0.98]"
+          >
+            {showWaitlistForm ? 'Hide waitlist' : `Don't have a code? Join waitlist`}
+          </button>
+
+          {showWaitlistForm ? (
+            <div className="rounded-[1.5rem] border border-white/10 bg-white/6 p-4">
+              <div className="text-sm font-black text-white">Join the beta waitlist</div>
+              <p className="mt-1 text-sm font-medium leading-relaxed text-white/55">
+                Drop your email and we&apos;ll reach out when we open more spots.
+              </p>
+              <input
+                type="email"
+                value={waitlistEmail}
+                onChange={(event) => {
+                  setWaitlistEmail(event.target.value.replace(/\s+/g, ''));
+                  setWaitlistError(null);
+                }}
+                placeholder="you@email.com"
+                className="mt-4 w-full rounded-xl border border-white/10 bg-black/20 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+              />
+              {waitlistError ? (
+                <div className="mt-3 rounded-[1rem] border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm font-semibold text-red-200">
+                  {waitlistError}
+                </div>
+              ) : null}
+              {waitlistMessage ? (
+                <div className="mt-3 rounded-[1rem] border border-accent/20 bg-accent/10 px-4 py-3 text-sm font-semibold text-accent">
+                  {waitlistMessage}
+                </div>
+              ) : null}
+              <button
+                type="button"
+                onClick={async () => {
+                  setIsJoiningWaitlist(true);
+                  setWaitlistError(null);
+                  setWaitlistMessage(null);
+                  try {
+                    await api.joinWaitlist({ email: waitlistEmail, source: 'invite-gate' });
+                    setWaitlistMessage(`You're on the list.`);
+                    setWaitlistEmail('');
+                  } catch (error) {
+                    setWaitlistError(
+                      error instanceof ApiError && error.status === 404
+                        ? 'Waitlist is not live yet. Try again after the local backend restarts.'
+                        : error instanceof ApiError
+                          ? error.message
+                          : 'Could not join the waitlist right now.',
+                    );
+                  } finally {
+                    setIsJoiningWaitlist(false);
+                  }
+                }}
+                disabled={!waitlistEmail.trim() || isJoiningWaitlist}
+                className={`mt-4 w-full rounded-xl px-5 py-4 text-sm font-black uppercase tracking-[0.14em] transition ${
+                  waitlistEmail.trim() && !isJoiningWaitlist ? 'bg-accent text-dark hover:brightness-105' : 'bg-white/10 text-white/35'
+                }`}
+              >
+                {isJoiningWaitlist ? 'Joining...' : 'Join waitlist'}
+              </button>
+            </div>
+          ) : null}
+        </div>
       </div>
     );
   }
 
   if (stage === 'choice') {
+    const isChoiceIntroReady = typedChoiceTitle.length === choiceTitle.length;
+
     return (
       <div className="p-10 pt-32 flex flex-col h-screen bg-zinc-950 text-white">
         <div className="mb-16">
           <div className="w-14 h-14 bg-white/8 rounded-2xl mb-8 flex items-center justify-center shadow-lg border border-white/10">
             <Sparkles className="text-accent" size={28} />
           </div>
-          <h1 className="text-5xl font-extrabold tracking-tighter mb-6 leading-[0.9]">
-            Sharpen the feed <br />before you start.
+          <h1 className="text-5xl font-extrabold tracking-tighter mb-6 leading-[0.9] min-h-[5.75rem]">
+            {typedChoiceTitle}
+            <span className="ml-1 inline-block h-[0.9em] w-[0.08em] animate-pulse bg-accent align-[-0.08em]" />
           </h1>
-          <p className="text-white/60 text-xl font-medium leading-snug">
-            Your interest picks and vibe choice both shape which places and events get ranked into the feed.
-          </p>
+          <AnimatePresence>
+            {isChoiceIntroReady ? (
+              <motion.p
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 12 }}
+                transition={{ duration: 0.28, ease: 'easeOut' }}
+                className="text-white/60 text-xl font-medium leading-snug"
+              >
+                Swipe a few picks and we&apos;ll start recommending places and events that fit your vibe.
+              </motion.p>
+            ) : null}
+          </AnimatePresence>
         </div>
 
-        <div className="space-y-4">
-          <button
-            type="button"
-            onClick={startPreferenceFlow}
-            className="w-full btn-primary py-5 text-lg"
-          >
-            Choose preferences
-          </button>
+        <AnimatePresence>
+          {isChoiceIntroReady ? (
+            <motion.div
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              transition={{ delay: 0.05, duration: 0.28, ease: 'easeOut' }}
+              className="space-y-4"
+            >
+              <button
+                type="button"
+                onClick={startPreferenceFlow}
+                className="w-full btn-primary py-5 text-lg"
+              >
+                Start now
+              </button>
 
-          <button
-            type="button"
-            onClick={onComplete}
-            className="w-full rounded-xl border border-white/10 bg-white/6 px-6 py-5 text-lg font-semibold text-white transition-all hover:bg-white/10 active:scale-[0.98]"
-          >
-            Skip for now
-          </button>
-        </div>
+              <button
+                type="button"
+                onClick={onComplete}
+                className="w-full rounded-xl border border-white/10 bg-white/6 px-6 py-5 text-lg font-semibold text-white transition-all hover:bg-white/10 active:scale-[0.98]"
+              >
+                Skip
+              </button>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </div>
     );
   }
 
   if (stage === 'unlock') {
+    const unlockVisualPlaces = DISCOVERY_PLACE_FEED
+      .filter((place) => Boolean(place.image))
+      .slice(0, 8)
+      .map((place, index) => ({
+        id: place.id,
+        image: place.image,
+        alt: place.name,
+        className: [
+          'left-[8%] top-[12%] w-22 -rotate-12',
+          'right-[10%] top-[14%] w-24 rotate-12',
+          'left-[12%] top-[34%] w-20 rotate-6',
+          'right-[14%] top-[38%] w-24 -rotate-6',
+          'left-[18%] bottom-[23%] w-24 -rotate-10',
+          'right-[17%] bottom-[22%] w-22 rotate-9',
+          'left-[38%] top-[8%] w-20 rotate-3',
+          'right-[34%] bottom-[10%] w-20 -rotate-3',
+        ][index] ?? 'left-[20%] top-[20%] w-20',
+        delay: 0.22 + index * 0.18,
+      }));
+
     return (
-      <div className="flex h-screen flex-col items-center justify-center bg-zinc-950 px-10 text-center text-white">
+      <div className="relative flex h-screen flex-col items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(211,255,72,0.22),_transparent_30%),linear-gradient(160deg,#120f1f_0%,#101820_42%,#071014_100%)] px-10 text-center text-white">
+        <div className="pointer-events-none absolute -left-16 top-20 h-40 w-40 rounded-full bg-pink-400/18 blur-3xl" />
+        <div className="pointer-events-none absolute -right-12 top-24 h-44 w-44 rounded-full bg-sky-300/18 blur-3xl" />
+        <div className="pointer-events-none absolute bottom-12 left-1/2 h-56 w-56 -translate-x-1/2 rounded-full bg-accent/12 blur-3xl" />
+
+        {unlockVisualPlaces.map((item) => (
+          <motion.div
+            key={`unlock-place-${item.id}`}
+            initial={{ opacity: 0, scale: 0.72, y: 24, rotate: 0 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            transition={{ delay: item.delay, duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
+            className={`pointer-events-none absolute ${item.className}`}
+          >
+            <div className="overflow-hidden rounded-[1.4rem] border border-white/12 bg-black/35 p-1.5 shadow-[0_24px_70px_rgba(0,0,0,0.35)] backdrop-blur-md">
+              <img
+                src={item.image}
+                alt={item.alt}
+                className="h-28 w-full rounded-[1rem] object-cover"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+          </motion.div>
+        ))}
+
         <motion.div
           initial={{ scale: 0.88, opacity: 0 }}
           animate={{ scale: 1, opacity: 1 }}
-          transition={{ duration: 0.35, ease: 'easeOut' }}
-          className="rounded-[2rem] border border-accent/20 bg-accent/10 p-5 shadow-[0_20px_80px_rgba(194,243,104,0.12)]"
+          transition={{ duration: 0.42, ease: 'easeOut' }}
+          className="relative z-10 rounded-[2rem] border border-accent/20 bg-accent/10 p-5 shadow-[0_20px_80px_rgba(194,243,104,0.12)]"
         >
           <Sparkles size={34} className="text-accent" />
         </motion.div>
         <motion.h1
           initial={{ y: 18, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.12, duration: 0.3 }}
-          className="mt-8 text-4xl font-black tracking-tighter"
+          transition={{ delay: 0.16, duration: 0.36 }}
+          className="relative z-10 mt-8 text-4xl font-black tracking-tighter sm:text-5xl"
         >
-          Access unlocked.
+          Welcome to Vibinn!
         </motion.h1>
         <motion.p
           initial={{ y: 18, opacity: 0 }}
           animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.2, duration: 0.3 }}
-          className="mt-3 max-w-sm text-base font-medium leading-relaxed text-white/65"
+          transition={{ delay: 0.28, duration: 0.36 }}
+          className="relative z-10 mt-3 max-w-sm text-base font-medium leading-relaxed text-white/70"
         >
-          We&apos;re opening your beta flow, then we&apos;ll let you tune the feed before you land inside the app.
+          Places are already bubbling up. Give us a second to open your beta flow.
         </motion.p>
       </div>
     );
@@ -2822,7 +3004,7 @@ function Onboarding({
         <div className="flex justify-between items-end">
           <div>
             <h2 className="text-white text-2xl font-black tracking-tight">
-              {step === 'interests' ? 'Swipe what you always save.' : 'Pick the vibe that feels most like you.'}
+              {step === 'interests' ? 'Swipe your vibe.' : 'Pick the vibe that feels most like you.'}
             </h2>
             <p className="text-white/40 text-[10px] font-bold uppercase tracking-widest mt-1">
               Swipe right to keep it. Left to skip.

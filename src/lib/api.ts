@@ -78,6 +78,12 @@ export const api = {
       moments: any[];
     }>('/api/profile/me');
   },
+  joinWaitlist(payload: { email: string; source?: string }) {
+    return request<{ entry: { id: string; email: string; source?: string | null } }>('/api/waitlist', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
   getPublicProfile(username: string) {
     return request<{
       user: any;
