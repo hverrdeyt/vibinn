@@ -1169,6 +1169,7 @@ export default function App() {
   const suppressNextDiscoveryAutoloadRef = useRef(false);
   const previousPreferenceKeyRef = useRef('');
   const forceDiscoveryRefreshAfterAuthRef = useRef(false);
+  const lastDiscoveryContextKeyRef = useRef('');
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1960,9 +1961,12 @@ export default function App() {
       return;
     }
 
-    const shouldRefreshDiscoveryImmediately = authReturnScreen === 'discover-places' && currentScreen === 'discover-places';
-    forceDiscoveryRefreshAfterAuthRef.current = authReturnScreen === 'discover-places';
-    setCurrentScreen(authReturnScreen);
+    const nextScreen = currentScreen === 'public-profile' || currentScreen === 'landing'
+      ? currentScreen
+      : authReturnScreen;
+    const shouldRefreshDiscoveryImmediately = nextScreen === 'discover-places' && currentScreen === 'discover-places';
+    forceDiscoveryRefreshAfterAuthRef.current = nextScreen === 'discover-places';
+    setCurrentScreen(nextScreen);
 
     if (shouldRefreshDiscoveryImmediately) {
       setDiscoveryPage(1);
@@ -2139,16 +2143,32 @@ export default function App() {
     const shouldRefreshForPreferences =
       previousPreferenceKeyRef.current.length > 0 && previousPreferenceKeyRef.current !== nextPreferenceKey;
     const shouldForceRefreshAfterAuth = forceDiscoveryRefreshAfterAuthRef.current;
+    const nextDiscoveryContextKey = [
+      activeLocation.id,
+      activeLocation.label,
+      activeLocation.type,
+      discoverySearchQuery,
+      nextPreferenceKey,
+    ].join('|');
     forceDiscoveryRefreshAfterAuthRef.current = false;
     previousPreferenceKeyRef.current = nextPreferenceKey;
 
+    const canReuseDiscoveryCache =
+      lastDiscoveryContextKeyRef.current === nextDiscoveryContextKey
+      && discoveryPlaces.length > 0
+      && !shouldRefreshForPreferences
+      && !shouldForceRefreshAfterAuth;
+
+    if (canReuseDiscoveryCache) {
+      return;
+    }
+
+    lastDiscoveryContextKeyRef.current = nextDiscoveryContextKey;
     setDiscoveryPage(1);
     setDiscoveryHasMore(true);
-    setDiscoveryPlaces([]);
-    setDiscoveryEvents([]);
     void loadDiscoveryPlaces(1, 'reset', { refresh: shouldRefreshForPreferences || shouldForceRefreshAfterAuth });
     void loadDiscoveryEvents();
-  }, [currentScreen, activeLocationId, savedLocations, selectedInterests, selectedVibe, discoverySearchQuery]);
+  }, [currentScreen, activeLocationId, savedLocations, selectedInterests, selectedVibe, discoverySearchQuery, discoveryPlaces.length]);
 
   useEffect(() => {
     if (!api.getStoredAuthToken()) return;
@@ -8978,121 +8998,169 @@ function CollectionDetailScreen({
 // --- PUBLIC PROFILE (WEB VIEW) ---
 function PublicProfile({ user, onOpenApp }: { user: User; onOpenApp: () => void }) {
   const publicMoments = user.travelHistory.flatMap((item) => item.places ?? []);
+  const travelerSummary = `${publicMoments.length} places • ${user.stats.cities} cities • ${user.stats.countries} countries`;
+  const displayFlags = (user.flags?.length ? user.flags : deriveFlagsFromTravelHistory(user.travelHistory)).slice(0, 5);
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      {/* Notion-style Header */}
-      <div className="h-48 bg-white/8 relative border-b border-white/10">
-        <div className="absolute -bottom-12 left-10">
-          <div className="w-28 h-28 rounded-3xl overflow-hidden border-4 border-zinc-950 shadow-xl bg-white">
-            <img
-              src={user.avatar}
-              alt={user.username}
-              className="w-full h-full object-cover"
-              referrerPolicy="no-referrer"
-              onError={(event) => handleAvatarImageError(event, user.displayName ?? user.username)}
-            />
+    <div className="min-h-screen bg-zinc-950 pb-24 text-white">
+      <div className="px-4 pb-10 pt-3">
+        <div className="mb-5 flex items-center justify-between rounded-full border border-white/10 bg-black/70 px-2 py-2 backdrop-blur-xl">
+          <div className="px-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
+            Public profile
           </div>
-        </div>
-      </div>
-
-      <div className="p-10 pt-16">
-        <div className="flex justify-between items-start mb-10">
-          <div>
-            <h1 className="text-4xl font-black tracking-tighter mb-2">@{user.username}</h1>
-            <p className="text-white/65 text-lg font-medium max-w-md">{user.bio}</p>
-            {user.descriptor ? (
-              <div className="mt-4 max-w-xl rounded-[1.5rem] border border-accent/25 bg-accent/10 px-4 py-4">
-                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-accent/80">Travel taste</div>
-                <p className="mt-1 text-base font-semibold leading-relaxed text-accent">{user.descriptor}</p>
-              </div>
-            ) : null}
-          </div>
-          <button className="p-3 bg-white/8 rounded-xl hover:bg-white/12 transition-colors">
-            <MoreHorizontal size={24} />
+          <button
+            type="button"
+            onClick={onOpenApp}
+            className="rounded-full bg-accent px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] text-black transition hover:brightness-105"
+          >
+            Open app
           </button>
         </div>
 
-        <div className="grid grid-cols-3 gap-6 mb-16 border-y border-white/10 py-8">
-          <div className="text-center border-r border-white/10">
-            <div className="text-3xl font-black">{user.stats.countries}</div>
-            <div className="text-[10px] uppercase font-bold text-white/35 tracking-widest">Countries</div>
-          </div>
-          <div className="text-center border-r border-white/10">
-            <div className="text-3xl font-black">{user.stats.cities}</div>
-            <div className="text-[10px] uppercase font-bold text-white/35 tracking-widest">Cities</div>
-          </div>
-          <div className="text-center">
-            <div className="text-3xl font-black">{user.stats.trips}</div>
-            <div className="text-[10px] uppercase font-bold text-white/35 tracking-widest">Trips</div>
-          </div>
-        </div>
+        <div className="rounded-[2.5rem] border border-white/10 bg-black p-6 text-white shadow-2xl">
+          <div className="flex items-start gap-3">
+            <div className="h-20 w-20 overflow-hidden rounded-[1.6rem] border border-white/10 bg-white">
+              <img
+                src={user.avatar}
+                alt={user.username}
+                className="h-full w-full object-cover"
+                referrerPolicy="no-referrer"
+                onError={(event) => handleAvatarImageError(event, user.displayName ?? user.username)}
+              />
+            </div>
 
-        <div className="mb-16">
-          <h2 className="text-2xl font-black tracking-tight mb-8 flex items-center gap-3">
-            <Globe size={24} className="text-soft-purple" /> Travel Identity.
-          </h2>
-          
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {user.travelHistory.map((item) => (
-              <div key={item.country} className="card-notion p-6">
-                <div className="flex items-center gap-3 mb-4">
-                  <div className="w-1.5 h-6 bg-accent rounded-full" />
-                  <span className="font-black text-lg uppercase tracking-widest">{item.country}</span>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  {item.cities.map(city => (
-                    <span key={city} className="px-3 py-2 bg-white/8 rounded-lg text-xs font-bold text-white/72 border border-white/10">
-                      {city}
-                    </span>
-                  ))}
-                </div>
+            <div className="min-w-0 flex-1">
+              <div className="min-w-0">
+                <h1 className="text-2xl font-black tracking-tighter">{user.displayName ?? user.username}</h1>
+                <p className="text-sm font-black text-white/60">@{user.username}</p>
+                <p className="mt-1 text-white/65 font-medium leading-tight">{user.bio}</p>
               </div>
-            ))}
+            </div>
           </div>
-        </div>
 
-        {publicMoments.length > 0 ? (
-          <div className="mb-16">
-            <h2 className="mb-8 flex items-center gap-3 text-2xl font-black tracking-tight">
-              <ImagePlus size={24} className="text-accent" /> Recent moments.
-            </h2>
-            <div className="space-y-5">
-              {publicMoments.slice(0, 6).map((place, index) => (
-                <div key={`${place.id}-${place.momentId ?? index}`}>
-                  <MomentEntryCard
-                    place={place}
-                    contextNote={place.visitedDate ? `Visited on ${place.visitedDate}` : place.location}
-                    traveler={{ username: user.username, avatar: user.avatar }}
-                    onOpenPlace={onOpenApp}
-                  />
-                </div>
+          <div className="mt-4">
+            <p className="text-xs font-bold uppercase tracking-[0.18em] text-white/35">{travelerSummary}</p>
+
+            <div className="mt-3 flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+              {displayFlags.map((flag, i) => (
+                <span key={i} className="rounded-full border border-white/10 bg-white/8 px-3 py-2 text-lg shadow-sm">
+                  {flag}
+                </span>
+              ))}
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {user.badges?.slice(0, 3).map((badge) => (
+                <span key={badge} className="rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-[10px] font-black uppercase tracking-[0.18em] text-white/80">
+                  {badge}
+                </span>
               ))}
             </div>
           </div>
-        ) : null}
 
-        <div className="bg-dark text-white p-10 rounded-3xl text-center relative overflow-hidden">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-accent/10 rounded-full blur-3xl" />
-          <div className="relative z-10">
-            <h3 className="text-3xl font-black mb-4">Want to see where I'm going next?</h3>
-            <p className="text-white/60 mb-8 font-medium">Join the exclusive community of vibe-checkers.</p>
-            <button
-              type="button"
-              onClick={onOpenApp}
-              className="rounded-[1.2rem] bg-accent px-6 py-4 text-sm font-black uppercase tracking-[0.14em] text-black transition hover:brightness-105"
-            >
-              Open the app
-            </button>
-            <button className="btn-accent px-10 py-5 text-lg flex items-center justify-center gap-3 mx-auto">
-              Download VibeCheck <ExternalLink size={20} />
-            </button>
+          {user.descriptor ? (
+            <div className="mt-6 rounded-[1.5rem] border border-accent/25 bg-accent/10 px-4 py-4">
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-accent/80">
+                Travel taste
+              </div>
+              <p className="mt-1 text-sm font-semibold leading-relaxed text-accent">
+                {user.descriptor}
+              </p>
+            </div>
+          ) : null}
+
+          <div className="mt-6 rounded-[2rem] bg-white/8 p-4 backdrop-blur-sm">
+            <p className="text-sm font-semibold leading-relaxed text-white/80">
+              A public snapshot of this traveler&apos;s taste graph, moments, and saved places.
+            </p>
+          </div>
+
+          <div className="mt-6 grid grid-cols-3 gap-3">
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
+              <div className="text-lg font-black text-white">{publicMoments.length}</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">moments</div>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
+              <div className="text-lg font-black text-white">{user.stats.cities}</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">cities</div>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
+              <div className="text-lg font-black text-white">{user.stats.countries}</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">countries</div>
+            </div>
+          </div>
+        </div>
+
+        <div className="mb-8 mt-8">
+          <section className="mb-8">
+            <div className="mb-3 text-[11px] font-black uppercase tracking-[0.18em] text-white/35">
+              Travel identity
+            </div>
+            <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
+              {user.travelHistory.map((item) => (
+                <div
+                  key={item.country}
+                  className="min-w-56 rounded-[24px] border border-white/10 bg-white/6 p-4 text-left"
+                >
+                  <div className="text-base font-black text-white">{item.country}</div>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    {item.cities.map((city) => (
+                      <span key={city} className="rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-[11px] font-black uppercase tracking-[0.14em] text-white/72">
+                        {city}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {publicMoments.length > 0 ? (
+            <section className="mb-10">
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-xl font-black tracking-tighter text-white">Recent moments</h2>
+                <span className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">
+                  Public highlights
+                </span>
+              </div>
+              <div className="space-y-5">
+                {publicMoments.slice(0, 6).map((place, index) => (
+                  <div key={`${place.id}-${place.momentId ?? index}`}>
+                    <MomentEntryCard
+                      place={place}
+                      contextNote={place.visitedDate ? `Visited on ${place.visitedDate}` : place.location}
+                      traveler={{ username: user.username, avatar: user.avatar }}
+                      onOpenPlace={onOpenApp}
+                    />
+                  </div>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          <div className="relative overflow-hidden rounded-[2rem] border border-white/10 bg-black p-6 text-center">
+            <div className="absolute right-0 top-0 h-32 w-32 rounded-full bg-accent/12 blur-3xl" />
+            <div className="absolute bottom-0 left-0 h-32 w-32 rounded-full bg-sky-400/12 blur-3xl" />
+            <div className="relative z-10">
+              <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
+                See the full graph
+              </div>
+              <h3 className="mt-2 text-2xl font-black tracking-tighter text-white">
+                Open Vibinn to go deeper.
+              </h3>
+              <p className="mt-2 text-sm font-medium leading-relaxed text-white/60">
+                Explore places, moments, and compatibility layers inside the app.
+              </p>
+              <button
+                type="button"
+                onClick={onOpenApp}
+                className="mt-5 rounded-[1.25rem] bg-accent px-6 py-4 text-sm font-black uppercase tracking-[0.14em] text-black transition hover:brightness-105"
+              >
+                Open the app
+              </button>
+            </div>
           </div>
         </div>
       </div>
-
-      <footer className="p-12 text-center text-white/30 text-[10px] font-mono uppercase tracking-widest border-t border-white/10">
-        VibeCheck Travel Identity Platform © 2026 — Built for the elite.
-      </footer>
     </div>
   );
 }
