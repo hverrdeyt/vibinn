@@ -1,0 +1,32 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="64" y1="40" x2="448" y2="472" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0B0B10"/>
+      <stop offset="0.5" stop-color="#15152B"/>
+      <stop offset="1" stop-color="#04181A"/>
+    </linearGradient>
+    <radialGradient id="glowA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(146 124) rotate(43.3251) scale(260.783)">
+      <stop stop-color="#CCFF00" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#CCFF00" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(388 388) rotate(143.794) scale(237.429)">
+      <stop stop-color="#FF5BD7" stop-opacity="0.72"/>
+      <stop offset="1" stop-color="#FF5BD7" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="-80" y="-80" width="672" height="672" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="30"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="120" fill="url(#bg)"/>
+  <g filter="url(#blur)">
+    <circle cx="154" cy="140" r="130" fill="url(#glowA)"/>
+    <circle cx="374" cy="366" r="118" fill="url(#glowB)"/>
+  </g>
+  <rect x="83" y="96" width="346" height="320" rx="42" fill="white" fill-opacity="0.06" stroke="white" stroke-opacity="0.18" stroke-width="2"/>
+  <rect x="110" y="126" width="128" height="170" rx="28" fill="white" fill-opacity="0.08"/>
+  <rect x="248" y="126" width="154" height="112" rx="28" fill="white" fill-opacity="0.08"/>
+  <rect x="248" y="250" width="154" height="46" rx="23" fill="#CCFF00"/>
+  <rect x="110" y="312" width="292" height="22" rx="11" fill="white" fill-opacity="0.12"/>
+  <rect x="110" y="348" width="206" height="16" rx="8" fill="white" fill-opacity="0.1"/>
+  <path d="M208.647 175L169.918 245.474C166.754 251.23 170.921 258.25 177.48 258.25H214.25L203.353 336.999L342.082 218.526C345.246 212.77 341.079 205.75 334.52 205.75H292.75L303.647 127.001L208.647 175Z" fill="#CCFF00"/>
+</svg>

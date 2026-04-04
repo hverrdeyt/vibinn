@@ -2957,7 +2957,7 @@ export default function App() {
       </AnimatePresence>
 
       {currentScreen !== 'landing' && currentScreen !== 'onboarding' && currentScreen !== 'public-profile' && currentScreen !== 'place-detail' && currentScreen !== 'event-detail' && currentScreen !== 'traveler-profile' && currentScreen !== 'location-search' && currentScreen !== 'collection-detail' && currentScreen !== 'create-moment' && currentScreen !== 'login' && currentScreen !== 'register' && currentScreen !== 'settings' && currentScreen !== 'settings-account' && currentScreen !== 'settings-notifications' && currentScreen !== 'settings-privacy' && currentScreen !== 'support' && currentScreen !== 'add-collection' && currentScreen !== 'notifications' && currentScreen !== 'edit-profile' && currentScreen !== 'edit-moment' && !isFloatingNavHidden && (
-        <nav className="fixed bottom-5 left-1/2 z-50 flex w-[calc(100%-2rem)] max-w-[24rem] -translate-x-1/2 items-center justify-between rounded-full border border-white/10 bg-black/88 px-4 py-3 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
+        <nav className="safe-bottom-offset fixed left-1/2 z-50 flex w-[calc(100%-2rem)] max-w-[24rem] -translate-x-1/2 items-center justify-between rounded-full border border-white/10 bg-black/88 px-4 py-3 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
           <button 
             onClick={() => setCurrentScreen('discover-places')}
             className={`flex h-12 w-12 items-center justify-center rounded-full transition-all ${
@@ -3030,7 +3030,8 @@ export default function App() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="fixed bottom-24 left-1/2 z-50 w-[calc(100%-3rem)] max-w-xs -translate-x-1/2 rounded-full border border-white/10 bg-white px-4 py-3 text-center text-sm font-black text-black shadow-[0_16px_40px_rgba(0,0,0,0.35)]"
+            className="safe-bottom-offset fixed left-1/2 z-50 w-[calc(100%-3rem)] max-w-xs -translate-x-1/2 rounded-full border border-white/10 bg-white px-4 py-3 text-center text-sm font-black text-black shadow-[0_16px_40px_rgba(0,0,0,0.35)]"
+            style={{ marginBottom: '4.5rem' }}
           >
             {actionToast}
           </motion.div>
@@ -3053,7 +3054,7 @@ export default function App() {
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', stiffness: 280, damping: 30 }}
-              className="fixed inset-x-0 bottom-0 z-[70] mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-950 px-4 pb-8 pt-4 shadow-[0_-20px_60px_rgba(0,0,0,0.45)]"
+              className="safe-bottom-pad fixed inset-x-0 bottom-0 z-[70] mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-950 px-4 pt-4 shadow-[0_-20px_60px_rgba(0,0,0,0.45)]"
             >
               <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
               <div className="mt-5">
@@ -3445,7 +3446,7 @@ function LandingPage({
       <div className="pointer-events-none absolute left-[-6rem] top-[18%] h-40 w-40 rounded-full bg-pink-400/10 blur-3xl" />
       <div className="pointer-events-none absolute right-[-5rem] top-[42%] h-44 w-44 rounded-full bg-sky-300/10 blur-3xl" />
       <div ref={scrollContainerRef} className="h-[100svh] snap-y snap-mandatory overflow-y-auto scroll-smooth">
-        <section className="relative flex min-h-[100svh] snap-start flex-col justify-between overflow-hidden px-6 pb-24 pt-8">
+        <section className="safe-top-pad relative flex min-h-[100svh] snap-start flex-col justify-between overflow-hidden px-6 pb-24 pt-8">
           <div className="mx-auto flex w-full max-w-6xl items-center justify-between rounded-full border border-white/10 bg-black/50 px-4 py-3 backdrop-blur-xl">
             <div className="text-sm font-black uppercase tracking-[0.22em] text-accent">Vibinn</div>
             <button
@@ -3516,7 +3517,7 @@ function LandingPage({
         ))}
       </div>
 
-      <div className={`pointer-events-none fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 pb-5 transition-opacity duration-200 ${showFloatingCta ? 'opacity-100' : 'opacity-0'}`}>
+      <div className={`pointer-events-none safe-bottom-pad fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 transition-opacity duration-200 ${showFloatingCta ? 'opacity-100' : 'opacity-0'}`}>
         <div className="pointer-events-auto flex w-full max-w-sm items-center justify-between rounded-full border border-white/10 bg-black/82 px-4 py-3 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
           <div className="min-w-0">
             <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/38">Invite-only beta</div>
@@ -5581,7 +5582,7 @@ function Profile({
               animate={{ y: 0 }}
               exit={{ y: '100%' }}
               transition={{ type: 'spring', stiffness: 280, damping: 30 }}
-              className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pb-8 pt-4"
+              className="safe-bottom-pad fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pt-4"
             >
               <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
               <div className="mt-4 text-center text-lg font-black text-white">Comments on {commentsPlace.name}</div>
@@ -5645,7 +5646,8 @@ function Profile({
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: 20 }}
-            className="fixed bottom-24 left-1/2 z-50 w-[calc(100%-3rem)] max-w-xs -translate-x-1/2 rounded-full border border-white/10 bg-white px-4 py-3 text-center text-sm font-black text-black shadow-[0_16px_40px_rgba(0,0,0,0.35)]"
+            className="safe-bottom-offset fixed left-1/2 z-50 w-[calc(100%-3rem)] max-w-xs -translate-x-1/2 rounded-full border border-white/10 bg-white px-4 py-3 text-center text-sm font-black text-black shadow-[0_16px_40px_rgba(0,0,0,0.35)]"
+            style={{ marginBottom: '4.5rem' }}
           >
             {profileToast}
           </motion.div>
@@ -6798,7 +6800,7 @@ function LocationPickerSheet({
         animate={{ y: 0 }}
         exit={{ y: '100%' }}
         transition={{ type: 'spring', stiffness: 280, damping: 30 }}
-        className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pb-8 pt-4 shadow-[0_-20px_60px_rgba(0,0,0,0.45)]"
+        className="safe-bottom-pad fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pt-4 shadow-[0_-20px_60px_rgba(0,0,0,0.45)]"
       >
         <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
         <div className="mt-5 flex items-center justify-between">
@@ -7021,10 +7023,22 @@ function MomentFormScreen({
     vibeTags: string[];
   }) => void | Promise<void>;
 }) {
-  const createMediaItem = (url: string) => ({
+  type DraftMediaItem = {
+    id: string;
+    url: string;
+    previewUrl: string;
+    fileName: string;
+    mediaType: 'image' | 'video';
+    status: 'uploaded' | 'processing' | 'uploading' | 'error';
+  };
+
+  const createMediaItem = (url: string): DraftMediaItem => ({
+    id: crypto.randomUUID(),
     url,
+    previewUrl: url,
     fileName: url.split('/').pop() ?? 'media',
     mediaType: url.match(/\.(mp4|mov|webm)$/i) ? 'video' as const : 'image' as const,
+    status: 'uploaded',
   });
   const [placeQuery, setPlaceQuery] = useState(initialPlace?.name ?? '');
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(initialPlace);
@@ -7032,7 +7046,7 @@ function MomentFormScreen({
   const [caption, setCaption] = useState(initialCaption);
   const [rating, setRating] = useState<number>(initialRating);
   const [budgetLevel, setBudgetLevel] = useState<'$' | '$$' | '$$$'>(initialBudgetLevel);
-  const [uploadedMedia, setUploadedMedia] = useState<Array<{ url: string; fileName: string; mediaType: 'image' | 'video' }>>(
+  const [uploadedMedia, setUploadedMedia] = useState<DraftMediaItem[]>(
     initialUploadedMedia.map(createMediaItem),
   );
   const [isAdvancedOpen, setIsAdvancedOpen] = useState(mode === 'edit');
@@ -7045,7 +7059,9 @@ function MomentFormScreen({
   const [isSearchingPlaces, setIsSearchingPlaces] = useState(false);
   const [isResolvingPlace, setIsResolvingPlace] = useState(false);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number; currentFileName: string | null } | null>(null);
 
   const canSubmit = !!selectedPlace && !!visitedDate && caption.trim().length > 0 && uploadedMedia.length > 0;
 
@@ -7066,6 +7082,85 @@ function MomentFormScreen({
         'Low effort plan, high reward kind of place.',
         'One of those spots that actually feels good in real life too.',
       ];
+
+  const readFileAsDataUrl = (file: Blob) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+        return;
+      }
+      reject(new Error('Could not read selected file'));
+    };
+    reader.onerror = () => reject(new Error('Could not read selected file'));
+    reader.readAsDataURL(file);
+  });
+
+  const loadImage = (src: string) => new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Could not load image'));
+    image.src = src;
+  });
+
+  const compressImageFile = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      return {
+        fileName: file.name,
+        mimeType: file.type,
+        dataUrl: await readFileAsDataUrl(file),
+      };
+    }
+
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const image = await loadImage(objectUrl);
+      const maxDimension = 2560;
+      const scale = Math.min(1, maxDimension / Math.max(image.naturalWidth, image.naturalHeight));
+      const targetWidth = Math.max(1, Math.round(image.naturalWidth * scale));
+      const targetHeight = Math.max(1, Math.round(image.naturalHeight * scale));
+
+      if (scale === 1 && file.size <= 2_500_000) {
+        return {
+          fileName: file.name,
+          mimeType: file.type,
+          dataUrl: await readFileAsDataUrl(file),
+        };
+      }
+
+      const canvas = document.createElement('canvas');
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        return {
+          fileName: file.name,
+          mimeType: file.type,
+          dataUrl: await readFileAsDataUrl(file),
+        };
+      }
+
+      context.drawImage(image, 0, 0, targetWidth, targetHeight);
+      const outputMimeType = file.type === 'image/png' ? 'image/png' : file.type === 'image/webp' ? 'image/webp' : 'image/jpeg';
+      const compressedDataUrl = canvas.toDataURL(outputMimeType, outputMimeType === 'image/png' ? undefined : 0.92);
+
+      if (compressedDataUrl.length >= file.size * 1.37) {
+        return {
+          fileName: file.name,
+          mimeType: file.type,
+          dataUrl: await readFileAsDataUrl(file),
+        };
+      }
+
+      return {
+        fileName: file.name.replace(/\.[^.]+$/, outputMimeType === 'image/jpeg' ? '.jpg' : outputMimeType === 'image/webp' ? '.webp' : '.png'),
+        mimeType: outputMimeType,
+        dataUrl: compressedDataUrl,
+      };
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  };
 
   useEffect(() => {
     if (selectedPlace || placeQuery.trim().length < 3) {
@@ -7092,6 +7187,14 @@ function MomentFormScreen({
       window.clearTimeout(timeoutId);
     };
   }, [placeQuery, selectedPlace]);
+
+  useEffect(() => () => {
+    uploadedMedia.forEach((media) => {
+      if (media.previewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(media.previewUrl);
+      }
+    });
+  }, [uploadedMedia]);
 
   return (
     <div className="min-h-screen bg-zinc-950 px-4 pb-10 pt-12 text-white">
@@ -7243,42 +7346,65 @@ function MomentFormScreen({
                 if (!files.length) return;
                 setMediaError(null);
                 setIsUploadingMedia(true);
+                setUploadProgress({ completed: 0, total: files.length, currentFileName: files[0]?.name ?? null });
 
-                const readFileAsDataUrl = (file: File) => new Promise<{ fileName: string; mimeType: string; dataUrl: string }>((resolve, reject) => {
-                  const reader = new FileReader();
-                  reader.onload = () => {
-                    if (typeof reader.result === 'string') {
-                      resolve({
+                const draftItems: DraftMediaItem[] = files.map((file) => ({
+                  id: crypto.randomUUID(),
+                  url: '',
+                  previewUrl: URL.createObjectURL(file),
+                  fileName: file.name,
+                  mediaType: file.type.startsWith('video/') ? 'video' : 'image',
+                  status: file.type.startsWith('video/') ? 'uploading' : 'processing',
+                }));
+
+                setUploadedMedia((current) => [...current, ...draftItems]);
+
+                void files.reduce<Promise<void>>(async (chain, file, index) => {
+                  await chain;
+                  const draftId = draftItems[index].id;
+                  setUploadProgress({ completed: index, total: files.length, currentFileName: file.name });
+
+                  const preparedFile = file.type.startsWith('image/')
+                    ? await compressImageFile(file)
+                    : {
                         fileName: file.name,
                         mimeType: file.type,
-                        dataUrl: reader.result,
-                      });
-                      return;
-                    }
-                    reject(new Error('Could not read selected file'));
-                  };
-                  reader.onerror = () => reject(new Error('Could not read selected file'));
-                  reader.readAsDataURL(file);
-                });
+                        dataUrl: await readFileAsDataUrl(file),
+                      };
 
-                void files.reduce<Promise<void>>(async (chain, file) => {
-                  await chain;
-                  const preparedFile = await readFileAsDataUrl(file);
+                  setUploadedMedia((current) => current.map((item) => (
+                    item.id === draftId
+                      ? { ...item, status: 'uploading' }
+                      : item
+                  )));
+
                   const response = await api.uploadMomentMedia({ files: [preparedFile] });
-                  setUploadedMedia((current) => [
-                    ...current,
-                    ...response.files.map((uploadedFile) => ({
-                      url: uploadedFile.url,
-                      fileName: uploadedFile.fileName,
-                      mediaType: uploadedFile.mediaType,
-                    })),
-                  ]);
+                  const uploadedFile = response.files[0];
+
+                  setUploadedMedia((current) => current.map((item) => (
+                    item.id === draftId
+                      ? {
+                          ...item,
+                          url: uploadedFile.url,
+                          fileName: uploadedFile.fileName,
+                          mediaType: uploadedFile.mediaType,
+                          status: 'uploaded',
+                        }
+                      : item
+                  )));
+                  setUploadProgress({ completed: index + 1, total: files.length, currentFileName: file.name });
                 }, Promise.resolve())
                   .catch(() => {
                     setMediaError('Could not upload media right now. Try a smaller file or upload one image at a time.');
+                    setUploadedMedia((current) => current.map((item) => (
+                      draftItems.some((draft) => draft.id === item.id)
+                        ? { ...item, status: item.url ? 'uploaded' : 'error' }
+                        : item
+                    )));
                   })
                   .finally(() => {
                     setIsUploadingMedia(false);
+                    window.setTimeout(() => setUploadProgress(null), 500);
                     event.target.value = '';
                   });
               }}
@@ -7289,8 +7415,26 @@ function MomentFormScreen({
             </div>
           </label>
           {isUploadingMedia ? (
-            <div className="mt-3 rounded-[20px] border border-white/10 bg-zinc-900 px-4 py-3 text-sm font-medium text-white/55">
-              Uploading media...
+            <div className="mt-3 rounded-[20px] border border-white/10 bg-zinc-900 px-4 py-4">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-black text-white">Uploading media</div>
+                  <div className="mt-1 text-xs font-medium text-white/45">
+                    {uploadProgress?.currentFileName
+                      ? `${Math.min(uploadProgress.completed + 1, uploadProgress.total)} of ${uploadProgress.total} • ${uploadProgress.currentFileName}`
+                      : 'Preparing files...'}
+                  </div>
+                </div>
+                <div className="text-sm font-black text-accent">
+                  {uploadProgress ? Math.round((uploadProgress.completed / Math.max(uploadProgress.total, 1)) * 100) : 0}%
+                </div>
+              </div>
+              <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/8">
+                <div
+                  className="h-full rounded-full bg-accent transition-all duration-300"
+                  style={{ width: `${uploadProgress ? (uploadProgress.completed / Math.max(uploadProgress.total, 1)) * 100 : 0}%` }}
+                />
+              </div>
             </div>
           ) : null}
           {mediaError ? (
@@ -7301,19 +7445,29 @@ function MomentFormScreen({
           {uploadedMedia.length > 0 ? (
             <div className="mt-3 grid grid-cols-2 gap-3">
               {uploadedMedia.map((media) => (
-                <div key={media.url} className="overflow-hidden rounded-[20px] border border-white/10 bg-zinc-900">
+                <div key={media.id} className="overflow-hidden rounded-[20px] border border-white/10 bg-zinc-900">
                   <div className="aspect-[4/5] bg-black">
                     {media.mediaType === 'video' ? (
-                      <video src={media.url} className="h-full w-full object-cover" controls muted playsInline />
+                      <video src={media.previewUrl} className="h-full w-full object-cover" controls muted playsInline />
                     ) : (
-                      <img src={media.url} alt={media.fileName} className="h-full w-full object-cover" />
+                      <img src={media.previewUrl} alt={media.fileName} className="h-full w-full object-cover" />
                     )}
                   </div>
                   <div className="flex items-center justify-between gap-2 px-3 py-2">
-                    <div className="min-w-0 truncate text-xs font-semibold text-white/78">{media.fileName}</div>
+                    <div className="min-w-0">
+                      <div className="truncate text-xs font-semibold text-white/78">{media.fileName}</div>
+                      <div className="mt-1 text-[10px] font-bold uppercase tracking-[0.14em] text-white/35">
+                        {media.status === 'processing' ? 'Optimizing' : media.status === 'uploading' ? 'Uploading' : media.status === 'error' ? 'Retry needed' : media.mediaType}
+                      </div>
+                    </div>
                     <button
                       type="button"
-                      onClick={() => setUploadedMedia((current) => current.filter((item) => item.url !== media.url))}
+                      onClick={() => {
+                        if (media.previewUrl.startsWith('blob:')) {
+                          URL.revokeObjectURL(media.previewUrl);
+                        }
+                        setUploadedMedia((current) => current.filter((item) => item.id !== media.id));
+                      }}
                       className="rounded-full bg-white/8 p-1.5 text-white/65 transition hover:bg-white/12"
                       aria-label={`Remove ${media.fileName}`}
                     >
@@ -7531,13 +7685,15 @@ function MomentFormScreen({
       <div className="sticky bottom-0 mt-8 bg-gradient-to-t from-zinc-950 via-zinc-950 to-transparent pb-2 pt-6">
         <button
           type="button"
-          onClick={() =>
-            selectedPlace
-              ? onSubmit({
+          onClick={async () => {
+            if (!selectedPlace) return;
+            setIsSubmitting(true);
+            try {
+              await onSubmit({
                   placeId: selectedPlace.id,
                   visitedDate,
                   caption,
-                  uploadedMedia: uploadedMedia.map((media) => media.url),
+                  uploadedMedia: uploadedMedia.filter((media) => media.url).map((media) => media.url),
                   rating,
                   budgetLevel,
                   visitType,
@@ -7545,15 +7701,17 @@ function MomentFormScreen({
                   privacy,
                   wouldRevisit,
                   vibeTags,
-                })
-              : undefined
-          }
-          disabled={!canSubmit || isUploadingMedia}
+                });
+            } finally {
+              setIsSubmitting(false);
+            }
+          }}
+          disabled={!canSubmit || isUploadingMedia || isSubmitting || uploadedMedia.some((media) => !media.url && media.status !== 'error')}
           className={`w-full rounded-[22px] px-5 py-4 text-sm font-black transition ${
-            canSubmit && !isUploadingMedia ? 'bg-accent text-dark hover:brightness-105' : 'bg-white/10 text-white/35'
+            canSubmit && !isUploadingMedia && !isSubmitting ? 'bg-accent text-dark hover:brightness-105' : 'bg-white/10 text-white/35'
           }`}
         >
-          {isUploadingMedia ? 'Uploading media...' : mode === 'create' ? 'Save moment' : 'Update moment'}
+          {isUploadingMedia ? 'Uploading media...' : isSubmitting ? (mode === 'create' ? 'Saving moment...' : 'Updating moment...') : mode === 'create' ? 'Save moment' : 'Update moment'}
         </button>
       </div>
     </div>
