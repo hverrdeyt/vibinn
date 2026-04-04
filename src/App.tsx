@@ -7058,12 +7058,13 @@ function MomentFormScreen({
   const [placeSuggestions, setPlaceSuggestions] = useState<Place[]>([]);
   const [isSearchingPlaces, setIsSearchingPlaces] = useState(false);
   const [isResolvingPlace, setIsResolvingPlace] = useState(false);
+  const [resolvingPlaceId, setResolvingPlaceId] = useState<string | null>(null);
   const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number; currentFileName: string | null } | null>(null);
 
-  const canSubmit = !!selectedPlace && !!visitedDate && caption.trim().length > 0 && uploadedMedia.length > 0;
+  const canSubmit = !!selectedPlace && !!visitedDate && caption.trim().length > 0;
 
   const quickTags = ['aesthetic', 'quiet', 'crowded', 'date spot', 'hidden gem', 'worth it'];
   const yesterday = new Date();
@@ -7235,8 +7236,9 @@ function MomentFormScreen({
                 setSelectedPlace(null);
                 setPlaceQuery(event.target.value);
               }}
+              disabled={isResolvingPlace}
               placeholder="Type at least 3 letters to search places"
-              className="w-full rounded-[20px] border border-white/10 bg-zinc-900 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/35 focus:ring-2 focus:ring-white/10"
+              className="w-full rounded-[20px] border border-white/10 bg-zinc-900 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/35 focus:ring-2 focus:ring-white/10 disabled:cursor-wait disabled:opacity-70"
             />
 
             {selectedPlace ? (
@@ -7246,11 +7248,19 @@ function MomentFormScreen({
                   setSelectedPlace(null);
                   setPlaceQuery('');
                 }}
+                disabled={isResolvingPlace}
                 className="absolute right-3 top-1/2 -translate-y-1/2 rounded-full bg-white/8 p-2 text-white/70"
                 aria-label="Clear selected place"
               >
                 <X size={14} />
               </button>
+            ) : null}
+
+            {isResolvingPlace ? (
+              <div className="pointer-events-none absolute inset-y-0 right-4 flex items-center gap-2 text-xs font-black uppercase tracking-[0.14em] text-accent">
+                <div className="h-2.5 w-2.5 animate-pulse rounded-full bg-accent" />
+                <span>Selecting</span>
+              </div>
             ) : null}
           </div>
 
@@ -7262,21 +7272,31 @@ function MomentFormScreen({
                   type="button"
                   onClick={async () => {
                     setIsResolvingPlace(true);
+                    setResolvingPlaceId(place.id);
                     try {
                       const response = await api.getPlaceDetails(place.id);
                       setSelectedPlace(response.place as Place);
                       setPlaceQuery(response.place.name);
                     } finally {
                       setIsResolvingPlace(false);
+                      setResolvingPlaceId(null);
                     }
                   }}
-                  className="flex w-full items-center justify-between rounded-[20px] border border-white/10 bg-zinc-900 px-4 py-3 text-left transition hover:bg-white/8"
+                  disabled={isResolvingPlace}
+                  className="flex w-full items-center justify-between rounded-[20px] border border-white/10 bg-zinc-900 px-4 py-3 text-left transition hover:bg-white/8 disabled:cursor-wait disabled:opacity-80"
                 >
                   <div>
                     <div className="text-sm font-black text-white">{place.name}</div>
                     <div className="mt-1 text-xs font-medium text-white/45">{place.location}</div>
                   </div>
-                  <ChevronRight size={16} className="text-white/35" />
+                  {resolvingPlaceId === place.id ? (
+                    <div className="flex items-center gap-2 rounded-full border border-accent/30 bg-accent/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-accent">
+                      <div className="h-2 w-2 animate-pulse rounded-full bg-accent" />
+                      Selecting
+                    </div>
+                  ) : (
+                    <ChevronRight size={16} className="text-white/35" />
+                  )}
                 </button>
               ))}
             </div>
@@ -7295,8 +7315,8 @@ function MomentFormScreen({
           ) : null}
 
           {isResolvingPlace ? (
-            <div className="mt-3 rounded-[20px] border border-white/10 bg-zinc-900 px-4 py-3 text-sm font-medium text-white/55">
-              Loading place details...
+            <div className="mt-3 rounded-[20px] border border-accent/20 bg-accent/8 px-4 py-3 text-sm font-medium text-white/75">
+              Pulling in the place details...
             </div>
           ) : null}
         </section>
@@ -7411,7 +7431,7 @@ function MomentFormScreen({
             />
             <div>
               <div className="text-sm font-black text-white">Upload photos or video</div>
-              <div className="mt-1 text-xs font-medium text-white/45">At least one file is required.</div>
+              <div className="mt-1 text-xs font-medium text-white/45">Optional, but it helps your moment feel more alive.</div>
             </div>
           </label>
           {isUploadingMedia ? (
