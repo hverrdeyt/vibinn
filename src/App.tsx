@@ -38,6 +38,7 @@ import {
   Check,
   Mail,
   KeyRound,
+  Download,
 } from 'lucide-react';
 import { Screen, User, Place, Interest, Vibe, EventItem } from './types';
 import { MOCK_USER, MOCK_PLACES, SIMILAR_TRAVELERS } from './mockData';
@@ -118,6 +119,186 @@ const VALID_INVITE_CODES = [
   'BOSTONBETA',
   'FRIENDSOFVIBINN',
 ];
+
+function escapeXml(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+function slugifyFilename(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '') || 'vibinn';
+}
+
+function wrapSvgText(value: string, maxCharsPerLine: number) {
+  const words = value.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [];
+
+  const lines: string[] = [];
+  let currentLine = '';
+
+  for (const word of words) {
+    const nextLine = currentLine ? `${currentLine} ${word}` : word;
+    if (nextLine.length <= maxCharsPerLine) {
+      currentLine = nextLine;
+      continue;
+    }
+
+    if (currentLine) lines.push(currentLine);
+    currentLine = word;
+  }
+
+  if (currentLine) lines.push(currentLine);
+  return lines;
+}
+
+async function fetchAssetAsDataUrl(url?: string | null) {
+  const resolvedAssetUrl = resolveApiAssetUrl(url);
+  const resolvedUrl = (() => {
+    if (
+      typeof window !== 'undefined'
+      && !import.meta.env.VITE_API_BASE_URL
+      && resolvedAssetUrl.startsWith('/api/')
+    ) {
+      return `${window.location.protocol}//${window.location.hostname}:3001${resolvedAssetUrl}`;
+    }
+    return resolvedAssetUrl;
+  })();
+  if (!resolvedUrl) return null;
+
+  try {
+    const token = api.getStoredAuthToken();
+    const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
+    const shouldAttachAuth = Boolean(token) && (
+      resolvedUrl.startsWith('/api/')
+      || (apiBaseUrl && resolvedUrl.startsWith(apiBaseUrl))
+    );
+
+    const response = await fetch(resolvedUrl, {
+      headers: shouldAttachAuth && token ? { Authorization: `Bearer ${token}` } : undefined,
+      mode: 'cors',
+      credentials: 'omit',
+      referrerPolicy: 'no-referrer',
+    });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (typeof reader.result === 'string') {
+          resolve(reader.result);
+          return;
+        }
+        reject(new Error('Could not read asset blob'));
+      };
+      reader.onerror = () => reject(reader.error ?? new Error('Could not read asset blob'));
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function svgToPngDataUrl(svgMarkup: string, width: number, height: number) {
+  const svgBlob = new Blob([svgMarkup], { type: 'image/svg+xml;charset=utf-8' });
+  const svgUrl = URL.createObjectURL(svgBlob);
+
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Could not load SVG image'));
+      img.src = svgUrl;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Could not create recap canvas');
+    }
+    context.drawImage(image, 0, 0, width, height);
+    return canvas.toDataURL('image/png');
+  } finally {
+    URL.revokeObjectURL(svgUrl);
+  }
+}
+
+async function loadCanvasImage(src: string) {
+  return await new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('Could not load image'));
+    image.src = src;
+  });
+}
+
+function drawRoundedRect(
+  context: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  radius: number,
+) {
+  const safeRadius = Math.min(radius, width / 2, height / 2);
+  context.beginPath();
+  context.moveTo(x + safeRadius, y);
+  context.lineTo(x + width - safeRadius, y);
+  context.quadraticCurveTo(x + width, y, x + width, y + safeRadius);
+  context.lineTo(x + width, y + height - safeRadius);
+  context.quadraticCurveTo(x + width, y + height, x + width - safeRadius, y + height);
+  context.lineTo(x + safeRadius, y + height);
+  context.quadraticCurveTo(x, y + height, x, y + height - safeRadius);
+  context.lineTo(x, y + safeRadius);
+  context.quadraticCurveTo(x, y, x + safeRadius, y);
+  context.closePath();
+}
+
+function drawImageCover(
+  context: CanvasRenderingContext2D,
+  image: HTMLImageElement,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) {
+  const imageRatio = image.width / image.height;
+  const frameRatio = width / height;
+
+  let sourceX = 0;
+  let sourceY = 0;
+  let sourceWidth = image.width;
+  let sourceHeight = image.height;
+
+  if (imageRatio > frameRatio) {
+    sourceWidth = image.height * frameRatio;
+    sourceX = (image.width - sourceWidth) / 2;
+  } else {
+    sourceHeight = image.width / frameRatio;
+    sourceY = (image.height - sourceHeight) / 2;
+  }
+
+  context.drawImage(image, sourceX, sourceY, sourceWidth, sourceHeight, x, y, width, height);
+}
+
+function dataUrlToFile(dataUrl: string, filename: string) {
+  const [meta, content] = dataUrl.split(',');
+  const mime = meta.match(/data:(.*?);base64/)?.[1] ?? 'image/png';
+  const binary = atob(content);
+  const array = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    array[i] = binary.charCodeAt(i);
+  }
+  return new File([array], filename, { type: mime });
+}
 
 function hasStoredInviteAccess() {
   return typeof window !== 'undefined' && window.localStorage.getItem(INVITE_UNLOCKED_KEY) === '1';
@@ -943,7 +1124,14 @@ export default function App() {
     title: string;
     text: string;
     url: string;
+    allowRecap?: boolean;
   }>(null);
+  const [profileRecapState, setProfileRecapState] = useState<null | {
+    imageUrl: string;
+    title: string;
+    fileName: string;
+  }>(null);
+  const [isProfileRecapGenerating, setIsProfileRecapGenerating] = useState(false);
   const [savedLocations, setSavedLocations] = useState<SavedLocationOption[]>(INITIAL_SAVED_LOCATIONS);
   const [activeLocationId, setActiveLocationId] = useState<string>(INITIAL_SAVED_LOCATIONS[0].id);
   const [deviceLocation, setDeviceLocation] = useState<DeviceLocation | null>(null);
@@ -1323,7 +1511,7 @@ export default function App() {
     return `${window.location.origin}/${encodeURIComponent(resolvedUsername)}`;
   };
 
-  const openShareSheet = (input: { url: string; title: string; text: string }) => {
+  const openShareSheet = (input: { url: string; title: string; text: string; allowRecap?: boolean }) => {
     setShareSheetState(input);
   };
 
@@ -1380,6 +1568,321 @@ export default function App() {
     }
 
     showActionToast(input.url);
+  };
+
+  const shareGeneratedImage = async (dataUrl: string, fileName: string) => {
+    if (typeof window !== 'undefined' && navigator.share && navigator.canShare) {
+      try {
+        const file = dataUrlToFile(dataUrl, fileName);
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({
+            files: [file],
+            title: 'Vibinn travel recap',
+            text: 'My Vibinn travel recap',
+          });
+          showActionToast('Share sheet opened');
+          return true;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : '';
+        if (message.includes('abort') || message.includes('cancel')) {
+          return false;
+        }
+      }
+    }
+
+    return false;
+  };
+
+  const downloadDataUrl = (dataUrl: string, fileName: string) => {
+    if (typeof document === 'undefined') return;
+    const anchor = document.createElement('a');
+    anchor.href = dataUrl;
+    anchor.download = fileName;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+  };
+
+  const generateProfileRecap = async () => {
+    if (isProfileRecapGenerating) return;
+
+    setIsProfileRecapGenerating(true);
+
+    try {
+      const ownPlaces = user.travelHistory.flatMap((history) => history.places ?? []);
+      const flags = (user.flags?.length ? user.flags : deriveFlagsFromTravelHistory(user.travelHistory)).slice(0, 8);
+      const profileUrl = buildPublicProfileShareUrl(user.username);
+      const profileName = user.displayName ?? user.username;
+      const uniquePlaceCount = new Set(ownPlaces.map((place) => place.id)).size;
+
+      const interactionState = await api.getInteractionState({
+        placeIds: ownPlaces.map((place) => place.id),
+        momentIds: ownPlaces.map((place) => place.momentId).filter(Boolean) as string[],
+        profileIds: [user.id],
+      }).catch(() => null);
+
+      const vibinCount = interactionState?.profileVibinCounts?.[user.id] ?? user.vibinCount ?? 0;
+      const descriptor = user.descriptor?.trim() || 'A traveler building a taste graph through every save and moment.';
+      const avatarInitials = (profileName || user.username)
+        .split(/\s+/)
+        .map((part) => part[0] ?? '')
+        .join('')
+        .slice(0, 2)
+        .toUpperCase();
+
+      const recapMediaCandidates = ownPlaces
+        .flatMap((place) => {
+          const momentMedia = (place.momentMedia ?? [])
+            .filter((item) => item.mediaType === 'image' && item.url)
+            .map((item, index) => ({ url: item.url, key: `${place.id}-moment-${index}`, placeName: place.name }));
+          if (momentMedia.length > 0) return momentMedia;
+          const galleryImages = (place.images?.length ? place.images : [place.image])
+            .filter(Boolean)
+            .map((url, index) => ({ url, key: `${place.id}-image-${index}`, placeName: place.name }));
+          return galleryImages;
+        })
+        .filter((item, index, array) => item.url && array.findIndex((candidate) => candidate.url === item.url) === index)
+        .slice(0, 3);
+
+      const [avatarDataUrl, ...mediaDataUrls] = await Promise.all([
+        fetchAssetAsDataUrl(user.avatar),
+        ...recapMediaCandidates.map((item) => fetchAssetAsDataUrl(item.url)),
+      ]);
+
+      const fallbackPalette = ['#d6ff72', '#7be7ff', '#ff8cc6'];
+      const photoFrames = [0, 1, 2].map((index) => mediaDataUrls[index] ?? null);
+      const topPlaces = recapMediaCandidates.map((item) => item.placeName)
+        .filter(Boolean)
+        .filter((placeName, index, allPlaces) => allPlaces.findIndex((candidate) => candidate === placeName) === index)
+        .slice(0, 3);
+      const descriptorLines = wrapSvgText(descriptor, 28).slice(0, 3);
+      const profileUrlLines = wrapSvgText(profileUrl.replace(/^https?:\/\//, ''), 30).slice(0, 2);
+      const canvas = document.createElement('canvas');
+      canvas.width = 1080;
+      canvas.height = 1920;
+      const context = canvas.getContext('2d');
+      if (!context) {
+        throw new Error('Could not create recap canvas');
+      }
+
+      context.fillStyle = '#0b1020';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+
+      const baseGradient = context.createLinearGradient(0, 0, 1080, 1920);
+      baseGradient.addColorStop(0, '#09090b');
+      baseGradient.addColorStop(0.5, '#111827');
+      baseGradient.addColorStop(1, '#1b0b2e');
+      context.fillStyle = baseGradient;
+      context.fillRect(0, 0, 1080, 1920);
+
+      const glowA = context.createRadialGradient(250, 240, 20, 250, 240, 320);
+      glowA.addColorStop(0, 'rgba(214,255,114,0.72)');
+      glowA.addColorStop(1, 'rgba(214,255,114,0)');
+      context.fillStyle = glowA;
+      context.fillRect(0, 0, 1080, 1920);
+
+      const glowB = context.createRadialGradient(820, 360, 20, 820, 360, 280);
+      glowB.addColorStop(0, 'rgba(123,231,255,0.36)');
+      glowB.addColorStop(1, 'rgba(123,231,255,0)');
+      context.fillStyle = glowB;
+      context.fillRect(0, 0, 1080, 1920);
+
+      const glowC = context.createRadialGradient(760, 1460, 20, 760, 1460, 320);
+      glowC.addColorStop(0, 'rgba(255,140,198,0.22)');
+      glowC.addColorStop(1, 'rgba(255,140,198,0)');
+      context.fillStyle = glowC;
+      context.fillRect(0, 0, 1080, 1920);
+
+      drawRoundedRect(context, 56, 56, 968, 1808, 72);
+      context.fillStyle = 'rgba(0,0,0,0.28)';
+      context.fill();
+      context.strokeStyle = 'rgba(255,255,255,0.08)';
+      context.lineWidth = 2;
+      context.stroke();
+
+      context.save();
+      drawRoundedRect(context, 104, 144, 168, 168, 84);
+      context.fillStyle = 'rgba(255,255,255,0.08)';
+      context.fill();
+      context.strokeStyle = 'rgba(255,255,255,0.18)';
+      context.stroke();
+      context.clip();
+      if (avatarDataUrl) {
+        try {
+          const avatarImage = await loadCanvasImage(avatarDataUrl);
+          context.drawImage(avatarImage, 104, 144, 168, 168);
+        } catch {
+          context.fillStyle = '#ffffff';
+          context.font = '900 56px Inter, Arial, sans-serif';
+          context.textAlign = 'center';
+          context.fillText(avatarInitials, 188, 246);
+        }
+      } else {
+        context.fillStyle = '#ffffff';
+        context.font = '900 56px Inter, Arial, sans-serif';
+        context.textAlign = 'center';
+        context.fillText(avatarInitials, 188, 246);
+      }
+      context.restore();
+
+      context.textAlign = 'left';
+      context.fillStyle = 'rgba(255,255,255,0.54)';
+      context.font = '800 28px Inter, Arial, sans-serif';
+      context.fillText('VIBINN CLUB', 306, 198);
+
+      context.fillStyle = '#ffffff';
+      context.font = '900 72px Inter, Arial, sans-serif';
+      context.fillText(profileName, 306, 258);
+
+      context.fillStyle = 'rgba(255,255,255,0.68)';
+      context.font = '700 34px Inter, Arial, sans-serif';
+      context.fillText(`@${user.username}`, 306, 310);
+
+      const collageFrames = [
+        { x: 640, y: 150, width: 280, height: 360, rotate: 7, fill: fallbackPalette[0], image: photoFrames[0] },
+        { x: 760, y: 430, width: 220, height: 290, rotate: -6, fill: fallbackPalette[1], image: photoFrames[1] },
+        { x: 556, y: 518, width: 250, height: 322, rotate: 5, fill: fallbackPalette[2], image: photoFrames[2] },
+      ];
+
+      for (const frame of collageFrames) {
+        context.save();
+        context.translate(frame.x + frame.width / 2, frame.y + frame.height / 2);
+        context.rotate((frame.rotate * Math.PI) / 180);
+        drawRoundedRect(context, -frame.width / 2, -frame.height / 2, frame.width, frame.height, 54);
+        context.fillStyle = 'rgba(255,255,255,0.12)';
+        context.fill();
+        context.strokeStyle = 'rgba(255,255,255,0.18)';
+        context.stroke();
+
+        drawRoundedRect(context, -frame.width / 2 + 12, -frame.height / 2 + 12, frame.width - 24, frame.height - 24, 42);
+        context.save();
+        context.clip();
+        if (frame.image) {
+          try {
+            const image = await loadCanvasImage(String(frame.image));
+            drawImageCover(
+              context,
+              image,
+              -frame.width / 2 + 12,
+              -frame.height / 2 + 12,
+              frame.width - 24,
+              frame.height - 24,
+            );
+          } catch {
+            context.fillStyle = frame.fill;
+            context.fillRect(-frame.width / 2 + 12, -frame.height / 2 + 12, frame.width - 24, frame.height - 24);
+          }
+        } else {
+          context.fillStyle = frame.fill;
+          context.fillRect(-frame.width / 2 + 12, -frame.height / 2 + 12, frame.width - 24, frame.height - 24);
+        }
+        context.restore();
+        context.restore();
+      }
+
+      context.fillStyle = 'rgba(255,255,255,0.58)';
+      context.font = '800 24px Inter, Arial, sans-serif';
+      context.fillText('TRAVEL TASTE 2026', 112, 634);
+
+      context.fillStyle = '#ffffff';
+      context.font = '900 72px Inter, Arial, sans-serif';
+      context.fillText('My travel', 112, 724);
+      context.fillText('recap so far.', 112, 792);
+
+      context.fillStyle = '#d6ff72';
+      context.font = '800 38px Inter, Arial, sans-serif';
+      descriptorLines.forEach((line, index) => {
+        context.fillText(line, 112, 840 + (index * 52));
+      });
+
+      const stats = [
+        { label: 'PLACES', value: String(uniquePlaceCount) },
+        { label: 'COUNTRIES', value: String(user.stats.countries) },
+        { label: 'VIBIN', value: String(vibinCount) },
+      ];
+      stats.forEach((item, index) => {
+        const x = 112 + (index * 288);
+        const y = 1038;
+        drawRoundedRect(context, x, y, 240, 144, 38);
+        context.fillStyle = 'rgba(255,255,255,0.07)';
+        context.fill();
+        context.strokeStyle = 'rgba(255,255,255,0.12)';
+        context.stroke();
+
+        context.textAlign = 'center';
+        context.fillStyle = '#ffffff';
+        context.font = '900 56px Inter, Arial, sans-serif';
+        context.fillText(item.value, x + 120, y + 68);
+        context.fillStyle = 'rgba(255,255,255,0.62)';
+        context.font = '700 22px Inter, Arial, sans-serif';
+        context.fillText(item.label, x + 120, y + 108);
+      });
+      context.textAlign = 'left';
+
+      const messyPositions = [
+        { x: 128, y: 1328, rotate: -0.18 },
+        { x: 388, y: 1468, rotate: 0.14 },
+        { x: 164, y: 1608, rotate: -0.1 },
+      ];
+      context.fillStyle = 'rgba(255,255,255,0.08)';
+      context.font = '900 46px Inter, Arial, sans-serif';
+      topPlaces.forEach((placeName, index) => {
+        const pos = messyPositions[index] ?? messyPositions[0];
+        context.save();
+        context.translate(pos.x, pos.y);
+        context.rotate(pos.rotate);
+        context.fillText(placeName, 0, 0);
+        context.restore();
+      });
+
+      context.fillStyle = 'rgba(255,255,255,0.56)';
+      context.font = '800 24px Inter, Arial, sans-serif';
+      context.fillText('COUNTRIES IN THE MIX', 112, 1398);
+
+      if (flags.length > 0) {
+        context.font = '42px "Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif';
+        flags.slice(0, 6).forEach((flag, index) => {
+          context.fillText(flag, 112 + (index * 68), 1456);
+        });
+      } else {
+        context.fillStyle = 'rgba(255,255,255,0.45)';
+        context.font = '700 26px Inter, Arial, sans-serif';
+        context.fillText('No flags yet', 112, 1456);
+      }
+
+      drawRoundedRect(context, 112, 1608, 856, 116, 38);
+      context.fillStyle = 'rgba(255,255,255,0.06)';
+      context.fill();
+      context.strokeStyle = 'rgba(255,255,255,0.09)';
+      context.stroke();
+
+      context.fillStyle = 'rgba(255,255,255,0.56)';
+      context.font = '800 24px Inter, Arial, sans-serif';
+      context.fillText('PROFILE', 152, 1660);
+
+      context.fillStyle = 'rgba(255,255,255,0.76)';
+      context.font = '700 24px Inter, Arial, sans-serif';
+      profileUrlLines.forEach((line, index) => {
+        context.fillText(line, 152, 1698 + (index * 24));
+      });
+
+      context.fillStyle = 'rgba(255,255,255,0.36)';
+      context.font = '700 22px Inter, Arial, sans-serif';
+      context.fillText('Built on Vibinn for the share-worthy version of your travel taste.', 112, 1756);
+
+      const dataUrl = canvas.toDataURL('image/png');
+      setProfileRecapState({
+        imageUrl: dataUrl,
+        title: 'Recap travel 2026',
+        fileName: `${slugifyFilename(user.username)}-travel-recap-2026.png`,
+      });
+      setShareSheetState(null);
+    } catch {
+      showActionToast('Could not generate recap right now');
+    } finally {
+      setIsProfileRecapGenerating(false);
+    }
   };
 
   const resetCreateMomentDraft = () => {
@@ -1868,6 +2371,7 @@ export default function App() {
                 url: buildPublicProfileShareUrl(user.username),
                 title: user.displayName ?? user.username,
                 text: `Take a look at my travel profile on Vibinn: @${user.username}`,
+                allowRecap: true,
               });
             }}
             onEditMoment={(place) => {
@@ -2446,6 +2950,18 @@ export default function App() {
               </div>
 
               <div className="mt-6 space-y-3">
+                {shareSheetState.allowRecap ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void generateProfileRecap();
+                    }}
+                    disabled={isProfileRecapGenerating}
+                    className="flex w-full items-center justify-center rounded-[20px] border border-white/10 bg-white/8 px-4 py-4 text-sm font-black text-white transition hover:bg-white/12 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    {isProfileRecapGenerating ? 'Generating recap...' : 'Recap travel 2026'}
+                  </button>
+                ) : null}
                 <button
                   type="button"
                   onClick={() => {
@@ -2481,6 +2997,80 @@ export default function App() {
                   className="flex w-full items-center justify-center rounded-[20px] border border-white/10 bg-transparent px-4 py-4 text-sm font-black text-white/70 transition hover:bg-white/6"
                 >
                   Cancel
+                </button>
+              </div>
+            </motion.div>
+          </>
+        ) : null}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {profileRecapState ? (
+          <>
+            <motion.button
+              type="button"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setProfileRecapState(null)}
+              className="fixed inset-0 z-[70] bg-black/80"
+            />
+            <motion.div
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', stiffness: 280, damping: 28 }}
+              className="fixed inset-x-0 bottom-0 z-[80] mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-950 px-4 pb-8 pt-4 shadow-[0_-20px_60px_rgba(0,0,0,0.45)]"
+            >
+              <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
+              <div className="mt-5">
+                <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">Share recap</div>
+                <div className="mt-2 text-xl font-black tracking-[-0.04em] text-white">Recap travel 2026</div>
+                <p className="mt-2 text-sm font-medium leading-relaxed text-white/58">
+                  A shareable story card built from your moments, saved places, and travel taste.
+                </p>
+              </div>
+
+              <div className="mt-5 overflow-hidden rounded-[28px] border border-white/10 bg-black/50">
+                <img
+                  src={profileRecapState.imageUrl}
+                  alt="Travel recap 2026"
+                  className="h-auto w-full object-cover"
+                />
+              </div>
+
+              <div className="mt-6 space-y-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    void shareGeneratedImage(profileRecapState.imageUrl, profileRecapState.fileName).then((shared) => {
+                      if (!shared) {
+                        downloadDataUrl(profileRecapState.imageUrl, profileRecapState.fileName);
+                        showActionToast('Recap saved');
+                      }
+                    });
+                  }}
+                  className="flex w-full items-center justify-center rounded-[20px] bg-accent px-4 py-4 text-sm font-black text-black transition hover:brightness-105"
+                >
+                  Share recap
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    downloadDataUrl(profileRecapState.imageUrl, profileRecapState.fileName);
+                    showActionToast('Recap saved');
+                  }}
+                  className="flex w-full items-center justify-center gap-2 rounded-[20px] border border-white/10 bg-white/8 px-4 py-4 text-sm font-black text-white transition hover:bg-white/12"
+                >
+                  <Download size={16} />
+                  Save image
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setProfileRecapState(null)}
+                  className="flex w-full items-center justify-center rounded-[20px] border border-white/10 bg-transparent px-4 py-4 text-sm font-black text-white/70 transition hover:bg-white/6"
+                >
+                  Close
                 </button>
               </div>
             </motion.div>
