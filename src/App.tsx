@@ -980,6 +980,7 @@ export default function App() {
   const screenScrollPositionsRef = useRef<Partial<Record<Screen, number>>>({});
   const suppressNextDiscoveryAutoloadRef = useRef(false);
   const previousPreferenceKeyRef = useRef('');
+  const forceDiscoveryRefreshAfterAuthRef = useRef(false);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1450,6 +1451,7 @@ export default function App() {
       return;
     }
 
+    forceDiscoveryRefreshAfterAuthRef.current = authReturnScreen === 'discover-places';
     setCurrentScreen(authReturnScreen);
   };
 
@@ -1617,13 +1619,15 @@ export default function App() {
     const nextPreferenceKey = `${[...selectedInterests].sort().join(',')}|${selectedVibe ?? ''}`;
     const shouldRefreshForPreferences =
       previousPreferenceKeyRef.current.length > 0 && previousPreferenceKeyRef.current !== nextPreferenceKey;
+    const shouldForceRefreshAfterAuth = forceDiscoveryRefreshAfterAuthRef.current;
+    forceDiscoveryRefreshAfterAuthRef.current = false;
     previousPreferenceKeyRef.current = nextPreferenceKey;
 
     setDiscoveryPage(1);
     setDiscoveryHasMore(true);
     setDiscoveryPlaces([]);
     setDiscoveryEvents([]);
-    void loadDiscoveryPlaces(1, 'reset', { refresh: shouldRefreshForPreferences });
+    void loadDiscoveryPlaces(1, 'reset', { refresh: shouldRefreshForPreferences || shouldForceRefreshAfterAuth });
     void loadDiscoveryEvents();
   }, [currentScreen, activeLocationId, savedLocations, selectedInterests, selectedVibe, discoverySearchQuery]);
 
@@ -1669,11 +1673,25 @@ export default function App() {
     void api.getSavedLocations()
       .then((response) => {
         const nextLocations = response.locations as SavedLocationOption[];
+        const currentActiveLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0];
         if (nextLocations.length > 0) {
-          setSavedLocations(nextLocations);
-          if (response.activeLocationId) {
-            setActiveLocationId(response.activeLocationId);
-          }
+          const matchingCurrentLocation = currentActiveLocation
+            ? nextLocations.find((location) =>
+              location.type === currentActiveLocation.type &&
+              location.label.trim().toLowerCase() === currentActiveLocation.label.trim().toLowerCase(),
+            )
+            : null;
+          const mergedLocations = matchingCurrentLocation || !currentActiveLocation
+            ? nextLocations
+            : [currentActiveLocation, ...nextLocations];
+
+          setSavedLocations(mergedLocations);
+          setActiveLocationId(
+            matchingCurrentLocation?.id ??
+            currentActiveLocation?.id ??
+            response.activeLocationId ??
+            mergedLocations[0].id,
+          );
         }
       })
       .catch(() => undefined);
