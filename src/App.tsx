@@ -47,6 +47,7 @@ import PlaceDetailPage, { PlaceDetailData } from './components/PlaceDetailPage';
 import TravelerCard, { TravelerCardData } from './components/TravelerCard';
 import DetailActionBar from './components/DetailActionBar';
 import { api, ApiError, resolveApiAssetUrl } from './lib/api';
+import { identifyAnalyticsUser, initAnalytics, resetAnalyticsUser, trackEvent, trackScreenView } from './lib/analytics';
 
 declare global {
   interface Window {
@@ -1172,6 +1173,10 @@ export default function App() {
   const lastDiscoveryContextKeyRef = useRef('');
 
   useEffect(() => {
+    initAnalytics();
+  }, []);
+
+  useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const previousScreen = previousScreenRef.current;
@@ -1946,6 +1951,19 @@ export default function App() {
   const completeAuth = async (payload?: { id?: string; name?: string; username?: string; email?: string }) => {
     setIsAuthenticated(true);
     setUser(buildAuthenticatedUserDraft(payload));
+    if (payload?.id) {
+      identifyAnalyticsUser({
+        id: payload.id,
+        username: payload.username,
+        displayName: payload.name,
+        email: payload.email,
+      });
+      trackEvent('Auth Completed', {
+        user_id: payload.id,
+        username: payload.username,
+        method: payload.email ? 'credentials_or_google' : 'unknown',
+      });
+    }
 
     try {
       await refreshOwnProfile();
@@ -2184,8 +2202,19 @@ export default function App() {
       })
       .catch(() => {
         api.clearAuthToken();
+        resetAnalyticsUser();
       });
   }, []);
+
+  useEffect(() => {
+    trackScreenView(currentScreen, {
+      public_profile_username: publicProfileUsername,
+      selected_place_id: selectedPlace?.id,
+      selected_event_id: selectedEvent?.id,
+      selected_traveler_id: selectedTraveler?.id,
+      active_location_id: activeLocationId,
+    });
+  }, [currentScreen, publicProfileUsername, selectedPlace?.id, selectedEvent?.id, selectedTraveler?.id, activeLocationId]);
 
   useEffect(() => {
     if (!isAuthenticated) return;
@@ -2437,6 +2466,8 @@ export default function App() {
             }}
             onLogout={async () => {
               await api.logout().catch(() => undefined);
+              resetAnalyticsUser();
+              trackEvent('Logged Out');
               setIsAuthenticated(false);
               showActionToast('Logged out');
               setCurrentScreen('discover-places');
