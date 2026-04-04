@@ -23,6 +23,7 @@ import {
   getNotificationSettings,
   getPrivacySettings,
   getProfileMe,
+  getPublicProfileByUsername,
   getSupport,
   updateMoment,
   updateNotificationSettings,
@@ -3436,6 +3437,24 @@ async function optionalAuth(req: AuthenticatedRequest, _res: express.Response, n
 app.get('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
   void getProfileMe(req.authUserId)
     .then((payload) => res.json(payload))
+    .catch((error) => handleError(res, error));
+});
+
+app.get('/api/profiles/:username/public', (req, res) => {
+  const username = req.params.username?.trim();
+  if (!username) {
+    res.status(400).json({ error: 'Username is required' });
+    return;
+  }
+
+  void getPublicProfileByUsername(username)
+    .then((payload) => {
+      if (!payload) {
+        res.status(404).json({ error: 'Profile not found' });
+        return;
+      }
+      res.json(payload);
+    })
     .catch((error) => handleError(res, error));
 });
 

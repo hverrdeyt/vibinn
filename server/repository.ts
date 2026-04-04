@@ -272,6 +272,66 @@ export async function getProfileMe(userId?: string) {
   };
 }
 
+export async function getPublicProfileByUsername(username: string) {
+  const normalizedUsername = username.trim().toLowerCase();
+  const user = await prisma.user.findFirst({
+    where: {
+      username: {
+        equals: normalizedUsername,
+        mode: 'insensitive',
+      },
+    },
+    include: {
+      badges: true,
+      flags: true,
+      moments: {
+        orderBy: { createdAt: 'desc' },
+        include: {
+          place: {
+            include: {
+              aiEnrichment: true,
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+          media: { orderBy: { sortOrder: 'asc' } },
+        },
+      },
+      collections: {
+        orderBy: { createdAt: 'desc' },
+        include: {
+          places: {
+            orderBy: { sortOrder: 'asc' },
+            include: {
+              place: {
+                include: {
+                  aiEnrichment: true,
+                  media: { orderBy: { sortOrder: 'asc' } },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!user) {
+    return null;
+  }
+
+  const moments = user.moments.map(mapMomentForClient);
+
+  return {
+    user: buildProfileUserWithMatch(user, moments),
+    collections: user.collections.map((collection) => ({
+      id: collection.id,
+      label: collection.title,
+      places: collection.places.map((item) => mapPlaceForClient(item.place)),
+    })),
+    moments,
+  };
+}
+
 export async function updateProfile(userId: string | undefined, payload: { displayName?: string; username?: string; bio?: string; avatarUrl?: string }) {
   const currentUser = await getCurrentUser(prisma, userId);
 

@@ -78,6 +78,13 @@ export const api = {
       moments: any[];
     }>('/api/profile/me');
   },
+  getPublicProfile(username: string) {
+    return request<{
+      user: any;
+      collections: Array<{ id: string; label: string; places: any[] }>;
+      moments: any[];
+    }>(`/api/profiles/${encodeURIComponent(username)}/public`);
+  },
   login(payload: AuthPayload) {
     return request<{ token: string; user: { id: string; displayName?: string; username: string; email?: string } }>('/api/auth/login', {
       method: 'POST',

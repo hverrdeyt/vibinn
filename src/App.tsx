@@ -102,7 +102,15 @@ const INVITE_UNLOCKED_KEY = 'vibecheck_invite_unlocked';
 const ONBOARDING_COMPLETED_KEY = 'vibecheck_onboarding_completed';
 const REDEEMED_INVITE_CODE_KEY = 'vibecheck_redeemed_invite_code';
 const APP_BASE_PATH = '/app';
-const PUBLIC_PROFILE_BASE_PATH = '/u';
+const LEGACY_PUBLIC_PROFILE_BASE_PATH = '/u';
+const RESERVED_TOP_LEVEL_PATHS = new Set([
+  'app',
+  'api',
+  'assets',
+  'favicon.ico',
+  'robots.txt',
+  'sitemap.xml',
+]);
 
 const VALID_INVITE_CODES = [
   'VIBE2026',
@@ -163,9 +171,17 @@ function parseAppRoute(pathname: string): { screen: Screen; publicProfileUsernam
     return { screen: 'discover-places' };
   }
 
-  if (normalizedPath.startsWith(`${PUBLIC_PROFILE_BASE_PATH}/`)) {
-    const username = decodeURIComponent(normalizedPath.slice(PUBLIC_PROFILE_BASE_PATH.length + 1)).trim();
+  if (normalizedPath.startsWith(`${LEGACY_PUBLIC_PROFILE_BASE_PATH}/`)) {
+    const username = decodeURIComponent(normalizedPath.slice(LEGACY_PUBLIC_PROFILE_BASE_PATH.length + 1)).trim();
     return { screen: 'public-profile', publicProfileUsername: username || null };
+  }
+
+  const directPublicProfileMatch = normalizedPath.match(/^\/([^/]+)$/);
+  if (directPublicProfileMatch) {
+    const username = decodeURIComponent(directPublicProfileMatch[1]).trim();
+    if (username && !RESERVED_TOP_LEVEL_PATHS.has(username.toLowerCase())) {
+      return { screen: 'public-profile', publicProfileUsername: username };
+    }
   }
 
   const appPath = normalizedPath.startsWith(`${APP_BASE_PATH}/`)
@@ -877,6 +893,8 @@ export default function App() {
     if (typeof window === 'undefined') return null;
     return parseAppRoute(window.location.pathname).publicProfileUsername ?? null;
   });
+  const [publicProfileUser, setPublicProfileUser] = useState<User | null>(null);
+  const [isPublicProfileLoading, setIsPublicProfileLoading] = useState(false);
   const [onboardingEntryMode, setOnboardingEntryMode] = useState<'invite' | 'preferences'>('invite');
   const [user, setUser] = useState<User>(MOCK_USER);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -1016,7 +1034,7 @@ export default function App() {
     let nextPath = '/';
     if (currentScreen === 'public-profile') {
       const username = publicProfileUsername ?? user.username;
-      nextPath = `${PUBLIC_PROFILE_BASE_PATH}/${encodeURIComponent(username)}`;
+      nextPath = `/${encodeURIComponent(username)}`;
     } else if (currentScreen !== 'landing') {
       nextPath = screenToAppPath(currentScreen);
     }
@@ -1025,6 +1043,48 @@ export default function App() {
       window.history.replaceState({}, '', nextPath);
     }
   }, [currentScreen, publicProfileUsername, user.username]);
+
+  useEffect(() => {
+    if (currentScreen !== 'public-profile') {
+      setIsPublicProfileLoading(false);
+      setPublicProfileUser(null);
+      return;
+    }
+
+    const localResolvedUser = resolvePublicProfileUser(publicProfileUsername, user);
+    if (localResolvedUser) {
+      setPublicProfileUser(localResolvedUser);
+      setIsPublicProfileLoading(false);
+      return;
+    }
+
+    if (!publicProfileUsername?.trim()) {
+      setPublicProfileUser(null);
+      setIsPublicProfileLoading(false);
+      return;
+    }
+
+    let isCancelled = false;
+    setIsPublicProfileLoading(true);
+
+    void api.getPublicProfile(publicProfileUsername)
+      .then((response) => {
+        if (isCancelled) return;
+        setPublicProfileUser(response.user as User);
+      })
+      .catch(() => {
+        if (isCancelled) return;
+        setPublicProfileUser(null);
+      })
+      .finally(() => {
+        if (isCancelled) return;
+        setIsPublicProfileLoading(false);
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentScreen, publicProfileUsername, user]);
 
   useEffect(() => {
     if (currentScreen === 'landing' || currentScreen === 'public-profile') return;
@@ -1561,7 +1621,7 @@ export default function App() {
   }, [isAuthenticated, currentScreen, selectedPlace?.id]);
 
   const renderScreen = () => {
-    const resolvedPublicProfileUser = resolvePublicProfileUser(publicProfileUsername, user);
+    const resolvedPublicProfileUser = publicProfileUser ?? resolvePublicProfileUser(publicProfileUsername, user);
 
     switch (currentScreen) {
       case 'landing':
@@ -2054,7 +2114,16 @@ export default function App() {
           />
         ) : null;
       case 'public-profile':
-        return resolvedPublicProfileUser ? (
+        return isPublicProfileLoading ? (
+          <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-6 text-center text-white">
+            <div className="rounded-[2rem] border border-white/10 bg-white/6 px-6 py-8">
+              <h1 className="text-2xl font-black tracking-tight">Loading profile</h1>
+              <p className="mt-3 text-sm font-medium leading-relaxed text-white/60">
+                Pulling this traveler&apos;s public travel card now.
+              </p>
+            </div>
+          </div>
+        ) : resolvedPublicProfileUser ? (
           <PublicProfile
             user={resolvedPublicProfileUser}
             onOpenApp={openApp}
