@@ -62,6 +62,9 @@ const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R
 const DISCOVERY_POOL_MIN_CANDIDATES = 80;
 const DISCOVERY_SEARCH_MIN_CANDIDATES = 18;
 const DISCOVERY_RESEED_INTERVAL_MS = 1000 * 60 * 60 * 24 * 7;
+const DISCOVERY_FORCE_REFRESH_MIN_INTERVAL_MS = 1000 * 60 * 60 * 12;
+const DISCOVERY_FORCE_REFRESH_MIN_CANDIDATES = 24;
+const DISCOVERY_SEARCH_RESEED_INTERVAL_MS = 1000 * 60 * 60 * 24;
 const placeEnrichmentInflight = new Map<string, Promise<{
   hook: string;
   description: string | null;
@@ -1071,6 +1074,10 @@ async function ensureLocationCandidatePool(
   const seededRecently = location.discoveryLastGoogleSyncAt
     ? (Date.now() - location.discoveryLastGoogleSyncAt.getTime()) < DISCOVERY_RESEED_INTERVAL_MS
     : false;
+  const forceRefreshAllowed = location.discoveryLastGoogleSyncAt
+    ? (Date.now() - location.discoveryLastGoogleSyncAt.getTime()) >= DISCOVERY_FORCE_REFRESH_MIN_INTERVAL_MS
+    : true;
+  const shouldBypassGoogleOnForcedRefresh = forceRefresh && cachedCount >= DISCOVERY_FORCE_REFRESH_MIN_CANDIDATES && !forceRefreshAllowed;
 
   if (
     !forceRefresh &&
@@ -1082,6 +1089,19 @@ async function ensureLocationCandidatePool(
         where: { id: location.id },
         data: {
           discoveryCandidateCount: cachedCount,
+        },
+      });
+    }
+    return;
+  }
+
+  if (shouldBypassGoogleOnForcedRefresh) {
+    if (location.discoveryCandidateCount !== cachedCount) {
+      await prisma.location.update({
+        where: { id: location.id },
+        data: {
+          discoveryCandidateCount: cachedCount,
+          discoverySeedVersion: 'city-pool-v2',
         },
       });
     }
@@ -1159,8 +1179,15 @@ async function getDiscoveryPlacesForUser(options: {
         options.locationLabel,
         options.locationType,
       )).filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery));
+      const location = await getOrCreateDiscoveryLocation(options.locationLabel, options.locationType);
+      const seededSearchRecently = location.discoveryLastGoogleSyncAt
+        ? (Date.now() - location.discoveryLastGoogleSyncAt.getTime()) < DISCOVERY_SEARCH_RESEED_INTERVAL_MS
+        : false;
 
-      if (cachedSearchMatches.length < DISCOVERY_SEARCH_MIN_CANDIDATES) {
+      if (
+        cachedSearchMatches.length < DISCOVERY_SEARCH_MIN_CANDIDATES &&
+        !seededSearchRecently
+      ) {
         await seedDiscoverySearchCandidates(
           options.locationLabel,
           options.locationType,
