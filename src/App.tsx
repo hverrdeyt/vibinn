@@ -1317,6 +1317,12 @@ export default function App() {
     return url.toString();
   };
 
+  const buildPublicProfileShareUrl = (username?: string) => {
+    const resolvedUsername = username ?? user.username;
+    if (typeof window === 'undefined') return `/${encodeURIComponent(resolvedUsername)}`;
+    return `${window.location.origin}/${encodeURIComponent(resolvedUsername)}`;
+  };
+
   const openShareSheet = (input: { url: string; title: string; text: string }) => {
     setShareSheetState(input);
   };
@@ -1846,7 +1852,6 @@ export default function App() {
             bookmarkedPlaces={bookmarkedPlaces}
             savedLocations={savedLocations}
             onNavigate={(s) => setCurrentScreen(s)}
-            onOpenPublicProfile={() => openPublicProfile(user.username)}
             onSavePlace={(placeToSave, nextActive) => syncBookmarkState(placeToSave, nextActive)}
             onSelectPlace={(p) => {
               setSelectedPlace(p);
@@ -1858,6 +1863,13 @@ export default function App() {
             }}
             customCollections={customCollections}
             onEditProfile={() => setCurrentScreen('edit-profile')}
+            onShareProfile={() => {
+              openShareSheet({
+                url: buildPublicProfileShareUrl(user.username),
+                title: user.displayName ?? user.username,
+                text: `Take a look at my travel profile on Vibinn: @${user.username}`,
+              });
+            }}
             onEditMoment={(place) => {
               const momentId = myMoments.find((moment) => moment.placeId === place.id)?.id ?? null;
               setEditableMomentPlace(place);
@@ -2157,6 +2169,13 @@ export default function App() {
             onOpenCollection={(collection) => {
               setSelectedCollection(collection);
               setCurrentScreen('collection-detail');
+            }}
+            onShareProfile={() => {
+              openShareSheet({
+                url: buildPublicProfileShareUrl(selectedTraveler.username),
+                title: selectedTraveler.displayName ?? selectedTraveler.username,
+                text: `Check out this traveler on Vibinn: @${selectedTraveler.username}`,
+              });
             }}
           />
         ) : null;
@@ -4395,7 +4414,7 @@ function Profile({
   bookmarkedPlaces,
   savedLocations,
   onNavigate,
-  onOpenPublicProfile,
+  onShareProfile,
   onSavePlace,
   onSelectPlace,
   onOpenCollection,
@@ -4407,7 +4426,7 @@ function Profile({
   bookmarkedPlaces: Place[];
   savedLocations: SavedLocationOption[];
   onNavigate: (s: Screen) => void;
-  onOpenPublicProfile: () => void;
+  onShareProfile: () => void;
   onSavePlace: (place: Place, nextActive: boolean) => Promise<boolean>;
   onSelectPlace: (place: Place) => void;
   onOpenCollection: (collection: { label: string; places: Place[] }) => void;
@@ -4424,16 +4443,15 @@ function Profile({
   const [vibedPlaceIds, setVibedPlaceIds] = useState<string[]>([]);
   const [sharedPlaceIds, setSharedPlaceIds] = useState<string[]>([]);
   const [profileCommentCounts, setProfileCommentCounts] = useState<Record<string, number>>({});
+  const [profileVibinCount, setProfileVibinCount] = useState(0);
+  const [followersCount, setFollowersCount] = useState(0);
   const [profileToast, setProfileToast] = useState<string | null>(null);
   const ownPlaces = user.travelHistory.flatMap((history) => history.places || []);
   const uniqueBookmarkedPlaces = bookmarkedPlaces.filter((place, index, allPlaces) => (
     allPlaces.findIndex((candidate) => candidate.id === place.id) === index
   ));
   const travelerSummary = `${ownPlaces.length} places • ${user.stats.cities} cities • ${user.stats.countries} countries`;
-  const displayFlags = (user.flags?.length ? user.flags : [
-    ...deriveFlagsFromTravelHistory(user.travelHistory),
-    ...savedLocations.map((location) => inferFlagFromLabel(location.label)).filter(Boolean) as string[],
-  ].filter((flag, index, list) => list.indexOf(flag) === index)).slice(0, 5);
+  const displayFlags = (user.flags?.length ? user.flags : deriveFlagsFromTravelHistory(user.travelHistory)).slice(0, 5);
   const momentCollections = customCollections.filter((collection) => collection.places.length > 0);
   const cityCollections = user.travelHistory.filter((history) => (history.places ?? []).length > 0);
   const groupedByTime = Object.values(
@@ -4476,6 +4494,23 @@ function Profile({
       });
   }, [commentsPlace]);
 
+  useEffect(() => {
+    const placeIds = ownPlaces.map((place) => place.id);
+    void api.getInteractionState({
+      placeIds,
+      momentIds: ownPlaces.map((place) => place.momentId).filter(Boolean) as string[],
+      profileIds: [user.id],
+    })
+      .then((response) => {
+        setSavedPlaceIds(response.bookmarkedPlaceIds);
+        setVibedPlaceIds([...response.vibedPlaceIds, ...response.vibedMomentIds]);
+        setProfileCommentCounts({ ...response.placeCommentCounts, ...response.momentCommentCounts });
+        setProfileVibinCount(response.profileVibinCounts[user.id] ?? 0);
+        setFollowersCount(response.profileFollowerCounts[user.id] ?? 0);
+      })
+      .catch(() => undefined);
+  }, [ownPlaces, user.id]);
+
   return (
     <div className="bg-zinc-950 min-h-screen pb-24 text-white">
       <div className="px-4 pb-10 pt-3">
@@ -4489,7 +4524,7 @@ function Profile({
           </button>
           <button
             type="button"
-            onClick={onOpenPublicProfile}
+            onClick={onShareProfile}
             className="rounded-full p-3 text-white transition hover:bg-white/8"
             aria-label="Share public profile"
           >
@@ -4538,6 +4573,17 @@ function Profile({
             </div>
           </div>
 
+          {user.descriptor ? (
+            <div className="mt-6 rounded-[1.5rem] border border-accent/25 bg-accent/10 px-4 py-4">
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-accent/80">
+                Travel taste
+              </div>
+              <p className="mt-1 text-sm font-semibold leading-relaxed text-accent">
+                {user.descriptor}
+              </p>
+            </div>
+          ) : null}
+
           <div className="mt-6 rounded-[2rem] bg-white/8 p-4 backdrop-blur-sm">
             <p className="text-sm font-semibold leading-relaxed text-white/80">
               Your profile is where moments, saves, and vibin stack into a public taste graph.
@@ -4568,11 +4614,11 @@ function Profile({
               <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">saved places</div>
             </div>
             <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
-              <div className="text-lg font-black text-white">{42 + user.stats.trips}</div>
+              <div className="text-lg font-black text-white">{profileVibinCount}</div>
               <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">vibin</div>
             </div>
             <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
-              <div className="text-lg font-black text-white">{user.stats.trips + 18}</div>
+              <div className="text-lg font-black text-white">{followersCount}</div>
               <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">followers</div>
             </div>
           </div>
@@ -7666,6 +7712,7 @@ function TravelerProfile({
   onSelectPlace,
   onExploreMoreTravelers,
   onOpenCollection,
+  onShareProfile,
 }: {
   user: User,
   onBack: () => void,
@@ -7673,6 +7720,7 @@ function TravelerProfile({
   onSelectPlace: (p: Place) => void,
   onExploreMoreTravelers: () => void,
   onOpenCollection: (collection: { label: string; places: Place[] }) => void,
+  onShareProfile: () => void,
 }) {
   const [activeTab, setActiveTab] = useState<'moments' | 'saved' | 'vibe'>('moments');
   const [momentsFilter, setMomentsFilter] = useState<'city' | 'time'>('city');
@@ -7764,6 +7812,7 @@ function TravelerProfile({
           </button>
           <button
             type="button"
+            onClick={onShareProfile}
             className="rounded-full p-3 text-white transition hover:bg-white/8"
             aria-label="Share traveler profile"
           >
@@ -7795,6 +7844,16 @@ function TravelerProfile({
                   <h1 className="text-2xl font-black tracking-tighter">{user.username}</h1>
                   <p className="text-sm font-black text-white/60">@{user.username}</p>
                   <p className="mt-1 text-white/65 font-medium leading-tight">{user.bio}</p>
+                  {user.descriptor ? (
+                    <div className="mt-3 rounded-[1.25rem] border border-accent/25 bg-accent/10 px-3 py-3">
+                      <div className="text-[10px] font-black uppercase tracking-[0.18em] text-accent/80">
+                        Travel taste
+                      </div>
+                      <p className="mt-1 max-w-[22rem] text-sm font-semibold leading-relaxed text-accent">
+                        {user.descriptor}
+                      </p>
+                    </div>
+                  ) : null}
                 </div>
                 {user.matchScore ? (
                   <div className="shrink-0 rounded-full bg-accent px-3 py-1.5 text-xs font-black text-dark">
@@ -7825,7 +7884,7 @@ function TravelerProfile({
             </div>
           </div>
 
-          {matchSummary ? (
+          {!user.descriptor && matchSummary ? (
             <div className="mt-6 rounded-[2rem] bg-white/8 p-4 backdrop-blur-sm">
               <p className="text-sm font-semibold leading-relaxed text-white/80">
                 {matchSummary}
@@ -8351,6 +8410,12 @@ function PublicProfile({ user, onOpenApp }: { user: User; onOpenApp: () => void 
           <div>
             <h1 className="text-4xl font-black tracking-tighter mb-2">@{user.username}</h1>
             <p className="text-white/65 text-lg font-medium max-w-md">{user.bio}</p>
+            {user.descriptor ? (
+              <div className="mt-4 max-w-xl rounded-[1.5rem] border border-accent/25 bg-accent/10 px-4 py-4">
+                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-accent/80">Travel taste</div>
+                <p className="mt-1 text-base font-semibold leading-relaxed text-accent">{user.descriptor}</p>
+              </div>
+            ) : null}
           </div>
           <button className="p-3 bg-white/8 rounded-xl hover:bg-white/12 transition-colors">
             <MoreHorizontal size={24} />

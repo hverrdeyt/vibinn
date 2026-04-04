@@ -1,6 +1,7 @@
 import type { Place as PrismaPlace, Prisma, PrismaClient } from '@prisma/client';
 import { findPlaceById, findTravelerById, store, type MomentRecord } from './store';
 import { prisma, withPrismaFallback } from './prisma';
+import { generateTravelerProfileDescriptor } from './travelerProfileEnrichment';
 
 const supportFaqs = [
   'How do bookmarks affect my recommendations?',
@@ -268,6 +269,17 @@ export async function getProfileMe(userId?: string) {
     include: {
       badges: true,
       flags: true,
+      bookmarks: {
+        orderBy: { createdAt: 'desc' },
+        include: {
+          place: {
+            include: {
+              aiEnrichment: true,
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+        },
+      },
       moments: {
         orderBy: { createdAt: 'desc' },
         include: {
@@ -300,9 +312,15 @@ export async function getProfileMe(userId?: string) {
   });
 
   const moments = user.moments.map(mapMomentForClient);
+  const descriptor = await generateTravelerProfileDescriptor({
+    userId: user.id,
+    displayName: user.displayName,
+    moments,
+    bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+  });
 
   return {
-    user: buildProfileUserWithMatch(user, moments),
+    user: buildProfileUserWithMatch(user, moments, undefined, { descriptor }),
     collections: user.collections.map((collection) => ({
       id: collection.id,
       label: collection.title,
@@ -324,6 +342,17 @@ export async function getPublicProfileByUsername(username: string) {
     include: {
       badges: true,
       flags: true,
+      bookmarks: {
+        orderBy: { createdAt: 'desc' },
+        include: {
+          place: {
+            include: {
+              aiEnrichment: true,
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+        },
+      },
       moments: {
         orderBy: { createdAt: 'desc' },
         include: {
@@ -360,9 +389,15 @@ export async function getPublicProfileByUsername(username: string) {
   }
 
   const moments = user.moments.map(mapMomentForClient);
+  const descriptor = await generateTravelerProfileDescriptor({
+    userId: user.id,
+    displayName: user.displayName,
+    moments,
+    bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+  });
 
   return {
-    user: buildProfileUserWithMatch(user, moments),
+    user: buildProfileUserWithMatch(user, moments, undefined, { descriptor }),
     collections: user.collections.map((collection) => ({
       id: collection.id,
       label: collection.title,
@@ -495,6 +530,36 @@ export async function getTravelerDiscovery(userId?: string) {
     : [];
   const fallbackTravelerIds = new Set(fallbackTravelers.map((traveler) => traveler.id));
 
+  const followedTravelerDescriptors = await Promise.all(
+    followedUsers.map(async (item) => {
+      const descriptor = await generateTravelerProfileDescriptor({
+        userId: item.targetUser.id,
+        displayName: item.targetUser.displayName,
+        moments: item.targetUser.moments.map(mapMomentForClient),
+        bookmarkedPlaces: [],
+      });
+      return [item.targetUser.id, descriptor] as const;
+    }),
+  );
+
+  const similarTravelerDescriptors = await Promise.all(
+    (similarUsers.length > 0
+      ? similarUsers.map((item) => item.traveler)
+      : fallbackTravelers
+    ).map(async (traveler) => {
+      const descriptor = await generateTravelerProfileDescriptor({
+        userId: traveler.id,
+        displayName: traveler.displayName,
+        moments: traveler.moments.map(mapMomentForClient),
+        bookmarkedPlaces: [],
+      });
+      return [traveler.id, descriptor] as const;
+    }),
+  );
+
+  const followedDescriptorMap = new Map(followedTravelerDescriptors);
+  const similarDescriptorMap = new Map(similarTravelerDescriptors);
+
   return {
     followedTravelers: followedUsers.map((item) =>
       buildProfileUserWithMatch(
@@ -503,6 +568,7 @@ export async function getTravelerDiscovery(userId?: string) {
         undefined,
         {
           vibinCount: vibinMap.get(item.targetUser.id) ?? 0,
+          descriptor: followedDescriptorMap.get(item.targetUser.id),
         },
       ),
     ),
@@ -528,7 +594,8 @@ export async function getTravelerDiscovery(userId?: string) {
         {
           relevanceReason: item.relevanceReason,
           vibinCount: vibinMap.get(item.user.id) ?? 0,
-          descriptor: similarUsers.length === 0 && fallbackTravelerIds.has(item.user.id) ? 'community traveler' : undefined,
+          descriptor: similarDescriptorMap.get(item.user.id)
+            ?? (similarUsers.length === 0 && fallbackTravelerIds.has(item.user.id) ? 'community traveler' : undefined),
         },
       ),
     ),
@@ -541,6 +608,17 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
     include: {
       badges: true,
       flags: true,
+      bookmarks: {
+        orderBy: { createdAt: 'desc' },
+        include: {
+          place: {
+            include: {
+              aiEnrichment: true,
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+        },
+      },
       moments: {
         orderBy: { createdAt: 'desc' },
         include: {
@@ -558,7 +636,9 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
 
   if (!traveler) return null;
 
-  const [similarity, vibinCount] = await Promise.all([
+  const moments = traveler.moments.map(mapMomentForClient);
+
+  const [similarity, vibinCount, descriptor] = await Promise.all([
     prisma.travelerSimilarity.findFirst({
       where: {
         travelerId,
@@ -572,15 +652,22 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
         targetId: travelerId,
       },
     }),
+    generateTravelerProfileDescriptor({
+      userId: traveler.id,
+      displayName: traveler.displayName,
+      moments,
+      bookmarkedPlaces: traveler.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+    }),
   ]);
 
   return buildProfileUserWithMatch(
     traveler,
-    traveler.moments.map(mapMomentForClient),
+    moments,
     similarity?.matchScore,
     {
       relevanceReason: similarity?.relevanceReason,
       vibinCount,
+      descriptor,
     },
   );
 }
