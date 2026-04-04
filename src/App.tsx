@@ -1451,8 +1451,18 @@ export default function App() {
       return;
     }
 
+    const shouldRefreshDiscoveryImmediately = authReturnScreen === 'discover-places' && currentScreen === 'discover-places';
     forceDiscoveryRefreshAfterAuthRef.current = authReturnScreen === 'discover-places';
     setCurrentScreen(authReturnScreen);
+
+    if (shouldRefreshDiscoveryImmediately) {
+      setDiscoveryPage(1);
+      setDiscoveryHasMore(true);
+      setDiscoveryPlaces([]);
+      setDiscoveryEvents([]);
+      void loadDiscoveryPlaces(1, 'reset', { refresh: true });
+      void loadDiscoveryEvents();
+    }
   };
 
   useEffect(() => {
