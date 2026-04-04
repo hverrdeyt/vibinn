@@ -77,6 +77,24 @@ type AuthenticatedRequest = express.Request & {
   authUserId?: string;
 };
 
+type BookmarkPlaceSnapshot = {
+  name?: string;
+  location?: string;
+  address?: string;
+  category?: string;
+  image?: string;
+  images?: string[];
+  tags?: string[];
+  description?: string;
+  hook?: string;
+  attitudeLabel?: string;
+  bestTime?: string;
+  rating?: number;
+  priceLevel?: number;
+  latitude?: number;
+  longitude?: number;
+};
+
 type InteractionTargetType = 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
 
 function handleError(res: express.Response, error: unknown) {
@@ -1009,6 +1027,85 @@ function getFallbackDiscoveryPlaces(locationLabel: string, searchQuery?: string)
   const normalizedSearchQuery = normalizeDiscoverySearchQuery(searchQuery);
 
   return mappedPlaces.filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery));
+}
+
+function splitDiscoveryLocation(location?: string | null) {
+  const [city, country] = (location ?? '')
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return {
+    city: city || null,
+    country: country || null,
+  };
+}
+
+async function ensureBookmarkablePlaceExists(placeId: string, snapshot?: BookmarkPlaceSnapshot | null) {
+  const existingPlace = await prisma.place.findUnique({
+    where: { id: placeId },
+    select: { id: true },
+  });
+
+  if (existingPlace) return;
+
+  const mockPlace = MOCK_PLACES.find((place) => place.id === placeId);
+  const source = snapshot ?? mockPlace;
+  if (!source?.name) return;
+
+  const { city, country } = splitDiscoveryLocation(source.location);
+  const tags = source.tags?.filter(Boolean) ?? [];
+  const images = (source.images?.filter(Boolean) ?? (source.image ? [source.image] : [])).slice(0, 6);
+
+  try {
+    await prisma.place.create({
+      data: {
+        id: placeId,
+        name: source.name,
+        address: source.address?.trim() || null,
+        city,
+        country,
+        category: normalizePlaceCategory(source.category ?? 'recommended spot', tags),
+        latitude: typeof source.latitude === 'number' ? source.latitude : null,
+        longitude: typeof source.longitude === 'number' ? source.longitude : null,
+        rating: typeof source.rating === 'number' ? source.rating : null,
+        priceLevel: typeof source.priceLevel === 'number' ? source.priceLevel : null,
+        primaryImageUrl: source.image?.trim() || images[0] || null,
+        media: images.length > 0
+          ? {
+              create: images.map((url, index) => ({
+                url,
+                mediaType: 'image',
+                sortOrder: index,
+                source: mockPlace ? 'fallback-mock' : 'bookmark-snapshot',
+              })),
+            }
+          : undefined,
+        aiEnrichment: source.description || source.hook || tags.length > 0 || source.attitudeLabel || source.bestTime
+          ? {
+              create: {
+                hook: source.hook?.trim() || source.name,
+                description: source.description?.trim() || null,
+                vibeTags: tags,
+                attitudeLabel: source.attitudeLabel?.trim() || null,
+                bestTime: source.bestTime?.trim() || null,
+              },
+            }
+          : undefined,
+      },
+    });
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: string }).code === 'P2002'
+    ) {
+      return;
+    }
+
+    throw error;
+  }
 }
 
 async function seedDiscoverySearchCandidates(
@@ -3298,7 +3395,7 @@ app.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS');
 
   if (req.method === 'OPTIONS') {
     res.status(204).send();
@@ -4275,11 +4372,13 @@ app.patch('/api/preferences', requireAuth, async (req: AuthenticatedRequest, res
 
 app.post('/api/bookmarks', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const { placeId } = req.body as { placeId?: string };
+    const { placeId, place } = req.body as { placeId?: string; place?: BookmarkPlaceSnapshot };
     if (!placeId) {
       res.status(400).json({ error: 'placeId is required' });
       return;
     }
+
+    await ensureBookmarkablePlaceExists(placeId, place ?? null);
 
     await prisma.bookmark.upsert({
       where: {

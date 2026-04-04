@@ -1950,7 +1950,26 @@ export default function App() {
 
     try {
       if (nextActive) {
-        const response = await api.bookmarkPlace({ placeId: place.id });
+        const response = await api.bookmarkPlace({
+          placeId: place.id,
+          place: {
+            name: place.name,
+            location: place.location,
+            address: place.address,
+            category: place.category,
+            image: place.image,
+            images: place.images,
+            tags: place.tags,
+            description: place.description,
+            hook: place.hook,
+            attitudeLabel: place.attitudeLabel,
+            bestTime: place.bestTime,
+            rating: place.rating,
+            priceLevel: place.priceLevel,
+            latitude: place.latitude,
+            longitude: place.longitude,
+          },
+        });
         setBookmarkedPlaceIds(response.bookmarkedPlaceIds);
         setBookmarkedPlaces((prev) => (prev.some((item) => item.id === place.id) ? prev : [place, ...prev]));
 

@@ -295,7 +295,26 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
-  bookmarkPlace(payload: { placeId: string }) {
+  bookmarkPlace(payload: {
+    placeId: string;
+    place?: {
+      name?: string;
+      location?: string;
+      address?: string;
+      category?: string;
+      image?: string;
+      images?: string[];
+      tags?: string[];
+      description?: string;
+      hook?: string;
+      attitudeLabel?: string;
+      bestTime?: string;
+      rating?: number;
+      priceLevel?: number;
+      latitude?: number;
+      longitude?: number;
+    };
+  }) {
     return request<{ bookmarkedPlaceIds: string[] }>('/api/bookmarks', {
       method: 'POST',
       body: JSON.stringify(payload),
