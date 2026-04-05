@@ -30,7 +30,7 @@ export interface PlaceDetailData {
   name: string;
   city: string;
   country: string;
-  distanceFromUserKm?: number;
+  distanceFromUserMiles?: number;
   address?: string;
   category: string;
   images: string[];
@@ -144,8 +144,8 @@ export default function PlaceDetailPage({
   const hasTravelerMoments = Boolean(data.travelerMoments?.length);
   const visibleFallbackTravelers = (data.fallbackTravelers ?? []).filter((traveler) => (traveler.matchScore ?? 0) >= 80);
   const shortAddress = data.address?.split(',')[0]?.trim() || data.city;
-  const heroMeta = typeof data.distanceFromUserKm === 'number'
-    ? `${shortAddress} • ${data.distanceFromUserKm} km away`
+  const heroMeta = typeof data.distanceFromUserMiles === 'number'
+    ? `${shortAddress} • ${data.distanceFromUserMiles} mi away`
     : shortAddress;
 
   return (
@@ -293,8 +293,8 @@ export default function PlaceDetailPage({
                 </span>
               </InfoChip>
             ) : null}
-            {typeof data.distanceFromUserKm === 'number' ? (
-              <InfoChip>{data.distanceFromUserKm} km away</InfoChip>
+            {typeof data.distanceFromUserMiles === 'number' ? (
+              <InfoChip>{data.distanceFromUserMiles} mi away</InfoChip>
             ) : null}
             {data.bestTime ? <InfoChip>Best time: {data.bestTime}</InfoChip> : null}
           </div>
@@ -535,7 +535,7 @@ export default function PlaceDetailPage({
                 </div>
               ) : null}
 
-              {typeof data.distanceFromUserKm !== 'number' ? (
+              {typeof data.distanceFromUserMiles !== 'number' ? (
                 <div className="rounded-[20px] border border-white/10 bg-black/20 p-4">
                   <div className="text-[10px] font-black uppercase tracking-[0.2em] text-white/35">Distance</div>
                   {locationPermission === 'denied' ? (

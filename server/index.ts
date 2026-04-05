@@ -1035,7 +1035,16 @@ function getFallbackDiscoveryPlaces(locationLabel: string, searchQuery?: string)
   const mappedPlaces = locationMatches.map(mapMockPlaceForDiscovery);
   const normalizedSearchQuery = normalizeDiscoverySearchQuery(searchQuery);
 
-  return mappedPlaces.filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery));
+  return mappedPlaces
+    .filter((place) => !isServiceLikePlace({
+      name: place.name,
+      tags: place.tags,
+      category: place.category,
+      hook: place.hook,
+      description: place.description,
+      whyYoullLikeIt: place.whyYoullLikeIt,
+    }))
+    .filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery));
 }
 
 function splitDiscoveryLocation(location?: string | null) {
@@ -1346,6 +1355,7 @@ async function getDiscoveryPlacesForUser(options: {
   let rankedPlaces = places
     .filter((place) => !context.dismissedPlaceIds.has(place.id))
     .filter((place) => !isServiceLikePlace({
+      name: place.name,
       tags: place.tags,
       category: place.category,
       hook: place.hook,
@@ -1526,6 +1536,15 @@ async function getDiscoveryPlacesForUser(options: {
       console.error('Background user place score refresh failed', error);
     });
   }
+
+  rankedPlaces = rankedPlaces.filter((place) => !isServiceLikePlace({
+    name: place.name,
+    tags: place.tags,
+    category: place.category,
+    hook: place.hook,
+    description: place.description,
+    whyYoullLikeIt: place.whyYoullLikeIt,
+  }));
 
   if (!normalizedSearchQuery && page === 1) {
     rankedPlaces = applyRankedVariety(
@@ -1720,6 +1739,7 @@ function normalizeKeyword(value: string) {
 }
 
 function isServiceLikePlace(place: {
+  name?: string | null;
   tags: string[];
   category?: string | null;
   hook?: string | null;
@@ -1727,6 +1747,7 @@ function isServiceLikePlace(place: {
   whyYoullLikeIt?: string[] | null;
 }) {
   const haystack = [
+    place.name ?? '',
     place.category ?? '',
     place.hook ?? '',
     place.description ?? '',
@@ -1757,9 +1778,52 @@ function isServiceLikePlace(place: {
     'bank',
     'accounting',
     'real estate',
+    'realtor',
+    'broker',
+    'property management',
+    'clinic',
+    'hospital',
+    'physician',
+    'audiology',
+    'hearing',
+    'cell phone repair',
+    'phone repair',
+    'computer repair',
+    'screen repair',
   ];
 
-  return blockedMatchers.some((matcher) => haystack.includes(matcher));
+  if (blockedMatchers.some((matcher) => haystack.includes(matcher))) {
+    return true;
+  }
+
+  const professionalSuffixPatterns = [
+    /\bmd\b/,
+    /\bm\.d\.\b/,
+    /\bdds\b/,
+    /\bdmd\b/,
+    /\bdo\b/,
+    /\baud\b/,
+    /\besq\b/,
+    /\bphd\b/,
+    /\bod\b/,
+    /\brn\b/,
+  ];
+
+  if (professionalSuffixPatterns.some((pattern) => pattern.test(haystack))) {
+    return true;
+  }
+
+  const personServicePatterns = [
+    /\bdr\b/,
+    /\bdoctor\b/,
+    /\brealtor\b/,
+    /\battorney\b/,
+    /\blawyer\b/,
+    /\baudiologist\b/,
+    /\bphysician\b/,
+  ];
+
+  return personServicePatterns.some((pattern) => pattern.test(haystack));
 }
 
 const PLACE_INTEREST_MATCHERS: Record<string, string[]> = {
@@ -4252,6 +4316,47 @@ app.get('/api/discovery/places', (req: AuthenticatedRequest, res) => {
     seed,
   })
     .then((payload) => res.json(payload))
+    .catch((error) => handleError(res, error));
+});
+
+app.get('/api/discovery/places/count', (req: AuthenticatedRequest, res) => {
+  const location = String(req.query.location || '').trim();
+  const type = String(req.query.type || '').trim();
+  const searchQuery = String(req.query.q || '').trim();
+  const selectedVibe = String(req.query.vibe || '').trim() || null;
+  const forceRefresh = String(req.query.refresh || '').trim() === '1';
+  const seed = String(req.query.seed || '').trim();
+  const selectedInterests = String(req.query.interests || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (!location) {
+    res.json({
+      location: null,
+      total: 0,
+    });
+    return;
+  }
+
+  void getDiscoveryPlacesForUser({
+    userId: req.authUserId,
+    locationLabel: location,
+    locationType: type,
+    searchQuery,
+    selectedInterests,
+    selectedVibe,
+    page: 1,
+    limit: 1,
+    forceRefresh,
+    seed,
+  })
+    .then((payload) => {
+      res.json({
+        location,
+        total: payload.pagination.total,
+      });
+    })
     .catch((error) => handleError(res, error));
 });
 

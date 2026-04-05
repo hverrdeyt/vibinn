@@ -1145,6 +1145,77 @@ function getDisplayPlaceCategory(place: Pick<Place, 'category' | 'tags'>) {
   return 'recommended spot';
 }
 
+function shouldExcludeDiscoveryPlace(place: Pick<Place, 'name' | 'category' | 'tags' | 'hook' | 'description' | 'whyYoullLikeIt'>) {
+  const haystack = [
+    place.name,
+    place.category,
+    place.hook,
+    place.description,
+    ...(place.whyYoullLikeIt ?? []),
+    ...(place.tags ?? []),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+
+  const blockedMatchers = [
+    'service',
+    'services',
+    'repair',
+    'cell phone repair',
+    'phone repair',
+    'computer repair',
+    'screen repair',
+    'lawyer',
+    'attorney',
+    'legal service',
+    'doctor',
+    'medical',
+    'physician',
+    'clinic',
+    'hospital',
+    'realtor',
+    'broker',
+    'property management',
+    'audiology',
+    'hearing',
+    'salon',
+    'spa',
+    'barber',
+    'insurance',
+    'bank',
+    'accounting',
+  ];
+
+  if (blockedMatchers.some((matcher) => haystack.includes(matcher))) {
+    return true;
+  }
+
+  return [
+    /\bmd\b/,
+    /\bm\.d\.\b/,
+    /\bdds\b/,
+    /\bdmd\b/,
+    /\bdo\b/,
+    /\baud\b/,
+    /\besq\b/,
+    /\bphd\b/,
+    /\bod\b/,
+    /\brn\b/,
+  ].some((pattern) => pattern.test(haystack));
+}
+
+function hasRenderableDiscoveryImage(place: Pick<Place, 'image' | 'images'>) {
+  const candidates = [place.image, ...(place.images ?? [])]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .map((value) => value.trim());
+
+  if (candidates.length === 0) return false;
+
+  return candidates.some((value) => !value.includes('placehold.co/800x1000/111111/ffffff?text=Place'));
+}
+
 function getDisplayEventCategory(event: Pick<EventItem, 'category' | 'tags'>) {
   const trimmedCategory = event.category?.trim();
   if (trimmedCategory && trimmedCategory.toLowerCase() !== 'undefined') return trimmedCategory;
@@ -1287,6 +1358,20 @@ function resolvePublicProfileUser(username: string | null | undefined, currentUs
   return SIMILAR_TRAVELERS.find((traveler) => traveler.username.toLowerCase() === normalizedUsername) ?? null;
 }
 
+function getInitialDiscoveryRotationSeed() {
+  if (typeof window === 'undefined') return 0;
+
+  const existingSeed = window.sessionStorage.getItem('vibinn:discovery-rotation-seed');
+  if (existingSeed) {
+    const parsedSeed = Number.parseInt(existingSeed, 10);
+    if (Number.isFinite(parsedSeed)) return parsedSeed;
+  }
+
+  const nextSeed = Math.floor(Math.random() * 100000);
+  window.sessionStorage.setItem('vibinn:discovery-rotation-seed', String(nextSeed));
+  return nextSeed;
+}
+
 export default function App() {
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
   const [currentScreen, setCurrentScreen] = useState<Screen>(() => {
@@ -1381,7 +1466,7 @@ export default function App() {
   const [isRequestingDeviceLocation, setIsRequestingDeviceLocation] = useState(false);
   const hasRequestedDeviceLocationRef = useRef(false);
   const [discoveryPlaces, setDiscoveryPlaces] = useState<Place[]>([]);
-  const discoveryRotationSeedRef = useRef(0);
+  const discoveryRotationSeedRef = useRef(getInitialDiscoveryRotationSeed());
   const [discoverySearchInput, setDiscoverySearchInput] = useState('');
   const [discoverySearchQuery, setDiscoverySearchQuery] = useState('');
   const [discoveryEvents, setDiscoveryEvents] = useState<EventItem[]>([]);
@@ -1411,6 +1496,9 @@ export default function App() {
   const previousScreenRef = useRef<Screen>('onboarding');
   const screenScrollPositionsRef = useRef<Partial<Record<Screen, number>>>({});
   const discoveryScrollRestoreRef = useRef<number | null>(null);
+  const pendingDiscoveryScrollRestoreRef = useRef<number | null>(null);
+  const pendingDiscoveryPlaceAnchorRef = useRef<string | null>(null);
+  const pendingDiscoveryViewportOffsetRef = useRef<number | null>(null);
   const skipNextDiscoveryVarietyRef = useRef(false);
   const suppressNextDiscoveryAutoloadRef = useRef(false);
   const previousPreferenceKeyRef = useRef('');
@@ -1425,12 +1513,21 @@ export default function App() {
     if (typeof window === 'undefined') return;
 
     const previousScreen = previousScreenRef.current;
-    screenScrollPositionsRef.current[previousScreen] = window.scrollY;
+    const previousScreenScrollTop =
+      previousScreen === 'discover-places' && discoveryScrollRestoreRef.current !== null
+        ? discoveryScrollRestoreRef.current
+        : window.scrollY;
+    screenScrollPositionsRef.current[previousScreen] = previousScreenScrollTop;
+
+    const isDiscoveryOverlayScreen =
+      (currentScreen === 'place-detail' && placeDetailReturnScreen === 'discover-places')
+      || currentScreen === 'event-detail';
 
     const shouldRestorePreviousPosition =
       currentScreen === 'discover-places' ||
       currentScreen === 'discover-travelers' ||
-      currentScreen === 'bookmarks';
+      currentScreen === 'bookmarks' ||
+      isDiscoveryOverlayScreen;
 
     const targetScrollTop = shouldRestorePreviousPosition
       ? (screenScrollPositionsRef.current[currentScreen] ?? 0)
@@ -1452,12 +1549,66 @@ export default function App() {
     };
   }, [
     currentScreen,
-    selectedPlace?.id,
-    selectedEvent?.id,
-    selectedTraveler?.id,
-    selectedCollection?.label,
-    editableMomentId,
+    placeDetailReturnScreen,
   ]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (currentScreen !== 'discover-places') return;
+
+    const targetScrollTop = pendingDiscoveryScrollRestoreRef.current;
+    const targetPlaceId = pendingDiscoveryPlaceAnchorRef.current;
+    if (targetScrollTop === null && !targetPlaceId) return;
+
+    let attemptCount = 0;
+    let timeoutId: number | null = null;
+
+    const tryRestore = () => {
+      const anchorElement = targetPlaceId
+        ? document.querySelector<HTMLElement>(`[data-discovery-place-id="${CSS.escape(targetPlaceId)}"]`)
+        : null;
+
+      if (anchorElement) {
+        const nextTop = Math.max(
+          0,
+          anchorElement.getBoundingClientRect().top + window.scrollY - Math.max(116, window.innerHeight * 0.18),
+        );
+        window.scrollTo({ top: nextTop, left: 0, behavior: 'auto' });
+        document.documentElement.scrollTop = nextTop;
+        document.body.scrollTop = nextTop;
+      } else if (targetScrollTop !== null) {
+        const maxScrollableTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+        const nextTop = Math.min(targetScrollTop, maxScrollableTop);
+        window.scrollTo({ top: nextTop, left: 0, behavior: 'auto' });
+        document.documentElement.scrollTop = nextTop;
+        document.body.scrollTop = nextTop;
+      }
+
+      const anchorTop = anchorElement?.getBoundingClientRect().top ?? null;
+      const maxScrollableTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+      const hasEnoughHeight = targetScrollTop === null || maxScrollableTop >= targetScrollTop - 4;
+      const isRestored = anchorElement
+        ? Math.abs(anchorTop - Math.max(116, window.innerHeight * 0.18)) < 28
+        : targetScrollTop !== null
+          ? Math.abs(window.scrollY - Math.min(targetScrollTop, maxScrollableTop)) < 4
+          : false;
+
+      attemptCount += 1;
+      if ((isRestored && hasEnoughHeight) || attemptCount >= 12) {
+        pendingDiscoveryScrollRestoreRef.current = null;
+        pendingDiscoveryPlaceAnchorRef.current = null;
+        return;
+      }
+
+      timeoutId = window.setTimeout(tryRestore, 120);
+    };
+
+    const frameId = window.requestAnimationFrame(tryRestore);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
+  }, [currentScreen, discoveryPlaces.length, isDiscoveryPlacesLoadingMore, isDiscoveryPlacesLoading]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1719,6 +1870,9 @@ export default function App() {
     setPlaceDetailReturnScreen(returnScreen);
     if (typeof window !== 'undefined' && returnScreen === 'discover-places') {
       discoveryScrollRestoreRef.current = window.scrollY;
+      pendingDiscoveryPlaceAnchorRef.current = place.id;
+      const anchorElement = document.querySelector<HTMLElement>(`[data-discovery-place-id="${CSS.escape(place.id)}"]`);
+      pendingDiscoveryViewportOffsetRef.current = anchorElement?.getBoundingClientRect().top ?? null;
     }
     setSelectedPlace(place);
     const cached = placeDetailCacheRef.current.get(place.id);
@@ -2604,10 +2758,7 @@ export default function App() {
     if (canReuseDiscoveryCache) {
       if (skipNextDiscoveryVarietyRef.current) {
         skipNextDiscoveryVarietyRef.current = false;
-        return;
       }
-      const rotationSeed = bumpDiscoveryRotationSeed();
-      setDiscoveryPlaces((prev) => applyRankedVarietyToPlaces(prev, rotationSeed));
       return;
     }
 
@@ -2758,7 +2909,251 @@ export default function App() {
   const renderScreen = () => {
     const resolvedPublicProfileUser = publicProfileUser ?? resolvePublicProfileUser(publicProfileUsername, user);
 
-    switch (currentScreen) {
+  const discoveryPlacesScreen = (
+    <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
+      <PlaceDiscoveryScreen
+        selectedInterests={selectedInterests}
+        selectedVibe={selectedVibe}
+        activeLocation={savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0]}
+        savedLocations={savedLocations}
+        deviceLocation={deviceLocation}
+        deviceLocationPermission={deviceLocationPermission}
+        isRequestingDeviceLocation={isRequestingDeviceLocation}
+        events={discoveryEvents}
+        searchInput={discoverySearchInput}
+        searchQuery={discoverySearchQuery}
+        onOpenPreferences={() => {
+          setOnboardingEntryMode('preferences');
+          setCurrentScreen('onboarding');
+        }}
+        onOpenLocationManager={() => setCurrentScreen('location-search')}
+        onOpenNotifications={() => setCurrentScreen('notifications')}
+        onSearchInputChange={setDiscoverySearchInput}
+        onClearSearch={() => {
+          setDiscoverySearchInput('');
+          setDiscoverySearchQuery('');
+        }}
+        onSelectLocation={(locationId) => {
+          setActiveLocationId(locationId);
+          if (isAuthenticated) {
+            void api.setDefaultSavedLocation(locationId).catch(() => undefined);
+          }
+        }}
+        onLocationSheetVisibilityChange={setIsFloatingNavHidden}
+        onRequestDeviceLocation={requestDeviceLocation}
+        visiblePlaces={discoveryPlaces.filter((place) =>
+          !dismissedPlaceIds.includes(place.id)
+          && !shouldExcludeDiscoveryPlace(place)
+          && hasRenderableDiscoveryImage(place)
+        )}
+        isLoading={isDiscoveryPlacesLoading}
+        isEventsLoading={isDiscoveryEventsLoading}
+        isPreferenceTransitionLoading={isPreferenceTransitionLoading}
+        isLoadingMore={isDiscoveryPlacesLoadingMore}
+        isRefreshing={isDiscoveryPlacesRefreshing}
+        hasMore={discoveryHasMore}
+        currentPage={discoveryPage}
+        hasError={isDiscoveryPlacesError}
+        hasEventsError={isDiscoveryEventsError}
+        restorePlaceId={pendingDiscoveryPlaceAnchorRef.current}
+        restoreViewportOffset={pendingDiscoveryViewportOffsetRef.current}
+        bookmarkedPlaceIds={bookmarkedPlaceIds}
+        showGestureDemo={showDiscoveryGestureDemo}
+        onFinishGestureDemo={() => setShowDiscoveryGestureDemo(false)}
+        onRestorePlaceHandled={() => {
+          pendingDiscoveryPlaceAnchorRef.current = null;
+          pendingDiscoveryScrollRestoreRef.current = null;
+          pendingDiscoveryViewportOffsetRef.current = null;
+        }}
+        onRefresh={() => {
+          if (isDiscoveryPlacesLoading || isDiscoveryPlacesLoadingMore || isDiscoveryPlacesRefreshing) return;
+          const rotationSeed = bumpDiscoveryRotationSeed();
+          void loadDiscoveryPlaces(1, 'reset', { refreshMode: 'soft', rotationSeedOverride: rotationSeed });
+        }}
+        onLoadMore={() => {
+          if (isDiscoveryPlacesLoading || isDiscoveryPlacesLoadingMore || isDiscoveryPlacesRefreshing || !discoveryHasMore) {
+            return false;
+          }
+          void loadDiscoveryPlaces(discoveryPage + 1, 'append');
+          return true;
+        }}
+        onBookmarkPlace={(place) => {
+          if (!isAuthenticated) {
+            openAuthGate('Log in to save places to your bookmarks.', 'login', () => {
+              void syncBookmarkState(place, true, { dismissAfterSave: true });
+            });
+            return;
+          }
+          void syncBookmarkState(place, true, { dismissAfterSave: true });
+        }}
+        onDismissPlace={(place) => {
+          if (!isAuthenticated) {
+            openAuthGate('Log in so we can learn what not to recommend for you.', 'login', () => {
+              setDismissedPlaceIds((prev) => (prev.includes(place.id) ? prev : [...prev, place.id]));
+              showActionToast('Removed from recommendations');
+            });
+            return;
+          }
+          setDismissedPlaceIds((prev) => (prev.includes(place.id) ? prev : [...prev, place.id]));
+          void api.dismissPlace({ placeId: place.id, reason: 'manual_hide' }).catch(() => undefined);
+          showActionToast('Removed from recommendations');
+        }}
+        onSelectPlace={(p) => {
+          openPlaceDetail(p, 'discover-places');
+        }}
+        onSelectEvent={(event) => {
+          setSelectedEvent(event);
+          setCurrentScreen('event-detail');
+        }}
+        getEditorialLabel={getEditorialLabel}
+        getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
+        getEventPreferenceDebugMatches={getEventPreferenceDebugMatches}
+      />
+    </Suspense>
+  );
+
+  const placeDetailContent = selectedPlace ? (
+    <PlaceDetail 
+      place={selectedPlace} 
+      hasCompatibilityScore={selectedInterests.length > 0 || !!selectedVibe}
+      savedLocations={savedLocations}
+      activeLocationId={activeLocationId}
+      deviceLocation={deviceLocation}
+      deviceLocationPermission={deviceLocationPermission}
+      relatedPlaces={relatedPlaces}
+      travelerMoments={placeTravelerMoments}
+      fallbackTravelers={placeFallbackTravelers}
+      onBack={() => {
+        const targetScrollTop = discoveryScrollRestoreRef.current;
+        if (placeDetailReturnScreen === 'discover-places') {
+          skipNextDiscoveryVarietyRef.current = true;
+          if (targetScrollTop !== null) {
+            screenScrollPositionsRef.current['discover-places'] = targetScrollTop;
+            pendingDiscoveryScrollRestoreRef.current = targetScrollTop;
+          }
+        }
+        setCurrentScreen(placeDetailReturnScreen);
+        if (
+          typeof window !== 'undefined' &&
+          placeDetailReturnScreen === 'discover-places' &&
+          targetScrollTop !== null
+        ) {
+          const restoreScroll = () => {
+            window.scrollTo({ top: targetScrollTop, left: 0, behavior: 'auto' });
+            document.documentElement.scrollTop = targetScrollTop;
+            document.body.scrollTop = targetScrollTop;
+          };
+          window.requestAnimationFrame(restoreScroll);
+          [60, 180, 360, 720].forEach((delay) => {
+            window.setTimeout(restoreScroll, delay);
+          });
+        }
+      }} 
+      interactionState={placeDetailInteraction}
+      onSavePlace={async (placeToSave, nextActive) => {
+        if (!isAuthenticated) {
+          openAuthGate('Log in to save places to your bookmarks.', 'login');
+          return false;
+        }
+        const updated = await syncBookmarkState(placeToSave, nextActive);
+        if (updated) {
+          setPlaceDetailInteraction((prev) => ({ ...prev, isSaved: nextActive }));
+        }
+        return updated;
+      }}
+      onMarkBeenThere={async () => {
+        if (!isAuthenticated) {
+          openAuthGate('Log in to track places you have been to and post a moment.', 'login');
+          return;
+        }
+        setPlaceDetailInteraction((prev) => ({ ...prev, isBeenThere: true }));
+        setCreateMomentInitialPlace(selectedPlace);
+        setCreateMomentInitialVisitedDate(new Date().toISOString().split('T')[0]);
+        setCreateMomentReturnScreen('place-detail');
+        setCurrentScreen('create-moment');
+      }}
+      onShare={() => {
+        openShareSheet({
+          url: buildPlaceShareUrl(selectedPlace.id),
+          title: selectedPlace.name,
+          text: `Found a place you might like on Vibinn: ${selectedPlace.name}`,
+        });
+      }}
+      onRequestDeviceLocation={requestDeviceLocation}
+      onExploreTravelers={() => {
+        setCurrentScreen('discover-travelers');
+      }}
+      onExplorePlaces={() => {
+        setCurrentScreen('discover-places');
+      }}
+      onSelectPlace={(p) => {
+        void api.getPlaceDetails(p.id)
+          .then((response) => {
+            openPlaceDetail(response.place as Place, placeDetailReturnScreen);
+          })
+          .catch(() => {
+            openPlaceDetail(p, placeDetailReturnScreen);
+          });
+      }}
+      onSelectTraveler={(travelerId) => {
+        const traveler = placeFallbackTravelers.find((item) => item.id === travelerId);
+        if (traveler) {
+          void openTravelerProfile(traveler);
+        } else {
+          setCurrentScreen('discover-travelers');
+        }
+      }}
+    />
+  ) : null;
+
+  const eventDetailContent = selectedEvent ? (
+    <EventDetail
+      event={selectedEvent}
+      hasCompatibilityScore={selectedInterests.length > 0 || !!selectedVibe}
+      isSaved={savedEventIds.includes(selectedEvent.id)}
+      onBack={() => setCurrentScreen('discover-places')}
+      onSave={() => {
+        const isActive = savedEventIds.includes(selectedEvent.id);
+        setSavedEventIds((prev) => isActive ? prev.filter((id) => id !== selectedEvent.id) : [...prev, selectedEvent.id]);
+        showActionToast(isActive ? 'Removed save' : 'Saved event');
+      }}
+      onShare={() => {
+        const nextActive = !sharedEventIds.includes(selectedEvent.id);
+        setSharedEventIds((prev) => nextActive ? [...prev, selectedEvent.id] : prev.filter((id) => id !== selectedEvent.id));
+        openShareSheet({
+          url: typeof window !== 'undefined' ? window.location.href : `${APP_BASE_PATH}`,
+          title: selectedEvent.name,
+          text: `Thought you'd want this one on Vibinn: ${selectedEvent.name}`,
+        });
+      }}
+    />
+  ) : null;
+
+  if (
+    currentScreen === 'discover-places'
+    || (currentScreen === 'place-detail' && placeDetailReturnScreen === 'discover-places')
+    || currentScreen === 'event-detail'
+  ) {
+    return (
+      <>
+        <div aria-hidden={currentScreen !== 'discover-places'}>
+          {discoveryPlacesScreen}
+        </div>
+        {currentScreen === 'place-detail' && selectedPlace ? (
+          <div className="fixed inset-0 z-[80] overflow-y-auto bg-zinc-950">
+            {placeDetailContent}
+          </div>
+        ) : null}
+        {currentScreen === 'event-detail' && selectedEvent ? (
+          <div className="fixed inset-0 z-[80] overflow-y-auto bg-zinc-950">
+            {eventDetailContent}
+          </div>
+        ) : null}
+      </>
+    );
+  }
+
+  switch (currentScreen) {
       case 'landing':
         return (
           <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
@@ -2862,8 +3257,7 @@ export default function App() {
               onNavigate={(s) => setCurrentScreen(s)}
               onSavePlace={(placeToSave, nextActive) => syncBookmarkState(placeToSave, nextActive)}
               onSelectPlace={(p) => {
-                setSelectedPlace(p);
-                setCurrentScreen('place-detail');
+                openPlaceDetail(p, 'discover-places');
               }}
               onOpenCollection={(collection) => {
                 setSelectedCollection(collection);
@@ -3059,98 +3453,6 @@ export default function App() {
             }}
           />
         );
-      case 'discover-places':
-        return (
-          <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
-            <PlaceDiscoveryScreen
-              selectedInterests={selectedInterests}
-              selectedVibe={selectedVibe}
-              activeLocation={savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0]}
-              savedLocations={savedLocations}
-              deviceLocation={deviceLocation}
-              deviceLocationPermission={deviceLocationPermission}
-              isRequestingDeviceLocation={isRequestingDeviceLocation}
-              events={discoveryEvents}
-              searchInput={discoverySearchInput}
-              searchQuery={discoverySearchQuery}
-              onOpenPreferences={() => {
-                setOnboardingEntryMode('preferences');
-                setCurrentScreen('onboarding');
-              }}
-              onOpenLocationManager={() => setCurrentScreen('location-search')}
-              onOpenNotifications={() => setCurrentScreen('notifications')}
-              onSearchInputChange={setDiscoverySearchInput}
-              onClearSearch={() => {
-                setDiscoverySearchInput('');
-                setDiscoverySearchQuery('');
-              }}
-              onSelectLocation={(locationId) => {
-                setActiveLocationId(locationId);
-                if (isAuthenticated) {
-                  void api.setDefaultSavedLocation(locationId).catch(() => undefined);
-                }
-              }}
-              onLocationSheetVisibilityChange={setIsFloatingNavHidden}
-              onRequestDeviceLocation={requestDeviceLocation}
-              visiblePlaces={discoveryPlaces.filter((place) => !dismissedPlaceIds.includes(place.id))}
-              isLoading={isDiscoveryPlacesLoading}
-              isEventsLoading={isDiscoveryEventsLoading}
-              isPreferenceTransitionLoading={isPreferenceTransitionLoading}
-              isLoadingMore={isDiscoveryPlacesLoadingMore}
-              isRefreshing={isDiscoveryPlacesRefreshing}
-              hasMore={discoveryHasMore}
-              hasError={isDiscoveryPlacesError}
-              hasEventsError={isDiscoveryEventsError}
-              bookmarkedPlaceIds={bookmarkedPlaceIds}
-              showGestureDemo={showDiscoveryGestureDemo}
-              onFinishGestureDemo={() => setShowDiscoveryGestureDemo(false)}
-              onRefresh={() => {
-                if (isDiscoveryPlacesLoading || isDiscoveryPlacesLoadingMore || isDiscoveryPlacesRefreshing) return;
-                const rotationSeed = bumpDiscoveryRotationSeed();
-                void loadDiscoveryPlaces(1, 'reset', { refreshMode: 'soft', rotationSeedOverride: rotationSeed });
-              }}
-              onLoadMore={() => {
-                if (isDiscoveryPlacesLoading || isDiscoveryPlacesLoadingMore || isDiscoveryPlacesRefreshing || !discoveryHasMore) {
-                  return false;
-                }
-                void loadDiscoveryPlaces(discoveryPage + 1, 'append');
-                return true;
-              }}
-              onBookmarkPlace={(place) => {
-                if (!isAuthenticated) {
-                  openAuthGate('Log in to save places to your bookmarks.', 'login', () => {
-                    void syncBookmarkState(place, true, { dismissAfterSave: true });
-                  });
-                  return;
-                }
-                void syncBookmarkState(place, true, { dismissAfterSave: true });
-              }}
-              onDismissPlace={(place) => {
-                if (!isAuthenticated) {
-                  openAuthGate('Log in so we can learn what not to recommend for you.', 'login', () => {
-                    setDismissedPlaceIds((prev) => (prev.includes(place.id) ? prev : [...prev, place.id]));
-                    showActionToast('Removed from recommendations');
-                  });
-                  return;
-                }
-                setDismissedPlaceIds((prev) => (prev.includes(place.id) ? prev : [...prev, place.id]));
-                void api.dismissPlace({ placeId: place.id, reason: 'manual_hide' }).catch(() => undefined);
-                showActionToast('Removed from recommendations');
-              }}
-              onSelectPlace={(p) => {
-                setSelectedPlace(p);
-                setCurrentScreen('place-detail');
-              }}
-              onSelectEvent={(event) => {
-                setSelectedEvent(event);
-                setCurrentScreen('event-detail');
-              }}
-              getEditorialLabel={getEditorialLabel}
-              getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
-              getEventPreferenceDebugMatches={getEventPreferenceDebugMatches}
-            />
-          </Suspense>
-        );
       case 'location-search':
         return (
           <LocationSearchScreen
@@ -3283,117 +3585,12 @@ export default function App() {
             }}
           />
         ) : null;
+      case 'discover-places':
+        return discoveryPlacesScreen;
       case 'place-detail':
-        return selectedPlace ? (
-          <PlaceDetail 
-            place={selectedPlace} 
-            hasCompatibilityScore={selectedInterests.length > 0 || !!selectedVibe}
-            savedLocations={savedLocations}
-            activeLocationId={activeLocationId}
-            deviceLocation={deviceLocation}
-            deviceLocationPermission={deviceLocationPermission}
-            relatedPlaces={relatedPlaces}
-            travelerMoments={placeTravelerMoments}
-            fallbackTravelers={placeFallbackTravelers}
-            onBack={() => {
-              if (placeDetailReturnScreen === 'discover-places') {
-                skipNextDiscoveryVarietyRef.current = true;
-              }
-              setCurrentScreen(placeDetailReturnScreen);
-              if (
-                typeof window !== 'undefined' &&
-                placeDetailReturnScreen === 'discover-places' &&
-                discoveryScrollRestoreRef.current !== null
-              ) {
-                const targetScrollTop = discoveryScrollRestoreRef.current;
-                const restoreScroll = () => {
-                  window.scrollTo({ top: targetScrollTop, left: 0, behavior: 'auto' });
-                  document.documentElement.scrollTop = targetScrollTop;
-                  document.body.scrollTop = targetScrollTop;
-                };
-                window.requestAnimationFrame(restoreScroll);
-                window.setTimeout(restoreScroll, 60);
-              }
-            }} 
-            interactionState={placeDetailInteraction}
-            onSavePlace={async (placeToSave, nextActive) => {
-              if (!isAuthenticated) {
-                openAuthGate('Log in to save places to your bookmarks.', 'login');
-                return false;
-              }
-              const updated = await syncBookmarkState(placeToSave, nextActive);
-              if (updated) {
-                setPlaceDetailInteraction((prev) => ({ ...prev, isSaved: nextActive }));
-              }
-              return updated;
-            }}
-            onMarkBeenThere={async () => {
-              if (!isAuthenticated) {
-                openAuthGate('Log in to track places you have been to and post a moment.', 'login');
-                return;
-              }
-              setPlaceDetailInteraction((prev) => ({ ...prev, isBeenThere: true }));
-              setCreateMomentInitialPlace(selectedPlace);
-              setCreateMomentInitialVisitedDate(new Date().toISOString().split('T')[0]);
-              setCreateMomentReturnScreen('place-detail');
-              setCurrentScreen('create-moment');
-            }}
-            onShare={() => {
-              openShareSheet({
-                url: buildPlaceShareUrl(selectedPlace.id),
-                title: selectedPlace.name,
-                text: `Found a place you might like on Vibinn: ${selectedPlace.name}`,
-              });
-            }}
-            onRequestDeviceLocation={requestDeviceLocation}
-            onExploreTravelers={() => {
-              setCurrentScreen('discover-travelers');
-            }}
-            onExplorePlaces={() => {
-              setCurrentScreen('discover-places');
-            }}
-            onSelectPlace={(p) => {
-              void api.getPlaceDetails(p.id)
-                .then((response) => {
-                  openPlaceDetail(response.place as Place, placeDetailReturnScreen);
-                })
-                .catch(() => {
-                  openPlaceDetail(p, placeDetailReturnScreen);
-                });
-            }}
-            onSelectTraveler={(travelerId) => {
-              const traveler = placeFallbackTravelers.find((item) => item.id === travelerId);
-              if (traveler) {
-                void openTravelerProfile(traveler);
-              } else {
-                setCurrentScreen('discover-travelers');
-              }
-            }}
-          />
-        ) : null;
+        return placeDetailContent;
       case 'event-detail':
-        return selectedEvent ? (
-          <EventDetail
-            event={selectedEvent}
-            hasCompatibilityScore={selectedInterests.length > 0 || !!selectedVibe}
-            isSaved={savedEventIds.includes(selectedEvent.id)}
-            onBack={() => setCurrentScreen('discover-places')}
-            onSave={() => {
-              const isActive = savedEventIds.includes(selectedEvent.id);
-              setSavedEventIds((prev) => isActive ? prev.filter((id) => id !== selectedEvent.id) : [...prev, selectedEvent.id]);
-              showActionToast(isActive ? 'Removed save' : 'Saved event');
-            }}
-            onShare={() => {
-              const nextActive = !sharedEventIds.includes(selectedEvent.id);
-              setSharedEventIds((prev) => nextActive ? [...prev, selectedEvent.id] : prev.filter((id) => id !== selectedEvent.id));
-              openShareSheet({
-                url: typeof window !== 'undefined' ? window.location.href : `${APP_BASE_PATH}`,
-                title: selectedEvent.name,
-                text: `Thought you'd want this one on Vibinn: ${selectedEvent.name}`,
-              });
-            }}
-          />
-        ) : null;
+        return eventDetailContent;
       case 'public-profile':
         return isPublicProfileLoading ? (
           <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-6 text-center text-white">
@@ -6174,7 +6371,7 @@ function PlaceDetail({
 }) {
   const [city, country] = place.location.split(',').map((part) => part.trim());
   const activeLocation = savedLocations.find((item) => item.id === activeLocationId) ?? savedLocations[0];
-  const distanceFromUserKm = calculateDistanceKm(
+  const distanceFromUserMiles = calculateDistanceMiles(
     deviceLocation ?? activeLocation,
     {
       latitude: place.latitude,
@@ -6188,7 +6385,7 @@ function PlaceDetail({
     name: place.name,
     city: city ?? place.location,
     country: country ?? '',
-    distanceFromUserKm,
+    distanceFromUserMiles,
     address: place.address ?? `${place.name}, ${place.location}`,
     category: getDisplayPlaceCategory(place),
     images: place.images ?? [place.image],

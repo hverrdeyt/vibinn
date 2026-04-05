@@ -38,6 +38,53 @@ function calculateDistanceMiles(
   return Math.round(distanceKm * 0.621371 * 10) / 10;
 }
 
+type DiscoveryFeedItem =
+  | { type: 'place'; id: string; place: Place }
+  | { type: 'event'; id: string; event: EventItem };
+
+function getDiscoveryTileHeightClass(sequenceIndex: number) {
+  return sequenceIndex % 4 === 0
+    ? 'h-[20.5rem]'
+    : sequenceIndex % 4 === 1
+      ? 'h-[26rem]'
+      : sequenceIndex % 4 === 2
+        ? 'h-[18rem]'
+        : 'h-[22.5rem]';
+}
+
+function getDiscoveryTileEstimatedHeight(sequenceIndex: number) {
+  return sequenceIndex % 4 === 0
+    ? 328
+    : sequenceIndex % 4 === 1
+      ? 416
+      : sequenceIndex % 4 === 2
+        ? 288
+        : 360;
+}
+
+function buildBalancedColumns(items: DiscoveryFeedItem[]) {
+  const left: Array<DiscoveryFeedItem & { renderIndex: number; sourceIndex: number }> = [];
+  const right: Array<DiscoveryFeedItem & { renderIndex: number; sourceIndex: number }> = [];
+  let leftHeight = 0;
+  let rightHeight = 0;
+
+  items.forEach((item, sourceIndex) => {
+    const estimatedHeight = getDiscoveryTileEstimatedHeight(sourceIndex);
+    if (leftHeight <= rightHeight) {
+      const renderIndex = left.length;
+      left.push({ ...item, renderIndex, sourceIndex });
+      leftHeight += estimatedHeight;
+      return;
+    }
+
+    const renderIndex = right.length;
+    right.push({ ...item, renderIndex, sourceIndex });
+    rightHeight += estimatedHeight;
+  });
+
+  return { left, right };
+}
+
 function getLocationPromptCopy(permission: 'unknown' | 'granted' | 'denied' | 'unsupported') {
   if (typeof window !== 'undefined' && !window.isSecureContext) {
     return 'Location on iPhone needs HTTPS, so local network previews will not show the Safari prompt.';
@@ -76,11 +123,15 @@ export default function PlaceDiscoveryScreen({
   isLoadingMore,
   isRefreshing,
   hasMore,
+  currentPage,
   hasError,
   hasEventsError,
+  restorePlaceId,
+  restoreViewportOffset,
   bookmarkedPlaceIds,
   showGestureDemo,
   onFinishGestureDemo,
+  onRestorePlaceHandled,
   onRefresh,
   onLoadMore,
   onBookmarkPlace,
@@ -116,11 +167,15 @@ export default function PlaceDiscoveryScreen({
   isLoadingMore: boolean;
   isRefreshing: boolean;
   hasMore: boolean;
+  currentPage: number;
   hasError: boolean;
   hasEventsError: boolean;
+  restorePlaceId: string | null;
+  restoreViewportOffset: number | null;
   bookmarkedPlaceIds: string[];
   showGestureDemo: boolean;
   onFinishGestureDemo: () => void;
+  onRestorePlaceHandled: () => void;
   onRefresh: () => void;
   onLoadMore: () => boolean | void;
   onBookmarkPlace: (place: Place) => void;
@@ -145,10 +200,7 @@ export default function PlaceDiscoveryScreen({
   const displayPlaces = visiblePlaces;
   const bookmarkedPlaceIdSet = useMemo(() => new Set(bookmarkedPlaceIds), [bookmarkedPlaceIds]);
   const mixedDiscoveryItems = useMemo(() => {
-    const items: Array<
-      | { type: 'place'; id: string; place: Place }
-      | { type: 'event'; id: string; event: EventItem }
-    > = [];
+    const items: DiscoveryFeedItem[] = [];
 
     displayPlaces.forEach((place, index) => {
       items.push({ type: 'place', id: place.id, place });
@@ -168,13 +220,23 @@ export default function PlaceDiscoveryScreen({
 
     return items;
   }, [displayPlaces, events]);
-  const leftColumnItems = useMemo(
-    () => mixedDiscoveryItems.filter((_, index) => index % 2 === 0),
-    [mixedDiscoveryItems],
+  const shouldShowSwipeHint = currentPage >= 2 && mixedDiscoveryItems.length > 8;
+  const swipeHintInsertIndex = shouldShowSwipeHint
+    ? Math.max(8, Math.min(16, mixedDiscoveryItems.length - 4))
+    : -1;
+  const leadingDiscoveryItems = shouldShowSwipeHint
+    ? mixedDiscoveryItems.slice(0, swipeHintInsertIndex)
+    : mixedDiscoveryItems;
+  const trailingDiscoveryItems = shouldShowSwipeHint
+    ? mixedDiscoveryItems.slice(swipeHintInsertIndex)
+    : [];
+  const leadingColumns = useMemo(
+    () => buildBalancedColumns(leadingDiscoveryItems),
+    [leadingDiscoveryItems],
   );
-  const rightColumnItems = useMemo(
-    () => mixedDiscoveryItems.filter((_, index) => index % 2 === 1),
-    [mixedDiscoveryItems],
+  const trailingColumns = useMemo(
+    () => buildBalancedColumns(trailingDiscoveryItems),
+    [trailingDiscoveryItems],
   );
   const shouldAnimateItemEntry = !hasPlayedInitialEntryMotionRef.current;
 
@@ -263,6 +325,45 @@ export default function PlaceDiscoveryScreen({
     }
   }, [mixedDiscoveryItems.length]);
 
+  useEffect(() => {
+    if (!restorePlaceId || typeof window === 'undefined') return;
+
+    let attemptCount = 0;
+    let timeoutId: number | null = null;
+
+    const tryRestore = () => {
+      const anchorElement = document.querySelector<HTMLElement>(`[data-discovery-place-id="${CSS.escape(restorePlaceId)}"]`);
+      if (anchorElement) {
+        const fallbackOffset = Math.max(116, window.innerHeight * 0.18);
+        const desiredOffset = restoreViewportOffset ?? fallbackOffset;
+        const nextTop = Math.max(0, anchorElement.getBoundingClientRect().top + window.scrollY - desiredOffset);
+        window.scrollTo({ top: nextTop, left: 0, behavior: 'auto' });
+        document.documentElement.scrollTop = nextTop;
+        document.body.scrollTop = nextTop;
+
+        const actualTop = anchorElement.getBoundingClientRect().top;
+        if (Math.abs(actualTop - desiredOffset) < 28 || attemptCount >= 12) {
+          onRestorePlaceHandled();
+          return;
+        }
+      }
+
+      attemptCount += 1;
+      if (attemptCount >= 12) {
+        onRestorePlaceHandled();
+        return;
+      }
+
+      timeoutId = window.setTimeout(tryRestore, 120);
+    };
+
+    const frameId = window.requestAnimationFrame(tryRestore);
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      if (timeoutId !== null) window.clearTimeout(timeoutId);
+    };
+  }, [restorePlaceId, restoreViewportOffset, mixedDiscoveryItems.length, isLoading, isLoadingMore, onRestorePlaceHandled]);
+
   const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
     if (typeof window !== 'undefined' && window.scrollY <= 0) {
       pullStartYRef.current = event.touches[0]?.clientY ?? null;
@@ -307,19 +408,22 @@ export default function PlaceDiscoveryScreen({
       </div>
       <div className="mb-6 flex items-start justify-between gap-4">
         <div>
-          <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/35">
-            For Your Vibe
-          </p>
-          <div className="mt-2 flex items-center gap-3">
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1">
+            <p className="text-[26px] font-black tracking-[-0.05em] text-white">
+              Your vibe picks in
+            </p>
             <button
               type="button"
               onClick={() => setIsLocationSheetOpen(true)}
-              className="inline-flex items-center gap-2 text-3xl font-black tracking-[-0.05em] text-white"
+              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/6 px-3 py-1.5 text-[26px] font-black tracking-[-0.05em] text-accent transition hover:bg-white/10"
             >
               {currentCity}
-              <ChevronDown size={20} className="text-white/60" />
+              <ChevronDown size={18} className="text-accent/80" />
             </button>
           </div>
+          <p className="mt-2 text-xs font-semibold text-white/45">
+            Ranked around your taste, not just what is popular nearby.
+          </p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -347,15 +451,15 @@ export default function PlaceDiscoveryScreen({
       </div>
 
       {!hasPreferences ? (
-        <div className="mb-5 flex items-center justify-between gap-3 rounded-[24px] border border-white/10 bg-white/6 px-4 py-3">
+        <div className="mb-5 flex items-center justify-between gap-3 rounded-[24px] border border-accent/20 bg-accent/8 px-4 py-3">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-white">Want sharper picks?</div>
-            <div className="text-xs text-white/55">Choose preferences so AI can tune this feed for your vibe.</div>
+            <div className="text-xs text-white/65">Choose preferences so AI can tune this feed for your vibe.</div>
           </div>
           <button
             type="button"
             onClick={onOpenPreferences}
-            className="shrink-0 rounded-full bg-white px-4 py-2 text-xs font-black text-black transition hover:bg-white/90"
+            className="shrink-0 rounded-full bg-accent px-4 py-2 text-xs font-black text-black transition hover:bg-accent/90"
           >
             Choose
           </button>
@@ -363,7 +467,7 @@ export default function PlaceDiscoveryScreen({
       ) : null}
 
       {deviceLocationPermission !== 'granted' && deviceLocationPermission !== 'unsupported' ? (
-        <div className="mb-5 flex items-center justify-between gap-3 rounded-[24px] border border-accent/20 bg-accent/8 px-4 py-3">
+        <div className="mb-5 flex items-center justify-between gap-3 rounded-[24px] border border-white/10 bg-white/6 px-4 py-3">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-white">See how far each place is</div>
             <div className="text-xs text-white/60">
@@ -374,7 +478,7 @@ export default function PlaceDiscoveryScreen({
             type="button"
             onClick={onRequestDeviceLocation}
             disabled={isRequestingDeviceLocation}
-            className="shrink-0 rounded-full bg-accent px-4 py-2 text-xs font-black text-black transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
+            className="shrink-0 rounded-full bg-white px-4 py-2 text-xs font-black text-black transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-60"
           >
             {isRequestingDeviceLocation
               ? 'Checking...'
@@ -484,8 +588,8 @@ export default function PlaceDiscoveryScreen({
         <>
           <div className="grid grid-cols-2 items-start gap-3 [overflow-anchor:none]">
             <div className="flex flex-col gap-3">
-              {leftColumnItems.map((item, columnIndex) => {
-                const index = columnIndex * 2;
+              {leadingColumns.left.map((item) => {
+                const index = item.sourceIndex;
                 return (
                   <div key={`${item.type}-${item.id}`} className={`min-w-0 ${showGestureDemo && index === 0 ? 'relative z-30' : ''}`}>
                     {item.type === 'place' ? (
@@ -525,9 +629,9 @@ export default function PlaceDiscoveryScreen({
                 </div>
               ) : null}
             </div>
-            <div className="flex flex-col gap-3">
-              {rightColumnItems.map((item, columnIndex) => {
-                const index = columnIndex * 2 + 1;
+            <div className="flex flex-col gap-3 pt-6">
+              {leadingColumns.right.map((item) => {
+                const index = item.sourceIndex;
                 return (
                   <div key={`${item.type}-${item.id}`} className={`min-w-0 ${showGestureDemo && index === 0 ? 'relative z-30' : ''}`}>
                     {item.type === 'place' ? (
@@ -569,15 +673,117 @@ export default function PlaceDiscoveryScreen({
             </div>
           </div>
 
+          {shouldShowSwipeHint ? (
+            <div className="mt-7 overflow-hidden rounded-[28px] border border-white/10 bg-white/6 px-4 py-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                <div className="min-w-0">
+                  <p className="text-[26px] font-black tracking-[-0.05em] text-white">
+                    Swipe right to save.
+                  </p>
+                  <p className="mt-1 text-[26px] font-black tracking-[-0.05em] text-white/76">
+                    Swipe left to hide.
+                  </p>
+                  <p className="mt-2 text-xs font-semibold text-white/45">
+                    The more you swipe, the sharper your next picks get.
+                  </p>
+                </div>
+                <div className="relative h-20 w-24 shrink-0 self-end sm:h-24 sm:w-28 sm:self-auto">
+                  <motion.div
+                    animate={{ x: [0, 18, 0, 0, -18, 0], rotate: [0, 4, 0, 0, -4, 0] }}
+                    transition={{ duration: 4.6, repeat: Infinity, ease: 'easeInOut', times: [0, 0.18, 0.36, 0.52, 0.72, 1] }}
+                    className="absolute left-2 top-1.5 h-16 w-12 rounded-[18px] border border-white/10 bg-gradient-to-b from-white/18 to-white/6 shadow-[0_18px_40px_rgba(0,0,0,0.24)] sm:top-2 sm:h-20 sm:w-16 sm:rounded-[22px]"
+                  >
+                    <div className="mx-auto mt-2.5 h-7 w-8 rounded-[12px] bg-white/18 sm:mt-3 sm:h-9 sm:w-10 sm:rounded-[14px]" />
+                    <div className="mx-auto mt-2 h-2 w-7 rounded-full bg-white/20 sm:mt-3 sm:w-8" />
+                  </motion.div>
+                  <div className="absolute bottom-1.5 right-0 rounded-full bg-accent/90 px-2 py-1 text-[8px] font-black uppercase tracking-[0.12em] text-black sm:bottom-2 sm:text-[9px]">
+                    Save / Hide
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          {shouldShowSwipeHint && trailingDiscoveryItems.length > 0 ? (
+            <div className="mt-5 grid grid-cols-2 items-start gap-3 [overflow-anchor:none]">
+              <div className="flex flex-col gap-3">
+                {trailingColumns.left.map((item) => {
+                  const index = item.sourceIndex;
+                  return (
+                    <div key={`${item.type}-${item.id}`} className="min-w-0">
+                      {item.type === 'place' ? (
+                        <PlaceDiscoveryTile
+                          place={item.place}
+                          index={index}
+                          selectedInterests={selectedInterests}
+                          selectedVibe={selectedVibe}
+                          deviceLocation={deviceLocation}
+                          shouldAnimateEntry={false}
+                          isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
+                          onBookmark={() => onBookmarkPlace(item.place)}
+                          onDismiss={() => onDismissPlace(item.place)}
+                          onOpen={() => onSelectPlace(item.place)}
+                          getEditorialLabel={getEditorialLabel}
+                          getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
+                        />
+                      ) : (
+                        <EventDiscoveryTile
+                          event={item.event}
+                          index={index}
+                          selectedInterests={selectedInterests}
+                          selectedVibe={selectedVibe}
+                          shouldAnimateEntry={false}
+                          onOpen={() => onSelectEvent(item.event)}
+                          getEventPreferenceDebugMatches={getEventPreferenceDebugMatches}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="flex flex-col gap-3 pt-6">
+                {trailingColumns.right.map((item) => {
+                  const index = item.sourceIndex;
+                  return (
+                    <div key={`${item.type}-${item.id}`} className="min-w-0">
+                      {item.type === 'place' ? (
+                        <PlaceDiscoveryTile
+                          place={item.place}
+                          index={index}
+                          selectedInterests={selectedInterests}
+                          selectedVibe={selectedVibe}
+                          deviceLocation={deviceLocation}
+                          shouldAnimateEntry={false}
+                          isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
+                          onBookmark={() => onBookmarkPlace(item.place)}
+                          onDismiss={() => onDismissPlace(item.place)}
+                          onOpen={() => onSelectPlace(item.place)}
+                          getEditorialLabel={getEditorialLabel}
+                          getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
+                        />
+                      ) : (
+                        <EventDiscoveryTile
+                          event={item.event}
+                          index={index}
+                          selectedInterests={selectedInterests}
+                          selectedVibe={selectedVibe}
+                          shouldAnimateEntry={false}
+                          onOpen={() => onSelectEvent(item.event)}
+                          getEventPreferenceDebugMatches={getEventPreferenceDebugMatches}
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ) : null}
+
           <div ref={loadMoreRef} className="h-8" />
 
           {isLoadingMore ? (
             <div className="mt-4 rounded-[24px] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white/60">
               {isFilteringBySearch ? `Loading more matches for "${searchQuery}"...` : `Loading more picks for ${currentCity}...`}
-            </div>
-          ) : !isEventsLoading && !hasEventsError && events.length > 0 ? (
-            <div className="mt-4 rounded-[24px] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white/60">
-              Live Ticketmaster events are woven into this feed where they fit your current vibe.
             </div>
           ) : hasEventsError ? (
             <div className="mt-4 rounded-[24px] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white/60">
@@ -641,22 +847,16 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
 }) {
   const suppressClickRef = useRef(false);
   const gestureDemoFinishedRef = useRef(false);
-  const hasCompatibilityScore = selectedInterests.length > 0 || !!selectedVibe;
-  const match = hasCompatibilityScore ? Math.min(place.similarityStat ?? 74, 98) : null;
+  void selectedInterests;
+  void selectedVibe;
+  const match = Math.min(place.similarityStat ?? 74, 98);
   const editorialLabel = getEditorialLabel(place, index);
   const preferenceDebugLabels = getPlacePreferenceDebugMatches(place, selectedInterests, selectedVibe);
   const distanceMiles = calculateDistanceMiles(deviceLocation, {
     latitude: place.latitude,
     longitude: place.longitude,
   });
-  const tileHeightClass =
-    index % 4 === 0
-      ? 'h-[20.5rem]'
-      : index % 4 === 1
-        ? 'h-[26rem]'
-        : index % 4 === 2
-          ? 'h-[18rem]'
-          : 'h-[22.5rem]';
+  const tileHeightClass = getDiscoveryTileHeightClass(index);
 
   useEffect(() => {
     if (!gestureDemo) {
@@ -674,6 +874,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
 
   return (
     <motion.button
+      data-discovery-place-id={place.id}
       type="button"
       drag="x"
       dragConstraints={{ left: 0, right: 0 }}
@@ -815,16 +1016,8 @@ const EventDiscoveryTile = memo(function EventDiscoveryTile({
 }) {
   const visualLabel = (event.tags?.[0] ?? getDisplayEventCategory(event)).toLowerCase();
   const preferenceDebugLabels = getEventPreferenceDebugMatches(event, selectedInterests, selectedVibe);
-  const hasCompatibilityScore = selectedInterests.length > 0 || !!selectedVibe;
-  const match = hasCompatibilityScore ? Math.min(event.compatibilityScore, 98) : null;
-  const tileHeightClass =
-    index % 4 === 0
-      ? 'h-[20.5rem]'
-      : index % 4 === 1
-        ? 'h-[26rem]'
-        : index % 4 === 2
-          ? 'h-[18rem]'
-          : 'h-[22.5rem]';
+  const match = Math.min(event.compatibilityScore, 98);
+  const tileHeightClass = getDiscoveryTileHeightClass(index);
 
   return (
     <motion.button
@@ -864,22 +1057,40 @@ const EventDiscoveryTile = memo(function EventDiscoveryTile({
 });
 
 function CompatibilityBadge({ match }: { match: number | null }) {
+  if (typeof match !== 'number') return null;
+
+  const badgeMeta =
+    match >= 85
+      ? {
+          label: 'Must visit',
+          className: 'bg-accent px-3.5 py-2 text-[11px] text-black shadow-[0_18px_40px_rgba(211,255,72,0.28)]',
+        }
+      : match >= 70
+        ? {
+          label: 'Fits you',
+            className: 'border border-accent/65 bg-black/58 px-3.5 py-2 text-[11px] text-accent backdrop-blur-md',
+          }
+        : match >= 55
+          ? {
+              label: 'Worth a look',
+              className: 'bg-black/60 px-3.5 py-2 text-[11px] text-white backdrop-blur-md',
+            }
+          : {
+              label: 'Maybe',
+          className: 'bg-black/55 px-3.5 py-2 text-[11px] text-white/78 backdrop-blur-md',
+        };
+
   return (
-    <div className="absolute left-3 top-3 rounded-full bg-black/60 px-3 py-1.5 text-[11px] font-black tracking-[0.14em] text-accent backdrop-blur-md">
-      {typeof match === 'number' ? (
-        `${match}%`
-      ) : (
-        <motion.span
-          animate={{ opacity: [0.28, 1, 0.28] }}
-          transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
-          className="inline-flex items-center gap-1"
-        >
-          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-          <span className="h-1.5 w-1.5 rounded-full bg-accent" />
-        </motion.span>
-      )}
-    </div>
+    <>
+      <div className="absolute left-3 right-3 top-3 flex items-center justify-between">
+        <div className={`rounded-full font-black tracking-[0.12em] ${badgeMeta.className}`}>
+          {badgeMeta.label}
+        </div>
+        <div className="text-[10px] font-semibold tracking-[0.04em] text-white/68">
+          {match}%
+        </div>
+      </div>
+    </>
   );
 }
 
