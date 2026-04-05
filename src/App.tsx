@@ -351,6 +351,16 @@ function hasStoredOnboardingCompletion() {
   return typeof window !== 'undefined' && window.localStorage.getItem(ONBOARDING_COMPLETED_KEY) === '1';
 }
 
+interface AppRouteState {
+  screen: Screen;
+  publicProfileUsername?: string | null;
+  placeId?: string | null;
+}
+
+function buildPlaceDetailPath(placeId: string) {
+  return `${APP_BASE_PATH}/place/${encodeURIComponent(placeId)}`;
+}
+
 function screenToAppPath(screen: Screen) {
   switch (screen) {
     case 'discover-places':
@@ -386,7 +396,7 @@ function screenToAppPath(screen: Screen) {
   }
 }
 
-function parseAppRoute(pathname: string): { screen: Screen; publicProfileUsername?: string | null } {
+function parseAppRoute(pathname: string): AppRouteState {
   const normalizedPath = pathname.replace(/\/+$/, '') || '/';
 
   if (normalizedPath === '/') {
@@ -413,6 +423,14 @@ function parseAppRoute(pathname: string): { screen: Screen; publicProfileUsernam
   const appPath = normalizedPath.startsWith(`${APP_BASE_PATH}/`)
     ? normalizedPath.slice(APP_BASE_PATH.length + 1)
     : '';
+
+  const placeDetailMatch = appPath.match(/^place\/([^/]+)$/);
+  if (placeDetailMatch) {
+    return {
+      screen: 'place-detail',
+      placeId: decodeURIComponent(placeDetailMatch[1]).trim() || null,
+    };
+  }
 
   switch (appPath) {
     case 'invite':
@@ -1372,12 +1390,21 @@ function getInitialDiscoveryRotationSeed() {
   return nextSeed;
 }
 
+function getPlaceDetailIdFromLocation() {
+  if (typeof window === 'undefined') return null;
+  const route = parseAppRoute(window.location.pathname);
+  if (route.placeId) {
+    return route.placeId;
+  }
+  return new URLSearchParams(window.location.search).get('place');
+}
+
 export default function App() {
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
   const [currentScreen, setCurrentScreen] = useState<Screen>(() => {
     if (typeof window === 'undefined') return 'landing';
     const route = parseAppRoute(window.location.pathname);
-    const placeIdFromShareLink = new URLSearchParams(window.location.search).get('place');
+    const placeIdFromShareLink = getPlaceDetailIdFromLocation();
     const hasAccess = hasStoredInviteAccess() || hasStoredOnboardingCompletion();
 
     if (route.screen === 'landing' || route.screen === 'public-profile') {
@@ -1465,6 +1492,7 @@ export default function App() {
   const [deviceLocationPermission, setDeviceLocationPermission] = useState<'unknown' | 'granted' | 'denied' | 'unsupported'>('unknown');
   const [isRequestingDeviceLocation, setIsRequestingDeviceLocation] = useState(false);
   const hasRequestedDeviceLocationRef = useRef(false);
+  const placeDetailHasHistoryEntryRef = useRef(false);
   const [discoveryPlaces, setDiscoveryPlaces] = useState<Place[]>([]);
   const discoveryRotationSeedRef = useRef(getInitialDiscoveryRotationSeed());
   const [discoverySearchInput, setDiscoverySearchInput] = useState('');
@@ -1618,22 +1646,30 @@ export default function App() {
       const hasAccess = hasStoredInviteAccess() || hasStoredOnboardingCompletion();
 
       if (route.screen === 'public-profile') {
+        placeDetailHasHistoryEntryRef.current = false;
         setPublicProfileUsername(route.publicProfileUsername ?? null);
         setCurrentScreen('public-profile');
         return;
       }
 
-      if (getSharedPlaceIdFromUrl()) {
+      const placeIdFromRoute = getPlaceDetailIdFromLocation();
+      if (placeIdFromRoute) {
+        placeDetailHasHistoryEntryRef.current = false;
         setPublicProfileUsername(null);
+        if (selectedPlace?.id !== placeIdFromRoute) {
+          setSelectedPlace(null);
+        }
         setCurrentScreen('place-detail');
         return;
       }
 
       if (route.screen === 'landing') {
+        placeDetailHasHistoryEntryRef.current = false;
         setCurrentScreen('landing');
         return;
       }
 
+      placeDetailHasHistoryEntryRef.current = false;
       setPublicProfileUsername(null);
       setCurrentScreen(hasAccess ? route.screen : 'onboarding');
     };
@@ -1644,7 +1680,7 @@ export default function App() {
 
   useEffect(() => {
     const sharedPlaceId = getSharedPlaceIdFromUrl();
-    if (currentScreen !== 'place-detail' || selectedPlace || !sharedPlaceId) return;
+    if (currentScreen !== 'place-detail' || !sharedPlaceId || selectedPlace?.id === sharedPlaceId) return;
 
     void api.getPlaceDetails(sharedPlaceId)
       .then((response) => {
@@ -1669,14 +1705,16 @@ export default function App() {
     if (currentScreen === 'public-profile') {
       const username = publicProfileUsername ?? user.username;
       nextPath = `/${encodeURIComponent(username)}`;
+    } else if (currentScreen === 'place-detail') {
+      nextPath = selectedPlace?.id ? buildPlaceDetailPath(selectedPlace.id) : window.location.pathname;
     } else if (currentScreen !== 'landing') {
       nextPath = screenToAppPath(currentScreen);
     }
 
-    if (window.location.pathname !== nextPath) {
+    if (`${window.location.pathname}${window.location.search}` !== nextPath) {
       window.history.replaceState({}, '', nextPath);
     }
-  }, [currentScreen, publicProfileUsername, user.username]);
+  }, [currentScreen, publicProfileUsername, selectedPlace?.id, user.username]);
 
   useEffect(() => {
     if (currentScreen !== 'public-profile') {
@@ -1874,6 +1912,13 @@ export default function App() {
       const anchorElement = document.querySelector<HTMLElement>(`[data-discovery-place-id="${CSS.escape(place.id)}"]`);
       pendingDiscoveryViewportOffsetRef.current = anchorElement?.getBoundingClientRect().top ?? null;
     }
+    if (typeof window !== 'undefined') {
+      const nextPath = buildPlaceDetailPath(place.id);
+      if (`${window.location.pathname}${window.location.search}` !== nextPath) {
+        window.history.pushState({}, '', nextPath);
+      }
+      placeDetailHasHistoryEntryRef.current = true;
+    }
     setSelectedPlace(place);
     const cached = placeDetailCacheRef.current.get(place.id);
     if (cached) {
@@ -2043,15 +2088,12 @@ export default function App() {
   };
 
   const getSharedPlaceIdFromUrl = () => {
-    if (typeof window === 'undefined') return null;
-    return new URLSearchParams(window.location.search).get('place');
+    return getPlaceDetailIdFromLocation();
   };
 
   const buildPlaceShareUrl = (placeId: string) => {
-    if (typeof window === 'undefined') return `${APP_BASE_PATH}?place=${encodeURIComponent(placeId)}`;
-    const url = new URL(`${window.location.origin}${APP_BASE_PATH}`);
-    url.searchParams.set('place', placeId);
-    return url.toString();
+    if (typeof window === 'undefined') return buildPlaceDetailPath(placeId);
+    return `${window.location.origin}${buildPlaceDetailPath(placeId)}`;
   };
 
   const buildPublicProfileShareUrl = (username?: string) => {
@@ -3024,6 +3066,17 @@ export default function App() {
       travelerMoments={placeTravelerMoments}
       fallbackTravelers={placeFallbackTravelers}
       onBack={() => {
+        const currentPlacePath = selectedPlace ? buildPlaceDetailPath(selectedPlace.id) : null;
+        if (
+          typeof window !== 'undefined'
+          && currentPlacePath
+          && window.location.pathname === currentPlacePath
+          && placeDetailHasHistoryEntryRef.current
+        ) {
+          placeDetailHasHistoryEntryRef.current = false;
+          window.history.back();
+          return;
+        }
         const targetScrollTop = discoveryScrollRestoreRef.current;
         if (placeDetailReturnScreen === 'discover-places') {
           skipNextDiscoveryVarietyRef.current = true;
