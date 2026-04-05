@@ -1341,6 +1341,13 @@ async function getDiscoveryPlacesForUser(options: {
   const shouldUsePersistedScores = !options.forceRefresh;
   let rankedPlaces = places
     .filter((place) => !context.dismissedPlaceIds.has(place.id))
+    .filter((place) => !isServiceLikePlace({
+      tags: place.tags,
+      category: place.category,
+      hook: place.hook,
+      description: place.description,
+      whyYoullLikeIt: place.whyYoullLikeIt,
+    }))
     .filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery))
     .map((place) => ({
       ...place,
@@ -1706,6 +1713,49 @@ function mapPriceLevel(value?: number | null) {
 
 function normalizeKeyword(value: string) {
   return value.toLowerCase().replace(/[_-]+/g, ' ').trim();
+}
+
+function isServiceLikePlace(place: {
+  tags: string[];
+  category?: string | null;
+  hook?: string | null;
+  description?: string | null;
+  whyYoullLikeIt?: string[] | null;
+}) {
+  const haystack = [
+    place.category ?? '',
+    place.hook ?? '',
+    place.description ?? '',
+    ...(place.whyYoullLikeIt ?? []),
+    ...place.tags,
+  ]
+    .map(normalizeKeyword)
+    .join(' ');
+
+  const blockedMatchers = [
+    'service',
+    'services',
+    'salon',
+    'hair salon',
+    'beauty salon',
+    'barber',
+    'spa',
+    'repair',
+    'car repair',
+    'auto repair',
+    'lawyer',
+    'attorney',
+    'legal service',
+    'dentist',
+    'doctor',
+    'medical',
+    'insurance',
+    'bank',
+    'accounting',
+    'real estate',
+  ];
+
+  return blockedMatchers.some((matcher) => haystack.includes(matcher));
 }
 
 const PLACE_INTEREST_MATCHERS: Record<string, string[]> = {

@@ -10,9 +10,9 @@
   "orientation": "portrait",
   "icons": [
     {
-      "src": "/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
+      "src": "/vibinn-icon.png",
+      "sizes": "640x640",
+      "type": "image/png",
       "purpose": "any maskable"
     }
   ]

@@ -410,92 +410,88 @@ export default function PlaceDiscoveryScreen({
         </div>
       ) : (
         <>
-          <div className="grid grid-cols-2 items-start gap-3">
+          <div className="grid grid-cols-2 items-start gap-3 [overflow-anchor:none]">
             <div className="flex flex-col gap-3">
-              <AnimatePresence initial={false}>
-                {leftColumnItems.map((item, columnIndex) => {
-                  const index = columnIndex * 2;
-                  return (
-                    <div key={`${item.type}-${item.id}`} className={`min-w-0 ${showGestureDemo && index === 0 ? 'relative z-30' : ''}`}>
-                      {item.type === 'place' ? (
-                        <PlaceDiscoveryTile
-                          place={item.place}
-                          index={index}
-                          selectedInterests={selectedInterests}
-                          selectedVibe={selectedVibe}
-                          shouldAnimateEntry={shouldAnimateItemEntry}
-                          isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
-                          gestureDemo={showGestureDemo && index === 0}
-                          onGestureDemoComplete={onFinishGestureDemo}
-                          onBookmark={() => onBookmarkPlace(item.place)}
-                          onDismiss={() => onDismissPlace(item.place)}
-                          onOpen={() => onSelectPlace(item.place)}
-                          getEditorialLabel={getEditorialLabel}
-                          getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
-                        />
-                      ) : (
-                        <EventDiscoveryTile
-                          event={item.event}
-                          index={index}
-                          selectedInterests={selectedInterests}
-                          selectedVibe={selectedVibe}
-                          shouldAnimateEntry={shouldAnimateItemEntry}
-                          onOpen={() => onSelectEvent(item.event)}
-                          getEventPreferenceDebugMatches={getEventPreferenceDebugMatches}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                {isLoadingMore ? (
-                  <div key="left-loading-placeholder" className="min-w-0">
-                    <div className="h-[21rem] w-full animate-pulse rounded-[28px] border border-white/10 bg-white/6" />
+              {leftColumnItems.map((item, columnIndex) => {
+                const index = columnIndex * 2;
+                return (
+                  <div key={`${item.type}-${item.id}`} className={`min-w-0 ${showGestureDemo && index === 0 ? 'relative z-30' : ''}`}>
+                    {item.type === 'place' ? (
+                      <PlaceDiscoveryTile
+                        place={item.place}
+                        index={index}
+                        selectedInterests={selectedInterests}
+                        selectedVibe={selectedVibe}
+                        shouldAnimateEntry={shouldAnimateItemEntry}
+                        isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
+                        gestureDemo={showGestureDemo && index === 0}
+                        onGestureDemoComplete={onFinishGestureDemo}
+                        onBookmark={() => onBookmarkPlace(item.place)}
+                        onDismiss={() => onDismissPlace(item.place)}
+                        onOpen={() => onSelectPlace(item.place)}
+                        getEditorialLabel={getEditorialLabel}
+                        getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
+                      />
+                    ) : (
+                      <EventDiscoveryTile
+                        event={item.event}
+                        index={index}
+                        selectedInterests={selectedInterests}
+                        selectedVibe={selectedVibe}
+                        shouldAnimateEntry={shouldAnimateItemEntry}
+                        onOpen={() => onSelectEvent(item.event)}
+                        getEventPreferenceDebugMatches={getEventPreferenceDebugMatches}
+                      />
+                    )}
                   </div>
-                ) : null}
-              </AnimatePresence>
+                );
+              })}
+              {isLoadingMore ? (
+                <div key="left-loading-placeholder" className="min-w-0 [overflow-anchor:none]">
+                  <div className="h-[21rem] w-full animate-pulse rounded-[28px] border border-white/10 bg-white/6" />
+                </div>
+              ) : null}
             </div>
             <div className="flex flex-col gap-3">
-              <AnimatePresence initial={false}>
-                {rightColumnItems.map((item, columnIndex) => {
-                  const index = columnIndex * 2 + 1;
-                  return (
-                    <div key={`${item.type}-${item.id}`} className={`min-w-0 ${showGestureDemo && index === 0 ? 'relative z-30' : ''}`}>
-                      {item.type === 'place' ? (
-                        <PlaceDiscoveryTile
-                          place={item.place}
-                          index={index}
-                          selectedInterests={selectedInterests}
-                          selectedVibe={selectedVibe}
-                          shouldAnimateEntry={shouldAnimateItemEntry}
-                          isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
-                          gestureDemo={showGestureDemo && index === 0}
-                          onGestureDemoComplete={onFinishGestureDemo}
-                          onBookmark={() => onBookmarkPlace(item.place)}
-                          onDismiss={() => onDismissPlace(item.place)}
-                          onOpen={() => onSelectPlace(item.place)}
-                          getEditorialLabel={getEditorialLabel}
-                          getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
-                        />
-                      ) : (
-                        <EventDiscoveryTile
-                          event={item.event}
-                          index={index}
-                          selectedInterests={selectedInterests}
-                          selectedVibe={selectedVibe}
-                          shouldAnimateEntry={shouldAnimateItemEntry}
-                          onOpen={() => onSelectEvent(item.event)}
-                          getEventPreferenceDebugMatches={getEventPreferenceDebugMatches}
-                        />
-                      )}
-                    </div>
-                  );
-                })}
-                {isLoadingMore ? (
-                  <div key="right-loading-placeholder" className="min-w-0">
-                    <div className="h-[24rem] w-full animate-pulse rounded-[28px] border border-white/10 bg-white/6" />
+              {rightColumnItems.map((item, columnIndex) => {
+                const index = columnIndex * 2 + 1;
+                return (
+                  <div key={`${item.type}-${item.id}`} className={`min-w-0 ${showGestureDemo && index === 0 ? 'relative z-30' : ''}`}>
+                    {item.type === 'place' ? (
+                      <PlaceDiscoveryTile
+                        place={item.place}
+                        index={index}
+                        selectedInterests={selectedInterests}
+                        selectedVibe={selectedVibe}
+                        shouldAnimateEntry={shouldAnimateItemEntry}
+                        isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
+                        gestureDemo={showGestureDemo && index === 0}
+                        onGestureDemoComplete={onFinishGestureDemo}
+                        onBookmark={() => onBookmarkPlace(item.place)}
+                        onDismiss={() => onDismissPlace(item.place)}
+                        onOpen={() => onSelectPlace(item.place)}
+                        getEditorialLabel={getEditorialLabel}
+                        getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
+                      />
+                    ) : (
+                      <EventDiscoveryTile
+                        event={item.event}
+                        index={index}
+                        selectedInterests={selectedInterests}
+                        selectedVibe={selectedVibe}
+                        shouldAnimateEntry={shouldAnimateItemEntry}
+                        onOpen={() => onSelectEvent(item.event)}
+                        getEventPreferenceDebugMatches={getEventPreferenceDebugMatches}
+                      />
+                    )}
                   </div>
-                ) : null}
-              </AnimatePresence>
+                );
+              })}
+              {isLoadingMore ? (
+                <div key="right-loading-placeholder" className="min-w-0 [overflow-anchor:none]">
+                  <div className="h-[24rem] w-full animate-pulse rounded-[28px] border border-white/10 bg-white/6" />
+                </div>
+              ) : null}
             </div>
           </div>
 

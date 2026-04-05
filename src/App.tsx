@@ -2268,6 +2268,7 @@ export default function App() {
   ) => {
     const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0];
     if (!activeLocation) return;
+    const appendScrollTop = mode === 'append' && typeof window !== 'undefined' ? window.scrollY : null;
     const refreshMode = mode === 'reset' ? options?.refreshMode : undefined;
     const isRefresh = Boolean(refreshMode) && mode === 'reset';
     const rotationSeed = options?.rotationSeedOverride ?? discoveryRotationSeedRef.current;
@@ -2308,6 +2309,17 @@ export default function App() {
       ));
       setDiscoveryPage(response.pagination.page);
       setDiscoveryHasMore(response.pagination.hasMore);
+      if (mode === 'append' && appendScrollTop !== null && typeof window !== 'undefined') {
+        const restoreAppendScroll = () => {
+          if (window.scrollY < appendScrollTop - 120) {
+            window.scrollTo({ top: appendScrollTop, left: 0, behavior: 'auto' });
+            document.documentElement.scrollTop = appendScrollTop;
+            document.body.scrollTop = appendScrollTop;
+          }
+        };
+        window.requestAnimationFrame(restoreAppendScroll);
+        window.setTimeout(restoreAppendScroll, 80);
+      }
     } catch {
       if (mode === 'reset') {
         setDiscoveryPlaces([]);
@@ -2580,6 +2592,30 @@ export default function App() {
               savedLocations={savedLocations}
               activeLocationId={activeLocationId}
               onSelectInitialLocation={(locationId) => setActiveLocationId(locationId)}
+              onAddInitialLocation={async (location) => {
+                if (isAuthenticated) {
+                  try {
+                    const response = await api.addSavedLocation({
+                      label: location.label,
+                      type: location.type,
+                      googlePlaceId: location.googlePlaceId,
+                      isDefault: true,
+                    });
+                    setSavedLocations((prev) => mergeSavedLocations(prev, response.locations as SavedLocationOption[]));
+                    if (response.activeLocationId) {
+                      setActiveLocationId(response.activeLocationId);
+                    }
+                    showActionToast(`${location.label} selected`);
+                  } catch {
+                    showActionToast('Could not save location right now');
+                  }
+                  return;
+                }
+
+                setSavedLocations((prev) => mergeSavedLocations(prev, [location]));
+                setActiveLocationId(location.id);
+                showActionToast(`${location.label} selected`);
+              }}
               onComplete={completeOnboarding}
               isValidInviteCode={(code) => VALID_INVITE_CODES.includes(code)}
               unlockVisualPlaces={DISCOVERY_PLACE_FEED
