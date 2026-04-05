@@ -17,7 +17,9 @@ export const MOCK_PLACES: Place[] = [
       'quiet neighborhood energy',
     ],
     priceRange: '$',
-    category: 'Bookstore / Cafe'
+    category: 'Bookstore / Cafe',
+    latitude: 42.3588,
+    longitude: -71.0696,
   },
   {
     id: 'p-bos-2',
@@ -35,7 +37,9 @@ export const MOCK_PLACES: Place[] = [
       'best when the harbor light softens',
     ],
     priceRange: 'Free',
-    category: 'Waterfront Walk'
+    category: 'Waterfront Walk',
+    latitude: 42.3675,
+    longitude: -71.0502,
   },
   {
     id: 'p-bos-3',
@@ -53,7 +57,9 @@ export const MOCK_PLACES: Place[] = [
       'good first stop before wandering the neighborhood',
     ],
     priceRange: '$',
-    category: 'Cafe'
+    category: 'Cafe',
+    latitude: 42.3427,
+    longitude: -71.0763,
   },
   {
     id: 'p-bos-4',
@@ -71,7 +77,9 @@ export const MOCK_PLACES: Place[] = [
       'strong fit if your nights lean more bar than club',
     ],
     priceRange: '$$',
-    category: 'Cocktail Bar / Music'
+    category: 'Cocktail Bar / Music',
+    latitude: 42.3647,
+    longitude: -71.0543,
   },
   {
     id: 'p-bos-5',
@@ -89,7 +97,9 @@ export const MOCK_PLACES: Place[] = [
       'works when you want a shopping stop with personality',
     ],
     priceRange: '$$',
-    category: 'Market / Shopping'
+    category: 'Market / Shopping',
+    latitude: 42.3429,
+    longitude: -71.0702,
   },
   {
     id: 'p1',

@@ -38,6 +38,18 @@ function calculateDistanceMiles(
   return Math.round(distanceKm * 0.621371 * 10) / 10;
 }
 
+function getLocationPromptCopy(permission: 'unknown' | 'granted' | 'denied' | 'unsupported') {
+  if (typeof window !== 'undefined' && !window.isSecureContext) {
+    return 'Location on iPhone needs HTTPS, so local network previews will not show the Safari prompt.';
+  }
+
+  if (permission === 'denied') {
+    return 'Turn location back on in your browser so we can show distance in miles.';
+  }
+
+  return 'Turn on location so we can show the distance from you in miles.';
+}
+
 export default function PlaceDiscoveryScreen({
   selectedInterests,
   selectedVibe,
@@ -355,9 +367,7 @@ export default function PlaceDiscoveryScreen({
           <div className="min-w-0">
             <div className="text-sm font-semibold text-white">See how far each place is</div>
             <div className="text-xs text-white/60">
-              {deviceLocationPermission === 'denied'
-                ? 'Turn location back on in your browser so we can show distance in miles.'
-                : 'Turn on location so we can show the distance from you in miles.'}
+              {getLocationPromptCopy(deviceLocationPermission)}
             </div>
           </div>
           <button

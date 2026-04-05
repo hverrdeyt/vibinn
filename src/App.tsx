@@ -965,6 +965,18 @@ function getLocationPermissionHelpMessage() {
   return 'Turn location back on in your browser settings for this site, then try again.';
 }
 
+function getLocationEnvironmentHelpMessage() {
+  if (typeof window === 'undefined') {
+    return 'Location needs a secure connection.';
+  }
+
+  if (!window.isSecureContext) {
+    return 'Location needs HTTPS on iPhone. Try this on vibinn.club or another secure URL.';
+  }
+
+  return 'Location needs a secure connection.';
+}
+
 function requestCurrentPosition(options: PositionOptions) {
   return new Promise<GeolocationPosition>((resolve, reject) => {
     if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
@@ -1576,18 +1588,6 @@ export default function App() {
   }, [discoverySearchInput]);
 
   useEffect(() => {
-    if (currentScreen !== 'discover-places' && currentScreen !== 'place-detail') {
-      return;
-    }
-
-    if (deviceLocationPermission !== 'unknown' || hasRequestedDeviceLocationRef.current) {
-      return;
-    }
-
-    requestDeviceLocation();
-  }, [currentScreen, deviceLocationPermission]);
-
-  useEffect(() => {
     if (typeof window === 'undefined') return;
 
     const resyncDeviceLocationPermission = () => {
@@ -1737,6 +1737,12 @@ export default function App() {
     if (typeof window === 'undefined' || !('geolocation' in navigator)) {
       setDeviceLocationPermission('unsupported');
       showActionToast('Location is not supported on this browser');
+      return;
+    }
+
+    if (!window.isSecureContext) {
+      setDeviceLocationPermission('unknown');
+      showActionToast(getLocationEnvironmentHelpMessage());
       return;
     }
 
