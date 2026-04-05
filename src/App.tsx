@@ -124,9 +124,7 @@ interface DeviceLocation {
   longitude: number;
 }
 
-const INVITE_UNLOCKED_KEY = 'vibecheck_invite_unlocked';
 const ONBOARDING_COMPLETED_KEY = 'vibecheck_onboarding_completed';
-const REDEEMED_INVITE_CODE_KEY = 'vibecheck_redeemed_invite_code';
 const DEVICE_LOCATION_KEY = 'vibinn_device_location';
 const DEVICE_LOCATION_PERMISSION_KEY = 'vibinn_device_location_permission';
 const HOME_SCREEN_PROMO_DISMISSED_KEY = 'vibinn_home_screen_promo_dismissed';
@@ -140,13 +138,6 @@ const RESERVED_TOP_LEVEL_PATHS = new Set([
   'robots.txt',
   'sitemap.xml',
 ]);
-
-const VALID_INVITE_CODES = [
-  'VIBE2026',
-  'FOUNDINGVIBE',
-  'BOSTONBETA',
-  'FRIENDSOFVIBINN',
-];
 
 function mergeSavedLocations(
   currentLocations: SavedLocationOption[],
@@ -357,10 +348,6 @@ function dataUrlToFile(dataUrl: string, filename: string) {
   return new File([array], filename, { type: mime });
 }
 
-function hasStoredInviteAccess() {
-  return typeof window !== 'undefined' && window.localStorage.getItem(INVITE_UNLOCKED_KEY) === '1';
-}
-
 function hasStoredOnboardingCompletion() {
   return typeof window !== 'undefined' && window.localStorage.getItem(ONBOARDING_COMPLETED_KEY) === '1';
 }
@@ -404,7 +391,7 @@ function screenToAppPath(screen: Screen) {
     case 'register':
       return `${APP_BASE_PATH}/register`;
     case 'onboarding':
-      return `${APP_BASE_PATH}/invite`;
+      return `${APP_BASE_PATH}/onboarding`;
     default:
       return APP_BASE_PATH;
   }
@@ -447,6 +434,8 @@ function parseAppRoute(pathname: string): AppRouteState {
   }
 
   switch (appPath) {
+    case 'onboarding':
+      return { screen: 'onboarding' };
     case 'invite':
       return { screen: 'onboarding' };
     case 'login':
@@ -1465,7 +1454,7 @@ export default function App() {
     if (typeof window === 'undefined') return 'landing';
     const route = parseAppRoute(window.location.pathname);
     const placeIdFromShareLink = getPlaceDetailIdFromLocation();
-    const hasAccess = hasStoredInviteAccess() || hasStoredOnboardingCompletion();
+    const hasAccess = hasStoredOnboardingCompletion();
 
     if (route.screen === 'landing' || route.screen === 'public-profile') {
       return route.screen;
@@ -1483,15 +1472,13 @@ export default function App() {
   });
   const [publicProfileUser, setPublicProfileUser] = useState<User | null>(null);
   const [isPublicProfileLoading, setIsPublicProfileLoading] = useState(false);
-  const [onboardingEntryMode, setOnboardingEntryMode] = useState<'invite' | 'preferences'>('invite');
+  const [onboardingEntryMode, setOnboardingEntryMode] = useState<'preferences'>('preferences');
   const [user, setUser] = useState<User>(MOCK_USER);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authReturnScreen, setAuthReturnScreen] = useState<Screen>('discover-places');
   const [authPrompt, setAuthPrompt] = useState('Log in to keep your travel graph synced.');
   const pendingAuthActionRef = useRef<null | (() => void)>(null);
   const isGoogleScriptLoadedRef = useRef(false);
-  const [inviteCode, setInviteCode] = useState('');
-  const [isInviteValid, setIsInviteValid] = useState(() => hasStoredInviteAccess());
   const [selectedInterests, setSelectedInterests] = useState<Interest[]>([]);
   const [selectedVibe, setSelectedVibe] = useState<Vibe | null>(null);
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
@@ -1790,7 +1777,7 @@ export default function App() {
 
     const handlePopState = () => {
       const route = parseAppRoute(window.location.pathname);
-      const hasAccess = hasStoredInviteAccess() || hasStoredOnboardingCompletion();
+      const hasAccess = hasStoredOnboardingCompletion();
 
       if (route.screen === 'public-profile') {
         placeDetailHasHistoryEntryRef.current = false;
@@ -1908,12 +1895,11 @@ export default function App() {
   useEffect(() => {
     if (currentScreen === 'landing' || currentScreen === 'public-profile') return;
 
-    const hasAccess = isInviteValid || hasStoredOnboardingCompletion();
+    const hasAccess = hasStoredOnboardingCompletion();
     if (!hasAccess && currentScreen !== 'onboarding') {
-      setOnboardingEntryMode('invite');
       setCurrentScreen('onboarding');
     }
-  }, [currentScreen, isInviteValid]);
+  }, [currentScreen]);
 
   useEffect(() => {
     const timeoutId = window.setTimeout(() => {
@@ -1946,18 +1932,6 @@ export default function App() {
     };
   }, [currentScreen, deviceLocation]);
 
-  // Handle invite submit
-  const handleInviteSubmit = () => {
-    const normalizedInviteCode = inviteCode.trim().toUpperCase();
-    if (VALID_INVITE_CODES.includes(normalizedInviteCode)) {
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(INVITE_UNLOCKED_KEY, '1');
-        window.localStorage.setItem(REDEEMED_INVITE_CODE_KEY, normalizedInviteCode);
-      }
-      setIsInviteValid(true);
-    }
-  };
-
   // Handle onboarding completion
   const completeOnboarding = async (override?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null }) => {
     const nextSelectedInterests = override?.selectedInterests ?? selectedInterests;
@@ -1976,7 +1950,6 @@ export default function App() {
       });
     }
     if (typeof window !== 'undefined') {
-      window.localStorage.setItem(INVITE_UNLOCKED_KEY, '1');
       window.localStorage.setItem(ONBOARDING_COMPLETED_KEY, '1');
     }
     setDiscoveryPlaces([]);
@@ -1984,7 +1957,7 @@ export default function App() {
     setDiscoveryPage(1);
     setDiscoveryHasMore(true);
     setIsPreferenceTransitionLoading(true);
-    setOnboardingEntryMode('invite');
+    setOnboardingEntryMode('preferences');
     suppressNextDiscoveryAutoloadRef.current = true;
     setCurrentScreen(shouldShowPostPreferencesIntro ? 'post-preferences-intro' : 'discover-places');
     setShowDiscoveryGestureDemo(shouldShowPostPreferencesIntro);
@@ -2052,7 +2025,7 @@ export default function App() {
   });
 
   const openApp = () => {
-    const hasAccess = isInviteValid || hasStoredOnboardingCompletion();
+    const hasAccess = hasStoredOnboardingCompletion();
     const targetScreen: Screen = hasAccess ? 'discover-places' : 'onboarding';
     setPublicProfileUsername(null);
     if (typeof window !== 'undefined') {
@@ -3439,10 +3412,6 @@ export default function App() {
           <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
             <OnboardingScreen
               entryMode={onboardingEntryMode}
-              inviteCode={inviteCode}
-              setInviteCode={setInviteCode}
-              isInviteValid={isInviteValid}
-              onInviteSubmit={handleInviteSubmit}
               selectedInterests={selectedInterests}
               setSelectedInterests={setSelectedInterests}
               selectedVibe={selectedVibe}
@@ -3475,15 +3444,6 @@ export default function App() {
                 showActionToast(`${location.label} selected`);
               }}
               onComplete={completeOnboarding}
-              isValidInviteCode={(code) => VALID_INVITE_CODES.includes(code)}
-              unlockVisualPlaces={DISCOVERY_PLACE_FEED
-                .filter((place) => Boolean(place.image))
-                .slice(0, 8)
-                .map((place) => ({
-                  id: place.id,
-                  image: place.image,
-                  name: place.name,
-                }))}
               analyticsContext={buildAnalyticsUserContext()}
             />
           </Suspense>

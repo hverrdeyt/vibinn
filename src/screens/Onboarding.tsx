@@ -1,8 +1,8 @@
 import { AnimatePresence, motion } from 'motion/react';
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
-import { ArrowRight, Lock, Sparkles } from 'lucide-react';
+import { ArrowRight, Sparkles } from 'lucide-react';
 import { type Interest, type Vibe } from '../types';
-import { api, ApiError } from '../lib/api';
+import { api } from '../lib/api';
 import { trackEvent } from '../lib/analytics';
 
 type SavedLocationOption = {
@@ -20,11 +20,7 @@ function handleOnboardingImageError(event: { currentTarget: HTMLImageElement }, 
 }
 
 type OnboardingProps = {
-  entryMode: 'invite' | 'preferences';
-  inviteCode: string;
-  setInviteCode: Dispatch<SetStateAction<string>>;
-  isInviteValid: boolean;
-  onInviteSubmit: () => void;
+  entryMode: 'preferences';
   selectedInterests: Interest[];
   setSelectedInterests: Dispatch<SetStateAction<Interest[]>>;
   selectedVibe: Vibe | null;
@@ -34,17 +30,11 @@ type OnboardingProps = {
   onSelectInitialLocation: (locationId: string) => void;
   onAddInitialLocation: (location: SavedLocationOption) => void | Promise<void>;
   onComplete: (payload?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null }) => void;
-  isValidInviteCode: (code: string) => boolean;
-  unlockVisualPlaces: Array<{ id: string; image: string; name: string }>;
   analyticsContext?: Record<string, unknown>;
 };
 
 export default function Onboarding({
   entryMode,
-  inviteCode,
-  setInviteCode,
-  isInviteValid,
-  onInviteSubmit,
   selectedInterests,
   setSelectedInterests,
   selectedVibe,
@@ -54,24 +44,16 @@ export default function Onboarding({
   onSelectInitialLocation,
   onAddInitialLocation,
   onComplete,
-  isValidInviteCode,
-  unlockVisualPlaces,
   analyticsContext,
 }: OnboardingProps) {
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
   const choiceTitle = 'Can I get to know you first?';
   const areaTitle = 'Where are you planning to go?';
-  const [stage, setStage] = useState<'invite' | 'unlock' | 'area' | 'choice' | 'swipe'>(
-    entryMode === 'preferences' ? 'swipe' : isInviteValid ? 'area' : 'invite',
+  const [stage, setStage] = useState<'area' | 'choice' | 'swipe'>(
+    entryMode === 'preferences' ? 'swipe' : 'area',
   );
   const [step, setStep] = useState<'interests' | 'vibes'>('interests');
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
-  const [inviteError, setInviteError] = useState<string | null>(null);
-  const [showWaitlistForm, setShowWaitlistForm] = useState(false);
-  const [waitlistEmail, setWaitlistEmail] = useState('');
-  const [isJoiningWaitlist, setIsJoiningWaitlist] = useState(false);
-  const [waitlistMessage, setWaitlistMessage] = useState<string | null>(null);
-  const [waitlistError, setWaitlistError] = useState<string | null>(null);
   const [typedChoiceTitle, setTypedChoiceTitle] = useState('');
   const [typedAreaTitle, setTypedAreaTitle] = useState('');
   const [areaQuery, setAreaQuery] = useState('');
@@ -87,20 +69,6 @@ export default function Onboarding({
     selected_interests_count: selectedInterests.length,
     selected_vibe: selectedVibe,
   };
-
-  useEffect(() => {
-    if (isInviteValid && stage === 'invite') {
-      setStage('unlock');
-    }
-  }, [isInviteValid, stage]);
-
-  useEffect(() => {
-    if (stage !== 'unlock') return;
-    const timeoutId = window.setTimeout(() => {
-      setStage('area');
-    }, 5000);
-    return () => window.clearTimeout(timeoutId);
-  }, [stage]);
 
   useEffect(() => {
     if (entryMode !== 'preferences') return;
@@ -240,138 +208,6 @@ export default function Onboarding({
     setStep('interests');
     setCurrentCardIndex(0);
   };
-
-  if (stage === 'invite') {
-    return (
-      <div className="h-[100svh] overflow-y-auto bg-zinc-950 px-10 pb-10 pt-24 text-white">
-        <div className="mb-12">
-          <div className="mb-8 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/8 shadow-lg">
-            <Lock className="text-accent" size={28} />
-          </div>
-          <h1 className="mb-6 text-5xl font-extrabold leading-[0.9] tracking-tighter">
-            If you know, <br />you know.
-          </h1>
-          <p className="text-xl font-medium leading-snug text-white/60">
-            We&apos;re still running a beta testing. If you have an invite, input the code below.
-          </p>
-        </div>
-
-        <div className="space-y-4">
-          <input
-            type="text"
-            placeholder="INVITE CODE"
-            value={inviteCode}
-            onChange={(e) => {
-              setInviteCode(e.target.value.replace(/\s+/g, '').toUpperCase());
-              setInviteError(null);
-            }}
-            className="w-full rounded-xl border border-white/10 bg-white/6 px-5 py-5 text-xl font-mono uppercase tracking-widest text-white outline-none transition-all focus:ring-2 focus:ring-white/10"
-          />
-          <button
-            onClick={() => {
-              const normalizedInviteCode = inviteCode.trim().replace(/\s+/g, '').toUpperCase();
-              const isValid = isValidInviteCode(normalizedInviteCode);
-              trackEvent('Submit invitation code', {
-                ...onboardingEventBase,
-                invite_code_length: normalizedInviteCode.length,
-                invite_code_valid: isValid,
-              });
-              if (!isValid) {
-                setInviteError('That invite code does not look right.');
-                return;
-              }
-              setInviteError(null);
-              onInviteSubmit();
-            }}
-            disabled={!inviteCode}
-            className="flex w-full items-center justify-center gap-2 py-5 text-lg btn-primary"
-          >
-            Verify Access <ArrowRight size={20} />
-          </button>
-          {inviteError ? (
-            <div className="rounded-[1rem] border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm font-semibold text-red-200">
-              {inviteError}
-            </div>
-          ) : null}
-
-          <button
-            type="button"
-            onClick={() => {
-              setShowWaitlistForm((current) => !current);
-              setWaitlistError(null);
-              setWaitlistMessage(null);
-            }}
-            className="w-full rounded-xl border border-white/10 bg-white/6 px-6 py-4 text-sm font-black uppercase tracking-[0.14em] text-white transition-all hover:bg-white/10 active:scale-[0.98]"
-          >
-            {showWaitlistForm ? 'Hide waitlist' : `Don't have a code? Join waitlist`}
-          </button>
-
-          {showWaitlistForm ? (
-            <div className="rounded-[1.5rem] border border-white/10 bg-white/6 p-4">
-              <div className="text-sm font-black text-white">Join the beta waitlist</div>
-              <p className="mt-1 text-sm font-medium leading-relaxed text-white/55">
-                Drop your email and we&apos;ll reach out when we open more spots.
-              </p>
-              <input
-                type="email"
-                value={waitlistEmail}
-                onChange={(event) => {
-                  setWaitlistEmail(event.target.value.replace(/\s+/g, ''));
-                  setWaitlistError(null);
-                }}
-                placeholder="you@email.com"
-                className="mt-4 w-full rounded-xl border border-white/10 bg-black/20 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
-              />
-              {waitlistError ? (
-                <div className="mt-3 rounded-[1rem] border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm font-semibold text-red-200">
-                  {waitlistError}
-                </div>
-              ) : null}
-              {waitlistMessage ? (
-                <div className="mt-3 rounded-[1rem] border border-accent/20 bg-accent/10 px-4 py-3 text-sm font-semibold text-accent">
-                  {waitlistMessage}
-                </div>
-              ) : null}
-              <button
-                type="button"
-                onClick={async () => {
-                  setIsJoiningWaitlist(true);
-                  setWaitlistError(null);
-                  setWaitlistMessage(null);
-                  try {
-                    await api.joinWaitlist({ email: waitlistEmail, source: 'invite-gate' });
-                    trackEvent('Submit waiting list', {
-                      ...onboardingEventBase,
-                      source: 'invite-gate',
-                      email_domain: waitlistEmail.split('@')[1]?.toLowerCase() ?? null,
-                    });
-                    setWaitlistMessage(`You're on the list.`);
-                    setWaitlistEmail('');
-                  } catch (error) {
-                    setWaitlistError(
-                      error instanceof ApiError && error.status === 404
-                        ? 'Waitlist is not live yet. Try again after the local backend restarts.'
-                        : error instanceof ApiError
-                          ? error.message
-                          : 'Could not join the waitlist right now.',
-                    );
-                  } finally {
-                    setIsJoiningWaitlist(false);
-                  }
-                }}
-                disabled={!waitlistEmail.trim() || isJoiningWaitlist}
-                className={`mt-4 w-full rounded-xl px-5 py-4 text-sm font-black uppercase tracking-[0.14em] transition ${
-                  waitlistEmail.trim() && !isJoiningWaitlist ? 'bg-accent text-dark hover:brightness-105' : 'bg-white/10 text-white/35'
-                }`}
-              >
-                {isJoiningWaitlist ? 'Joining...' : 'Join waitlist'}
-              </button>
-            </div>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
 
   if (stage === 'choice') {
     const isChoiceIntroReady = typedChoiceTitle.length === choiceTitle.length;
@@ -585,71 +421,6 @@ export default function Onboarding({
             </motion.div>
           ) : null}
         </AnimatePresence>
-      </div>
-    );
-  }
-
-  if (stage === 'unlock') {
-    return (
-      <div className="relative flex h-[100svh] flex-col items-center justify-center overflow-hidden bg-[radial-gradient(circle_at_top,_rgba(211,255,72,0.22),_transparent_30%),linear-gradient(160deg,#120f1f_0%,#101820_42%,#071014_100%)] px-10 text-center text-white">
-        <div className="pointer-events-none absolute -left-16 top-20 h-40 w-40 rounded-full bg-pink-400/18 blur-3xl" />
-        <div className="pointer-events-none absolute -right-12 top-24 h-44 w-44 rounded-full bg-sky-300/18 blur-3xl" />
-        <div className="pointer-events-none absolute bottom-12 left-1/2 h-56 w-56 -translate-x-1/2 rounded-full bg-accent/12 blur-3xl" />
-
-        {unlockVisualPlaces.map((item, index) => (
-          <motion.div
-            key={`unlock-place-${item.id}`}
-            initial={{ opacity: 0, scale: 0.72, y: 24, rotate: 0 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            transition={{ delay: 0.22 + index * 0.18, duration: 0.55, ease: [0.22, 1, 0.36, 1] }}
-            className={`pointer-events-none absolute ${
-              [
-                'left-[8%] top-[12%] w-22 -rotate-12',
-                'right-[10%] top-[14%] w-24 rotate-12',
-                'left-[12%] top-[34%] w-20 rotate-6',
-                'right-[14%] top-[38%] w-24 -rotate-6',
-                'left-[18%] bottom-[23%] w-24 -rotate-10',
-                'right-[17%] bottom-[22%] w-22 rotate-9',
-                'left-[38%] top-[8%] w-20 rotate-3',
-                'right-[34%] bottom-[10%] w-20 -rotate-3',
-              ][index] ?? 'left-[20%] top-[20%] w-20'
-            }`}
-          >
-            <div className="overflow-hidden rounded-[1.4rem] border border-white/12 bg-black/35 p-1.5 shadow-[0_24px_70px_rgba(0,0,0,0.35)] backdrop-blur-md">
-              <img
-                src={item.image}
-                alt={item.name}
-                className="h-28 w-full rounded-[1rem] object-cover"
-                referrerPolicy="no-referrer"
-              />
-            </div>
-          </motion.div>
-        ))}
-
-        <motion.div
-          initial={{ scale: 0.88, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ duration: 0.42, ease: 'easeOut' }}
-          className="relative z-10 rounded-[2rem] border border-accent/20 bg-accent/10 p-5 shadow-[0_20px_80px_rgba(194,243,104,0.12)]"
-        >
-          <Sparkles size={34} className="text-accent" />
-        </motion.div>
-        <motion.h1
-          initial={{ y: 18, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.16, duration: 0.36 }}
-          className="relative z-10 mt-8 text-4xl font-black tracking-tighter sm:text-5xl"
-        >
-          Welcome to Vibinn!
-        </motion.h1>
-        <motion.p
-          initial={{ y: 18, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ delay: 0.28, duration: 0.36 }}
-          className="relative z-10 mt-3 max-w-sm text-base font-medium leading-relaxed text-white/70"
-        >
-          Places are already bubbling up. Give us a second to open your beta flow.
-        </motion.p>
       </div>
     );
   }

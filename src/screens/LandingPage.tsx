@@ -348,7 +348,7 @@ export default function LandingPage({
       <div className={`pointer-events-none safe-bottom-pad fixed inset-x-0 bottom-0 z-40 flex justify-center px-4 transition-opacity duration-200 ${showFloatingCta ? 'opacity-100' : 'opacity-0'}`}>
         <div className="pointer-events-auto flex w-full max-w-sm items-center justify-between rounded-full border border-white/10 bg-black/82 px-4 py-3 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur-xl">
           <div className="min-w-0">
-            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/38">Invite-only beta</div>
+            <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/38">Vibinn</div>
             <div className="truncate text-sm font-black text-white">Try Vibinn now</div>
           </div>
           <button type="button" onClick={onFloatingTryNow} className="rounded-full bg-accent px-5 py-3 text-[11px] font-black uppercase tracking-[0.14em] text-black transition hover:brightness-105">
