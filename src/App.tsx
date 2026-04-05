@@ -367,7 +367,7 @@ function screenToAppPath(screen: Screen) {
     case 'discover-places':
       return APP_BASE_PATH;
     case 'post-preferences-intro':
-      return `${APP_BASE_PATH}/ready`;
+      return APP_BASE_PATH;
     case 'discover-travelers':
       return `${APP_BASE_PATH}/travelers`;
     case 'bookmarks':
@@ -443,7 +443,7 @@ function parseAppRoute(pathname: string): AppRouteState {
     case 'register':
       return { screen: 'register' };
     case 'ready':
-      return { screen: 'post-preferences-intro' };
+      return { screen: 'discover-places' };
     case 'travelers':
       return { screen: 'discover-travelers' };
     case 'bookmarks':
@@ -1586,6 +1586,7 @@ export default function App() {
   const previousPreferenceKeyRef = useRef('');
   const forceDiscoveryRefreshAfterAuthRef = useRef(false);
   const lastDiscoveryContextKeyRef = useRef('');
+  const ownProfileLastFetchedAtRef = useRef<number>(0);
 
   useEffect(() => {
     initAnalytics();
@@ -1951,7 +1952,6 @@ export default function App() {
   const completeOnboarding = async (override?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null }) => {
     const nextSelectedInterests = override?.selectedInterests ?? selectedInterests;
     const nextSelectedVibe = override?.selectedVibe ?? selectedVibe;
-    const shouldShowPostPreferencesIntro = nextSelectedInterests.length > 0 || Boolean(nextSelectedVibe);
 
     setSelectedInterests(nextSelectedInterests);
     setSelectedVibe(nextSelectedVibe ?? null);
@@ -1973,21 +1973,18 @@ export default function App() {
     setDiscoveryHasMore(true);
     setIsPreferenceTransitionLoading(true);
     setOnboardingEntryMode('preferences');
-    suppressNextDiscoveryAutoloadRef.current = true;
-    setCurrentScreen(shouldShowPostPreferencesIntro ? 'post-preferences-intro' : 'discover-places');
-    setShowDiscoveryGestureDemo(shouldShowPostPreferencesIntro);
+    setCurrentScreen('discover-places');
+    setShowDiscoveryGestureDemo(nextSelectedInterests.length > 0 || Boolean(nextSelectedVibe));
     if (postPreferencesIntroTimerRef.current) {
       window.clearTimeout(postPreferencesIntroTimerRef.current);
     }
-    if (shouldShowPostPreferencesIntro) {
-      postPreferencesIntroTimerRef.current = window.setTimeout(() => {
-        setCurrentScreen('discover-places');
-      }, 4200);
-    }
-    await Promise.allSettled([
-      loadDiscoveryPlaces(1, 'reset', { refreshMode: 'hard', preferencesOverride: { selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe } }),
-      loadDiscoveryEvents({ selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe }),
-    ]);
+    await loadDiscoveryPlaces(1, 'reset', {
+      refreshMode: 'hard',
+      preferencesOverride: { selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe },
+    });
+    window.setTimeout(() => {
+      void loadDiscoveryEvents({ selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe });
+    }, 180);
     setIsPreferenceTransitionLoading(false);
   };
 
@@ -2143,7 +2140,14 @@ export default function App() {
     }
   };
 
-  const refreshOwnProfile = async () => {
+  const refreshOwnProfile = async (options?: { force?: boolean }) => {
+    const shouldReuseRecentProfile = (
+      !options?.force &&
+      ownProfileLastFetchedAtRef.current > 0 &&
+      Date.now() - ownProfileLastFetchedAtRef.current < 30_000
+    );
+    if (shouldReuseRecentProfile) return;
+
     try {
       const [profileResponse, bookmarksResponse] = await Promise.all([
         api.getProfileMe(),
@@ -2164,6 +2168,7 @@ export default function App() {
         })),
       );
       setBookmarkedPlaces(bookmarksResponse.bookmarks as Place[]);
+      ownProfileLastFetchedAtRef.current = Date.now();
     } catch {
       showActionToast('Could not sync profile right now');
     }
@@ -2174,29 +2179,35 @@ export default function App() {
       selectedInterests: Interest[];
       selectedVibe: Vibe | null;
     };
+    includeProfile?: boolean;
   }) => {
     try {
       const [profileResponse, bookmarksResponse, signalsResponse, savedLocationsResponse] = await Promise.all([
-        api.getProfileMe(),
-        api.getBookmarks().catch(() => ({ bookmarks: [] as any[] })),
+        options?.includeProfile ? api.getProfileMe() : Promise.resolve(null),
+        options?.includeProfile ? api.getBookmarks().catch(() => ({ bookmarks: [] as any[] })) : Promise.resolve(null),
         api.getPersonalizationSignals().catch(() => null),
         api.getSavedLocations().catch(() => null),
       ]);
 
-      setUser(profileResponse.user as User);
-      setCustomCollections(
-        profileResponse.collections.map((collection) => ({
-          label: collection.label,
-          places: collection.places as Place[],
-        })),
-      );
-      setMyMoments(
-        profileResponse.moments.map((moment) => ({
-          id: String(moment.id),
-          placeId: String(moment.placeId),
-        })),
-      );
-      setBookmarkedPlaces(bookmarksResponse.bookmarks as Place[]);
+      if (profileResponse) {
+        setUser(profileResponse.user as User);
+        setCustomCollections(
+          profileResponse.collections.map((collection) => ({
+            label: collection.label,
+            places: collection.places as Place[],
+          })),
+        );
+        setMyMoments(
+          profileResponse.moments.map((moment) => ({
+            id: String(moment.id),
+            placeId: String(moment.placeId),
+          })),
+        );
+        if (bookmarksResponse) {
+          setBookmarkedPlaces(bookmarksResponse.bookmarks as Place[]);
+        }
+        ownProfileLastFetchedAtRef.current = Date.now();
+      }
 
       let effectiveSelectedInterests = (signalsResponse?.selectedInterests ?? []) as Interest[];
       let effectiveSelectedVibe = (signalsResponse?.selectedVibe as Vibe | null | undefined) ?? null;
@@ -2797,7 +2808,10 @@ export default function App() {
       });
     }
 
-    const hydratedPreferences = await applyAuthenticatedBootstrapState({ guestPreferences });
+    const hydratedPreferences = await applyAuthenticatedBootstrapState({
+      guestPreferences,
+      includeProfile: false,
+    });
 
     const pendingAction = pendingAuthActionRef.current;
     pendingAuthActionRef.current = null;
@@ -2819,11 +2833,13 @@ export default function App() {
       setDiscoveryHasMore(true);
       const rotationSeed = bumpDiscoveryRotationSeed();
       void loadDiscoveryPlaces(1, 'reset', {
-        refreshMode: 'hard',
+        refreshMode: 'soft',
         rotationSeedOverride: rotationSeed,
         preferencesOverride: hydratedPreferences,
       });
-      void loadDiscoveryEvents(hydratedPreferences);
+      window.setTimeout(() => {
+        void loadDiscoveryEvents(hydratedPreferences);
+      }, 200);
     }
   };
 
