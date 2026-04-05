@@ -27,7 +27,7 @@ async function loadMixpanel() {
 
         if (!hasInitialized) {
           mixpanel.init(MIXPANEL_TOKEN as string, {
-            autocapture: true,
+            autocapture: false,
             record_sessions_percent: 100,
           });
           hasInitialized = true;
@@ -72,13 +72,6 @@ export function initAnalytics() {
 export function trackEvent(eventName: string, properties?: Record<string, unknown>) {
   enqueueTask((mixpanel) => {
     mixpanel.track(eventName, properties);
-  });
-}
-
-export function trackScreenView(screen: string, properties?: Record<string, unknown>) {
-  trackEvent('Screen Viewed', {
-    screen,
-    ...properties,
   });
 }
 

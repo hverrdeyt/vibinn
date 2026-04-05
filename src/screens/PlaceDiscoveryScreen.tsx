@@ -178,9 +178,9 @@ export default function PlaceDiscoveryScreen({
   onRestorePlaceHandled: () => void;
   onRefresh: () => void;
   onLoadMore: () => boolean | void;
-  onBookmarkPlace: (place: Place) => void;
-  onDismissPlace: (place: Place) => void;
-  onSelectPlace: (place: Place) => void;
+  onBookmarkPlace: (place: Place, metadata?: { positionInFeed: number; currentPage: number }) => void;
+  onDismissPlace: (place: Place, metadata?: { positionInFeed: number; currentPage: number }) => void;
+  onSelectPlace: (place: Place, metadata?: { positionInFeed: number; currentPage: number }) => void;
   onSelectEvent: (event: EventItem) => void;
   getEditorialLabel: (place: Place, index?: number) => string | null;
   getPlacePreferenceDebugMatches: (place: Place, selectedInterests: Interest[], selectedVibe: Vibe | null) => string[];
@@ -603,9 +603,9 @@ export default function PlaceDiscoveryScreen({
                         isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
                         gestureDemo={showGestureDemo && index === 0}
                         onGestureDemoComplete={onFinishGestureDemo}
-                        onBookmark={() => onBookmarkPlace(item.place)}
-                        onDismiss={() => onDismissPlace(item.place)}
-                        onOpen={() => onSelectPlace(item.place)}
+                        onBookmark={() => onBookmarkPlace(item.place, { positionInFeed: item.sourceIndex + 1, currentPage })}
+                        onDismiss={() => onDismissPlace(item.place, { positionInFeed: item.sourceIndex + 1, currentPage })}
+                        onOpen={() => onSelectPlace(item.place, { positionInFeed: item.sourceIndex + 1, currentPage })}
                         getEditorialLabel={getEditorialLabel}
                         getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
                       />
@@ -645,9 +645,9 @@ export default function PlaceDiscoveryScreen({
                         isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
                         gestureDemo={showGestureDemo && index === 0}
                         onGestureDemoComplete={onFinishGestureDemo}
-                        onBookmark={() => onBookmarkPlace(item.place)}
-                        onDismiss={() => onDismissPlace(item.place)}
-                        onOpen={() => onSelectPlace(item.place)}
+                        onBookmark={() => onBookmarkPlace(item.place, { positionInFeed: item.sourceIndex + 1, currentPage })}
+                        onDismiss={() => onDismissPlace(item.place, { positionInFeed: item.sourceIndex + 1, currentPage })}
+                        onOpen={() => onSelectPlace(item.place, { positionInFeed: item.sourceIndex + 1, currentPage })}
                         getEditorialLabel={getEditorialLabel}
                         getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
                       />
@@ -720,9 +720,9 @@ export default function PlaceDiscoveryScreen({
                           deviceLocation={deviceLocation}
                           shouldAnimateEntry={false}
                           isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
-                          onBookmark={() => onBookmarkPlace(item.place)}
-                          onDismiss={() => onDismissPlace(item.place)}
-                          onOpen={() => onSelectPlace(item.place)}
+                          onBookmark={() => onBookmarkPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
+                          onDismiss={() => onDismissPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
+                          onOpen={() => onSelectPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
                           getEditorialLabel={getEditorialLabel}
                           getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
                         />
@@ -755,9 +755,9 @@ export default function PlaceDiscoveryScreen({
                           deviceLocation={deviceLocation}
                           shouldAnimateEntry={false}
                           isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
-                          onBookmark={() => onBookmarkPlace(item.place)}
-                          onDismiss={() => onDismissPlace(item.place)}
-                          onOpen={() => onSelectPlace(item.place)}
+                          onBookmark={() => onBookmarkPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
+                          onDismiss={() => onDismissPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
+                          onOpen={() => onSelectPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
                           getEditorialLabel={getEditorialLabel}
                           getPlacePreferenceDebugMatches={getPlacePreferenceDebugMatches}
                         />

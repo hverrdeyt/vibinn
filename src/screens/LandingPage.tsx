@@ -2,16 +2,29 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { motion } from 'motion/react';
 import { ArrowRight, ChevronDown, Share2, Sparkles, Zap } from 'lucide-react';
 import { MOCK_USER } from '../mockData';
+import { trackEvent } from '../lib/analytics';
 
 export default function LandingPage({
   onHeaderTryNow,
   onFloatingTryNow,
+  analyticsContext,
 }: {
   onHeaderTryNow: () => void;
   onFloatingTryNow: () => void;
+  analyticsContext?: Record<string, unknown>;
 }) {
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const proSectionRefs = useRef<Array<HTMLElement | null>>([]);
+  const analyticsContextRef = useRef<Record<string, unknown> | undefined>(analyticsContext);
   const [showFloatingCta, setShowFloatingCta] = useState(false);
+
+  useEffect(() => {
+    analyticsContextRef.current = analyticsContext;
+  }, [analyticsContext]);
+
+  useEffect(() => {
+    trackEvent('Visit landing page', analyticsContextRef.current);
+  }, []);
 
   useEffect(() => {
     const node = scrollContainerRef.current;
@@ -24,6 +37,36 @@ export default function LandingPage({
     handleScroll();
     node.addEventListener('scroll', handleScroll, { passive: true });
     return () => node.removeEventListener('scroll', handleScroll);
+  }, []);
+
+  useEffect(() => {
+    const node = scrollContainerRef.current;
+    if (!node) return;
+
+    const tracked = new Set<number>();
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        const index = Number((entry.target as HTMLElement).dataset.proIndex ?? '-1');
+        if (!entry.isIntersecting || tracked.has(index)) return;
+        tracked.add(index);
+        if (index === 0) {
+          trackEvent('Landing page - pro 1', analyticsContextRef.current);
+        } else if (index === 1) {
+          trackEvent('Landing page - pro 2', analyticsContextRef.current);
+        } else if (index === 2) {
+          trackEvent('Landing page - pro 3', analyticsContextRef.current);
+        }
+      });
+    }, {
+      root: node,
+      threshold: 0.6,
+    });
+
+    proSectionRefs.current.slice(0, 3).forEach((section) => {
+      if (section) observer.observe(section);
+    });
+
+    return () => observer.disconnect();
   }, []);
 
   const screenshotPlaceCards = [
@@ -266,8 +309,15 @@ export default function LandingPage({
           </div>
         </section>
 
-        {featureSections.map((section) => (
-          <section key={section.eyebrow} className="relative flex min-h-[100svh] snap-start items-center overflow-hidden px-6 py-16">
+        {featureSections.map((section, index) => (
+          <section
+            key={section.eyebrow}
+            ref={(node) => {
+              proSectionRefs.current[index] = node;
+            }}
+            data-pro-index={index}
+            className="relative flex min-h-[100svh] snap-start items-center overflow-hidden px-6 py-16"
+          >
             <div className={`absolute inset-0 bg-gradient-to-b ${section.accent}`} />
             <div className="relative mx-auto grid w-full max-w-6xl gap-10 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
               <motion.div

@@ -47,7 +47,7 @@ import PlaceDetailPage, { PlaceDetailData } from './components/PlaceDetailPage';
 import TravelerCard, { TravelerCardData } from './components/TravelerCard';
 import DetailActionBar from './components/DetailActionBar';
 import { api, ApiError, resolveApiAssetUrl } from './lib/api';
-import { identifyAnalyticsUser, initAnalytics, resetAnalyticsUser, trackEvent, trackScreenView } from './lib/analytics';
+import { identifyAnalyticsUser, initAnalytics, resetAnalyticsUser, trackEvent } from './lib/analytics';
 
 const LandingPage = lazy(() => import('./screens/LandingPage'));
 const OnboardingScreen = lazy(() => import('./screens/Onboarding'));
@@ -1963,21 +1963,6 @@ export default function App() {
     const nextSelectedInterests = override?.selectedInterests ?? selectedInterests;
     const nextSelectedVibe = override?.selectedVibe ?? selectedVibe;
     const shouldShowPostPreferencesIntro = nextSelectedInterests.length > 0 || Boolean(nextSelectedVibe);
-    const skippedPreferences = nextSelectedInterests.length === 0 && !nextSelectedVibe;
-
-    if (skippedPreferences) {
-      trackEvent('Skip Onboarding', {
-        entry_mode: onboardingEntryMode,
-      });
-    } else {
-      trackEvent('Complete Onboarding', {
-        entry_mode: onboardingEntryMode,
-        selected_interests: nextSelectedInterests,
-        selected_vibe: nextSelectedVibe,
-        selected_interests_count: nextSelectedInterests.length,
-        full_selection: nextSelectedInterests.length === 5 && Boolean(nextSelectedVibe),
-      });
-    }
 
     setSelectedInterests(nextSelectedInterests);
     setSelectedVibe(nextSelectedVibe ?? null);
@@ -2030,6 +2015,42 @@ export default function App() {
     return discoveryRotationSeedRef.current;
   };
 
+  const buildAnalyticsUserContext = () => {
+    const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0] ?? null;
+    return {
+      user_id: isAuthenticated ? user.id : null,
+      username: isAuthenticated ? user.username : null,
+      is_authenticated: isAuthenticated,
+      active_location_id: activeLocationId,
+      active_location_label: activeLocation?.label ?? null,
+      active_location_type: activeLocation?.type ?? null,
+      selected_interests: selectedInterests,
+      selected_vibe: selectedVibe,
+    };
+  };
+
+  const buildPlaceAnalyticsContext = (
+    place: Place,
+    metadata?: {
+      positionInFeed?: number;
+      currentPage?: number;
+      sourceScreen?: Screen;
+      action?: 'save' | 'hide' | 'open_detail';
+    },
+  ) => ({
+    ...buildAnalyticsUserContext(),
+    place_id: place.id,
+    place_name: place.name,
+    place_category: place.category ?? null,
+    place_location: place.location,
+    place_match_score: place.similarityStat ?? null,
+    place_tags: place.tags,
+    position_in_feed: metadata?.positionInFeed ?? null,
+    current_page: metadata?.currentPage ?? null,
+    source_screen: metadata?.sourceScreen ?? currentScreen,
+    action: metadata?.action ?? null,
+  });
+
   const openApp = () => {
     const hasAccess = isInviteValid || hasStoredOnboardingCompletion();
     const targetScreen: Screen = hasAccess ? 'discover-places' : 'onboarding';
@@ -2046,12 +2067,6 @@ export default function App() {
   };
 
   const openPlaceDetail = (place: Place, returnScreen: Screen = 'discover-places') => {
-    trackEvent('View Place', {
-      place_id: place.id,
-      place_name: place.name,
-      location: place.location,
-      source_screen: returnScreen,
-    });
     setPlaceDetailReturnScreen(returnScreen);
     if (typeof window !== 'undefined' && returnScreen === 'discover-places') {
       discoveryScrollRestoreRef.current = window.scrollY;
@@ -3022,21 +3037,6 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    trackScreenView(currentScreen, {
-      public_profile_username: publicProfileUsername,
-      selected_place_id: selectedPlace?.id,
-      selected_event_id: selectedEvent?.id,
-      selected_traveler_id: selectedTraveler?.id,
-      active_location_id: activeLocationId,
-    });
-  }, [currentScreen, publicProfileUsername, selectedPlace?.id, selectedEvent?.id, selectedTraveler?.id, activeLocationId]);
-
-  useEffect(() => {
-    if (currentScreen === 'landing') {
-      trackEvent('View Landing Page');
-      return;
-    }
-
     if (currentScreen === 'discover-travelers') {
       trackEvent('View Discovery Traveler');
       return;
@@ -3209,7 +3209,12 @@ export default function App() {
           void loadDiscoveryPlaces(discoveryPage + 1, 'append');
           return true;
         }}
-        onBookmarkPlace={(place) => {
+        onBookmarkPlace={(place, metadata) => {
+          trackEvent('Swipe right card', buildPlaceAnalyticsContext(place, {
+            ...metadata,
+            sourceScreen: 'discover-places',
+            action: 'save',
+          }));
           if (!isAuthenticated) {
             openAuthGate('Log in to save places to your bookmarks.', 'login', () => {
               void syncBookmarkState(place, true, { dismissAfterSave: true });
@@ -3218,7 +3223,12 @@ export default function App() {
           }
           void syncBookmarkState(place, true, { dismissAfterSave: true });
         }}
-        onDismissPlace={(place) => {
+        onDismissPlace={(place, metadata) => {
+          trackEvent('Swipe left card', buildPlaceAnalyticsContext(place, {
+            ...metadata,
+            sourceScreen: 'discover-places',
+            action: 'hide',
+          }));
           if (!isAuthenticated) {
             openAuthGate('Log in so we can learn what not to recommend for you.', 'login', () => {
               setDismissedPlaceIds((prev) => (prev.includes(place.id) ? prev : [...prev, place.id]));
@@ -3230,7 +3240,12 @@ export default function App() {
           void api.dismissPlace({ placeId: place.id, reason: 'manual_hide' }).catch(() => undefined);
           showActionToast('Removed from recommendations');
         }}
-        onSelectPlace={(p) => {
+        onSelectPlace={(p, metadata) => {
+          trackEvent('View detail page', buildPlaceAnalyticsContext(p, {
+            ...metadata,
+            sourceScreen: 'discover-places',
+            action: 'open_detail',
+          }));
           openPlaceDetail(p, 'discover-places');
         }}
         onSelectEvent={(event) => {
@@ -3401,12 +3416,19 @@ export default function App() {
         return (
           <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
             <LandingPage
+              analyticsContext={buildAnalyticsUserContext()}
               onHeaderTryNow={() => {
-                trackEvent('Click Try Now', { placement: 'landing_header' });
+                trackEvent('Try now', {
+                  ...buildAnalyticsUserContext(),
+                  placement: 'landing_header',
+                });
                 openApp();
               }}
               onFloatingTryNow={() => {
-                trackEvent('Click Try Now', { placement: 'landing_floating' });
+                trackEvent('Try now', {
+                  ...buildAnalyticsUserContext(),
+                  placement: 'landing_floating',
+                });
                 openApp();
               }}
             />
@@ -3462,6 +3484,7 @@ export default function App() {
                   image: place.image,
                   name: place.name,
                 }))}
+              analyticsContext={buildAnalyticsUserContext()}
             />
           </Suspense>
         );

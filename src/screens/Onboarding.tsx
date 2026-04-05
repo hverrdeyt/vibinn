@@ -36,6 +36,7 @@ type OnboardingProps = {
   onComplete: (payload?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null }) => void;
   isValidInviteCode: (code: string) => boolean;
   unlockVisualPlaces: Array<{ id: string; image: string; name: string }>;
+  analyticsContext?: Record<string, unknown>;
 };
 
 export default function Onboarding({
@@ -55,6 +56,7 @@ export default function Onboarding({
   onComplete,
   isValidInviteCode,
   unlockVisualPlaces,
+  analyticsContext,
 }: OnboardingProps) {
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
   const choiceTitle = 'Can I get to know you first?';
@@ -75,6 +77,16 @@ export default function Onboarding({
   const [areaQuery, setAreaQuery] = useState('');
   const [areaResults, setAreaResults] = useState<SavedLocationOption[]>([]);
   const [isAreaSearching, setIsAreaSearching] = useState(false);
+  const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? null;
+  const onboardingEventBase = {
+    ...analyticsContext,
+    entry_mode: entryMode,
+    active_location_id: activeLocationId,
+    active_location_label: activeLocation?.label ?? null,
+    active_location_type: activeLocation?.type ?? null,
+    selected_interests_count: selectedInterests.length,
+    selected_vibe: selectedVibe,
+  };
 
   useEffect(() => {
     if (isInviteValid && stage === 'invite') {
@@ -258,7 +270,13 @@ export default function Onboarding({
           <button
             onClick={() => {
               const normalizedInviteCode = inviteCode.trim().replace(/\s+/g, '').toUpperCase();
-              if (!isValidInviteCode(normalizedInviteCode)) {
+              const isValid = isValidInviteCode(normalizedInviteCode);
+              trackEvent('Submit invitation code', {
+                ...onboardingEventBase,
+                invite_code_length: normalizedInviteCode.length,
+                invite_code_valid: isValid,
+              });
+              if (!isValid) {
                 setInviteError('That invite code does not look right.');
                 return;
               }
@@ -279,9 +297,6 @@ export default function Onboarding({
           <button
             type="button"
             onClick={() => {
-              trackEvent('Enter Waitlist', {
-                action: showWaitlistForm ? 'hide' : 'show',
-              });
               setShowWaitlistForm((current) => !current);
               setWaitlistError(null);
               setWaitlistMessage(null);
@@ -325,8 +340,10 @@ export default function Onboarding({
                   setWaitlistMessage(null);
                   try {
                     await api.joinWaitlist({ email: waitlistEmail, source: 'invite-gate' });
-                    trackEvent('Submit Waitlist', {
+                    trackEvent('Submit waiting list', {
+                      ...onboardingEventBase,
                       source: 'invite-gate',
+                      email_domain: waitlistEmail.split('@')[1]?.toLowerCase() ?? null,
                     });
                     setWaitlistMessage(`You're on the list.`);
                     setWaitlistEmail('');
@@ -395,7 +412,10 @@ export default function Onboarding({
             >
               <button
                 type="button"
-                onClick={startPreferenceFlow}
+                onClick={() => {
+                  trackEvent('Start preferences', onboardingEventBase);
+                  startPreferenceFlow();
+                }}
                 className="w-full py-5 text-lg btn-primary"
               >
                 Start now
@@ -403,7 +423,10 @@ export default function Onboarding({
 
               <button
                 type="button"
-                onClick={() => onComplete({ selectedInterests, selectedVibe })}
+                onClick={() => {
+                  trackEvent('Skip preferences', onboardingEventBase);
+                  onComplete({ selectedInterests, selectedVibe });
+                }}
                 className="w-full rounded-xl border border-white/10 bg-white/6 px-6 py-5 text-lg font-semibold text-white transition-all hover:bg-white/10 active:scale-[0.98]"
               >
                 Skip
@@ -459,7 +482,15 @@ export default function Onboarding({
                     <button
                       key={location.id}
                       type="button"
-                      onClick={() => onSelectInitialLocation(location.id)}
+                      onClick={() => {
+                        onSelectInitialLocation(location.id);
+                        trackEvent('Change area onboarding', {
+                          ...onboardingEventBase,
+                          location_id: location.id,
+                          location_label: location.label,
+                          location_type: location.type,
+                        });
+                      }}
                       className={`flex w-full items-center justify-between rounded-[1.4rem] border px-5 py-5 text-left transition ${
                         isActive
                           ? 'border-accent bg-accent text-black'
@@ -519,6 +550,12 @@ export default function Onboarding({
                       type="button"
                       onClick={async () => {
                         await onAddInitialLocation(location);
+                        trackEvent('Change area onboarding', {
+                          ...onboardingEventBase,
+                          location_id: location.id,
+                          location_label: location.label,
+                          location_type: location.type,
+                        });
                         setAreaQuery('');
                         setAreaResults([]);
                       }}
@@ -645,7 +682,13 @@ export default function Onboarding({
             </p>
           </div>
           <button
-            onClick={() => onComplete({ selectedInterests, selectedVibe })}
+            onClick={() => {
+              trackEvent('Skip setup', {
+                ...onboardingEventBase,
+                swipe_step: step,
+              });
+              onComplete({ selectedInterests, selectedVibe });
+            }}
             className="pb-1 text-[10px] font-bold uppercase tracking-widest text-white/30 transition-colors hover:text-white"
           >
             Skip setup
