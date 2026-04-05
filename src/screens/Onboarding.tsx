@@ -49,9 +49,7 @@ export default function Onboarding({
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
   const choiceTitle = 'Can I get to know you first?';
   const areaTitle = 'Where are you planning to go?';
-  const [stage, setStage] = useState<'area' | 'choice' | 'swipe'>(
-    entryMode === 'preferences' ? 'swipe' : 'area',
-  );
+  const [stage, setStage] = useState<'area' | 'choice' | 'swipe'>('area');
   const [step, setStep] = useState<'interests' | 'vibes'>('interests');
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [typedChoiceTitle, setTypedChoiceTitle] = useState('');
@@ -69,15 +67,6 @@ export default function Onboarding({
     selected_interests_count: selectedInterests.length,
     selected_vibe: selectedVibe,
   };
-
-  useEffect(() => {
-    if (entryMode !== 'preferences') return;
-    setSelectedInterests([]);
-    setSelectedVibe(null);
-    setStage('swipe');
-    setStep('interests');
-    setCurrentCardIndex(0);
-  }, [entryMode, setSelectedInterests, setSelectedVibe]);
 
   useEffect(() => {
     if (stage !== 'area') {

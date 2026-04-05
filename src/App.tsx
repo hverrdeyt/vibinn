@@ -1546,6 +1546,7 @@ export default function App() {
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(HOME_SCREEN_PROMO_DISMISSED_KEY) === '1';
   });
+  const [hasQualifiedForHomeScreenPromo, setHasQualifiedForHomeScreenPromo] = useState(false);
   const [discoveryPlaces, setDiscoveryPlaces] = useState<Place[]>([]);
   const discoveryRotationSeedRef = useRef(getInitialDiscoveryRotationSeed());
   const [discoverySearchInput, setDiscoverySearchInput] = useState('');
@@ -1722,6 +1723,20 @@ export default function App() {
 
     window.localStorage.removeItem(HOME_SCREEN_PROMO_DISMISSED_KEY);
   }, [isHomeScreenPromoDismissed]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (hasQualifiedForHomeScreenPromo) return;
+    if (isHomeScreenPromoDismissed) return;
+    if (!isIosSafariLike() || isStandaloneDisplayMode()) return;
+    if (currentScreen !== 'discover-places') return;
+
+    const timeoutId = window.setTimeout(() => {
+      setHasQualifiedForHomeScreenPromo(true);
+    }, 10000);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [currentScreen, hasQualifiedForHomeScreenPromo, isHomeScreenPromoDismissed]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -2271,13 +2286,10 @@ export default function App() {
   };
 
   const shouldShowHomeScreenPromo = !isHomeScreenPromoDismissed
+    && hasQualifiedForHomeScreenPromo
     && !isStandaloneDisplayMode()
     && isIosSafariLike()
-    && currentScreen !== 'landing'
-    && currentScreen !== 'public-profile'
-    && currentScreen !== 'login'
-    && currentScreen !== 'register'
-    && currentScreen !== 'onboarding';
+    && currentScreen === 'discover-places';
   const homeScreenPromoSpacerClass = isInstallHelpVisible ? 'h-[8.5rem]' : 'h-[5.5rem]';
 
   const copyText = async (value: string) => {
