@@ -2938,7 +2938,7 @@ async function applyAiCompatibilityToPlaces(input: {
 
   const persistedMap = new Map(input.persistedScores.map((item) => [item.placeId, item.sourceVersion]));
   const candidates = input.places
-    .filter((place) => input.forceRefresh || persistedMap.get(place.id) !== 'writeback-v4-ai')
+    .filter((place) => input.forceRefresh || persistedMap.get(place.id) !== 'writeback-v6-ai')
     .slice(0, 3);
 
   const results = new Map<string, { score: number; reason: string }>();
@@ -2963,6 +2963,7 @@ async function applyAiCompatibilityToPlaces(input: {
           selectedVibe: input.context.selectedVibe,
           tasteKeywords: Array.from(input.context.tasteKeywords).slice(0, 8),
           socialKeywords: Array.from(input.context.socialKeywords).slice(0, 6),
+          tasteProfileSummary: buildUserTasteProfileSummary(input.context),
           followedPlaceMatch: input.context.followedPlaceIds.has(place.id),
           isBookmarked: input.context.bookmarkedPlaceIds.has(place.id),
           isVisited: input.context.visitedPlaceIds.has(place.id),
@@ -2986,20 +2987,20 @@ async function applyAiCompatibilityToPlaces(input: {
           placeId: place.id,
         },
       },
-      update: {
-        matchScore: score,
-        similarityPercentage: score,
-        recommendationReason: assessment.reason,
-        sourceVersion: 'writeback-v4-ai',
-      },
-      create: {
-        userId: input.userId,
-        placeId: place.id,
-        matchScore: score,
-        similarityPercentage: score,
-        recommendationReason: assessment.reason,
-        sourceVersion: 'writeback-v4-ai',
-      },
+        update: {
+          matchScore: score,
+          similarityPercentage: score,
+          recommendationReason: assessment.reason,
+          sourceVersion: 'writeback-v6-ai',
+        },
+        create: {
+          userId: input.userId,
+          placeId: place.id,
+          matchScore: score,
+          similarityPercentage: score,
+          recommendationReason: assessment.reason,
+          sourceVersion: 'writeback-v6-ai',
+        },
     });
 
     results.set(place.id, {
@@ -3009,6 +3010,48 @@ async function applyAiCompatibilityToPlaces(input: {
   }
 
   return results;
+}
+
+function buildUserTasteProfileSummary(context: RecommendationContext) {
+  const interestLabelMap: Record<string, string> = {
+    cafe: 'coffee-stop taste',
+    nature: 'green-reset taste',
+    culture: 'culture-heavy taste',
+    shopping: 'good-browse taste',
+    party: 'after-dark taste',
+    adventure: 'detour-first taste',
+  };
+  const vibeLabelMap: Record<string, string> = {
+    aesthetic: 'main-character energy',
+    solo: 'solo-day energy',
+    luxury: 'elevated taste',
+    budget: 'budget-win instinct',
+    spontaneous: 'spur-of-the-moment energy',
+  };
+
+  const traits: string[] = [];
+  const primaryInterest = context.selectedInterests[0];
+  if (primaryInterest && interestLabelMap[primaryInterest]) {
+    traits.push(interestLabelMap[primaryInterest]);
+  }
+  if (context.selectedVibe && vibeLabelMap[context.selectedVibe]) {
+    traits.push(vibeLabelMap[context.selectedVibe]);
+  }
+
+  const keywordSlice = Array.from(context.tasteKeywords).slice(0, 4);
+  if (keywordSlice.length > 0) {
+    traits.push(`save pattern around ${keywordSlice.join(', ')}`);
+  }
+
+  if (context.followedUserIds.size > 0 || context.followedPlaceIds.size > 0) {
+    traits.push('social proof matters in their picks');
+  }
+
+  if (context.recentPlaceIds.size > 0) {
+    traits.push('recent behavior matters most');
+  }
+
+  return traits.slice(0, 4);
 }
 
 function buildRecommendationReason(input: {
@@ -3030,10 +3073,9 @@ function buildRecommendationReason(input: {
   isDismissed: boolean;
 }) {
   if (input.isDismissed) {
-    return 'Hidden after you removed it from your recommendations.';
+    return 'You hid this one, so it drops out of your picks.';
   }
 
-  const reasons: string[] = [];
   const normalizedTags = input.place.tags.map(normalizeKeyword);
   const normalizedCategory = normalizeKeyword(input.place.category ?? '');
 
@@ -3042,14 +3084,35 @@ function buildRecommendationReason(input: {
     return normalizedTags.some((tag) => tag.includes(normalizedInterest)) || normalizedCategory.includes(normalizedInterest);
   });
 
+  const interestLabelMap: Record<string, string> = {
+    cafe: 'coffee stop',
+    nature: 'green reset',
+    culture: 'culture fix',
+    shopping: 'good browse',
+    party: 'after-dark plan',
+    adventure: 'easy detour',
+  };
+
+  const vibeLabelMap: Record<string, string> = {
+    aesthetic: 'main-character vibe',
+    solo: 'solo-day energy',
+    luxury: 'elevated taste',
+    budget: 'budget-win energy',
+    spontaneous: 'spur-of-the-moment plan',
+  };
+
   if (matchingInterests.length > 0) {
-    reasons.push(`matches your ${matchingInterests.slice(0, 2).join(' + ')} picks`);
+    const interestLabel = interestLabelMap[matchingInterests[0]] ?? matchingInterests[0];
+    if (input.selectedVibe && vibeLabelMap[input.selectedVibe]) {
+      return `It fits your ${interestLabel} streak with ${vibeLabelMap[input.selectedVibe]}.`;
+    }
+    return `It fits the ${interestLabel} side of your taste right now.`;
   }
 
   if (input.selectedVibe) {
     const normalizedVibe = normalizeKeyword(input.selectedVibe);
     if (normalizedTags.some((tag) => tag.includes(normalizedVibe)) || normalizedCategory.includes(normalizedVibe)) {
-      reasons.push(`fits your ${input.selectedVibe} vibe`);
+      return `It lands right in your ${vibeLabelMap[input.selectedVibe] ?? input.selectedVibe} lane.`;
     }
   }
 
@@ -3058,46 +3121,44 @@ function buildRecommendationReason(input: {
     normalizedCategory.includes(keyword) ||
     keyword.includes(normalizedCategory),
   )) {
-    reasons.push('overlaps with places you already save or visit');
+    return 'It feels close to the places you already save and revisit.';
   }
 
   if (input.followedPlaceMatch) {
-    reasons.push('shows up in trips from travelers you follow');
+    return 'It keeps showing up around travelers you already trust.';
   }
 
   if (input.followedTravelerVisits > 0) {
-    reasons.push(
-      input.followedTravelerVisits === 1
-        ? 'someone you follow was here'
-        : `${input.followedTravelerVisits} travelers you follow were here`,
-    );
+    return input.followedTravelerVisits === 1
+      ? 'Someone you follow already put this on the map.'
+      : `People you follow keep ending up here.`;
   }
 
   if (input.socialOverlap) {
-    reasons.push('matches the social taste patterns around your graph');
+    return 'It matches the taste pattern building around your graph.';
   }
 
   if (input.isBookmarked) {
-    reasons.push('already saved in your graph');
+    return 'You already saved this, so it still ranks as your thing.';
   }
 
   if (input.isVisited) {
-    reasons.push('aligned with your visit history');
+    return 'It lines up with the kinds of places you actually go to.';
   }
 
   if (input.isVibed) {
-    reasons.push('connected to places you already vibed with');
+    return 'It tracks with the places you keep vibing with.';
   }
 
   if (input.isCommented) {
-    reasons.push('close to the spots you tend to talk about');
+    return 'It is close to the spots you usually have thoughts about.';
   }
 
   if (input.isRecent) {
-    reasons.push('close to what you have been into lately');
+    return 'It matches what you have been into lately.';
   }
 
-  return reasons[0] ?? 'Fresh match for your current city feed.';
+  return 'It is one of the strongest fits for your taste in this area.';
 }
 
 async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
@@ -3189,7 +3250,7 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
             isRecent: context.recentPlaceIds.has(place.id),
             isDismissed: context.dismissedPlaceIds.has(place.id),
           }),
-          sourceVersion: 'writeback-v3',
+          sourceVersion: 'writeback-v4',
         },
         create: {
           userId,
@@ -3214,7 +3275,7 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
             isRecent: context.recentPlaceIds.has(place.id),
             isDismissed: context.dismissedPlaceIds.has(place.id),
           }),
-          sourceVersion: 'writeback-v3',
+          sourceVersion: 'writeback-v4',
         },
       });
     }),

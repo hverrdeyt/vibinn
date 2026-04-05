@@ -421,6 +421,7 @@ export async function generateAiCompatibilityAssessment(input: {
     selectedVibe: string | null;
     tasteKeywords: string[];
     socialKeywords: string[];
+    tasteProfileSummary?: string[];
     followedPlaceMatch: boolean;
     isBookmarked: boolean;
     isVisited: boolean;
@@ -439,7 +440,7 @@ export async function generateAiCompatibilityAssessment(input: {
         content: [
           {
             type: 'input_text',
-            text: 'You judge how well a travel place fits a user taste profile. Be conservative and use only the provided facts. Return compact JSON only.',
+            text: 'You write ultra-short personalized recommendation reasons for a Gen Z travel app. Be conservative and use only the provided facts. Sound sharp, social, and specific without sounding cringe. The reason must feel like it was written for this exact user, not a generic preference bucket. Use the strongest behavioral or taste signal only. Prefer language that feels editorial and social, like a smart friend calling out why this place is so them. Avoid phrases like "matches your vibe", "based on your preferences", "current profile", or "you may like". Return compact JSON only.',
           },
         ],
       },
@@ -453,7 +454,7 @@ export async function generateAiCompatibilityAssessment(input: {
               user: input.user,
               output_rules: {
                 boost: 'integer from -8 to 12',
-                reason: 'one short sentence, max 110 chars',
+                reason: 'one short sentence, max 90 chars, highly personal, specific, Gen Z-friendly',
               },
             }),
           },
