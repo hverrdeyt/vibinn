@@ -92,6 +92,7 @@ export default function PlaceDiscoveryScreen({
   const pullStartYRef = useRef<number | null>(null);
   const autoFillLoadMoreRafRef = useRef<number | null>(null);
   const loadMoreLockRef = useRef(false);
+  const hasPlayedInitialEntryMotionRef = useRef(false);
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
   const currentCity = activeLocation?.label ?? 'Boston';
   const isFilteringBySearch = searchQuery.length > 0;
@@ -129,6 +130,7 @@ export default function PlaceDiscoveryScreen({
     () => mixedDiscoveryItems.filter((_, index) => index % 2 === 1),
     [mixedDiscoveryItems],
   );
+  const shouldAnimateItemEntry = !hasPlayedInitialEntryMotionRef.current;
 
   const canLoadMore = hasMore && !isLoading && !isLoadingMore && !isRefreshing;
 
@@ -205,6 +207,12 @@ export default function PlaceDiscoveryScreen({
       loadMoreLockRef.current = false;
     }
   }, [isLoadingMore]);
+
+  useEffect(() => {
+    if (mixedDiscoveryItems.length > 0) {
+      hasPlayedInitialEntryMotionRef.current = true;
+    }
+  }, [mixedDiscoveryItems.length]);
 
   const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
     if (typeof window !== 'undefined' && window.scrollY <= 0) {
@@ -415,6 +423,7 @@ export default function PlaceDiscoveryScreen({
                           index={index}
                           selectedInterests={selectedInterests}
                           selectedVibe={selectedVibe}
+                          shouldAnimateEntry={shouldAnimateItemEntry}
                           isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
                           gestureDemo={showGestureDemo && index === 0}
                           onGestureDemoComplete={onFinishGestureDemo}
@@ -430,6 +439,7 @@ export default function PlaceDiscoveryScreen({
                           index={index}
                           selectedInterests={selectedInterests}
                           selectedVibe={selectedVibe}
+                          shouldAnimateEntry={shouldAnimateItemEntry}
                           onOpen={() => onSelectEvent(item.event)}
                           getEventPreferenceDebugMatches={getEventPreferenceDebugMatches}
                         />
@@ -456,6 +466,7 @@ export default function PlaceDiscoveryScreen({
                           index={index}
                           selectedInterests={selectedInterests}
                           selectedVibe={selectedVibe}
+                          shouldAnimateEntry={shouldAnimateItemEntry}
                           isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
                           gestureDemo={showGestureDemo && index === 0}
                           onGestureDemoComplete={onFinishGestureDemo}
@@ -471,6 +482,7 @@ export default function PlaceDiscoveryScreen({
                           index={index}
                           selectedInterests={selectedInterests}
                           selectedVibe={selectedVibe}
+                          shouldAnimateEntry={shouldAnimateItemEntry}
                           onOpen={() => onSelectEvent(item.event)}
                           getEventPreferenceDebugMatches={getEventPreferenceDebugMatches}
                         />
@@ -531,6 +543,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   index,
   selectedInterests,
   selectedVibe,
+  shouldAnimateEntry,
   isBookmarked,
   gestureDemo = false,
   onGestureDemoComplete,
@@ -544,6 +557,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   index: number;
   selectedInterests: Interest[];
   selectedVibe: Vibe | null;
+  shouldAnimateEntry: boolean;
   isBookmarked: boolean;
   gestureDemo?: boolean;
   onGestureDemoComplete?: () => void;
@@ -585,7 +599,6 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   return (
     <motion.button
       type="button"
-      layout
       drag="x"
       dragConstraints={{ left: 0, right: 0 }}
       onDragEnd={(_, info) => {
@@ -616,7 +629,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
         onOpen();
       }}
       whileDrag={{ scale: 1.02, rotate: 4 }}
-      initial={{ opacity: 0, y: 18 }}
+      initial={shouldAnimateEntry ? { opacity: 0, y: 18 } : false}
       animate={
         gestureDemo
           ? { opacity: 1, y: 0, ...(demoAnimation ?? {}) }
@@ -638,7 +651,6 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
           onGestureDemoComplete?.();
         }
       }}
-      exit={{ opacity: 0, scale: 0.92, y: 20 }}
       className={`group relative inline-block w-full overflow-hidden rounded-[28px] bg-zinc-900 text-left shadow-[0_18px_50px_rgba(0,0,0,0.28)] ${tileHeightClass}`}
     >
       <img
@@ -702,6 +714,7 @@ const EventDiscoveryTile = memo(function EventDiscoveryTile({
   index,
   selectedInterests,
   selectedVibe,
+  shouldAnimateEntry,
   onOpen,
   getEventPreferenceDebugMatches,
 }: {
@@ -709,6 +722,7 @@ const EventDiscoveryTile = memo(function EventDiscoveryTile({
   index: number;
   selectedInterests: Interest[];
   selectedVibe: Vibe | null;
+  shouldAnimateEntry: boolean;
   onOpen: () => void;
   getEventPreferenceDebugMatches: (event: EventItem, selectedInterests: Interest[], selectedVibe: Vibe | null) => string[];
 }) {
@@ -728,11 +742,9 @@ const EventDiscoveryTile = memo(function EventDiscoveryTile({
   return (
     <motion.button
       type="button"
-      layout
       onClick={onOpen}
-      initial={{ opacity: 0, y: 18 }}
+      initial={shouldAnimateEntry ? { opacity: 0, y: 18 } : false}
       animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, scale: 0.92, y: 20 }}
       className={`group relative inline-block w-full overflow-hidden rounded-[28px] bg-zinc-900 text-left shadow-[0_18px_50px_rgba(0,0,0,0.28)] ${tileHeightClass}`}
     >
       <img

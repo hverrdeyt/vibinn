@@ -5,6 +5,12 @@ import { type Interest, type Vibe } from '../types';
 import { api, ApiError } from '../lib/api';
 import { trackEvent } from '../lib/analytics';
 
+type SavedLocationOption = {
+  id: string;
+  label: string;
+  type: 'city' | 'province' | 'country';
+};
+
 function handleOnboardingImageError(event: { currentTarget: HTMLImageElement }, label?: string | null) {
   const fallbackLabel = (label?.trim() || 'Vibe').replace(/\s+/g, '+');
   const fallbackUrl = `https://placehold.co/1200x1600/111111/D3FF48?text=${encodeURIComponent(fallbackLabel)}`;
@@ -22,6 +28,9 @@ type OnboardingProps = {
   setSelectedInterests: Dispatch<SetStateAction<Interest[]>>;
   selectedVibe: Vibe | null;
   setSelectedVibe: Dispatch<SetStateAction<Vibe | null>>;
+  savedLocations: SavedLocationOption[];
+  activeLocationId: string;
+  onSelectInitialLocation: (locationId: string) => void;
   onComplete: (payload?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null }) => void;
   isValidInviteCode: (code: string) => boolean;
   unlockVisualPlaces: Array<{ id: string; image: string; name: string }>;
@@ -37,14 +46,18 @@ export default function Onboarding({
   setSelectedInterests,
   selectedVibe,
   setSelectedVibe,
+  savedLocations,
+  activeLocationId,
+  onSelectInitialLocation,
   onComplete,
   isValidInviteCode,
   unlockVisualPlaces,
 }: OnboardingProps) {
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
   const choiceTitle = 'Can I get to know you first?';
-  const [stage, setStage] = useState<'invite' | 'unlock' | 'choice' | 'swipe'>(
-    entryMode === 'preferences' ? 'swipe' : isInviteValid ? 'choice' : 'invite',
+  const areaTitle = 'Where are you planning to go?';
+  const [stage, setStage] = useState<'invite' | 'unlock' | 'area' | 'choice' | 'swipe'>(
+    entryMode === 'preferences' ? 'swipe' : isInviteValid ? 'area' : 'invite',
   );
   const [step, setStep] = useState<'interests' | 'vibes'>('interests');
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
@@ -55,6 +68,7 @@ export default function Onboarding({
   const [waitlistMessage, setWaitlistMessage] = useState<string | null>(null);
   const [waitlistError, setWaitlistError] = useState<string | null>(null);
   const [typedChoiceTitle, setTypedChoiceTitle] = useState('');
+  const [typedAreaTitle, setTypedAreaTitle] = useState('');
 
   useEffect(() => {
     if (isInviteValid && stage === 'invite') {
@@ -65,7 +79,7 @@ export default function Onboarding({
   useEffect(() => {
     if (stage !== 'unlock') return;
     const timeoutId = window.setTimeout(() => {
-      setStage('choice');
+      setStage('area');
     }, 5000);
     return () => window.clearTimeout(timeoutId);
   }, [stage]);
@@ -78,6 +92,26 @@ export default function Onboarding({
     setStep('interests');
     setCurrentCardIndex(0);
   }, [entryMode, setSelectedInterests, setSelectedVibe]);
+
+  useEffect(() => {
+    if (stage !== 'area') {
+      setTypedAreaTitle('');
+      return;
+    }
+
+    let currentIndex = 0;
+    setTypedAreaTitle('');
+
+    const intervalId = window.setInterval(() => {
+      currentIndex += 1;
+      setTypedAreaTitle(areaTitle.slice(0, currentIndex));
+      if (currentIndex >= areaTitle.length) {
+        window.clearInterval(intervalId);
+      }
+    }, 45);
+
+    return () => window.clearInterval(intervalId);
+  }, [areaTitle, stage]);
 
   useEffect(() => {
     if (stage !== 'choice') {
@@ -335,6 +369,87 @@ export default function Onboarding({
                 className="w-full rounded-xl border border-white/10 bg-white/6 px-6 py-5 text-lg font-semibold text-white transition-all hover:bg-white/10 active:scale-[0.98]"
               >
                 Skip
+              </button>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+      </div>
+    );
+  }
+
+  if (stage === 'area') {
+    const isAreaIntroReady = typedAreaTitle.length === areaTitle.length;
+
+    return (
+      <div className="flex h-[100svh] flex-col bg-zinc-950 p-10 pt-32 text-white">
+        <div className="mb-16">
+          <div className="mb-8 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/8 shadow-lg">
+            <Sparkles className="text-accent" size={28} />
+          </div>
+          <h1 className="mb-6 min-h-[5.75rem] text-5xl font-extrabold leading-[0.9] tracking-tighter">
+            {typedAreaTitle}
+            <span className="ml-1 inline-block h-[0.9em] w-[0.08em] animate-pulse bg-accent align-[-0.08em]" />
+          </h1>
+          <AnimatePresence>
+            {isAreaIntroReady ? (
+              <motion.p
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: 12 }}
+                transition={{ duration: 0.28, ease: 'easeOut' }}
+                className="text-xl font-medium leading-snug text-white/60"
+              >
+                Pick the area first, then we&apos;ll shape the recommendations around where you&apos;re heading.
+              </motion.p>
+            ) : null}
+          </AnimatePresence>
+        </div>
+
+        <AnimatePresence>
+          {isAreaIntroReady ? (
+            <motion.div
+              initial={{ opacity: 0, y: 18 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 12 }}
+              transition={{ delay: 0.05, duration: 0.28, ease: 'easeOut' }}
+              className="space-y-4"
+            >
+              <div className="space-y-3">
+                {savedLocations.map((location) => {
+                  const isActive = location.id === activeLocationId;
+                  return (
+                    <button
+                      key={location.id}
+                      type="button"
+                      onClick={() => onSelectInitialLocation(location.id)}
+                      className={`flex w-full items-center justify-between rounded-[1.4rem] border px-5 py-5 text-left transition ${
+                        isActive
+                          ? 'border-accent bg-accent text-black'
+                          : 'border-white/10 bg-white/6 text-white hover:bg-white/10'
+                      }`}
+                    >
+                      <div>
+                        <div className="text-lg font-black">{location.label}</div>
+                        <div className={`mt-1 text-[10px] font-bold uppercase tracking-[0.18em] ${
+                          isActive ? 'text-black/60' : 'text-white/40'
+                        }`}>
+                          {location.type}
+                        </div>
+                      </div>
+                      {isActive ? (
+                        <span className="text-[10px] font-black uppercase tracking-[0.18em]">Selected</span>
+                      ) : null}
+                    </button>
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setStage('choice')}
+                className="w-full py-5 text-lg btn-primary"
+              >
+                Continue
               </button>
             </motion.div>
           ) : null}
