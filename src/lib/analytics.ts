@@ -5,6 +5,7 @@ const MIXPANEL_TOKEN = (import.meta.env.VITE_MIXPANEL_TOKEN as string | undefine
 const isMixpanelEnabled = Boolean(MIXPANEL_TOKEN) && typeof window !== 'undefined';
 
 let mixpanelPromise: Promise<MixpanelInstance | null> | null = null;
+let mixpanelInstance: MixpanelInstance | null = null;
 let hasInitialized = false;
 
 type AnalyticsTask = (mixpanel: MixpanelInstance) => void;
@@ -33,6 +34,7 @@ async function loadMixpanel() {
           hasInitialized = true;
         }
 
+        mixpanelInstance = mixpanel;
         flushQueuedTasks(mixpanel);
         return mixpanel;
       })
@@ -44,6 +46,10 @@ async function loadMixpanel() {
 
 function enqueueTask(task: AnalyticsTask) {
   if (!isMixpanelEnabled) return;
+  if (mixpanelInstance) {
+    task(mixpanelInstance);
+    return;
+  }
   queuedTasks.push(task);
   void loadMixpanel();
 }
