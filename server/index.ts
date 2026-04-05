@@ -65,6 +65,7 @@ const DISCOVERY_RESEED_INTERVAL_MS = 1000 * 60 * 60 * 24 * 7;
 const DISCOVERY_FORCE_REFRESH_MIN_INTERVAL_MS = 1000 * 60 * 60 * 12;
 const DISCOVERY_FORCE_REFRESH_MIN_CANDIDATES = 24;
 const DISCOVERY_SEARCH_RESEED_INTERVAL_MS = 1000 * 60 * 60 * 24;
+const RECOMMENDATION_CONTEXT_CACHE_TTL_MS = 1000 * 60;
 const placeEnrichmentInflight = new Map<string, Promise<{
   hook: string;
   description: string | null;
@@ -72,6 +73,10 @@ const placeEnrichmentInflight = new Map<string, Promise<{
   attitudeLabel: string | null;
   bestTime: string | null;
 } | null>>();
+const recommendationContextCache = new Map<string, {
+  expiresAt: number;
+  value: RecommendationContext;
+}>();
 
 type AuthenticatedRequest = express.Request & {
   authUserId?: string;
@@ -1245,6 +1250,7 @@ async function getDiscoveryPlacesForUser(options: {
   page?: number;
   limit?: number;
   forceRefresh?: boolean;
+  seed?: string;
 }) {
   const currentPreferences = options.userId
     ? await prisma.userPreference.findUnique({
@@ -1508,6 +1514,13 @@ async function getDiscoveryPlacesForUser(options: {
     ).catch((error) => {
       console.error('Background user place score refresh failed', error);
     });
+  }
+
+  if (!normalizedSearchQuery && page === 1) {
+    rankedPlaces = applyRankedVariety(
+      rankedPlaces,
+      options.seed ?? `${options.userId ?? 'guest'}|${options.locationLabel}|${selectedInterests.join(',')}|${selectedVibe ?? ''}|${new Date().toISOString().slice(0, 10)}`,
+    );
   }
 
   const start = (page - 1) * limit;
@@ -2015,6 +2028,11 @@ type EventRecommendationContext = {
 };
 
 async function getUserRecommendationContext(userId: string): Promise<RecommendationContext> {
+  const cached = recommendationContextCache.get(userId);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
   const recentSince = new Date(Date.now() - (1000 * 60 * 60 * 24 * 120));
   const [preferences, dismissed, bookmarks, moments, follows, vibins, comments] = await Promise.all([
     prisma.userPreference.findUnique({
@@ -2121,7 +2139,7 @@ async function getUserRecommendationContext(userId: string): Promise<Recommendat
       .filter(Boolean) as string[],
   ]);
 
-  return {
+  const value = {
     selectedInterests: preferences?.selectedInterests ?? [],
     selectedVibe: preferences?.selectedVibe ?? null,
     bookmarkedPlaceIds: new Set(bookmarks.map((item) => item.placeId)),
@@ -2138,6 +2156,13 @@ async function getUserRecommendationContext(userId: string): Promise<Recommendat
     commentedPlaceIds,
     recentPlaceIds,
   };
+
+  recommendationContextCache.set(userId, {
+    expiresAt: Date.now() + RECOMMENDATION_CONTEXT_CACHE_TTL_MS,
+    value,
+  });
+
+  return value;
 }
 
 function getEventRecommendationContext(context: RecommendationContext): EventRecommendationContext {
@@ -2543,6 +2568,43 @@ function buildEventCompatibilityReason(event: {
   }
 
   return `it lines up as a ${scoreLabel} fit for the event energy your profile is responding to right now`;
+}
+
+function hashStringSeed(value: string) {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = ((hash << 5) - hash) + value.charCodeAt(index);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+function rotateArray<T>(items: T[], offset: number) {
+  if (items.length <= 1) return items;
+  const normalizedOffset = ((offset % items.length) + items.length) % items.length;
+  return [...items.slice(normalizedOffset), ...items.slice(0, normalizedOffset)];
+}
+
+function applyRankedVariety<T extends { similarityStat?: number | null }>(items: T[], seedKey: string) {
+  if (items.length <= 2) return items;
+
+  const topBucket: T[] = [];
+  const upperBucket: T[] = [];
+  const baseBucket: T[] = [];
+
+  items.forEach((item) => {
+    const score = item.similarityStat ?? 0;
+    if (score >= 88) topBucket.push(item);
+    else if (score >= 78) upperBucket.push(item);
+    else baseBucket.push(item);
+  });
+
+  const seed = hashStringSeed(seedKey);
+  return [
+    ...rotateArray(topBucket, seed),
+    ...rotateArray(upperBucket, seed * 2 + 1),
+    ...rotateArray(baseBucket, seed * 3 + 2),
+  ];
 }
 
 function buildEventHook(event: {
@@ -4112,6 +4174,7 @@ app.get('/api/discovery/places', (req: AuthenticatedRequest, res) => {
   const page = Number(req.query.page || 1);
   const limit = Number(req.query.limit || 10);
   const forceRefresh = String(req.query.refresh || '').trim() === '1';
+  const seed = String(req.query.seed || '').trim();
   const selectedInterests = String(req.query.interests || '')
     .split(',')
     .map((item) => item.trim())
@@ -4132,6 +4195,7 @@ app.get('/api/discovery/places', (req: AuthenticatedRequest, res) => {
     page,
     limit,
     forceRefresh,
+    seed,
   })
     .then((payload) => res.json(payload))
     .catch((error) => handleError(res, error));

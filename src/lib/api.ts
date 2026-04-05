@@ -225,7 +225,7 @@ export const api = {
     location: string,
     type?: string,
     preferences?: { selectedInterests?: string[]; selectedVibe?: string | null },
-    pagination?: { page?: number; limit?: number; refresh?: boolean; query?: string },
+    pagination?: { page?: number; limit?: number; refresh?: boolean; query?: string; seed?: string },
   ) {
     const params = new URLSearchParams({ location });
     if (type) params.set('type', type);
@@ -239,6 +239,7 @@ export const api = {
     if (pagination?.limit) params.set('limit', String(pagination.limit));
     if (pagination?.refresh) params.set('refresh', '1');
     if (pagination?.query?.trim()) params.set('q', pagination.query.trim());
+    if (pagination?.seed?.trim()) params.set('seed', pagination.seed.trim());
     return request<{ places: any[]; pagination: { page: number; limit: number; total: number; hasMore: boolean } }>(`/api/discovery/places?${params.toString()}`);
   },
   getDiscoveryEvents(

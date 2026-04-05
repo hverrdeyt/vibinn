@@ -849,6 +849,33 @@ function buildPlaceRecommendationReason(place: Place, travelerMomentCount = 0) {
   return 'it keeps ranking well against the places and signals already shaping your profile';
 }
 
+function applyRankedVarietyToPlaces(places: Place[], seed: number) {
+  if (places.length <= 2) return places;
+
+  const rotate = (bucket: Place[], offset: number) => {
+    if (bucket.length <= 1) return bucket;
+    const normalizedOffset = ((offset % bucket.length) + bucket.length) % bucket.length;
+    return [...bucket.slice(normalizedOffset), ...bucket.slice(0, normalizedOffset)];
+  };
+
+  const topBucket: Place[] = [];
+  const upperBucket: Place[] = [];
+  const baseBucket: Place[] = [];
+
+  places.forEach((place) => {
+    const score = place.similarityStat ?? 0;
+    if (score >= 88) topBucket.push(place);
+    else if (score >= 78) upperBucket.push(place);
+    else baseBucket.push(place);
+  });
+
+  return [
+    ...rotate(topBucket, seed),
+    ...rotate(upperBucket, seed * 2 + 1),
+    ...rotate(baseBucket, seed * 3 + 2),
+  ];
+}
+
 const PLACE_INTEREST_MATCHERS: Record<Interest, string[]> = {
   cafe: ['cafe', 'coffee', 'espresso', 'bakery', 'brunch', 'pastry', 'tea', 'roastery', 'easy pause'],
   nature: ['nature', 'park', 'garden', 'waterfront', 'scenic', 'outdoor', 'green', 'lake', 'trail', 'harbor', 'walk'],
@@ -1172,6 +1199,7 @@ export default function App() {
   const [deviceLocationPermission, setDeviceLocationPermission] = useState<'unknown' | 'granted' | 'denied' | 'unsupported'>('unknown');
   const hasRequestedDeviceLocationRef = useRef(false);
   const [discoveryPlaces, setDiscoveryPlaces] = useState<Place[]>([]);
+  const discoveryRotationSeedRef = useRef(0);
   const [discoverySearchInput, setDiscoverySearchInput] = useState('');
   const [discoverySearchQuery, setDiscoverySearchQuery] = useState('');
   const [discoveryEvents, setDiscoveryEvents] = useState<EventItem[]>([]);
@@ -1453,7 +1481,7 @@ export default function App() {
       }, 4200);
     }
     await Promise.allSettled([
-      loadDiscoveryPlaces(1, 'reset', { refresh: true, preferencesOverride: { selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe } }),
+      loadDiscoveryPlaces(1, 'reset', { refreshMode: 'hard', preferencesOverride: { selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe } }),
       loadDiscoveryEvents({ selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe }),
     ]);
     setIsPreferenceTransitionLoading(false);
@@ -1464,6 +1492,11 @@ export default function App() {
     window.setTimeout(() => {
       setActionToast((current) => (current === message ? null : current));
     }, 1800);
+  };
+
+  const bumpDiscoveryRotationSeed = () => {
+    discoveryRotationSeedRef.current += 1;
+    return discoveryRotationSeedRef.current;
   };
 
   const openApp = () => {
@@ -2135,7 +2168,8 @@ export default function App() {
     if (shouldRefreshDiscoveryImmediately) {
       setDiscoveryPage(1);
       setDiscoveryHasMore(true);
-      void loadDiscoveryPlaces(1, 'reset', { refresh: true });
+      const rotationSeed = bumpDiscoveryRotationSeed();
+      void loadDiscoveryPlaces(1, 'reset', { refreshMode: 'hard', rotationSeedOverride: rotationSeed });
       void loadDiscoveryEvents();
     }
   };
@@ -2192,7 +2226,8 @@ export default function App() {
     page: number,
     mode: 'reset' | 'append' = 'reset',
     options?: {
-      refresh?: boolean;
+      refreshMode?: 'soft' | 'hard';
+      rotationSeedOverride?: number;
       preferencesOverride?: {
         selectedInterests?: Interest[];
         selectedVibe?: Vibe | null;
@@ -2201,7 +2236,9 @@ export default function App() {
   ) => {
     const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0];
     if (!activeLocation) return;
-    const isRefresh = Boolean(options?.refresh) && mode === 'reset';
+    const refreshMode = mode === 'reset' ? options?.refreshMode : undefined;
+    const isRefresh = Boolean(refreshMode) && mode === 'reset';
+    const rotationSeed = options?.rotationSeedOverride ?? discoveryRotationSeedRef.current;
     const effectiveSelectedInterests = options?.preferencesOverride?.selectedInterests ?? selectedInterests;
     const effectiveSelectedVibe = options?.preferencesOverride?.selectedVibe ?? selectedVibe;
 
@@ -2225,8 +2262,9 @@ export default function App() {
         {
           page,
           limit: 10,
-          refresh: options?.refresh,
+          refresh: refreshMode === 'hard',
           query: discoverySearchQuery,
+          seed: `${activeLocation.id}:${page}:${rotationSeed}`,
         },
       );
 
@@ -2234,7 +2272,7 @@ export default function App() {
       setDiscoveryPlaces((prev) => (
         mode === 'append'
           ? [...prev, ...nextPlaces.filter((place) => !prev.some((item) => item.id === place.id))]
-          : nextPlaces
+          : applyRankedVarietyToPlaces(nextPlaces, rotationSeed)
       ));
       setDiscoveryPage(response.pagination.page);
       setDiscoveryHasMore(response.pagination.hasMore);
@@ -2322,13 +2360,17 @@ export default function App() {
       && !shouldForceRefreshAfterAuth;
 
     if (canReuseDiscoveryCache) {
+      const rotationSeed = bumpDiscoveryRotationSeed();
+      setDiscoveryPlaces((prev) => applyRankedVarietyToPlaces(prev, rotationSeed));
       return;
     }
 
     lastDiscoveryContextKeyRef.current = nextDiscoveryContextKey;
     setDiscoveryPage(1);
     setDiscoveryHasMore(true);
-    void loadDiscoveryPlaces(1, 'reset', { refresh: shouldRefreshForPreferences || shouldForceRefreshAfterAuth });
+    void loadDiscoveryPlaces(1, 'reset', {
+      refreshMode: shouldRefreshForPreferences || shouldForceRefreshAfterAuth ? 'hard' : undefined,
+    });
     void loadDiscoveryEvents();
   }, [currentScreen, activeLocationId, savedLocations, selectedInterests, selectedVibe, discoverySearchQuery, discoveryPlaces.length]);
 
@@ -2787,8 +2829,8 @@ export default function App() {
               onFinishGestureDemo={() => setShowDiscoveryGestureDemo(false)}
               onRefresh={() => {
                 if (isDiscoveryPlacesLoading || isDiscoveryPlacesLoadingMore || isDiscoveryPlacesRefreshing) return;
-                void loadDiscoveryPlaces(1, 'reset', { refresh: true });
-                void loadDiscoveryEvents();
+                const rotationSeed = bumpDiscoveryRotationSeed();
+                void loadDiscoveryPlaces(1, 'reset', { refreshMode: 'soft', rotationSeedOverride: rotationSeed });
               }}
               onLoadMore={() => {
                 if (isDiscoveryPlacesLoading || isDiscoveryPlacesLoadingMore || isDiscoveryPlacesRefreshing || !discoveryHasMore) return;
