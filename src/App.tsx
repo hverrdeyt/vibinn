@@ -2169,7 +2169,12 @@ export default function App() {
     }
   };
 
-  const applyAuthenticatedBootstrapState = async () => {
+  const applyAuthenticatedBootstrapState = async (options?: {
+    guestPreferences?: {
+      selectedInterests: Interest[];
+      selectedVibe: Vibe | null;
+    };
+  }) => {
     try {
       const [profileResponse, bookmarksResponse, signalsResponse, savedLocationsResponse] = await Promise.all([
         api.getProfileMe(),
@@ -2193,16 +2198,35 @@ export default function App() {
       );
       setBookmarkedPlaces(bookmarksResponse.bookmarks as Place[]);
 
+      let effectiveSelectedInterests = (signalsResponse?.selectedInterests ?? []) as Interest[];
+      let effectiveSelectedVibe = (signalsResponse?.selectedVibe as Vibe | null | undefined) ?? null;
+      const guestSelectedInterests = options?.guestPreferences?.selectedInterests ?? [];
+      const guestSelectedVibe = options?.guestPreferences?.selectedVibe ?? null;
+      const shouldHydrateGuestPreferences = (
+        (guestSelectedInterests.length > 0 || guestSelectedVibe)
+        && effectiveSelectedInterests.length === 0
+        && !effectiveSelectedVibe
+      );
+
+      if (shouldHydrateGuestPreferences) {
+        effectiveSelectedInterests = guestSelectedInterests;
+        effectiveSelectedVibe = guestSelectedVibe;
+
+        void api.savePreferences({
+          selectedInterests: guestSelectedInterests,
+          selectedVibe: guestSelectedVibe,
+          skippedPreferences: guestSelectedInterests.length === 0 && !guestSelectedVibe,
+          onboardingCompleted: hasStoredOnboardingCompletion(),
+        }).catch(() => undefined);
+      }
+
       if (signalsResponse) {
         setBookmarkedPlaceIds(signalsResponse.bookmarkedPlaceIds);
         setDismissedPlaceIds(signalsResponse.dismissedPlaceIds);
-        if (signalsResponse.selectedInterests.length > 0) {
-          setSelectedInterests(signalsResponse.selectedInterests as Interest[]);
-        }
-        if (signalsResponse.selectedVibe) {
-          setSelectedVibe(signalsResponse.selectedVibe as Vibe);
-        }
       }
+
+      setSelectedInterests(effectiveSelectedInterests);
+      setSelectedVibe(effectiveSelectedVibe);
 
       if (savedLocationsResponse) {
         const nextLocations = savedLocationsResponse.locations as SavedLocationOption[];
@@ -2225,8 +2249,17 @@ export default function App() {
           );
         }
       }
+
+      return {
+        selectedInterests: effectiveSelectedInterests,
+        selectedVibe: effectiveSelectedVibe,
+      };
     } catch {
       showActionToast('Could not sync profile right now');
+      return {
+        selectedInterests: options?.guestPreferences?.selectedInterests ?? selectedInterests,
+        selectedVibe: options?.guestPreferences?.selectedVibe ?? selectedVibe,
+      };
     }
   };
 
@@ -2744,6 +2777,10 @@ export default function App() {
   };
 
   const completeAuth = async (payload?: { id?: string; name?: string; username?: string; email?: string }) => {
+    const guestPreferences = {
+      selectedInterests,
+      selectedVibe,
+    };
     setIsAuthenticated(true);
     setUser(buildAuthenticatedUserDraft(payload));
     if (payload?.id) {
@@ -2760,7 +2797,7 @@ export default function App() {
       });
     }
 
-    await applyAuthenticatedBootstrapState();
+    const hydratedPreferences = await applyAuthenticatedBootstrapState({ guestPreferences });
 
     const pendingAction = pendingAuthActionRef.current;
     pendingAuthActionRef.current = null;
@@ -2781,8 +2818,12 @@ export default function App() {
       setDiscoveryPage(1);
       setDiscoveryHasMore(true);
       const rotationSeed = bumpDiscoveryRotationSeed();
-      void loadDiscoveryPlaces(1, 'reset', { refreshMode: 'hard', rotationSeedOverride: rotationSeed });
-      void loadDiscoveryEvents();
+      void loadDiscoveryPlaces(1, 'reset', {
+        refreshMode: 'hard',
+        rotationSeedOverride: rotationSeed,
+        preferencesOverride: hydratedPreferences,
+      });
+      void loadDiscoveryEvents(hydratedPreferences);
     }
   };
 
