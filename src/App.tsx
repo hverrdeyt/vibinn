@@ -965,6 +965,17 @@ function getLocationPermissionHelpMessage() {
   return 'Turn location back on in your browser settings for this site, then try again.';
 }
 
+function requestCurrentPosition(options: PositionOptions) {
+  return new Promise<GeolocationPosition>((resolve, reject) => {
+    if (typeof navigator === 'undefined' || !('geolocation' in navigator)) {
+      reject(new Error('Geolocation is not supported'));
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(resolve, reject, options);
+  });
+}
+
 function buildPlaceRecommendationReason(place: Place, travelerMomentCount = 0) {
   const normalizedTags = place.tags.map((tag) => tag.toLowerCase().replace(/[_-]+/g, ' ').trim());
   const normalizedCategory = (place.category ?? '').toLowerCase().replace(/[_-]+/g, ' ').trim();
@@ -1722,7 +1733,7 @@ export default function App() {
     setCurrentScreen('place-detail');
   };
 
-  const requestDeviceLocation = () => {
+  const requestDeviceLocation = async () => {
     if (typeof window === 'undefined' || !('geolocation' in navigator)) {
       setDeviceLocationPermission('unsupported');
       showActionToast('Location is not supported on this browser');
@@ -1733,35 +1744,48 @@ export default function App() {
     hasRequestedDeviceLocationRef.current = true;
     setIsRequestingDeviceLocation(true);
 
-    navigator.geolocation.getCurrentPosition(
-      (position) => {
-        setDeviceLocation({
-          latitude: position.coords.latitude,
-          longitude: position.coords.longitude,
-        });
-        setDeviceLocationPermission('granted');
-        setIsRequestingDeviceLocation(false);
-        showActionToast('Location enabled');
-      },
-      (error) => {
-        setDeviceLocationPermission('denied');
-        setIsRequestingDeviceLocation(false);
-        if (error.code === error.PERMISSION_DENIED) {
-          showActionToast(getLocationPermissionHelpMessage());
-          return;
-        }
-        if (error.code === error.TIMEOUT) {
-          showActionToast('Location check timed out');
-          return;
-        }
-        showActionToast('Could not get your location right now');
-      },
-      {
+    try {
+      const position = await requestCurrentPosition({
         enableHighAccuracy: true,
         timeout: 10000,
-        maximumAge: 5 * 60 * 1000,
-      },
-    );
+        maximumAge: 60 * 1000,
+      }).catch(async (error) => {
+        const geoError = error as GeolocationPositionError;
+        if (geoError?.code === geoError.PERMISSION_DENIED) {
+          throw geoError;
+        }
+
+        return requestCurrentPosition({
+          enableHighAccuracy: false,
+          timeout: 20000,
+          maximumAge: 10 * 60 * 1000,
+        });
+      });
+
+      setDeviceLocation({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude,
+      });
+      setDeviceLocationPermission('granted');
+      showActionToast('Location enabled');
+    } catch (error) {
+      const geoError = error as GeolocationPositionError | Error;
+      if ('code' in geoError && geoError.code === 1) {
+        setDeviceLocationPermission('denied');
+        showActionToast(getLocationPermissionHelpMessage());
+      } else if ('code' in geoError && geoError.code === 2) {
+        setDeviceLocationPermission('unknown');
+        showActionToast('Location services could not find you');
+      } else if ('code' in geoError && geoError.code === 3) {
+        setDeviceLocationPermission('unknown');
+        showActionToast('Location check timed out');
+      } else {
+        setDeviceLocationPermission('unknown');
+        showActionToast(geoError.message || 'Could not get your location right now');
+      }
+    } finally {
+      setIsRequestingDeviceLocation(false);
+    }
   };
 
   const refreshOwnProfile = async () => {

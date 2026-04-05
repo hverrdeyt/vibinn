@@ -952,6 +952,8 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     rating: place.rating ?? undefined,
     priceRange: mapPriceLevel(place.priceLevel),
     category,
+    latitude: place.latitude ?? undefined,
+    longitude: place.longitude ?? undefined,
   };
 }
 
@@ -1022,6 +1024,8 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     rating: 0,
     priceRange: place.priceRange ?? '',
     category,
+    latitude: place.latitude ?? undefined,
+    longitude: place.longitude ?? undefined,
   };
 }
 
