@@ -3340,8 +3340,7 @@ export default function App() {
                   place={place}
                   contextNote={contextNote}
                   onOpenPlace={() => {
-                    setSelectedPlace(place);
-                    setCurrentScreen('place-detail');
+                    openPlaceDetail(place, 'profile');
                   }}
                   footer={footer}
                 />
@@ -3354,8 +3353,7 @@ export default function App() {
                     contextNote: 'saved to your vibe graph',
                   }}
                   onClick={() => {
-                    setSelectedPlace(place);
-                    setCurrentScreen('place-detail');
+                    openPlaceDetail(place, 'profile');
                   }}
                 />
               )}
@@ -3368,8 +3366,7 @@ export default function App() {
             <NotificationsScreen
               onBack={() => setCurrentScreen('discover-places')}
               onOpenPlace={(place) => {
-                setSelectedPlace(place);
-                setCurrentScreen('place-detail');
+                openPlaceDetail(place, 'notifications');
               }}
               onOpenTraveler={(traveler) => {
                 if (!isAuthenticated) {
@@ -3482,8 +3479,7 @@ export default function App() {
           <BookmarksScreen
             bookmarkedPlaces={bookmarkedPlaces}
             onSelectPlace={(place) => {
-              setSelectedPlace(place);
-              setCurrentScreen('place-detail');
+              openPlaceDetail(place, 'bookmarks');
             }}
           />
         );
@@ -3584,8 +3580,7 @@ export default function App() {
               onBack={() => setCurrentScreen('discover-travelers')}
               onSavePlace={(placeToSave, nextActive) => syncBookmarkState(placeToSave, nextActive)}
               onSelectPlace={(p) => {
-                setSelectedPlace(p);
-                setCurrentScreen('place-detail');
+                openPlaceDetail(p, 'traveler-profile');
               }}
               onOpenCollection={(collection) => {
                 setSelectedCollection(collection);
@@ -3603,8 +3598,7 @@ export default function App() {
                   place={place}
                   contextNote={contextNote}
                   onOpenPlace={() => {
-                    setSelectedPlace(place);
-                    setCurrentScreen('place-detail');
+                    openPlaceDetail(place, 'traveler-profile');
                   }}
                   matchScore={matchScore}
                   footer={footer}
@@ -3619,8 +3613,7 @@ export default function App() {
                   }}
                   className="rounded-b-none border-0 shadow-none hover:translate-y-0 hover:shadow-none"
                   onClick={() => {
-                    setSelectedPlace(place);
-                    setCurrentScreen('place-detail');
+                    openPlaceDetail(place, 'traveler-profile');
                   }}
                 />
               )}
@@ -3633,8 +3626,7 @@ export default function App() {
             collection={selectedCollection}
             onBack={() => setCurrentScreen('traveler-profile')}
             onSelectPlace={(place) => {
-              setSelectedPlace(place);
-              setCurrentScreen('place-detail');
+              openPlaceDetail(place, 'traveler-profile');
             }}
           />
         ) : null;
