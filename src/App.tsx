@@ -594,6 +594,97 @@ function getSpecificPlaceLabel(place: Place) {
   return null;
 }
 
+function toEditorialTitleCase(value: string) {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 3)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+function getAIBackedPlaceLabel(place: Place) {
+  const haystack = [
+    place.attitudeLabel,
+    place.hook,
+    place.description,
+    place.bestTime,
+    ...(place.whyYoullLikeIt ?? []),
+    ...(place.tags ?? []),
+    place.category,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+
+  const phraseFirstMatchers: Array<{ label: string; matchers: string[] }> = [
+    { label: 'Rich-Aunt Energy', matchers: ['rich aunt energy'] },
+    { label: 'Main-Character Walk', matchers: ['main character walking', 'main character energy'] },
+    { label: 'Old-Soul Street', matchers: ['old street facades', 'old world', 'historic facades'] },
+    { label: 'Underrated Pour', matchers: ['underrated bar', 'underrated cocktail', 'speakeasy'] },
+    { label: 'Vinyl Nightcap', matchers: ['vinyl bar', 'records and cocktails', 'vinyl and cocktails'] },
+    { label: 'Design Stacks', matchers: ['design books', 'art books', 'design bookstore'] },
+    { label: 'Golden Walk', matchers: ['brownstones', 'pretty streets', 'window shopping'] },
+    { label: 'Harbor Breather', matchers: ['harborwalk', 'waterfront air', 'seaport breeze'] },
+    { label: 'Green Reset', matchers: ['green reset'] },
+    { label: 'Nostalgic Night', matchers: ['nostalgic concert', 'throwback set', 'retro set'] },
+    { label: 'Quiet Browse', matchers: ['quiet browse', 'unhurried browsing'] },
+    { label: 'Slow-Sip Stop', matchers: ['specialty coffee', 'slow coffee', 'coffee stop'] },
+    { label: 'Pastry Detour', matchers: ['pastry', 'bakery stop', 'morning pastry'] },
+    { label: 'Gallery Drift', matchers: ['gallery', 'art crawl', 'small exhibit'] },
+    { label: 'Museum Mood', matchers: ['museum', 'cultural stop', 'historic house'] },
+    { label: 'Sunset Breather', matchers: ['sunset', 'golden hour', 'sunset views'] },
+    { label: 'Market Drift', matchers: ['artisan market', 'farmers market', 'night market', 'bazaar'] },
+    { label: 'Treasure Hunt', matchers: ['concept store', 'boutique', 'vintage', 'showroom'] },
+    { label: 'Easy Wander', matchers: ['easy wander', 'easy stroll', 'walkable'] },
+    { label: 'Local Favorite', matchers: ['local favorite', 'neighborhood spot', 'hidden gem'] },
+  ];
+
+  const matchedPhrase = phraseFirstMatchers.find(({ matchers }) =>
+    matchers.some((matcher) => haystack.includes(matcher)),
+  );
+
+  if (matchedPhrase) return matchedPhrase.label;
+
+  const editorialMatchers: Array<{ label: string; matchers: string[] }> = [
+    { label: 'Late-Night Pour', matchers: ['cocktail', 'late night', 'after dark', 'bar'] },
+    { label: 'Live Music Fix', matchers: ['live music', 'jazz', 'dj', 'concert'] },
+    { label: 'Market Wander', matchers: ['market', 'artisan', 'popup', 'fair'] },
+    { label: 'Design Browse', matchers: ['design', 'curated', 'stylish'] },
+    { label: 'Vintage Hunt', matchers: ['vintage', 'thrift', 'record shop'] },
+    { label: 'Quiet Stacks', matchers: ['bookstore', 'library', 'books', 'reading'] },
+    { label: 'Gallery Pause', matchers: ['gallery', 'exhibit', 'arts'] },
+    { label: 'Historic Walk', matchers: ['historic', 'history', 'monument', 'heritage'] },
+    { label: 'Green Escape', matchers: ['park', 'garden', 'nature preserve'] },
+    { label: 'Harbor Reset', matchers: ['waterfront', 'harbor', 'river', 'seaport'] },
+    { label: 'Sunset Stroll', matchers: ['scenic', 'viewpoint', 'boardwalk'] },
+    { label: 'Slow Coffee', matchers: ['coffee', 'espresso', 'roastery', 'cafe'] },
+    { label: 'Pastry Pause', matchers: ['bakery', 'croissant', 'brunch'] },
+    { label: 'Easy Detour', matchers: ['easy stop', 'detour', 'quick escape'] },
+    { label: 'Photo Moment', matchers: ['photo', 'aesthetic', 'visual', 'beautiful'] },
+    { label: 'Neighborhood Find', matchers: ['local', 'neighborhood', 'underrated'] },
+  ];
+
+  const matched = editorialMatchers.find(({ matchers }) =>
+    matchers.some((matcher) => haystack.includes(matcher)),
+  );
+
+  if (matched) return matched.label;
+
+  const specificLabel = getSpecificPlaceLabel(place);
+  if (specificLabel) {
+    return toEditorialTitleCase(specificLabel.replace(/-/g, ' '));
+  }
+
+  const cleanedAttitude = getCleanAttitudeLabel(place.attitudeLabel);
+  if (cleanedAttitude) {
+    return toEditorialTitleCase(cleanedAttitude.replace(/-/g, ' '));
+  }
+
+  return null;
+}
+
 function getDisplayAttitudeLabel(place: Place) {
   const specificLabel = getSpecificPlaceLabel(place);
   if (specificLabel) return specificLabel;
@@ -745,21 +836,34 @@ function deriveFlagsFromTravelHistory(travelHistory: User['travelHistory']) {
 }
 
 function getEditorialLabel(place: Place, index = 0) {
-  const specificOrClean = getDisplayAttitudeLabel(place);
-  if (specificOrClean) return specificOrClean;
+  const aiBackedLabel = getAIBackedPlaceLabel(place);
+  if (aiBackedLabel) return aiBackedLabel;
 
   const normalizedTags = place.tags.map((tag) => tag.toLowerCase().replace(/_/g, ' ').trim());
   void index;
-  if (normalizedTags.some((tag) => tag.includes('easy pause') || tag.includes('city break'))) return 'coffee stop';
-  if (normalizedTags.some((tag) => tag.includes('thoughtful stop') || tag.includes('quiet browse'))) return 'culture fix';
-  if (normalizedTags.some((tag) => tag.includes('easy wander'))) return 'easy stroll';
+  if (normalizedTags.some((tag) => tag.includes('easy pause') || tag.includes('city break'))) return 'Slow Coffee';
+  if (normalizedTags.some((tag) => tag.includes('thoughtful stop') || tag.includes('quiet browse'))) return 'Gallery Pause';
+  if (normalizedTags.some((tag) => tag.includes('easy wander'))) return 'Easy Detour';
 
   const fallbackCategory = getDisplayPlaceCategory(place).toLowerCase().trim();
   if (fallbackCategory && fallbackCategory !== 'recommended spot') {
-    return fallbackCategory;
+    const conciseCategoryMatchers: Array<{ label: string; matchers: string[] }> = [
+      { label: 'Slow Coffee', matchers: ['cafe', 'coffee', 'bakery'] },
+      { label: 'Gallery Pause', matchers: ['gallery', 'museum', 'culture'] },
+      { label: 'Green Escape', matchers: ['park', 'garden', 'nature'] },
+      { label: 'Market Wander', matchers: ['market', 'shopping', 'boutique', 'retail'] },
+      { label: 'Late-Night Pour', matchers: ['bar', 'cocktail', 'nightlife'] },
+      { label: 'Harbor Reset', matchers: ['waterfront', 'harbor', 'river'] },
+      { label: 'Historic Walk', matchers: ['historic', 'monument'] },
+    ];
+    const categoryMatch = conciseCategoryMatchers.find(({ matchers }) =>
+      matchers.some((matcher) => fallbackCategory.includes(matcher)),
+    );
+    if (categoryMatch) return categoryMatch.label;
+    return toEditorialTitleCase(fallbackCategory.replace(/[\/,]+/g, ' '));
   }
 
-  return 'recommended spot';
+  return 'Good Find';
 }
 
 function getPriceLevel(place: Place) {
@@ -834,6 +938,31 @@ function calculateDistanceKm(
     + Math.sin(dLng / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
   const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
   return Math.round(earthRadiusKm * c * 10) / 10;
+}
+
+function calculateDistanceMiles(
+  from?: { latitude?: number; longitude?: number },
+  to?: { latitude?: number; longitude?: number },
+) {
+  const distanceKm = calculateDistanceKm(from, to);
+  if (typeof distanceKm !== 'number') return undefined;
+  return Math.round(distanceKm * 0.621371 * 10) / 10;
+}
+
+function getLocationPermissionHelpMessage() {
+  if (typeof navigator === 'undefined') {
+    return 'Turn location back on in your browser settings, then try again.';
+  }
+
+  const userAgent = navigator.userAgent.toLowerCase();
+  const isIPhone = /iphone|ipad|ipod/.test(userAgent);
+  const isSafari = /safari/.test(userAgent) && !/crios|fxios|edgios|chrome/.test(userAgent);
+
+  if (isIPhone && isSafari) {
+    return 'Turn Location back on in Safari settings for this site, then tap Allow again.';
+  }
+
+  return 'Turn location back on in your browser settings for this site, then try again.';
 }
 
 function buildPlaceRecommendationReason(place: Place, travelerMomentCount = 0) {
@@ -1226,6 +1355,7 @@ export default function App() {
   const [activeLocationId, setActiveLocationId] = useState<string>(INITIAL_SAVED_LOCATIONS[0].id);
   const [deviceLocation, setDeviceLocation] = useState<DeviceLocation | null>(null);
   const [deviceLocationPermission, setDeviceLocationPermission] = useState<'unknown' | 'granted' | 'denied' | 'unsupported'>('unknown');
+  const [isRequestingDeviceLocation, setIsRequestingDeviceLocation] = useState(false);
   const hasRequestedDeviceLocationRef = useRef(false);
   const [discoveryPlaces, setDiscoveryPlaces] = useState<Place[]>([]);
   const discoveryRotationSeedRef = useRef(0);
@@ -1446,6 +1576,29 @@ export default function App() {
     requestDeviceLocation();
   }, [currentScreen, deviceLocationPermission]);
 
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const resyncDeviceLocationPermission = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (currentScreen !== 'discover-places' && currentScreen !== 'place-detail') return;
+      if (deviceLocation) return;
+
+      hasRequestedDeviceLocationRef.current = false;
+      setDeviceLocationPermission('unknown');
+    };
+
+    window.addEventListener('focus', resyncDeviceLocationPermission);
+    window.addEventListener('pageshow', resyncDeviceLocationPermission);
+    document.addEventListener('visibilitychange', resyncDeviceLocationPermission);
+
+    return () => {
+      window.removeEventListener('focus', resyncDeviceLocationPermission);
+      window.removeEventListener('pageshow', resyncDeviceLocationPermission);
+      document.removeEventListener('visibilitychange', resyncDeviceLocationPermission);
+    };
+  }, [currentScreen, deviceLocation]);
+
   // Handle invite submit
   const handleInviteSubmit = () => {
     const normalizedInviteCode = inviteCode.trim().toUpperCase();
@@ -1572,10 +1725,13 @@ export default function App() {
   const requestDeviceLocation = () => {
     if (typeof window === 'undefined' || !('geolocation' in navigator)) {
       setDeviceLocationPermission('unsupported');
+      showActionToast('Location is not supported on this browser');
       return;
     }
 
+    setDeviceLocationPermission('unknown');
     hasRequestedDeviceLocationRef.current = true;
+    setIsRequestingDeviceLocation(true);
 
     navigator.geolocation.getCurrentPosition(
       (position) => {
@@ -1584,9 +1740,21 @@ export default function App() {
           longitude: position.coords.longitude,
         });
         setDeviceLocationPermission('granted');
+        setIsRequestingDeviceLocation(false);
+        showActionToast('Location enabled');
       },
-      () => {
+      (error) => {
         setDeviceLocationPermission('denied');
+        setIsRequestingDeviceLocation(false);
+        if (error.code === error.PERMISSION_DENIED) {
+          showActionToast(getLocationPermissionHelpMessage());
+          return;
+        }
+        if (error.code === error.TIMEOUT) {
+          showActionToast('Location check timed out');
+          return;
+        }
+        showActionToast('Could not get your location right now');
       },
       {
         enableHighAccuracy: true,
@@ -2869,6 +3037,9 @@ export default function App() {
               selectedVibe={selectedVibe}
               activeLocation={savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0]}
               savedLocations={savedLocations}
+              deviceLocation={deviceLocation}
+              deviceLocationPermission={deviceLocationPermission}
+              isRequestingDeviceLocation={isRequestingDeviceLocation}
               events={discoveryEvents}
               searchInput={discoverySearchInput}
               searchQuery={discoverySearchQuery}
@@ -2890,6 +3061,7 @@ export default function App() {
                 }
               }}
               onLocationSheetVisibilityChange={setIsFloatingNavHidden}
+              onRequestDeviceLocation={requestDeviceLocation}
               visiblePlaces={discoveryPlaces.filter((place) => !dismissedPlaceIds.includes(place.id))}
               isLoading={isDiscoveryPlacesLoading}
               isEventsLoading={isDiscoveryEventsLoading}
@@ -2908,8 +3080,11 @@ export default function App() {
                 void loadDiscoveryPlaces(1, 'reset', { refreshMode: 'soft', rotationSeedOverride: rotationSeed });
               }}
               onLoadMore={() => {
-                if (isDiscoveryPlacesLoading || isDiscoveryPlacesLoadingMore || isDiscoveryPlacesRefreshing || !discoveryHasMore) return;
+                if (isDiscoveryPlacesLoading || isDiscoveryPlacesLoadingMore || isDiscoveryPlacesRefreshing || !discoveryHasMore) {
+                  return false;
+                }
                 void loadDiscoveryPlaces(discoveryPage + 1, 'append');
+                return true;
               }}
               onBookmarkPlace={(place) => {
                 if (!isAuthenticated) {

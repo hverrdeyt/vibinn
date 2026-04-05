@@ -12,11 +12,40 @@ interface SavedLocationOption {
   longitude?: number;
 }
 
+function calculateDistanceMiles(
+  from?: { latitude?: number; longitude?: number } | null,
+  to?: { latitude?: number; longitude?: number } | null,
+) {
+  if (
+    typeof from?.latitude !== 'number' ||
+    typeof from?.longitude !== 'number' ||
+    typeof to?.latitude !== 'number' ||
+    typeof to?.longitude !== 'number'
+  ) {
+    return undefined;
+  }
+
+  const toRadians = (value: number) => (value * Math.PI) / 180;
+  const earthRadiusKm = 6371;
+  const dLat = toRadians(to.latitude - from.latitude);
+  const dLng = toRadians(to.longitude - from.longitude);
+  const lat1 = toRadians(from.latitude);
+  const lat2 = toRadians(to.latitude);
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.sin(dLng / 2) ** 2 * Math.cos(lat1) * Math.cos(lat2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const distanceKm = earthRadiusKm * c;
+  return Math.round(distanceKm * 0.621371 * 10) / 10;
+}
+
 export default function PlaceDiscoveryScreen({
   selectedInterests,
   selectedVibe,
   activeLocation,
   savedLocations,
+  deviceLocation,
+  deviceLocationPermission,
+  isRequestingDeviceLocation,
   events,
   searchInput,
   searchQuery,
@@ -27,6 +56,7 @@ export default function PlaceDiscoveryScreen({
   onClearSearch,
   onSelectLocation,
   onLocationSheetVisibilityChange,
+  onRequestDeviceLocation,
   visiblePlaces,
   isLoading,
   isEventsLoading,
@@ -53,6 +83,9 @@ export default function PlaceDiscoveryScreen({
   selectedVibe: Vibe | null;
   activeLocation: SavedLocationOption;
   savedLocations: SavedLocationOption[];
+  deviceLocation: { latitude: number; longitude: number } | null;
+  deviceLocationPermission: 'unknown' | 'granted' | 'denied' | 'unsupported';
+  isRequestingDeviceLocation: boolean;
   events: EventItem[];
   searchInput: string;
   searchQuery: string;
@@ -63,6 +96,7 @@ export default function PlaceDiscoveryScreen({
   onClearSearch: () => void;
   onSelectLocation: (locationId: string) => void;
   onLocationSheetVisibilityChange: (isOpen: boolean) => void;
+  onRequestDeviceLocation: () => void;
   visiblePlaces: Place[];
   isLoading: boolean;
   isEventsLoading: boolean;
@@ -76,7 +110,7 @@ export default function PlaceDiscoveryScreen({
   showGestureDemo: boolean;
   onFinishGestureDemo: () => void;
   onRefresh: () => void;
-  onLoadMore: () => void;
+  onLoadMore: () => boolean | void;
   onBookmarkPlace: (place: Place) => void;
   onDismissPlace: (place: Place) => void;
   onSelectPlace: (place: Place) => void;
@@ -137,7 +171,10 @@ export default function PlaceDiscoveryScreen({
   const triggerLoadMore = () => {
     if (!canLoadMore || loadMoreLockRef.current) return;
     loadMoreLockRef.current = true;
-    onLoadMore();
+    const didStartLoad = onLoadMore();
+    if (didStartLoad === false) {
+      loadMoreLockRef.current = false;
+    }
   };
 
   useEffect(() => {
@@ -313,6 +350,31 @@ export default function PlaceDiscoveryScreen({
         </div>
       ) : null}
 
+      {deviceLocationPermission !== 'granted' && deviceLocationPermission !== 'unsupported' ? (
+        <div className="mb-5 flex items-center justify-between gap-3 rounded-[24px] border border-accent/20 bg-accent/8 px-4 py-3">
+          <div className="min-w-0">
+            <div className="text-sm font-semibold text-white">See how far each place is</div>
+            <div className="text-xs text-white/60">
+              {deviceLocationPermission === 'denied'
+                ? 'Turn location back on in your browser so we can show distance in miles.'
+                : 'Turn on location so we can show the distance from you in miles.'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onRequestDeviceLocation}
+            disabled={isRequestingDeviceLocation}
+            className="shrink-0 rounded-full bg-accent px-4 py-2 text-xs font-black text-black transition hover:bg-accent/90 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {isRequestingDeviceLocation
+              ? 'Checking...'
+              : deviceLocationPermission === 'denied'
+                ? 'Try again'
+                : 'Allow'}
+          </button>
+        </div>
+      ) : null}
+
       {isSearchOpen || isFilteringBySearch ? (
         <div className="mb-5 rounded-[24px] border border-white/10 bg-white/6 p-3">
           <div className="relative">
@@ -422,6 +484,7 @@ export default function PlaceDiscoveryScreen({
                         index={index}
                         selectedInterests={selectedInterests}
                         selectedVibe={selectedVibe}
+                        deviceLocation={deviceLocation}
                         shouldAnimateEntry={shouldAnimateItemEntry}
                         isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
                         gestureDemo={showGestureDemo && index === 0}
@@ -463,6 +526,7 @@ export default function PlaceDiscoveryScreen({
                         index={index}
                         selectedInterests={selectedInterests}
                         selectedVibe={selectedVibe}
+                        deviceLocation={deviceLocation}
                         shouldAnimateEntry={shouldAnimateItemEntry}
                         isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
                         gestureDemo={showGestureDemo && index === 0}
@@ -539,6 +603,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   index,
   selectedInterests,
   selectedVibe,
+  deviceLocation,
   shouldAnimateEntry,
   isBookmarked,
   gestureDemo = false,
@@ -553,6 +618,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   index: number;
   selectedInterests: Interest[];
   selectedVibe: Vibe | null;
+  deviceLocation: { latitude: number; longitude: number } | null;
   shouldAnimateEntry: boolean;
   isBookmarked: boolean;
   gestureDemo?: boolean;
@@ -569,6 +635,10 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   const match = hasCompatibilityScore ? Math.min(place.similarityStat ?? 74, 98) : null;
   const editorialLabel = getEditorialLabel(place, index);
   const preferenceDebugLabels = getPlacePreferenceDebugMatches(place, selectedInterests, selectedVibe);
+  const distanceMiles = calculateDistanceMiles(deviceLocation, {
+    latitude: place.latitude,
+    longitude: place.longitude,
+  });
   const tileHeightClass =
     index % 4 === 0
       ? 'h-[20.5rem]'
@@ -696,8 +766,19 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
           </div>
         ) : null}
         {editorialLabel ? (
-          <p className="inline-flex rounded-full bg-white/12 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-white/88 backdrop-blur-md">
-            {editorialLabel}
+          <div>
+            <p className="inline-flex rounded-full bg-white/12 px-3 py-1 text-[11px] font-black uppercase tracking-[0.18em] text-white/88 backdrop-blur-md">
+              {editorialLabel}
+            </p>
+            {typeof distanceMiles === 'number' ? (
+              <p className="mt-1.5 px-1 text-[10px] font-semibold tracking-[0.04em] text-white/62">
+                {distanceMiles} mi away
+              </p>
+            ) : null}
+          </div>
+        ) : typeof distanceMiles === 'number' ? (
+          <p className="px-1 text-[10px] font-semibold tracking-[0.04em] text-white/62">
+            {distanceMiles} mi away
           </p>
         ) : null}
       </div>
