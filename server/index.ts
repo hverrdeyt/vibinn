@@ -1334,12 +1334,15 @@ async function getDiscoveryPlacesForUser(options: {
         visitedPlaceIds: new Set<string>(),
         dismissedPlaceIds: new Set<string>(),
         tasteKeywords: new Set<string>(),
+        bookmarkKeywords: new Set<string>(),
+        momentKeywords: new Set<string>(),
         followedUserIds: new Set<string>(),
         followedPlaceIds: new Set<string>(),
         socialKeywords: new Set<string>(),
         vibedPlaceIds: new Set<string>(),
         commentedPlaceIds: new Set<string>(),
         recentPlaceIds: new Set<string>(),
+        momentRatingsByPlaceId: new Map<string, number>(),
       };
 
   const persistedScores = options.userId
@@ -1393,7 +1396,8 @@ async function getDiscoveryPlacesForUser(options: {
             {
               selectedInterests,
               selectedVibe,
-              tasteKeywords: context.tasteKeywords,
+              bookmarkKeywords: context.bookmarkKeywords,
+              momentKeywords: context.momentKeywords,
               socialKeywords: context.socialKeywords,
               isBookmarked: context.bookmarkedPlaceIds.has(place.id),
               isVisited: context.visitedPlaceIds.has(place.id),
@@ -1401,6 +1405,7 @@ async function getDiscoveryPlacesForUser(options: {
               isCommented: context.commentedPlaceIds.has(place.id),
               isRecent: context.recentPlaceIds.has(place.id),
               followedPlaceMatch: context.followedPlaceIds.has(place.id),
+              momentRating: context.momentRatingsByPlaceId.get(place.id) ?? null,
             },
           ))
         : computeRecommendationScore(
@@ -1417,7 +1422,8 @@ async function getDiscoveryPlacesForUser(options: {
             {
               selectedInterests,
               selectedVibe,
-              tasteKeywords: context.tasteKeywords,
+              bookmarkKeywords: context.bookmarkKeywords,
+              momentKeywords: context.momentKeywords,
               socialKeywords: context.socialKeywords,
               isBookmarked: context.bookmarkedPlaceIds.has(place.id),
               isVisited: context.visitedPlaceIds.has(place.id),
@@ -1425,6 +1431,7 @@ async function getDiscoveryPlacesForUser(options: {
               isCommented: context.commentedPlaceIds.has(place.id),
               isRecent: context.recentPlaceIds.has(place.id),
               followedPlaceMatch: context.followedPlaceIds.has(place.id),
+              momentRating: context.momentRatingsByPlaceId.get(place.id) ?? null,
             },
           ),
     }))
@@ -1514,7 +1521,8 @@ async function getDiscoveryPlacesForUser(options: {
           {
             selectedInterests,
             selectedVibe,
-            tasteKeywords: context.tasteKeywords,
+            bookmarkKeywords: context.bookmarkKeywords,
+            momentKeywords: context.momentKeywords,
             socialKeywords: context.socialKeywords,
             isBookmarked: context.bookmarkedPlaceIds.has(place.id),
             isVisited: context.visitedPlaceIds.has(place.id),
@@ -1522,6 +1530,7 @@ async function getDiscoveryPlacesForUser(options: {
             isCommented: context.commentedPlaceIds.has(place.id),
             isRecent: context.recentPlaceIds.has(place.id),
             followedPlaceMatch: context.followedPlaceIds.has(place.id),
+            momentRating: context.momentRatingsByPlaceId.get(place.id) ?? null,
           },
         ),
       }))
@@ -1736,6 +1745,17 @@ function mapPriceLevel(value?: number | null) {
 
 function normalizeKeyword(value: string) {
   return value.toLowerCase().replace(/[_-]+/g, ' ').trim();
+}
+
+function buildMaxMomentRatingMap(items: Array<{ placeId: string; rating: number }>) {
+  const map = new Map<string, number>();
+  items.forEach((item) => {
+    const existing = map.get(item.placeId) ?? 0;
+    if (item.rating > existing) {
+      map.set(item.placeId, item.rating);
+    }
+  });
+  return map;
 }
 
 function isServiceLikePlace(place: {
@@ -2021,7 +2041,8 @@ function computeRecommendationScore(place: {
 }, input: {
   selectedInterests: string[];
   selectedVibe?: string | null;
-  tasteKeywords?: Set<string>;
+  bookmarkKeywords?: Set<string>;
+  momentKeywords?: Set<string>;
   socialKeywords?: Set<string>;
   isBookmarked?: boolean;
   isVisited?: boolean;
@@ -2029,6 +2050,7 @@ function computeRecommendationScore(place: {
   isCommented?: boolean;
   isRecent?: boolean;
   followedPlaceMatch?: boolean;
+  momentRating?: number | null;
 }) {
   const normalizedTags = place.tags.map(normalizeKeyword);
   const normalizedCategory = normalizeKeyword(place.category ?? '');
@@ -2044,7 +2066,8 @@ function computeRecommendationScore(place: {
       );
     });
   const diversitySeed = hashScoreSeed(`${place.id ?? normalizedCategory}|${normalizedTags.join('|')}`) % 17;
-  const tasteKeywords = input.tasteKeywords ?? new Set<string>();
+  const bookmarkKeywords = input.bookmarkKeywords ?? new Set<string>();
+  const momentKeywords = input.momentKeywords ?? new Set<string>();
   const socialKeywords = input.socialKeywords ?? new Set<string>();
   let score = 34 + diversitySeed;
   if (place.similarityStat && place.similarityStat !== 82) {
@@ -2070,13 +2093,21 @@ function computeRecommendationScore(place: {
     score -= 8;
   }
 
-  const overlapCount = Array.from(tasteKeywords).filter((keyword) =>
+  const momentOverlapCount = Array.from(momentKeywords).filter((keyword) =>
     normalizedTags.some((tag) => tag.includes(keyword) || keyword.includes(tag)) ||
     normalizedCategory.includes(keyword) ||
     keyword.includes(normalizedCategory),
   ).length;
 
-  score += Math.min(overlapCount * 6, 24);
+  score += Math.min(momentOverlapCount * 10, 36);
+
+  const bookmarkOverlapCount = Array.from(bookmarkKeywords).filter((keyword) =>
+    normalizedTags.some((tag) => tag.includes(keyword) || keyword.includes(tag)) ||
+    normalizedCategory.includes(keyword) ||
+    keyword.includes(normalizedCategory),
+  ).length;
+
+  score += Math.min(bookmarkOverlapCount * 4, 12);
 
   const socialOverlapCount = Array.from(socialKeywords).filter((keyword) =>
     normalizedTags.some((tag) => tag.includes(keyword) || keyword.includes(tag)) ||
@@ -2101,15 +2132,27 @@ function computeRecommendationScore(place: {
   }
 
   if (input.isBookmarked) {
-    score += 12;
+    score += 7;
   }
 
   if (input.isVisited) {
-    score += 10;
+    score += 16;
+  }
+
+  if (typeof input.momentRating === 'number') {
+    if (input.momentRating >= 5) {
+      score += 24;
+    } else if (input.momentRating >= 4) {
+      score += 18;
+    } else if (input.momentRating >= 3) {
+      score += 10;
+    } else if (input.momentRating > 0 && input.momentRating <= 2) {
+      score -= 10;
+    }
   }
 
   if (input.isVibed) {
-    score += 8;
+    score += 7;
   }
 
   if (input.isCommented) {
@@ -2117,7 +2160,7 @@ function computeRecommendationScore(place: {
   }
 
   if (input.isRecent) {
-    score += 5;
+    score += 7;
   }
 
   return Math.max(28, Math.min(score, 98));
@@ -2130,12 +2173,15 @@ type RecommendationContext = {
   visitedPlaceIds: Set<string>;
   dismissedPlaceIds: Set<string>;
   tasteKeywords: Set<string>;
+  bookmarkKeywords: Set<string>;
+  momentKeywords: Set<string>;
   followedUserIds: Set<string>;
   followedPlaceIds: Set<string>;
   socialKeywords: Set<string>;
   vibedPlaceIds: Set<string>;
   commentedPlaceIds: Set<string>;
   recentPlaceIds: Set<string>;
+  momentRatingsByPlaceId: Map<string, number>;
 };
 
 type EventRecommendationContext = {
@@ -2179,6 +2225,7 @@ async function getUserRecommendationContext(userId: string): Promise<Recommendat
         placeId: true,
         visitedAt: true,
         createdAt: true,
+        rating: true,
         place: {
           select: {
             category: true,
@@ -2267,12 +2314,20 @@ async function getUserRecommendationContext(userId: string): Promise<Recommendat
       ...collectTasteKeywords(bookmarks.map((item) => item.place)),
       ...collectTasteKeywords(moments.map((item) => item.place)),
     ]),
+    bookmarkKeywords: collectTasteKeywords(bookmarks.map((item) => item.place)),
+    momentKeywords: collectTasteKeywords(moments.map((item) => item.place)),
     followedUserIds: new Set(followedUserIds),
     followedPlaceIds: new Set(followedMoments.map((item) => item.placeId)),
     socialKeywords: collectTasteKeywords(followedMoments.map((item) => item.place)),
     vibedPlaceIds,
     commentedPlaceIds,
     recentPlaceIds,
+    momentRatingsByPlaceId: buildMaxMomentRatingMap(
+      moments.map((item) => ({
+        placeId: item.placeId,
+        rating: item.rating,
+      })),
+    ),
   };
 
   recommendationContextCache.set(userId, {
@@ -3206,7 +3261,8 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
         {
           selectedInterests: context.selectedInterests,
           selectedVibe: context.selectedVibe,
-          tasteKeywords: context.tasteKeywords,
+          bookmarkKeywords: context.bookmarkKeywords,
+          momentKeywords: context.momentKeywords,
           socialKeywords: context.socialKeywords,
           isBookmarked: context.bookmarkedPlaceIds.has(place.id),
           isVisited: context.visitedPlaceIds.has(place.id),
@@ -3214,6 +3270,7 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
           isCommented: context.commentedPlaceIds.has(place.id),
           isRecent: context.recentPlaceIds.has(place.id),
           followedPlaceMatch: context.followedPlaceIds.has(place.id),
+          momentRating: context.momentRatingsByPlaceId.get(place.id) ?? null,
         },
       );
 
@@ -3250,7 +3307,7 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
             isRecent: context.recentPlaceIds.has(place.id),
             isDismissed: context.dismissedPlaceIds.has(place.id),
           }),
-          sourceVersion: 'writeback-v4',
+          sourceVersion: 'writeback-v5',
         },
         create: {
           userId,
@@ -3275,7 +3332,7 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
             isRecent: context.recentPlaceIds.has(place.id),
             isDismissed: context.dismissedPlaceIds.has(place.id),
           }),
-          sourceVersion: 'writeback-v4',
+          sourceVersion: 'writeback-v5',
         },
       });
     }),
@@ -3407,6 +3464,7 @@ async function runRecommendationWriteback(input: {
 }) {
   const placeIds = Array.from(new Set((input.placeIds ?? []).filter(Boolean)));
   const travelerIds = Array.from(new Set((input.travelerIds ?? []).filter(Boolean)));
+  recommendationContextCache.delete(input.userId);
 
   await Promise.all([
     placeIds.length > 0 ? refreshUserPlaceScores(input.userId, placeIds) : Promise.resolve(),
