@@ -6129,6 +6129,7 @@ function PlaceDiscovery({
   const [pullDistance, setPullDistance] = useState(0);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const pullStartYRef = useRef<number | null>(null);
+  const autoFillLoadMoreRafRef = useRef<number | null>(null);
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
   const currentCity = activeLocation?.label ?? 'Boston';
   const isFilteringBySearch = searchQuery.length > 0;
@@ -6209,6 +6210,27 @@ function PlaceDiscovery({
     window.addEventListener('scroll', handleWindowScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleWindowScroll);
   }, [hasMore, isLoading, isLoadingMore, isRefreshing, onLoadMore]);
+
+  useEffect(() => {
+    if (!hasMore || isLoading || isLoadingMore || isRefreshing) return;
+    if (mixedDiscoveryItems.length === 0) return;
+
+    const attemptAutoFill = () => {
+      const remaining = document.documentElement.scrollHeight - window.innerHeight;
+      if (remaining < 220) {
+        onLoadMore();
+      }
+    };
+
+    autoFillLoadMoreRafRef.current = window.requestAnimationFrame(attemptAutoFill);
+
+    return () => {
+      if (autoFillLoadMoreRafRef.current !== null) {
+        window.cancelAnimationFrame(autoFillLoadMoreRafRef.current);
+        autoFillLoadMoreRafRef.current = null;
+      }
+    };
+  }, [mixedDiscoveryItems.length, hasMore, isLoading, isLoadingMore, isRefreshing, onLoadMore]);
 
   const handleTouchStart = (event: TouchEvent<HTMLDivElement>) => {
     if (typeof window !== 'undefined' && window.scrollY <= 0) {
