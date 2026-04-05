@@ -3216,6 +3216,64 @@ function buildRecommendationReason(input: {
   return 'It is one of the strongest fits for your taste in this area.';
 }
 
+function buildPlaceDetailRecommendationFallback(place: {
+  category?: string | null;
+  tags?: string[] | null;
+  attitudeLabel?: string | null;
+  bestTime?: string | null;
+  hook?: string | null;
+  description?: string | null;
+}) {
+  const normalizedCategory = normalizeKeyword(place.category ?? '');
+  const normalizedTags = (place.tags ?? []).map(normalizeKeyword);
+
+  if (normalizedTags.some((tag) => tag.includes('hidden gem')) || normalizeKeyword(place.attitudeLabel ?? '').includes('hidden gem')) {
+    return 'It feels like the kind of under-the-radar find your feed keeps rewarding.';
+  }
+
+  if (normalizedTags.some((tag) => tag.includes('cafe')) || normalizedCategory.includes('cafe') || normalizedCategory.includes('coffee')) {
+    return 'It lines up with the slower, save-now coffee spots your taste keeps leaning toward.';
+  }
+
+  if (normalizedTags.some((tag) => tag.includes('nature')) || normalizedCategory.includes('park') || normalizedCategory.includes('garden')) {
+    return 'It fits the reset-heavy side of your taste more than the average stop nearby.';
+  }
+
+  if (normalizedTags.some((tag) => tag.includes('shopping')) || normalizedCategory.includes('shop') || normalizedCategory.includes('market')) {
+    return 'It reads like one of your stronger browse-and-discover kinds of stops.';
+  }
+
+  if (place.bestTime) {
+    return `It stands out more than most places nearby, especially if you catch it ${place.bestTime}.`;
+  }
+
+  return 'It is landing as one of the stronger fits for your taste in this area right now.';
+}
+
+function resolvePlaceDetailRecommendationReason(input: {
+  persistedReason?: string | null;
+  category?: string | null;
+  tags?: string[] | null;
+  attitudeLabel?: string | null;
+  bestTime?: string | null;
+  hook?: string | null;
+  description?: string | null;
+}) {
+  const persistedReason = input.persistedReason?.trim();
+  const description = input.description?.trim();
+  const hook = input.hook?.trim();
+
+  if (
+    persistedReason &&
+    persistedReason.toLowerCase() !== description?.toLowerCase() &&
+    persistedReason.toLowerCase() !== hook?.toLowerCase()
+  ) {
+    return persistedReason;
+  }
+
+  return buildPlaceDetailRecommendationFallback(input);
+}
+
 async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
   const uniquePlaceIds = Array.from(new Set(placeIds.filter(Boolean)));
   if (uniquePlaceIds.length === 0) return;
@@ -3496,7 +3554,15 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       })
     : null;
   const similarityStat = persistedScore?.similarityPercentage ?? persistedScore?.matchScore ?? 82;
-  const recommendationReason = persistedScore?.recommendationReason ?? (place.aiEnrichment?.description ? [place.aiEnrichment.description] : [])[0] ?? 'Fresh match for your current city feed.';
+  const recommendationReason = resolvePlaceDetailRecommendationReason({
+    persistedReason: persistedScore?.recommendationReason,
+    category: place.category,
+    tags: place.aiEnrichment?.vibeTags ?? [place.category],
+    attitudeLabel: place.aiEnrichment?.attitudeLabel ?? null,
+    bestTime: place.aiEnrichment?.bestTime ?? null,
+    hook: place.aiEnrichment?.hook ?? null,
+    description: place.aiEnrichment?.description ?? null,
+  });
 
   if (!place.aiEnrichment) {
     await ensurePlaceAiEnrichment(place.id);
@@ -3615,7 +3681,15 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       bestTime: finalPlace.aiEnrichment?.bestTime ?? undefined,
       similarityStat,
       whyYoullLikeIt: finalPlace.aiEnrichment?.description ? [finalPlace.aiEnrichment.description] : [],
-      recommendationReason: persistedScore?.recommendationReason ?? finalPlace.aiEnrichment?.description ?? 'Fresh match for your current city feed.',
+      recommendationReason: resolvePlaceDetailRecommendationReason({
+        persistedReason: persistedScore?.recommendationReason,
+        category: finalPlace.category,
+        tags: finalPlace.aiEnrichment?.vibeTags ?? [finalPlace.category],
+        attitudeLabel: finalPlace.aiEnrichment?.attitudeLabel ?? null,
+        bestTime: finalPlace.aiEnrichment?.bestTime ?? null,
+        hook: finalPlace.aiEnrichment?.hook ?? null,
+        description: finalPlace.aiEnrichment?.description ?? null,
+      }),
       rating: finalPlace.rating ?? undefined,
       priceLevel: finalPlace.priceLevel ?? undefined,
       openingHours: details.regularOpeningHours?.weekdayDescriptions ?? undefined,

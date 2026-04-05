@@ -2901,11 +2901,15 @@ export default function App() {
         window.setTimeout(restoreAppendScroll, 80);
       }
     } catch {
-      if (mode === 'reset') {
+      if (isRefresh) {
+        setIsDiscoveryPlacesError(true);
+        showActionToast('Could not refresh picks right now');
+      } else if (mode === 'reset') {
         setDiscoveryPlaces([]);
         setDiscoveryPage(1);
         setDiscoveryHasMore(false);
         setIsDiscoveryPlacesError(true);
+        showActionToast('Could not load picks right now');
       }
     } finally {
       if (mode === 'reset' && !isRefresh) {
