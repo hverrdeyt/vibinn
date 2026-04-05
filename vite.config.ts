@@ -26,5 +26,33 @@ export default defineConfig(({mode}) => {
         },
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (!id.includes('node_modules')) return;
+
+            if (
+              id.includes('/react/')
+              || id.includes('/react-dom/')
+              || id.includes('react-jsx-runtime')
+              || id.includes('scheduler')
+            ) {
+              return 'react-vendor';
+            }
+
+            if (id.includes('/mixpanel-browser/')) {
+              return 'analytics-vendor';
+            }
+
+            if (id.includes('/lucide-react/')) {
+              return 'icon-vendor';
+            }
+
+            return 'vendor';
+          },
+        },
+      },
+    },
   };
 });

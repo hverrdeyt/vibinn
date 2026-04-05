@@ -3362,6 +3362,50 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
   };
 }
 
+async function getPlaceDetailBundle(placeId: string, userId?: string) {
+  const place = await getPlaceDetailsByInternalId(placeId, userId);
+  if (!place) return null;
+
+  const [relatedPlaces, travelerMoments, interactionState] = await Promise.all([
+    getRelatedPlaces(placeId).catch((error) => {
+      console.error(error);
+      return [];
+    }),
+    userId
+      ? getPlaceTravelerMoments(placeId, userId).catch((error) => {
+          console.error(error);
+          return [];
+        })
+      : Promise.resolve([]),
+    userId
+      ? Promise.all([
+          prisma.bookmark.findMany({
+            where: { userId, placeId: { in: [placeId] } },
+            select: { placeId: true },
+          }),
+          prisma.moment.findMany({
+            where: { userId, placeId: { in: [placeId] } },
+            distinct: ['placeId'],
+            select: { placeId: true },
+          }),
+        ]).then(([bookmarked, beenThereMoments]) => ({
+          bookmarkedPlaceIds: bookmarked.map((item) => item.placeId),
+          beenTherePlaceIds: beenThereMoments.map((item) => item.placeId),
+        }))
+      : Promise.resolve({
+          bookmarkedPlaceIds: [] as string[],
+          beenTherePlaceIds: [] as string[],
+        }),
+  ]);
+
+  return {
+    place,
+    relatedPlaces,
+    travelerMoments,
+    interactionState,
+  };
+}
+
 app.use(async (req: AuthenticatedRequest, _res, next) => {
   const header = req.header('Authorization');
   const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
@@ -4044,6 +4088,18 @@ app.get('/api/lookups/places/:id', optionalAuth, (req: AuthenticatedRequest, res
         return;
       }
       res.json({ place });
+    })
+    .catch((error) => handleError(res, error));
+});
+
+app.get('/api/lookups/places/:id/bundle', optionalAuth, (req: AuthenticatedRequest, res) => {
+  void getPlaceDetailBundle(req.params.id, req.authUserId)
+    .then((payload) => {
+      if (!payload) {
+        res.status(404).json({ error: 'Place not found' });
+        return;
+      }
+      res.json(payload);
     })
     .catch((error) => handleError(res, error));
 });

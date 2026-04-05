@@ -203,6 +203,24 @@ export const api = {
   getPlaceDetails(id: string) {
     return request<{ place: any }>(`/api/lookups/places/${id}`);
   },
+  getPlaceDetailBundle(id: string) {
+    return request<{
+      place: any;
+      relatedPlaces: Array<{ id: string; name: string; imageUrl: string }>;
+      travelerMoments: Array<{
+        id: string;
+        travelerUsername: string;
+        travelerAvatar: string;
+        mediaUrl: string;
+        mediaType: 'image' | 'video';
+        caption: string;
+      }>;
+      interactionState: {
+        bookmarkedPlaceIds: string[];
+        beenTherePlaceIds: string[];
+      };
+    }>(`/api/lookups/places/${id}/bundle`);
+  },
   getDiscoveryPlaces(
     location: string,
     type?: string,

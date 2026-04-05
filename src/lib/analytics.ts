@@ -1,19 +1,51 @@
-import mixpanel from 'mixpanel-browser';
+type MixpanelModule = typeof import('mixpanel-browser');
+type MixpanelInstance = MixpanelModule['default'];
 
 const MIXPANEL_TOKEN = (import.meta.env.VITE_MIXPANEL_TOKEN as string | undefined)?.trim() || 'ce8a43e3dc710572335d8e1e597f86b3';
 const isMixpanelEnabled = Boolean(MIXPANEL_TOKEN) && typeof window !== 'undefined';
 
+let mixpanelPromise: Promise<MixpanelInstance | null> | null = null;
 let hasInitialized = false;
 
-function ensureMixpanel() {
-  if (!isMixpanelEnabled || hasInitialized) return;
+type AnalyticsTask = (mixpanel: MixpanelInstance) => void;
+const queuedTasks: AnalyticsTask[] = [];
 
-  mixpanel.init(MIXPANEL_TOKEN as string, {
-    autocapture: true,
-    record_sessions_percent: 100,
-  });
+function flushQueuedTasks(mixpanel: MixpanelInstance) {
+  while (queuedTasks.length > 0) {
+    const task = queuedTasks.shift();
+    if (!task) continue;
+    task(mixpanel);
+  }
+}
 
-  hasInitialized = true;
+async function loadMixpanel() {
+  if (!isMixpanelEnabled) return null;
+  if (!mixpanelPromise) {
+    mixpanelPromise = import('mixpanel-browser')
+      .then((module) => {
+        const mixpanel = module.default;
+
+        if (!hasInitialized) {
+          mixpanel.init(MIXPANEL_TOKEN as string, {
+            autocapture: true,
+            record_sessions_percent: 100,
+          });
+          hasInitialized = true;
+        }
+
+        flushQueuedTasks(mixpanel);
+        return mixpanel;
+      })
+      .catch(() => null);
+  }
+
+  return mixpanelPromise;
+}
+
+function enqueueTask(task: AnalyticsTask) {
+  if (!isMixpanelEnabled) return;
+  queuedTasks.push(task);
+  void loadMixpanel();
 }
 
 export function analyticsEnabled() {
@@ -21,13 +53,26 @@ export function analyticsEnabled() {
 }
 
 export function initAnalytics() {
-  ensureMixpanel();
+  if (!isMixpanelEnabled) return;
+  if (typeof window === 'undefined') return;
+
+  const scheduleLoad = () => {
+    void loadMixpanel();
+  };
+
+  if ('requestIdleCallback' in window) {
+    (window as Window & { requestIdleCallback: (callback: () => void, options?: { timeout: number }) => number })
+      .requestIdleCallback(scheduleLoad, { timeout: 1500 });
+    return;
+  }
+
+  globalThis.setTimeout(scheduleLoad, 600);
 }
 
 export function trackEvent(eventName: string, properties?: Record<string, unknown>) {
-  if (!isMixpanelEnabled) return;
-  ensureMixpanel();
-  mixpanel.track(eventName, properties);
+  enqueueTask((mixpanel) => {
+    mixpanel.track(eventName, properties);
+  });
 }
 
 export function trackScreenView(screen: string, properties?: Record<string, unknown>) {
@@ -43,18 +88,18 @@ export function identifyAnalyticsUser(user: {
   displayName?: string;
   email?: string;
 }) {
-  if (!isMixpanelEnabled) return;
-  ensureMixpanel();
-  mixpanel.identify(user.id);
-  mixpanel.people.set({
-    $name: user.displayName ?? user.username,
-    $email: user.email,
-    username: user.username,
+  enqueueTask((mixpanel) => {
+    mixpanel.identify(user.id);
+    mixpanel.people.set({
+      $name: user.displayName ?? user.username,
+      $email: user.email,
+      username: user.username,
+    });
   });
 }
 
 export function resetAnalyticsUser() {
-  if (!isMixpanelEnabled) return;
-  ensureMixpanel();
-  mixpanel.reset();
+  enqueueTask((mixpanel) => {
+    mixpanel.reset();
+  });
 }
