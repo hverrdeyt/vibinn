@@ -38,6 +38,7 @@ export interface PlaceCardData {
   // Internal social graph: followed travelers who have been here.
   visitedByFollowingAvatars?: string[];
   contextNote?: string;
+  isVisited?: boolean;
 }
 
 interface PlaceCardProps {
@@ -114,6 +115,12 @@ export function PlaceCard({
             </span>
           ) : null}
         </div>
+
+        {data.isVisited ? (
+          <div className="absolute left-4 top-14 rounded-full bg-black/75 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-white backdrop-blur-md">
+            Visited
+          </div>
+        ) : null}
 
         <div className="absolute inset-x-4 bottom-4">
           {/* AI-generated hook is the loudest line because it sells the vibe in a single scroll-stopping beat. */}

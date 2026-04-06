@@ -47,7 +47,8 @@ import PlaceDetailPage, { PlaceDetailData } from './components/PlaceDetailPage';
 import TravelerCard, { TravelerCardData } from './components/TravelerCard';
 import DetailActionBar from './components/DetailActionBar';
 import { api, ApiError, resolveApiAssetUrl } from './lib/api';
-import { identifyAnalyticsUser, initAnalytics, resetAnalyticsUser, trackEvent } from './lib/analytics';
+import { identifyAnalyticsUser, initAnalytics, resetAnalyticsUser, trackEvent, trackPageView } from './lib/analytics';
+import { getCurrentDevicePosition, isNativeApp, openExternalUrl, shareNativeContent } from './lib/native';
 
 const LandingPage = lazy(() => import('./screens/LandingPage'));
 const OnboardingScreen = lazy(() => import('./screens/Onboarding'));
@@ -124,10 +125,21 @@ interface DeviceLocation {
   longitude: number;
 }
 
+interface DiscoveryPlacesCacheEntry {
+  cachedAt: number;
+  places: Place[];
+  pagination: {
+    page: number;
+    hasMore: boolean;
+  };
+}
+
 const ONBOARDING_COMPLETED_KEY = 'vibecheck_onboarding_completed';
 const DEVICE_LOCATION_KEY = 'vibinn_device_location';
 const DEVICE_LOCATION_PERMISSION_KEY = 'vibinn_device_location_permission';
 const HOME_SCREEN_PROMO_DISMISSED_KEY = 'vibinn_home_screen_promo_dismissed';
+const DISCOVERY_CACHE_PREFIX = 'vibinn_discovery_cache:';
+const DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
 const APP_BASE_PATH = '/app';
 const LEGACY_PUBLIC_PROFILE_BASE_PATH = '/u';
 const RESERVED_TOP_LEVEL_PATHS = new Set([
@@ -204,6 +216,53 @@ function wrapSvgText(value: string, maxCharsPerLine: number) {
 
   if (currentLine) lines.push(currentLine);
   return lines;
+}
+
+function buildDiscoveryContextKey(input: {
+  locationId: string;
+  locationLabel: string;
+  locationType: string;
+  searchQuery: string;
+  selectedInterests: Interest[];
+  selectedVibe: Vibe | null;
+}) {
+  return [
+    input.locationId,
+    input.locationLabel,
+    input.locationType,
+    input.searchQuery.trim(),
+    [...input.selectedInterests].sort().join(','),
+    input.selectedVibe ?? '',
+  ].join('|');
+}
+
+function readDiscoveryPlacesCache(contextKey: string) {
+  if (typeof window === 'undefined') return null;
+
+  try {
+    const raw = window.sessionStorage.getItem(`${DISCOVERY_CACHE_PREFIX}${contextKey}`);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw) as DiscoveryPlacesCacheEntry;
+    if (!parsed?.cachedAt || Date.now() - parsed.cachedAt > DISCOVERY_CACHE_TTL_MS) {
+      window.sessionStorage.removeItem(`${DISCOVERY_CACHE_PREFIX}${contextKey}`);
+      return null;
+    }
+
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeDiscoveryPlacesCache(contextKey: string, entry: DiscoveryPlacesCacheEntry) {
+  if (typeof window === 'undefined') return;
+
+  try {
+    window.sessionStorage.setItem(`${DISCOVERY_CACHE_PREFIX}${contextKey}`, JSON.stringify(entry));
+  } catch {
+    // Ignore cache write failures; discovery should still work without session storage.
+  }
 }
 
 async function fetchAssetAsDataUrl(url?: string | null) {
@@ -733,9 +792,13 @@ function GoogleIdentityButton({
 }) {
   const buttonRef = useRef<HTMLDivElement | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isGoogleButtonReady, setIsGoogleButtonReady] = useState(false);
 
   useEffect(() => {
-    if (!clientId || !buttonRef.current || !window.google?.accounts?.id || disabled) return;
+    if (!clientId || !buttonRef.current || !window.google?.accounts?.id || disabled) {
+      setIsGoogleButtonReady(false);
+      return;
+    }
 
     buttonRef.current.innerHTML = '';
     window.google.accounts.id.initialize({
@@ -762,6 +825,7 @@ function GoogleIdentityButton({
       width: 320,
       logo_alignment: 'left',
     });
+    setIsGoogleButtonReady(true);
   }, [clientId, disabled, onCredential, text]);
 
   if (!clientId) {
@@ -775,7 +839,16 @@ function GoogleIdentityButton({
   return (
     <div className="space-y-3">
       <div className={disabled ? 'pointer-events-none opacity-60' : ''}>
-        <div ref={buttonRef} className="flex justify-center" />
+        {!isGoogleButtonReady ? (
+          <button
+            type="button"
+            disabled
+            className="mx-auto flex w-full max-w-[320px] items-center justify-center rounded-full border border-white/12 bg-white px-5 py-3 text-sm font-bold text-zinc-950 opacity-85"
+          >
+            Continue with Google
+          </button>
+        ) : null}
+        <div ref={buttonRef} className={`flex justify-center ${isGoogleButtonReady ? '' : 'sr-only'}`} />
       </div>
       {errorMessage ? (
         <div className="rounded-[1.25rem] border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm font-semibold text-red-200">
@@ -1325,6 +1398,7 @@ function mapPlaceToCardData(place: Place, index = 0): PlaceCardData {
     recommendationReason: place.recommendationReason ?? buildPlaceRecommendationReason(place),
     bestTime: place.bestTime,
     visitedByFollowingAvatars: followedTravelerAvatars,
+    isVisited: Boolean(place.momentId),
   };
 }
 
@@ -1456,8 +1530,14 @@ export default function App() {
     const placeIdFromShareLink = getPlaceDetailIdFromLocation();
     const hasAccess = hasStoredOnboardingCompletion();
 
-    if (route.screen === 'landing' || route.screen === 'public-profile') {
+    if (route.screen === 'public-profile') {
       return route.screen;
+    }
+
+    if (route.screen === 'landing') {
+      return isNativeApp()
+        ? (hasAccess ? 'discover-places' : 'onboarding')
+        : 'landing';
     }
 
     if (placeIdFromShareLink) {
@@ -1472,7 +1552,7 @@ export default function App() {
   });
   const [publicProfileUser, setPublicProfileUser] = useState<User | null>(null);
   const [isPublicProfileLoading, setIsPublicProfileLoading] = useState(false);
-  const [onboardingEntryMode, setOnboardingEntryMode] = useState<'preferences'>('preferences');
+  const [onboardingEntryMode, setOnboardingEntryMode] = useState<'area-first' | 'choice' | 'swipe-direct'>('area-first');
   const [user, setUser] = useState<User>(MOCK_USER);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authReturnScreen, setAuthReturnScreen] = useState<Screen>('discover-places');
@@ -1815,7 +1895,11 @@ export default function App() {
 
       if (route.screen === 'landing') {
         placeDetailHasHistoryEntryRef.current = false;
-        setCurrentScreen('landing');
+        setCurrentScreen(
+          isNativeApp()
+            ? (hasAccess ? 'discover-places' : 'onboarding')
+            : 'landing',
+        );
         return;
       }
 
@@ -1847,7 +1931,11 @@ export default function App() {
 
     if (window.location.pathname === '/' && currentScreen !== 'landing' && currentScreen !== 'public-profile') {
       setPublicProfileUsername(null);
-      setCurrentScreen('landing');
+      setCurrentScreen(
+        isNativeApp()
+          ? (hasStoredOnboardingCompletion() ? 'discover-places' : 'onboarding')
+          : 'landing',
+      );
       return;
     }
 
@@ -1865,6 +1953,19 @@ export default function App() {
       window.history.replaceState({}, '', nextPath);
     }
   }, [currentScreen, publicProfileUsername, selectedPlace?.id, user.username]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!isNativeApp()) return;
+    if (window.location.pathname !== '/') return;
+
+    const nextScreen = hasStoredOnboardingCompletion() ? 'discover-places' : 'onboarding';
+    const nextPath = screenToAppPath(nextScreen);
+    window.history.replaceState({}, '', nextPath);
+    if (currentScreen === 'landing') {
+      setCurrentScreen(nextScreen);
+    }
+  }, [currentScreen]);
 
   useEffect(() => {
     if (currentScreen !== 'public-profile') {
@@ -1952,6 +2053,7 @@ export default function App() {
   const completeOnboarding = async (override?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null }) => {
     const nextSelectedInterests = override?.selectedInterests ?? selectedInterests;
     const nextSelectedVibe = override?.selectedVibe ?? selectedVibe;
+    const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0];
 
     setSelectedInterests(nextSelectedInterests);
     setSelectedVibe(nextSelectedVibe ?? null);
@@ -1972,20 +2074,39 @@ export default function App() {
     setDiscoveryPage(1);
     setDiscoveryHasMore(true);
     setIsPreferenceTransitionLoading(true);
-    setOnboardingEntryMode('preferences');
+    setOnboardingEntryMode('area-first');
+    if (activeLocation) {
+      lastDiscoveryContextKeyRef.current = buildDiscoveryContextKey({
+        locationId: activeLocation.id,
+        locationLabel: activeLocation.label,
+        locationType: activeLocation.type,
+        searchQuery: discoverySearchQuery,
+        selectedInterests: nextSelectedInterests,
+        selectedVibe: nextSelectedVibe ?? null,
+      });
+    } else {
+      lastDiscoveryContextKeyRef.current = '';
+    }
+    previousPreferenceKeyRef.current = `${[...nextSelectedInterests].sort().join(',')}|${nextSelectedVibe ?? ''}`;
+    suppressNextDiscoveryAutoloadRef.current = true;
     setCurrentScreen('discover-places');
     setShowDiscoveryGestureDemo(nextSelectedInterests.length > 0 || Boolean(nextSelectedVibe));
     if (postPreferencesIntroTimerRef.current) {
       window.clearTimeout(postPreferencesIntroTimerRef.current);
     }
-    await loadDiscoveryPlaces(1, 'reset', {
-      refreshMode: 'hard',
+    const releaseTransitionLoading = () => {
+      setIsPreferenceTransitionLoading(false);
+    };
+    const transitionFallbackTimer = window.setTimeout(releaseTransitionLoading, 900);
+    void loadDiscoveryPlaces(1, 'reset', {
       preferencesOverride: { selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe },
+    }).finally(() => {
+      window.clearTimeout(transitionFallbackTimer);
+      releaseTransitionLoading();
     });
     window.setTimeout(() => {
       void loadDiscoveryEvents({ selectedInterests: nextSelectedInterests, selectedVibe: nextSelectedVibe });
-    }, 180);
-    setIsPreferenceTransitionLoading(false);
+    }, 650);
   };
 
   const showActionToast = (message: string) => {
@@ -2080,13 +2201,14 @@ export default function App() {
   };
 
   const requestDeviceLocation = async () => {
-    if (typeof window === 'undefined' || !('geolocation' in navigator)) {
+    const supportsBrowserGeolocation = typeof window !== 'undefined' && 'geolocation' in navigator;
+    if (!isNativeApp() && !supportsBrowserGeolocation) {
       setDeviceLocationPermission('unsupported');
       showActionToast('Location is not supported on this browser');
       return;
     }
 
-    if (!window.isSecureContext) {
+    if (!isNativeApp() && typeof window !== 'undefined' && !window.isSecureContext) {
       setDeviceLocationPermission('unknown');
       showActionToast(getLocationEnvironmentHelpMessage());
       return;
@@ -2097,26 +2219,36 @@ export default function App() {
     setIsRequestingDeviceLocation(true);
 
     try {
-      const position = await requestCurrentPosition({
-        enableHighAccuracy: true,
-        timeout: 10000,
-        maximumAge: 60 * 1000,
-      }).catch(async (error) => {
-        const geoError = error as GeolocationPositionError;
-        if (geoError?.code === geoError.PERMISSION_DENIED) {
-          throw geoError;
-        }
-
-        return requestCurrentPosition({
+      const position = isNativeApp()
+        ? await getCurrentDevicePosition({
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 60 * 1000,
+        }).catch(async () => getCurrentDevicePosition({
           enableHighAccuracy: false,
           timeout: 20000,
           maximumAge: 10 * 60 * 1000,
+        }))
+        : await requestCurrentPosition({
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 60 * 1000,
+        }).catch(async (error) => {
+          const geoError = error as GeolocationPositionError;
+          if (geoError?.code === geoError.PERMISSION_DENIED) {
+            throw geoError;
+          }
+
+          return requestCurrentPosition({
+            enableHighAccuracy: false,
+            timeout: 20000,
+            maximumAge: 10 * 60 * 1000,
+          });
         });
-      });
 
       setDeviceLocation({
-        latitude: position.coords.latitude,
-        longitude: position.coords.longitude,
+        latitude: 'coords' in position ? position.coords.latitude : position.latitude,
+        longitude: 'coords' in position ? position.coords.longitude : position.longitude,
       });
       setDeviceLocationPermission('granted');
       showActionToast('Location enabled');
@@ -2331,6 +2463,7 @@ export default function App() {
 
   const shouldShowHomeScreenPromo = !isHomeScreenPromoDismissed
     && hasQualifiedForHomeScreenPromo
+    && !isNativeApp()
     && !isStandaloneDisplayMode()
     && isIosSafariLike()
     && currentScreen === 'discover-places';
@@ -2368,6 +2501,21 @@ export default function App() {
   };
 
   const shareUrl = async (input: { url: string; title: string; text: string; successToast: string }) => {
+    if (isNativeApp()) {
+      try {
+        await shareNativeContent({
+          url: input.url,
+          title: input.title,
+          text: input.text,
+        });
+        showActionToast(input.successToast);
+        return;
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : '';
+        if (message.includes('abort') || message.includes('cancel')) return;
+      }
+    }
+
     if (typeof window !== 'undefined' && navigator.share) {
       try {
         await navigator.share({
@@ -2392,6 +2540,23 @@ export default function App() {
   };
 
   const shareGeneratedImage = async (dataUrl: string, fileName: string) => {
+    if (isNativeApp()) {
+      try {
+        await shareNativeContent({
+          title: 'Vibinn travel recap',
+          text: 'My Vibinn travel recap',
+          files: [dataUrl],
+        });
+        showActionToast('Share sheet opened');
+        return true;
+      } catch (error) {
+        const message = error instanceof Error ? error.message.toLowerCase() : '';
+        if (message.includes('abort') || message.includes('cancel')) {
+          return false;
+        }
+      }
+    }
+
     if (typeof window !== 'undefined' && navigator.share && navigator.canShare) {
       try {
         const file = dataUrlToFile(dataUrl, fileName);
@@ -2839,7 +3004,7 @@ export default function App() {
       });
       window.setTimeout(() => {
         void loadDiscoveryEvents(hydratedPreferences);
-      }, 200);
+      }, 650);
     }
   };
 
@@ -2911,13 +3076,36 @@ export default function App() {
     const rotationSeed = options?.rotationSeedOverride ?? discoveryRotationSeedRef.current;
     const effectiveSelectedInterests = options?.preferencesOverride?.selectedInterests ?? selectedInterests;
     const effectiveSelectedVibe = options?.preferencesOverride?.selectedVibe ?? selectedVibe;
+    const discoveryContextKey = buildDiscoveryContextKey({
+      locationId: activeLocation.id,
+      locationLabel: activeLocation.label,
+      locationType: activeLocation.type,
+      searchQuery: discoverySearchQuery,
+      selectedInterests: effectiveSelectedInterests,
+      selectedVibe: effectiveSelectedVibe,
+    });
+    const cachedDiscovery = (
+      mode === 'reset'
+      && page === 1
+      && !isRefresh
+      ? readDiscoveryPlacesCache(discoveryContextKey)
+      : null
+    );
 
-    if (mode === 'reset' && !isRefresh) {
+    if (mode === 'reset' && !isRefresh && !cachedDiscovery) {
       setIsDiscoveryPlacesLoading(true);
     } else if (mode === 'append') {
       setIsDiscoveryPlacesLoadingMore(true);
     } else if (isRefresh) {
       setIsDiscoveryPlacesRefreshing(true);
+    }
+
+    if (cachedDiscovery) {
+      setDiscoveryPlaces(applyRankedVarietyToPlaces(cachedDiscovery.places, rotationSeed));
+      setDiscoveryPage(cachedDiscovery.pagination.page);
+      setDiscoveryHasMore(cachedDiscovery.pagination.hasMore);
+      setIsDiscoveryPlacesLoading(false);
+      setIsDiscoveryPlacesError(false);
     }
 
     try {
@@ -2946,6 +3134,16 @@ export default function App() {
       ));
       setDiscoveryPage(response.pagination.page);
       setDiscoveryHasMore(response.pagination.hasMore);
+      if (mode === 'reset' && page === 1) {
+        writeDiscoveryPlacesCache(discoveryContextKey, {
+          cachedAt: Date.now(),
+          places: nextPlaces,
+          pagination: {
+            page: response.pagination.page,
+            hasMore: response.pagination.hasMore,
+          },
+        });
+      }
       if (mode === 'append' && appendScrollTop !== null && typeof window !== 'undefined') {
         const restoreAppendScroll = () => {
           if (window.scrollY < appendScrollTop - 120) {
@@ -2961,7 +3159,7 @@ export default function App() {
       if (isRefresh) {
         setIsDiscoveryPlacesError(true);
         showActionToast('Could not refresh picks right now');
-      } else if (mode === 'reset') {
+      } else if (mode === 'reset' && !cachedDiscovery) {
         setDiscoveryPlaces([]);
         setDiscoveryPage(1);
         setDiscoveryHasMore(false);
@@ -3028,13 +3226,14 @@ export default function App() {
     const shouldRefreshForPreferences =
       previousPreferenceKeyRef.current.length > 0 && previousPreferenceKeyRef.current !== nextPreferenceKey;
     const shouldForceRefreshAfterAuth = forceDiscoveryRefreshAfterAuthRef.current;
-    const nextDiscoveryContextKey = [
-      activeLocation.id,
-      activeLocation.label,
-      activeLocation.type,
-      discoverySearchQuery,
-      nextPreferenceKey,
-    ].join('|');
+    const nextDiscoveryContextKey = buildDiscoveryContextKey({
+      locationId: activeLocation.id,
+      locationLabel: activeLocation.label,
+      locationType: activeLocation.type,
+      searchQuery: discoverySearchQuery,
+      selectedInterests,
+      selectedVibe,
+    });
     forceDiscoveryRefreshAfterAuthRef.current = false;
     previousPreferenceKeyRef.current = nextPreferenceKey;
 
@@ -3091,6 +3290,11 @@ export default function App() {
       });
     }
   }, [currentScreen, user.id, user.username]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    trackPageView(window.location.pathname, document.title);
+  }, [currentScreen, publicProfileUsername, selectedPlace?.id, selectedEvent?.id]);
 
   useEffect(() => {
     if (currentScreen !== 'place-detail' || !selectedPlace) {
@@ -3197,7 +3401,7 @@ export default function App() {
         searchInput={discoverySearchInput}
         searchQuery={discoverySearchQuery}
         onOpenPreferences={() => {
-          setOnboardingEntryMode('preferences');
+          setOnboardingEntryMode('swipe-direct');
           setCurrentScreen('onboarding');
         }}
         onOpenLocationManager={() => setCurrentScreen('location-search')}
@@ -3232,6 +3436,7 @@ export default function App() {
         restorePlaceId={pendingDiscoveryPlaceAnchorRef.current}
         restoreViewportOffset={pendingDiscoveryViewportOffsetRef.current}
         bookmarkedPlaceIds={bookmarkedPlaceIds}
+        visitedPlaceIds={myMoments.map((moment) => moment.placeId)}
         showGestureDemo={showDiscoveryGestureDemo}
         onFinishGestureDemo={() => setShowDiscoveryGestureDemo(false)}
         onRestorePlaceHandled={() => {
@@ -3630,7 +3835,7 @@ export default function App() {
               onBack={() => setCurrentScreen('profile')}
               onOpenSection={(screen) => setCurrentScreen(screen)}
               onOpenPreferences={() => {
-                setOnboardingEntryMode('preferences');
+                setOnboardingEntryMode('swipe-direct');
                 setCurrentScreen('onboarding');
               }}
               onLogout={async () => {
@@ -6774,6 +6979,9 @@ function PlaceDetail({
       onBeenThere={onMarkBeenThere}
       onShare={() => onShare()}
       onRequestLocation={onRequestDeviceLocation}
+      onOpenMaps={(url) => {
+        void openExternalUrl(url);
+      }}
       onSelectFallbackTraveler={onSelectTraveler}
       onExploreMoreLikeThis={onExplorePlaces}
       onExploreTravelers={onExploreTravelers}
@@ -7002,7 +7210,7 @@ function EventDetail({
         secondaryIcon={<ExternalLink size={16} />}
         onSecondary={() => {
           if (event.ticketUrl) {
-            window.open(event.ticketUrl, '_blank', 'noopener,noreferrer');
+            void openExternalUrl(event.ticketUrl);
           }
         }}
         secondaryDisabled={!event.ticketUrl}

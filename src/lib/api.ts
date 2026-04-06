@@ -1,3 +1,5 @@
+import { isNativeApp } from './native';
+
 export interface AuthPayload {
   name?: string;
   email?: string;
@@ -15,7 +17,15 @@ export class ApiError extends Error {
 }
 
 const AUTH_TOKEN_KEY = 'vibecheck_auth_token';
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
+const DEFAULT_NATIVE_API_BASE_URL = 'https://api.vibinn.club';
+const API_BASE_URL = (() => {
+  const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
+  if (configuredBaseUrl) return configuredBaseUrl;
+  if (typeof window !== 'undefined' && isNativeApp()) {
+    return DEFAULT_NATIVE_API_BASE_URL;
+  }
+  return '';
+})();
 
 export function resolveApiAssetUrl(url?: string | null) {
   if (!url) return '';

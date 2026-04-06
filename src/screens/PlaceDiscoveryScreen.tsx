@@ -97,6 +97,81 @@ function getLocationPromptCopy(permission: 'unknown' | 'granted' | 'denied' | 'u
   return 'Turn on location so we can show the distance from you in miles.';
 }
 
+function DiscoveryLoadingPreview() {
+  const previewCards = [
+    {
+      key: 'card-a',
+      rotate: -7,
+      translateX: -20,
+      translateY: 10,
+      gradient: 'from-[#1f2937] via-[#374151] to-[#111827]',
+      accent: 'bg-[#d6ff72]',
+      delay: 0,
+    },
+    {
+      key: 'card-b',
+      rotate: 3,
+      translateX: 0,
+      translateY: -6,
+      gradient: 'from-[#0f172a] via-[#164e63] to-[#111827]',
+      accent: 'bg-[#7be7ff]',
+      delay: 0.08,
+    },
+    {
+      key: 'card-c',
+      rotate: 9,
+      translateX: 24,
+      translateY: 14,
+      gradient: 'from-[#312e81] via-[#1f2937] to-[#111827]',
+      accent: 'bg-[#ff8cc6]',
+      delay: 0.16,
+    },
+  ];
+
+  return (
+    <div className="relative mx-auto mt-2 h-44 w-full max-w-[18rem]">
+      {previewCards.map((card, index) => (
+        <motion.div
+          key={card.key}
+          initial={{ opacity: 0, scale: 0.94, y: 24 }}
+          animate={{
+            opacity: 1,
+            scale: 1,
+            y: [card.translateY, card.translateY - 8, card.translateY],
+            rotate: [card.rotate, card.rotate + (index === 1 ? -2 : 2), card.rotate],
+          }}
+          transition={{
+            duration: 2.6,
+            delay: card.delay,
+            repeat: Number.POSITIVE_INFINITY,
+            repeatType: 'mirror',
+            ease: 'easeInOut',
+          }}
+          className="absolute left-1/2 top-1/2 h-40 w-28 -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-[24px] border border-white/10 bg-zinc-900 shadow-[0_18px_50px_rgba(0,0,0,0.35)]"
+          style={{
+            transform: `translate(calc(-50% + ${card.translateX}px), calc(-50% + ${card.translateY}px)) rotate(${card.rotate}deg)`,
+            zIndex: index + 1,
+          }}
+        >
+          <div className={`h-full w-full bg-gradient-to-br ${card.gradient} p-3`}>
+            <div className="flex h-full flex-col justify-between">
+              <div className="space-y-2">
+                <div className={`h-16 rounded-[18px] ${card.accent} opacity-85`} />
+                <div className="h-2.5 w-16 rounded-full bg-white/75" />
+                <div className="h-2.5 w-20 rounded-full bg-white/35" />
+              </div>
+              <div className="space-y-2">
+                <div className="h-2 w-14 rounded-full bg-white/50" />
+                <div className="h-2 w-10 rounded-full bg-white/25" />
+              </div>
+            </div>
+          </div>
+        </motion.div>
+      ))}
+    </div>
+  );
+}
+
 export default function PlaceDiscoveryScreen({
   selectedInterests,
   selectedVibe,
@@ -129,6 +204,7 @@ export default function PlaceDiscoveryScreen({
   restorePlaceId,
   restoreViewportOffset,
   bookmarkedPlaceIds,
+  visitedPlaceIds,
   showGestureDemo,
   onFinishGestureDemo,
   onRestorePlaceHandled,
@@ -173,6 +249,7 @@ export default function PlaceDiscoveryScreen({
   restorePlaceId: string | null;
   restoreViewportOffset: number | null;
   bookmarkedPlaceIds: string[];
+  visitedPlaceIds: string[];
   showGestureDemo: boolean;
   onFinishGestureDemo: () => void;
   onRestorePlaceHandled: () => void;
@@ -547,25 +624,30 @@ export default function PlaceDiscoveryScreen({
       {isPreferenceTransitionLoading ? (
         <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
           <div className="text-[11px] font-black uppercase tracking-[0.2em] text-accent/80">
-            Tuning your feed
+            Cooking your picks
           </div>
           <div className="mt-2 text-lg font-black text-white">
-            Curating places and events around your picks...
+            We&apos;re cooking places around your vibe right now.
           </div>
           <p className="mt-2 text-sm font-medium text-white/55">
-            We&apos;re re-ranking this city around the interests and vibe you just chose.
+            Pulling together the first stops that feel the most you.
           </p>
+          <DiscoveryLoadingPreview />
         </div>
       ) : isLoading ? (
         <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
-          <div className="text-lg font-black text-white">
-            {isFilteringBySearch ? `Searching places in ${currentCity}...` : `Loading picks for ${currentCity}...`}
+          <div className="text-[11px] font-black uppercase tracking-[0.2em] text-accent/80">
+            Cooking your picks
+          </div>
+          <div className="mt-2 text-lg font-black text-white">
+            {isFilteringBySearch ? `We&apos;re cooking search matches in ${currentCity}.` : `We&apos;re cooking places for you in ${currentCity}.`}
           </div>
           <p className="mt-2 text-sm font-medium text-white/55">
             {isFilteringBySearch
-              ? 'We\'re finding matches for your search and re-ranking them for your taste.'
-              : 'We&apos;re pulling place recommendations for this location.'}
+              ? 'Finding the best-fit spots for your search, then stacking them in the right order.'
+              : 'Lining up the first places that fit your current taste.'}
           </p>
+          <DiscoveryLoadingPreview />
         </div>
       ) : mixedDiscoveryItems.length === 0 ? (
         <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
@@ -601,6 +683,7 @@ export default function PlaceDiscoveryScreen({
                         deviceLocation={deviceLocation}
                         shouldAnimateEntry={shouldAnimateItemEntry}
                         isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
+                        isVisited={visitedPlaceIds.includes(item.place.id)}
                         gestureDemo={showGestureDemo && index === 0}
                         onGestureDemoComplete={onFinishGestureDemo}
                         onBookmark={() => onBookmarkPlace(item.place, { positionInFeed: item.sourceIndex + 1, currentPage })}
@@ -643,6 +726,7 @@ export default function PlaceDiscoveryScreen({
                         deviceLocation={deviceLocation}
                         shouldAnimateEntry={shouldAnimateItemEntry}
                         isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
+                        isVisited={visitedPlaceIds.includes(item.place.id)}
                         gestureDemo={showGestureDemo && index === 0}
                         onGestureDemoComplete={onFinishGestureDemo}
                         onBookmark={() => onBookmarkPlace(item.place, { positionInFeed: item.sourceIndex + 1, currentPage })}
@@ -720,6 +804,7 @@ export default function PlaceDiscoveryScreen({
                           deviceLocation={deviceLocation}
                           shouldAnimateEntry={false}
                           isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
+                          isVisited={visitedPlaceIds.includes(item.place.id)}
                           onBookmark={() => onBookmarkPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
                           onDismiss={() => onDismissPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
                           onOpen={() => onSelectPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
@@ -822,6 +907,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   deviceLocation,
   shouldAnimateEntry,
   isBookmarked,
+  isVisited,
   gestureDemo = false,
   onGestureDemoComplete,
   onBookmark,
@@ -837,6 +923,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   deviceLocation: { latitude: number; longitude: number } | null;
   shouldAnimateEntry: boolean;
   isBookmarked: boolean;
+  isVisited: boolean;
   gestureDemo?: boolean;
   onGestureDemoComplete?: () => void;
   onBookmark: () => void;
@@ -938,9 +1025,18 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
       />
       <div className="absolute inset-0 bg-gradient-to-t from-black via-black/18 to-black/8" />
       <CompatibilityBadge match={match} />
-      {isBookmarked ? (
-        <div className="absolute right-3 top-3 rounded-full bg-white px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-black">
-          Saved
+      {isBookmarked || isVisited ? (
+        <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
+          {isBookmarked ? (
+            <div className="rounded-full bg-white px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-black">
+              Saved
+            </div>
+          ) : null}
+          {isVisited ? (
+            <div className="rounded-full bg-black/72 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-white backdrop-blur-md">
+              Visited
+            </div>
+          ) : null}
         </div>
       ) : null}
       {gestureDemo ? (

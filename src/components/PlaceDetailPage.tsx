@@ -94,6 +94,7 @@ interface PlaceDetailPageProps {
   onBeenThere?: (place: PlaceDetailData) => void;
   onShare?: (place: PlaceDetailData) => void;
   onRequestLocation?: () => void;
+  onOpenMaps?: (url: string) => void;
   onSelectRelatedPlace?: (placeId: string) => void;
   onSelectFallbackTraveler?: (travelerId: string) => void;
   onExploreMoreLikeThis?: () => void;
@@ -125,6 +126,7 @@ export default function PlaceDetailPage({
   onBeenThere,
   onShare,
   onRequestLocation,
+  onOpenMaps,
   onSelectRelatedPlace,
   onSelectFallbackTraveler,
   onExploreMoreLikeThis,
@@ -513,6 +515,11 @@ export default function PlaceDetailPage({
                       href={data.mapsUrl}
                       target="_blank"
                       rel="noreferrer"
+                      onClick={(event) => {
+                        if (!onOpenMaps) return;
+                        event.preventDefault();
+                        onOpenMaps(data.mapsUrl!);
+                      }}
                       className="mt-1 inline-flex rounded-full border border-white/10 bg-white/8 px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-white transition hover:bg-white/12"
                     >
                       Open in Maps
@@ -577,6 +584,11 @@ export default function PlaceDetailPage({
                   href={data.mapsUrl}
                   target="_blank"
                   rel="noreferrer"
+                  onClick={(event) => {
+                    if (!onOpenMaps) return;
+                    event.preventDefault();
+                    onOpenMaps(data.mapsUrl!);
+                  }}
                   className="rounded-full border border-white/10 bg-white/8 px-4 py-2 text-[11px] font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/12"
                 >
                   Open in Maps

@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'motion/react';
-import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { ArrowRight, Sparkles } from 'lucide-react';
 import { type Interest, type Vibe } from '../types';
 import { api } from '../lib/api';
@@ -20,7 +20,7 @@ function handleOnboardingImageError(event: { currentTarget: HTMLImageElement }, 
 }
 
 type OnboardingProps = {
-  entryMode: 'preferences';
+  entryMode: 'area-first' | 'choice' | 'swipe-direct';
   selectedInterests: Interest[];
   setSelectedInterests: Dispatch<SetStateAction<Interest[]>>;
   selectedVibe: Vibe | null;
@@ -49,7 +49,9 @@ export default function Onboarding({
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
   const choiceTitle = 'Can I get to know you first?';
   const areaTitle = 'Where are you planning to go?';
-  const [stage, setStage] = useState<'area' | 'choice' | 'swipe'>('area');
+  const [stage, setStage] = useState<'area' | 'choice' | 'swipe'>(
+    entryMode === 'swipe-direct' ? 'swipe' : entryMode === 'choice' ? 'choice' : 'area',
+  );
   const [step, setStep] = useState<'interests' | 'vibes'>('interests');
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [typedChoiceTitle, setTypedChoiceTitle] = useState('');
@@ -57,6 +59,7 @@ export default function Onboarding({
   const [areaQuery, setAreaQuery] = useState('');
   const [areaResults, setAreaResults] = useState<SavedLocationOption[]>([]);
   const [isAreaSearching, setIsAreaSearching] = useState(false);
+  const previousEntryModeRef = useRef(entryMode);
   const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? null;
   const onboardingEventBase = {
     ...analyticsContext,
@@ -67,6 +70,14 @@ export default function Onboarding({
     selected_interests_count: selectedInterests.length,
     selected_vibe: selectedVibe,
   };
+
+  useEffect(() => {
+    if (previousEntryModeRef.current === entryMode) return;
+    previousEntryModeRef.current = entryMode;
+    setStage(entryMode === 'swipe-direct' ? 'swipe' : entryMode === 'choice' ? 'choice' : 'area');
+    setStep('interests');
+    setCurrentCardIndex(0);
+  }, [entryMode]);
 
   useEffect(() => {
     if (stage !== 'area') {
@@ -202,8 +213,8 @@ export default function Onboarding({
     const isChoiceIntroReady = typedChoiceTitle.length === choiceTitle.length;
 
     return (
-      <div className="flex h-[100svh] flex-col bg-zinc-950 p-10 pt-32 text-white">
-        <div className="mb-16">
+      <div className="flex h-[100svh] flex-col overflow-hidden bg-zinc-950 p-10 pt-24 text-white">
+        <div className="mb-12 shrink-0">
           <div className="mb-8 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/8 shadow-lg">
             <Sparkles className="text-accent" size={28} />
           </div>
@@ -233,7 +244,7 @@ export default function Onboarding({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 12 }}
               transition={{ delay: 0.05, duration: 0.28, ease: 'easeOut' }}
-              className="space-y-4"
+              className="mt-auto space-y-4 pb-2"
             >
               <button
                 type="button"
@@ -267,8 +278,8 @@ export default function Onboarding({
     const isAreaIntroReady = typedAreaTitle.length === areaTitle.length;
 
     return (
-      <div className="h-[100svh] overflow-y-auto bg-zinc-950 p-10 pb-12 pt-32 text-white">
-        <div className="mb-16">
+      <div className="flex h-[100svh] flex-col overflow-hidden bg-zinc-950 p-10 pb-10 pt-24 text-white">
+        <div className="mb-10 shrink-0">
           <div className="mb-8 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/8 shadow-lg">
             <Sparkles className="text-accent" size={28} />
           </div>
@@ -298,9 +309,9 @@ export default function Onboarding({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 12 }}
               transition={{ delay: 0.05, duration: 0.28, ease: 'easeOut' }}
-              className="space-y-4 pb-8"
+              className="flex min-h-0 flex-1 flex-col space-y-4"
             >
-              <div className="space-y-3">
+              <div className="shrink-0 space-y-3">
                 {savedLocations.map((location) => {
                   const isActive = location.id === activeLocationId;
                   return (
@@ -338,7 +349,7 @@ export default function Onboarding({
                 })}
               </div>
 
-              <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-4">
+              <div className="min-h-0 flex-1 overflow-y-auto rounded-[1.4rem] border border-white/10 bg-white/6 p-4">
                 <div className="text-xs font-black uppercase tracking-[0.16em] text-white/45">
                   Change area
                 </div>
@@ -403,7 +414,7 @@ export default function Onboarding({
               <button
                 type="button"
                 onClick={() => setStage('choice')}
-                className="w-full py-5 text-lg btn-primary"
+                className="mt-auto w-full shrink-0 py-5 text-lg btn-primary"
               >
                 Continue
               </button>

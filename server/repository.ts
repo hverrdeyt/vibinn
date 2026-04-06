@@ -72,7 +72,13 @@ function isRenderableMediaUrl(url?: string | null) {
   return /^(https?:)?\/\//i.test(url) || url.startsWith('/') || url.startsWith('data:') || url.startsWith('blob:');
 }
 
-function mapPlaceForClient(place: PlaceWithRelations) {
+function mapPlaceForClient(
+  place: PlaceWithRelations,
+  overrides?: {
+    similarityStat?: number | null;
+    recommendationReason?: string | null;
+  },
+) {
   return {
     id: place.id,
     name: place.name,
@@ -84,11 +90,18 @@ function mapPlaceForClient(place: PlaceWithRelations) {
     tags: place.aiEnrichment?.vibeTags.length ? place.aiEnrichment.vibeTags : [place.category].filter(Boolean),
     attitudeLabel: place.aiEnrichment?.attitudeLabel ?? undefined,
     bestTime: place.aiEnrichment?.bestTime ?? undefined,
-    similarityStat: 82,
+    similarityStat: overrides?.similarityStat ?? 82,
     whyYoullLikeIt: [
-      ...(place.aiEnrichment?.description ? [place.aiEnrichment.description] : []),
+      ...(
+        overrides?.recommendationReason
+          ? [overrides.recommendationReason]
+          : place.aiEnrichment?.description
+            ? [place.aiEnrichment.description]
+            : []
+      ),
       ...(place.aiEnrichment?.bestTime ? [`best at ${place.aiEnrichment.bestTime}`] : []),
     ],
+    recommendationReason: overrides?.recommendationReason ?? place.aiEnrichment?.description ?? '',
     priceRange: mapPriceLevel(place.priceLevel),
     category: place.category,
   };
@@ -972,7 +985,28 @@ export async function getBookmarks(userId?: string) {
     },
   });
 
-  return bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place));
+  const persistedScores = await prisma.userPlaceScore.findMany({
+    where: {
+      userId: currentUser.id,
+      placeId: {
+        in: bookmarks.map((bookmark) => bookmark.placeId),
+      },
+    },
+  });
+  const persistedScoreMap = new Map(
+    persistedScores.map((score) => [
+      score.placeId,
+      {
+        similarityStat: score.similarityPercentage ?? score.matchScore ?? 82,
+        recommendationReason: score.recommendationReason,
+      },
+    ]),
+  );
+
+  return bookmarks.map((bookmark) => mapPlaceForClient(
+    bookmark.place,
+    persistedScoreMap.get(bookmark.placeId),
+  ));
 }
 
 export async function getMoments(userId?: string) {
