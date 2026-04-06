@@ -267,7 +267,7 @@ export default function Onboarding({
     const isAreaIntroReady = typedAreaTitle.length === areaTitle.length;
 
     return (
-      <div className="flex h-[100svh] flex-col bg-zinc-950 p-10 pt-32 text-white">
+      <div className="h-[100svh] overflow-y-auto bg-zinc-950 p-10 pb-12 pt-32 text-white">
         <div className="mb-16">
           <div className="mb-8 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/8 shadow-lg">
             <Sparkles className="text-accent" size={28} />
@@ -298,7 +298,7 @@ export default function Onboarding({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 12 }}
               transition={{ delay: 0.05, duration: 0.28, ease: 'easeOut' }}
-              className="space-y-4"
+              className="space-y-4 pb-8"
             >
               <div className="space-y-3">
                 {savedLocations.map((location) => {

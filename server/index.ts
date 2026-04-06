@@ -3250,6 +3250,53 @@ function buildPlaceDetailRecommendationFallback(place: {
   return 'It is landing as one of the stronger fits for your taste in this area right now.';
 }
 
+function isGenericPlaceSummaryReason(input: {
+  persistedReason?: string | null;
+  category?: string | null;
+  hook?: string | null;
+  description?: string | null;
+  placeName?: string | null;
+}) {
+  const persistedReason = input.persistedReason?.trim().toLowerCase();
+  if (!persistedReason) return false;
+
+  const description = input.description?.trim().toLowerCase();
+  const hook = input.hook?.trim().toLowerCase();
+  const category = normalizeKeyword(input.category ?? '');
+  const placeName = input.placeName?.trim().toLowerCase() ?? '';
+
+  if (description && persistedReason === description) return true;
+  if (hook && persistedReason === hook) return true;
+
+  if (
+    placeName &&
+    persistedReason.includes(placeName) &&
+    (
+      persistedReason.includes('stands out as a solid') ||
+      persistedReason.includes('works best when') ||
+      persistedReason.includes('offers a compact') ||
+      persistedReason.includes('feels best as an easy') ||
+      persistedReason.includes('worth a closer look')
+    )
+  ) {
+    return true;
+  }
+
+  if (
+    category &&
+    (
+      persistedReason.includes(`solid ${category}`) ||
+      persistedReason.includes(`${category} worth a closer look`) ||
+      persistedReason.includes(`travel stop when you want`) ||
+      persistedReason.includes(`addition to your plan`)
+    )
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
 function resolvePlaceDetailRecommendationReason(input: {
   persistedReason?: string | null;
   category?: string | null;
@@ -3258,6 +3305,7 @@ function resolvePlaceDetailRecommendationReason(input: {
   bestTime?: string | null;
   hook?: string | null;
   description?: string | null;
+  placeName?: string | null;
 }) {
   const persistedReason = input.persistedReason?.trim();
   const description = input.description?.trim();
@@ -3265,6 +3313,7 @@ function resolvePlaceDetailRecommendationReason(input: {
 
   if (
     persistedReason &&
+    !isGenericPlaceSummaryReason(input) &&
     persistedReason.toLowerCase() !== description?.toLowerCase() &&
     persistedReason.toLowerCase() !== hook?.toLowerCase()
   ) {
@@ -3556,6 +3605,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
   const similarityStat = persistedScore?.similarityPercentage ?? persistedScore?.matchScore ?? 82;
   const recommendationReason = resolvePlaceDetailRecommendationReason({
     persistedReason: persistedScore?.recommendationReason,
+    placeName: place.name,
     category: place.category,
     tags: place.aiEnrichment?.vibeTags ?? [place.category],
     attitudeLabel: place.aiEnrichment?.attitudeLabel ?? null,
@@ -3683,6 +3733,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       whyYoullLikeIt: finalPlace.aiEnrichment?.description ? [finalPlace.aiEnrichment.description] : [],
       recommendationReason: resolvePlaceDetailRecommendationReason({
         persistedReason: persistedScore?.recommendationReason,
+        placeName: finalPlace.name,
         category: finalPlace.category,
         tags: finalPlace.aiEnrichment?.vibeTags ?? [finalPlace.category],
         attitudeLabel: finalPlace.aiEnrichment?.attitudeLabel ?? null,
