@@ -143,7 +143,7 @@ export function trackEvent(eventName: string, properties?: Record<string, unknow
 export function trackPageView(path: string, title?: string) {
   if (!isGoogleAnalyticsEnabled || typeof window === 'undefined') return;
   ensureGoogleAnalytics();
-  window.gtag?.('event', 'page_view', {
+  window.gtag?.('config', GA_MEASUREMENT_ID, {
     page_path: path,
     page_title: title ?? document.title,
     page_location: window.location.href,
