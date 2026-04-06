@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type TouchEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Bell, ChevronDown, Search, X } from 'lucide-react';
+import { Bell, BookOpen, ChevronDown, Coffee, Footprints, Landmark, MoonStar, Music2, Search, ShoppingBag, Trees, Waves, X, type LucideIcon } from 'lucide-react';
 import { type EventItem, type Interest, type Place, type Vibe } from '../types';
 
 interface SavedLocationOption {
@@ -95,6 +95,167 @@ function getLocationPromptCopy(permission: 'unknown' | 'granted' | 'denied' | 'u
   }
 
   return 'Turn on location so we can show the distance from you in miles.';
+}
+
+type MoodBadgeMeta = {
+  label: string;
+  className: string;
+  iconClassName: string;
+  Icon: LucideIcon;
+};
+
+const PLACE_MOOD_BADGES: MoodBadgeMeta[] = [
+  {
+    label: 'After dark',
+    className: 'border border-fuchsia-300/35 bg-fuchsia-500/18 text-fuchsia-100 backdrop-blur-md',
+    iconClassName: 'text-fuchsia-200/90',
+    Icon: MoonStar,
+  },
+  {
+    label: 'Scenic',
+    className: 'border border-sky-300/35 bg-sky-500/18 text-sky-100 backdrop-blur-md',
+    iconClassName: 'text-sky-200/90',
+    Icon: Waves,
+  },
+  {
+    label: 'Walkable',
+    className: 'border border-emerald-300/35 bg-emerald-500/18 text-emerald-100 backdrop-blur-md',
+    iconClassName: 'text-emerald-200/90',
+    Icon: Footprints,
+  },
+  {
+    label: 'Browsey',
+    className: 'border border-amber-300/35 bg-amber-500/18 text-amber-100 backdrop-blur-md',
+    iconClassName: 'text-amber-200/90',
+    Icon: ShoppingBag,
+  },
+  {
+    label: 'Cozy',
+    className: 'border border-rose-300/35 bg-rose-500/18 text-rose-100 backdrop-blur-md',
+    iconClassName: 'text-rose-200/90',
+    Icon: BookOpen,
+  },
+  {
+    label: 'Cultural',
+    className: 'border border-violet-300/35 bg-violet-500/18 text-violet-100 backdrop-blur-md',
+    iconClassName: 'text-violet-200/90',
+    Icon: Landmark,
+  },
+  {
+    label: 'Chill',
+    className: 'border border-lime-300/35 bg-lime-500/18 text-lime-100 backdrop-blur-md',
+    iconClassName: 'text-lime-200/90',
+    Icon: Coffee,
+  },
+  {
+    label: 'Outdoorsy',
+    className: 'border border-teal-300/35 bg-teal-500/18 text-teal-100 backdrop-blur-md',
+    iconClassName: 'text-teal-200/90',
+    Icon: Trees,
+  },
+];
+
+function getPlaceMoodBadge(place: Pick<Place, 'name' | 'category' | 'tags' | 'hook' | 'description' | 'bestTime' | 'whyYoullLikeIt'>): MoodBadgeMeta | null {
+  const haystack = [
+    place.name,
+    place.category,
+    place.hook,
+    place.description,
+    place.bestTime,
+    ...(place.whyYoullLikeIt ?? []),
+    ...(place.tags ?? []),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+
+  const matches = (terms: string[]) => terms.some((term) => haystack.includes(term));
+
+  if (matches(['after dark', 'late night', 'nightlife', 'cocktail', 'bar', 'vinyl', 'live music', 'dj'])) {
+    return PLACE_MOOD_BADGES[0];
+  }
+  if (matches(['walk', 'stroll', 'wander', 'loop', 'street', 'neighborhood', 'city walk', 'brownstones'])) {
+    return PLACE_MOOD_BADGES[2];
+  }
+  if (matches(['market', 'design', 'shopping', 'browse', 'makers', 'concept store', 'stall'])) {
+    return PLACE_MOOD_BADGES[3];
+  }
+  if (matches(['bookstore', 'bookshop', 'cozy', 'soft light', 'warm', 'intimate', 'quiet corner', 'shelves'])) {
+    return PLACE_MOOD_BADGES[4];
+  }
+  if (matches(['museum', 'science', 'history', 'cultural', 'culture', 'mosque', 'islamic center', 'gallery', 'exhibit'])) {
+    return PLACE_MOOD_BADGES[5];
+  }
+  if (matches(['coffee', 'espresso', 'slow', 'calm', 'easy pause', 'chill', 'reset', 'low pressure', 'bakery', 'cafe'])) {
+    return PLACE_MOOD_BADGES[6];
+  }
+  if (matches(['park', 'garden', 'green', 'nature', 'grass', 'trees'])) {
+    return PLACE_MOOD_BADGES[7];
+  }
+  if (matches(['view', 'lookout', 'waterfront', 'harbor', 'skyline', 'sunset', 'scenic', 'lake', 'river', 'reflecting pool'])) {
+    return PLACE_MOOD_BADGES[1];
+  }
+  if (matches(['trail'])) {
+    return PLACE_MOOD_BADGES[2];
+  }
+
+  return PLACE_MOOD_BADGES[6];
+}
+
+const EVENT_MOOD_BADGES: MoodBadgeMeta[] = [
+  {
+    label: 'Live',
+    className: 'border border-fuchsia-300/35 bg-fuchsia-500/18 text-fuchsia-100 backdrop-blur-md',
+    iconClassName: 'text-fuchsia-200/90',
+    Icon: Music2,
+  },
+  {
+    label: 'After dark',
+    className: 'border border-indigo-300/35 bg-indigo-500/18 text-indigo-100 backdrop-blur-md',
+    iconClassName: 'text-indigo-200/90',
+    Icon: MoonStar,
+  },
+  {
+    label: 'Browsey',
+    className: 'border border-amber-300/35 bg-amber-500/18 text-amber-100 backdrop-blur-md',
+    iconClassName: 'text-amber-200/90',
+    Icon: ShoppingBag,
+  },
+  {
+    label: 'Cultural',
+    className: 'border border-violet-300/35 bg-violet-500/18 text-violet-100 backdrop-blur-md',
+    iconClassName: 'text-violet-200/90',
+    Icon: Landmark,
+  },
+  {
+    label: 'Night out',
+    className: 'border border-rose-300/35 bg-rose-500/18 text-rose-100 backdrop-blur-md',
+    iconClassName: 'text-rose-200/90',
+    Icon: Music2,
+  },
+];
+
+function getEventMoodBadge(event: Pick<EventItem, 'name' | 'category' | 'tags' | 'hook' | 'description'>): MoodBadgeMeta {
+  const haystack = [
+    event.name,
+    event.category,
+    event.hook,
+    event.description,
+    ...(event.tags ?? []),
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ');
+
+  const matches = (terms: string[]) => terms.some((term) => haystack.includes(term));
+
+  if (matches(['concert', 'music', 'live', 'tour', 'dj', 'band'])) return EVENT_MOOD_BADGES[0];
+  if (matches(['night', 'late', 'club'])) return EVENT_MOOD_BADGES[1];
+  if (matches(['market', 'expo', 'festival', 'fair'])) return EVENT_MOOD_BADGES[2];
+  if (matches(['museum', 'art', 'culture', 'theater', 'comedy', 'lecture'])) return EVENT_MOOD_BADGES[3];
+  return EVENT_MOOD_BADGES[4];
 }
 
 function DiscoveryLoadingPreview() {
@@ -263,9 +424,14 @@ export default function PlaceDiscoveryScreen({
   getPlacePreferenceDebugMatches: (place: Place, selectedInterests: Interest[], selectedVibe: Vibe | null) => string[];
   getEventPreferenceDebugMatches: (event: EventItem, selectedInterests: Interest[], selectedVibe: Vibe | null) => string[];
 }) {
+  const LOCATION_PROMO_DISMISSED_KEY = 'vibinn_location_prompt_dismissed';
   const [isLocationSheetOpen, setIsLocationSheetOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(searchInput.trim().length > 0);
   const [pullDistance, setPullDistance] = useState(0);
+  const [isLocationPromptDismissed, setIsLocationPromptDismissed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.localStorage.getItem(LOCATION_PROMO_DISMISSED_KEY) === '1';
+  });
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const pullStartYRef = useRef<number | null>(null);
   const autoFillLoadMoreRafRef = useRef<number | null>(null);
@@ -274,7 +440,11 @@ export default function PlaceDiscoveryScreen({
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
   const currentCity = activeLocation?.label ?? 'Boston';
   const isFilteringBySearch = searchQuery.length > 0;
-  const displayPlaces = visiblePlaces;
+  const dedupedVisiblePlaces = useMemo(
+    () => visiblePlaces.filter((place, index, list) => list.findIndex((item) => item.id === place.id) === index),
+    [visiblePlaces],
+  );
+  const displayPlaces = dedupedVisiblePlaces;
   const bookmarkedPlaceIdSet = useMemo(() => new Set(bookmarkedPlaceIds), [bookmarkedPlaceIds]);
   const mixedDiscoveryItems = useMemo(() => {
     const items: DiscoveryFeedItem[] = [];
@@ -332,6 +502,15 @@ export default function PlaceDiscoveryScreen({
     onLocationSheetVisibilityChange(isLocationSheetOpen);
     return () => onLocationSheetVisibilityChange(false);
   }, [isLocationSheetOpen, onLocationSheetVisibilityChange]);
+
+  useEffect(() => {
+    if (deviceLocationPermission === 'granted' || deviceLocationPermission === 'unsupported') {
+      setIsLocationPromptDismissed(false);
+      if (typeof window !== 'undefined') {
+        window.localStorage.removeItem(LOCATION_PROMO_DISMISSED_KEY);
+      }
+    }
+  }, [deviceLocationPermission]);
 
   useEffect(() => {
     if (searchInput.trim().length > 0) {
@@ -530,39 +709,56 @@ export default function PlaceDiscoveryScreen({
       {!hasPreferences ? (
         <div className="mb-5 flex items-center justify-between gap-3 rounded-[24px] border border-accent/20 bg-accent/8 px-4 py-3">
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-white">Want sharper picks?</div>
-            <div className="text-xs text-white/65">Choose preferences so AI can tune this feed for your vibe.</div>
+            <div className="text-sm font-semibold text-white">Unlock your vibe</div>
+            <div className="text-xs text-white/65">Pick a few preferences so Vibinn can tune these picks around your taste.</div>
           </div>
           <button
             type="button"
             onClick={onOpenPreferences}
             className="shrink-0 rounded-full bg-accent px-4 py-2 text-xs font-black text-black transition hover:bg-accent/90"
           >
-            Choose
+            Pick my vibe
           </button>
         </div>
       ) : null}
 
-      {deviceLocationPermission !== 'granted' && deviceLocationPermission !== 'unsupported' ? (
-        <div className="mb-5 flex items-center justify-between gap-3 rounded-[24px] border border-white/10 bg-white/6 px-4 py-3">
-          <div className="min-w-0">
-            <div className="text-sm font-semibold text-white">See how far each place is</div>
-            <div className="text-xs text-white/60">
-              {getLocationPromptCopy(deviceLocationPermission)}
+      {deviceLocationPermission !== 'granted' && deviceLocationPermission !== 'unsupported' && !isLocationPromptDismissed ? (
+        <div className="mb-5 rounded-[24px] border border-white/10 bg-white/6 px-4 py-3">
+          <div className="mb-3 flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-white">See how far each place is</div>
+              <div className="text-xs text-white/60">
+                {getLocationPromptCopy(deviceLocationPermission)}
+              </div>
             </div>
+            <button
+              type="button"
+              onClick={() => {
+                setIsLocationPromptDismissed(true);
+                if (typeof window !== 'undefined') {
+                  window.localStorage.setItem(LOCATION_PROMO_DISMISSED_KEY, '1');
+                }
+              }}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/20 text-white/60 transition hover:bg-white/10 hover:text-white"
+              aria-label="Dismiss location prompt"
+            >
+              <X size={14} />
+            </button>
           </div>
-          <button
-            type="button"
-            onClick={onRequestDeviceLocation}
-            disabled={isRequestingDeviceLocation}
-            className="shrink-0 rounded-full bg-white px-4 py-2 text-xs font-black text-black transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {isRequestingDeviceLocation
-              ? 'Checking...'
-              : deviceLocationPermission === 'denied'
-                ? 'Try again'
-                : 'Allow'}
-          </button>
+          <div className="flex items-center justify-end">
+            <button
+              type="button"
+              onClick={onRequestDeviceLocation}
+              disabled={isRequestingDeviceLocation}
+              className="shrink-0 rounded-full bg-white px-4 py-2 text-xs font-black text-black transition hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isRequestingDeviceLocation
+                ? 'Checking...'
+                : deviceLocationPermission === 'denied'
+                  ? 'Allow Location'
+                  : 'Allow Location'}
+            </button>
+          </div>
         </div>
       ) : null}
 
@@ -680,6 +876,7 @@ export default function PlaceDiscoveryScreen({
                         index={index}
                         selectedInterests={selectedInterests}
                         selectedVibe={selectedVibe}
+                        hasPreferences={hasPreferences}
                         deviceLocation={deviceLocation}
                         shouldAnimateEntry={shouldAnimateItemEntry}
                         isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
@@ -723,6 +920,7 @@ export default function PlaceDiscoveryScreen({
                         index={index}
                         selectedInterests={selectedInterests}
                         selectedVibe={selectedVibe}
+                        hasPreferences={hasPreferences}
                         deviceLocation={deviceLocation}
                         shouldAnimateEntry={shouldAnimateItemEntry}
                         isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
@@ -801,6 +999,7 @@ export default function PlaceDiscoveryScreen({
                           index={index}
                           selectedInterests={selectedInterests}
                           selectedVibe={selectedVibe}
+                          hasPreferences={hasPreferences}
                           deviceLocation={deviceLocation}
                           shouldAnimateEntry={false}
                           isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
@@ -837,9 +1036,11 @@ export default function PlaceDiscoveryScreen({
                           index={index}
                           selectedInterests={selectedInterests}
                           selectedVibe={selectedVibe}
+                          hasPreferences={hasPreferences}
                           deviceLocation={deviceLocation}
                           shouldAnimateEntry={false}
                           isBookmarked={bookmarkedPlaceIdSet.has(item.place.id)}
+                          isVisited={visitedPlaceIds.includes(item.place.id)}
                           onBookmark={() => onBookmarkPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
                           onDismiss={() => onDismissPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
                           onOpen={() => onSelectPlace(item.place, { positionInFeed: swipeHintInsertIndex + item.sourceIndex + 1, currentPage })}
@@ -904,6 +1105,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   index,
   selectedInterests,
   selectedVibe,
+  hasPreferences,
   deviceLocation,
   shouldAnimateEntry,
   isBookmarked,
@@ -920,6 +1122,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   index: number;
   selectedInterests: Interest[];
   selectedVibe: Vibe | null;
+  hasPreferences: boolean;
   deviceLocation: { latitude: number; longitude: number } | null;
   shouldAnimateEntry: boolean;
   isBookmarked: boolean;
@@ -939,6 +1142,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
   const match = Math.min(place.similarityStat ?? 74, 98);
   const editorialLabel = getEditorialLabel(place, index);
   const preferenceDebugLabels = getPlacePreferenceDebugMatches(place, selectedInterests, selectedVibe);
+  const noPreferenceMood = hasPreferences ? null : getPlaceMoodBadge(place);
   const distanceMiles = calculateDistanceMiles(deviceLocation, {
     latitude: place.latitude,
     longitude: place.longitude,
@@ -1024,7 +1228,7 @@ const PlaceDiscoveryTile = memo(function PlaceDiscoveryTile({
         referrerPolicy="no-referrer"
       />
       <div className="absolute inset-0 bg-gradient-to-t from-black via-black/18 to-black/8" />
-      <CompatibilityBadge match={match} />
+      <CompatibilityBadge match={match} hasPreferences={hasPreferences} noPreferenceMood={noPreferenceMood} />
       {isBookmarked || isVisited ? (
         <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
           {isBookmarked ? (
@@ -1113,6 +1317,7 @@ const EventDiscoveryTile = memo(function EventDiscoveryTile({
   const visualLabel = (event.tags?.[0] ?? getDisplayEventCategory(event)).toLowerCase();
   const preferenceDebugLabels = getEventPreferenceDebugMatches(event, selectedInterests, selectedVibe);
   const match = Math.min(event.compatibilityScore, 98);
+  const noPreferenceMood = selectedInterests.length > 0 || !!selectedVibe ? null : getEventMoodBadge(event);
   const tileHeightClass = getDiscoveryTileHeightClass(index);
 
   return (
@@ -1130,7 +1335,11 @@ const EventDiscoveryTile = memo(function EventDiscoveryTile({
         referrerPolicy="no-referrer"
       />
       <div className="absolute inset-0 bg-gradient-to-t from-black via-black/18 to-black/8" />
-      <CompatibilityBadge match={match} />
+      <CompatibilityBadge
+        match={match}
+        hasPreferences={selectedInterests.length > 0 || !!selectedVibe}
+        noPreferenceMood={noPreferenceMood}
+      />
       <div className="absolute inset-x-0 bottom-0 p-4">
         {import.meta.env.DEV && preferenceDebugLabels.length > 0 ? (
           <div className="mb-2 flex flex-wrap gap-1.5">
@@ -1152,19 +1361,30 @@ const EventDiscoveryTile = memo(function EventDiscoveryTile({
   );
 });
 
-function CompatibilityBadge({ match }: { match: number | null }) {
+function CompatibilityBadge({
+  match,
+  hasPreferences,
+  noPreferenceMood,
+}: {
+  match: number | null;
+  hasPreferences: boolean;
+  noPreferenceMood: MoodBadgeMeta | null;
+}) {
   if (typeof match !== 'number') return null;
+  if (!hasPreferences && !noPreferenceMood) return null;
 
-  const badgeMeta =
-    match >= 85
+  const badgeMeta = hasPreferences
+    ? match >= 85
       ? {
           label: 'Must visit',
-          className: 'bg-accent px-3.5 py-2 text-[11px] text-black shadow-[0_18px_40px_rgba(211,255,72,0.28)]',
+          className:
+            'bg-accent px-3.5 py-2 text-[11px] text-black shadow-[0_18px_40px_rgba(211,255,72,0.28)]',
         }
       : match >= 70
         ? {
-          label: 'Fits you',
-            className: 'border border-accent/65 bg-black/58 px-3.5 py-2 text-[11px] text-accent backdrop-blur-md',
+            label: 'Fits you',
+            className:
+              'border border-accent/65 bg-black/58 px-3.5 py-2 text-[11px] text-accent backdrop-blur-md',
           }
         : match >= 55
           ? {
@@ -1173,20 +1393,28 @@ function CompatibilityBadge({ match }: { match: number | null }) {
             }
           : {
               label: 'Maybe',
-          className: 'bg-black/55 px-3.5 py-2 text-[11px] text-white/78 backdrop-blur-md',
-        };
+              className: 'bg-black/55 px-3.5 py-2 text-[11px] text-white/78 backdrop-blur-md',
+            }
+    : null;
 
   return (
-    <>
-      <div className="absolute left-3 right-3 top-3 flex items-center justify-between">
+    <div className="absolute left-3 right-3 top-3 flex items-center justify-between">
+      {hasPreferences && badgeMeta ? (
         <div className={`rounded-full font-black tracking-[0.12em] ${badgeMeta.className}`}>
           {badgeMeta.label}
         </div>
+      ) : noPreferenceMood ? (
+        <div className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[11px] font-black tracking-[0.12em] ${noPreferenceMood.className}`}>
+          <noPreferenceMood.Icon size={13} className={noPreferenceMood.iconClassName} />
+          <span>{noPreferenceMood.label}</span>
+        </div>
+      ) : null}
+      {hasPreferences ? (
         <div className="text-[10px] font-semibold tracking-[0.04em] text-white/68">
           {match}%
         </div>
-      </div>
-    </>
+      ) : null}
+    </div>
   );
 }
 

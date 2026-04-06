@@ -2050,13 +2050,17 @@ export default function App() {
   }, [currentScreen, deviceLocation]);
 
   // Handle onboarding completion
-  const completeOnboarding = async (override?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null }) => {
+  const completeOnboarding = async (override?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null; activeLocationId?: string }) => {
     const nextSelectedInterests = override?.selectedInterests ?? selectedInterests;
     const nextSelectedVibe = override?.selectedVibe ?? selectedVibe;
-    const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0];
+    const nextActiveLocationId = override?.activeLocationId ?? activeLocationId;
+    const activeLocation = savedLocations.find((location) => location.id === nextActiveLocationId) ?? savedLocations[0];
 
     setSelectedInterests(nextSelectedInterests);
     setSelectedVibe(nextSelectedVibe ?? null);
+    if (nextActiveLocationId !== activeLocationId) {
+      setActiveLocationId(nextActiveLocationId);
+    }
 
     if (isAuthenticated) {
       void api.savePreferences({
@@ -3076,6 +3080,8 @@ export default function App() {
     const rotationSeed = options?.rotationSeedOverride ?? discoveryRotationSeedRef.current;
     const effectiveSelectedInterests = options?.preferencesOverride?.selectedInterests ?? selectedInterests;
     const effectiveSelectedVibe = options?.preferencesOverride?.selectedVibe ?? selectedVibe;
+    const hasEffectivePreferences = effectiveSelectedInterests.length > 0 || !!effectiveSelectedVibe;
+    const discoveryPageLimit = page === 1 && !hasEffectivePreferences && !discoverySearchQuery ? 18 : 10;
     const discoveryContextKey = buildDiscoveryContextKey({
       locationId: activeLocation.id,
       locationLabel: activeLocation.label,
@@ -3119,7 +3125,7 @@ export default function App() {
         },
         {
           page,
-          limit: 10,
+          limit: discoveryPageLimit,
           refresh: refreshMode === 'hard',
           query: discoverySearchQuery,
           seed: `${activeLocation.id}:${page}:${rotationSeed}`,

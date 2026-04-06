@@ -1,4 +1,4 @@
-import { AnimatePresence, motion } from 'motion/react';
+import { AnimatePresence, motion, useMotionValue, useTransform } from 'motion/react';
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { ArrowRight, Sparkles } from 'lucide-react';
 import { type Interest, type Vibe } from '../types';
@@ -29,7 +29,7 @@ type OnboardingProps = {
   activeLocationId: string;
   onSelectInitialLocation: (locationId: string) => void;
   onAddInitialLocation: (location: SavedLocationOption) => void | Promise<void>;
-  onComplete: (payload?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null }) => void;
+  onComplete: (payload?: { selectedInterests?: Interest[]; selectedVibe?: Vibe | null; activeLocationId?: string }) => void;
   analyticsContext?: Record<string, unknown>;
 };
 
@@ -198,6 +198,7 @@ export default function Onboarding({
     onComplete({
       selectedInterests: nextSelectedInterests,
       selectedVibe: nextSelectedVibe,
+      activeLocationId,
     });
   };
 
@@ -261,7 +262,7 @@ export default function Onboarding({
                 type="button"
                 onClick={() => {
                   trackEvent('Skip preferences', onboardingEventBase);
-                  onComplete({ selectedInterests, selectedVibe });
+                  onComplete({ selectedInterests, selectedVibe, activeLocationId });
                 }}
                 className="w-full rounded-xl border border-white/10 bg-white/6 px-6 py-5 text-lg font-semibold text-white transition-all hover:bg-white/10 active:scale-[0.98]"
               >
@@ -413,10 +414,19 @@ export default function Onboarding({
 
               <button
                 type="button"
-                onClick={() => setStage('choice')}
+                onClick={() => {
+                  if (entryMode === 'area-first') {
+                    setSelectedInterests([]);
+                    setSelectedVibe(null);
+                    onComplete({ selectedInterests: [], selectedVibe: null, activeLocationId });
+                    return;
+                  }
+
+                  setStage('choice');
+                }}
                 className="mt-auto w-full shrink-0 py-5 text-lg btn-primary"
               >
-                Continue
+                {entryMode === 'area-first' ? 'Show picks' : 'Continue'}
               </button>
             </motion.div>
           ) : null}
@@ -453,13 +463,13 @@ export default function Onboarding({
             </p>
           </div>
           <button
-            onClick={() => {
-              trackEvent('Skip setup', {
-                ...onboardingEventBase,
-                swipe_step: step,
-              });
-              onComplete({ selectedInterests, selectedVibe });
-            }}
+              onClick={() => {
+                trackEvent('Skip setup', {
+                  ...onboardingEventBase,
+                  swipe_step: step,
+                });
+                onComplete({ selectedInterests, selectedVibe, activeLocationId });
+              }}
             className="pb-1 text-[10px] font-bold uppercase tracking-widest text-white/30 transition-colors hover:text-white"
           >
             Skip setup
@@ -496,19 +506,31 @@ function SwipeCard({
   onSwipe: (dir: 'right' | 'left') => void;
   key?: string;
 }) {
-  const [exitX, setExitX] = useState(0);
+  const [exitDirection, setExitDirection] = useState<-1 | 0 | 1>(0);
+  const x = useMotionValue(0);
+  const rotate = useTransform(x, [-220, 0, 220], [-10, 0, 10]);
+  const dragScale = useTransform(x, [-220, 0, 220], [0.98, 1, 0.98]);
+  const swipeAffordanceOpacity = useTransform(x, [-180, -80, 0, 80, 180], [1, 0.45, 0, 0.45, 1]);
+  const leftAffordanceScale = useTransform(x, [-180, -100, 0], [1.08, 1, 0.92]);
+  const rightAffordanceScale = useTransform(x, [0, 100, 180], [0.92, 1, 1.08]);
 
   return (
     <motion.div
-      style={{ x: exitX, zIndex: isTop ? 10 : 0 }}
+      style={{ x, rotate, scale: isTop ? dragScale : undefined, zIndex: isTop ? 10 : 0 }}
       drag={isTop ? 'x' : false}
       dragConstraints={{ left: 0, right: 0 }}
+      dragElastic={0.16}
+      dragMomentum={false}
+      dragTransition={{ bounceStiffness: 420, bounceDamping: 32 }}
       onDragEnd={(_, info) => {
-        if (info.offset.x > 100) {
-          setExitX(1000);
+        const shouldSwipeRight = info.offset.x > 110 || info.velocity.x > 650;
+        const shouldSwipeLeft = info.offset.x < -110 || info.velocity.x < -650;
+
+        if (shouldSwipeRight) {
+          setExitDirection(1);
           onSwipe('right');
-        } else if (info.offset.x < -100) {
-          setExitX(-1000);
+        } else if (shouldSwipeLeft) {
+          setExitDirection(-1);
           onSwipe('left');
         }
       }}
@@ -517,10 +539,15 @@ function SwipeCard({
         scale: isTop ? 1 : 0.95,
         opacity: 1,
         y: isTop ? 0 : 10,
-        rotate: 0,
       }}
-      whileDrag={{ rotate: exitX > 0 ? 5 : -5 }}
-      exit={{ x: exitX, opacity: 0, scale: 0.5, transition: { duration: 0.2 } }}
+      whileDrag={isTop ? { cursor: 'grabbing' } : undefined}
+      exit={{
+        x: exitDirection === 1 ? 520 : exitDirection === -1 ? -520 : 0,
+        rotate: exitDirection === 1 ? 12 : exitDirection === -1 ? -12 : 0,
+        opacity: 0,
+        scale: 0.92,
+        transition: { duration: 0.26, ease: 'easeOut' },
+      }}
       className="absolute inset-0 px-4 pb-12"
     >
       <div className="relative h-full w-full overflow-hidden rounded-[2.5rem] border border-white/10 shadow-2xl">
@@ -533,6 +560,11 @@ function SwipeCard({
         />
 
         <div className="absolute inset-0 bg-gradient-to-t from-black via-black/20 to-transparent" />
+        <motion.div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 bg-gradient-to-r from-white/14 via-transparent to-accent/16"
+          style={{ opacity: swipeAffordanceOpacity }}
+        />
 
         <div className="absolute bottom-0 left-0 w-full p-8 pb-12">
           <motion.div
@@ -550,14 +582,20 @@ function SwipeCard({
         </div>
 
         <div className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2">
-          <div className="rounded-full border border-white/20 bg-white/10 p-3 text-white/30 backdrop-blur-md">
+          <motion.div
+            style={{ opacity: swipeAffordanceOpacity, scale: leftAffordanceScale }}
+            className="rounded-full border border-white/20 bg-white/10 p-3 text-white/38 backdrop-blur-md"
+          >
             <ArrowRight size={24} className="rotate-180" />
-          </div>
+          </motion.div>
         </div>
         <div className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2">
-          <div className="rounded-full border border-accent/30 bg-accent/20 p-3 text-accent backdrop-blur-md">
+          <motion.div
+            style={{ opacity: swipeAffordanceOpacity, scale: rightAffordanceScale }}
+            className="rounded-full border border-accent/30 bg-accent/20 p-3 text-accent backdrop-blur-md"
+          >
             <ArrowRight size={24} />
-          </div>
+          </motion.div>
         </div>
       </div>
     </motion.div>
