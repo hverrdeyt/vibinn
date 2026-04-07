@@ -248,6 +248,14 @@ function buildProfileUserWithMatch(
     relevanceReason?: string;
     descriptor?: string;
     vibinCount?: number;
+    recentSavedPlaces?: Array<{
+      place: ReturnType<typeof mapPlaceForClient>;
+      savedAtLabel: string;
+      savedAtIso?: string;
+    }>;
+    latestVisitedAtIso?: string;
+    savedPlacesCount?: number;
+    collectionsCount?: number;
   },
 ) {
   return {
@@ -256,7 +264,31 @@ function buildProfileUserWithMatch(
     ...(extras?.relevanceReason ? { relevanceReason: extras.relevanceReason } : {}),
     ...(extras?.descriptor ? { descriptor: extras.descriptor } : {}),
     ...(typeof extras?.vibinCount === 'number' ? { vibinCount: extras.vibinCount } : {}),
+    ...(extras?.recentSavedPlaces?.length ? { recentSavedPlaces: extras.recentSavedPlaces } : {}),
+    ...(extras?.latestVisitedAtIso ? { latestVisitedAtIso: extras.latestVisitedAtIso } : {}),
+    ...(typeof extras?.savedPlacesCount === 'number' ? { savedPlacesCount: extras.savedPlacesCount } : {}),
+    ...(typeof extras?.collectionsCount === 'number' ? { collectionsCount: extras.collectionsCount } : {}),
   };
+}
+
+function formatRelativeActivityLabel(date: Date) {
+  const diffMs = Date.now() - date.getTime();
+  const diffHours = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60)));
+
+  if (diffHours < 1) return 'just now';
+  if (diffHours < 24) return `${diffHours}h ago`;
+
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+
+  const diffWeeks = Math.floor(diffDays / 7);
+  if (diffWeeks < 5) return `${diffWeeks}w ago`;
+
+  const diffMonths = Math.floor(diffDays / 30);
+  if (diffMonths < 12) return `${Math.max(1, diffMonths)}mo ago`;
+
+  const diffYears = Math.floor(diffDays / 365);
+  return `${Math.max(1, diffYears)}y ago`;
 }
 
 async function getCurrentUser(client: PrismaClient, userId?: string) {
@@ -333,13 +365,66 @@ export async function getProfileMe(userId?: string) {
   });
 
   return {
-    user: buildProfileUserWithMatch(user, moments, undefined, { descriptor }),
+    user: buildProfileUserWithMatch(user, moments, undefined, {
+      descriptor,
+      recentSavedPlaces: user.bookmarks.map((bookmark) => ({
+        place: mapPlaceForClient(bookmark.place),
+        savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+        savedAtIso: bookmark.createdAt.toISOString(),
+      })),
+      savedPlacesCount: user.bookmarks.length,
+      collectionsCount: user.collections.length,
+      latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString(),
+    }),
     collections: user.collections.map((collection) => ({
       id: collection.id,
       label: collection.title,
       places: collection.places.map((item) => mapPlaceForClient(item.place)),
     })),
     moments,
+  };
+}
+
+export async function getPublicCollectionById(collectionId: string) {
+  const collection = await prisma.collection.findUnique({
+    where: { id: collectionId },
+    include: {
+      user: {
+        include: {
+          badges: true,
+          flags: true,
+        },
+      },
+      places: {
+        orderBy: { sortOrder: 'asc' },
+        include: {
+          place: {
+            include: {
+              aiEnrichment: true,
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!collection) {
+    throw new Error('Collection not found');
+  }
+
+  return {
+    collection: {
+      id: collection.id,
+      label: collection.title,
+      places: collection.places.map((item) => mapPlaceForClient(item.place)),
+    },
+    owner: {
+      id: collection.user.id,
+      username: collection.user.username,
+      displayName: collection.user.displayName ?? collection.user.username,
+      avatar: collection.user.avatarUrl,
+    },
   };
 }
 
@@ -463,6 +548,24 @@ export async function getTravelerDiscovery(userId?: string) {
           include: {
             badges: true,
             flags: true,
+            _count: {
+              select: {
+                bookmarks: true,
+                collections: true,
+              },
+            },
+            bookmarks: {
+              orderBy: { createdAt: 'desc' },
+              take: 4,
+              include: {
+                place: {
+                  include: {
+                    aiEnrichment: true,
+                    media: { orderBy: { sortOrder: 'asc' } },
+                  },
+                },
+              },
+            },
             moments: {
               orderBy: { createdAt: 'desc' },
               include: {
@@ -486,6 +589,24 @@ export async function getTravelerDiscovery(userId?: string) {
           include: {
             badges: true,
             flags: true,
+            _count: {
+              select: {
+                bookmarks: true,
+                collections: true,
+              },
+            },
+            bookmarks: {
+              orderBy: { createdAt: 'desc' },
+              take: 4,
+              include: {
+                place: {
+                  include: {
+                    aiEnrichment: true,
+                    media: { orderBy: { sortOrder: 'asc' } },
+                  },
+                },
+              },
+            },
             moments: {
               orderBy: { createdAt: 'desc' },
               include: {
@@ -524,6 +645,24 @@ export async function getTravelerDiscovery(userId?: string) {
         include: {
           badges: true,
           flags: true,
+          _count: {
+            select: {
+              bookmarks: true,
+              collections: true,
+            },
+          },
+          bookmarks: {
+            orderBy: { createdAt: 'desc' },
+            take: 4,
+            include: {
+              place: {
+                include: {
+                  aiEnrichment: true,
+                  media: { orderBy: { sortOrder: 'asc' } },
+                },
+              },
+            },
+          },
           moments: {
             orderBy: { createdAt: 'desc' },
             include: {
@@ -549,7 +688,7 @@ export async function getTravelerDiscovery(userId?: string) {
         userId: item.targetUser.id,
         displayName: item.targetUser.displayName,
         moments: item.targetUser.moments.map(mapMomentForClient),
-        bookmarkedPlaces: [],
+        bookmarkedPlaces: item.targetUser.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
       });
       return [item.targetUser.id, descriptor] as const;
     }),
@@ -564,7 +703,7 @@ export async function getTravelerDiscovery(userId?: string) {
         userId: traveler.id,
         displayName: traveler.displayName,
         moments: traveler.moments.map(mapMomentForClient),
-        bookmarkedPlaces: [],
+        bookmarkedPlaces: traveler.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
       });
       return [traveler.id, descriptor] as const;
     }),
@@ -572,6 +711,21 @@ export async function getTravelerDiscovery(userId?: string) {
 
   const followedDescriptorMap = new Map(followedTravelerDescriptors);
   const similarDescriptorMap = new Map(similarTravelerDescriptors);
+  const feedSavedDrops = followedUsers
+    .flatMap((item) =>
+      item.targetUser.bookmarks.map((bookmark) => ({
+        id: `saved-${item.targetUser.id}-${bookmark.id}`,
+        travelerId: item.targetUser.id,
+        place: mapPlaceForClient(bookmark.place),
+        caption: 'Saved this to come back to later.',
+        savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+        savedAtIso: bookmark.createdAt.toISOString(),
+        createdAtMs: bookmark.createdAt.getTime(),
+      })),
+    )
+    .sort((a, b) => b.createdAtMs - a.createdAtMs)
+    .slice(0, 8)
+    .map(({ createdAtMs: _createdAtMs, ...entry }) => entry);
 
   return {
     followedTravelers: followedUsers.map((item) =>
@@ -582,6 +736,14 @@ export async function getTravelerDiscovery(userId?: string) {
         {
           vibinCount: vibinMap.get(item.targetUser.id) ?? 0,
           descriptor: followedDescriptorMap.get(item.targetUser.id),
+          recentSavedPlaces: item.targetUser.bookmarks.map((bookmark) => ({
+            place: mapPlaceForClient(bookmark.place),
+            savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+            savedAtIso: bookmark.createdAt.toISOString(),
+          })),
+          latestVisitedAtIso: item.targetUser.moments[0]?.visitedAt?.toISOString?.() ?? item.targetUser.moments[0]?.createdAt?.toISOString?.(),
+          savedPlacesCount: item.targetUser._count.bookmarks,
+          collectionsCount: item.targetUser._count.collections,
         },
       ),
     ),
@@ -609,10 +771,136 @@ export async function getTravelerDiscovery(userId?: string) {
           vibinCount: vibinMap.get(item.user.id) ?? 0,
           descriptor: similarDescriptorMap.get(item.user.id)
             ?? (similarUsers.length === 0 && fallbackTravelerIds.has(item.user.id) ? 'community traveler' : undefined),
+          recentSavedPlaces: item.user.bookmarks.map((bookmark) => ({
+            place: mapPlaceForClient(bookmark.place),
+            savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+            savedAtIso: bookmark.createdAt.toISOString(),
+          })),
+          latestVisitedAtIso: item.user.moments[0]?.visitedAt?.toISOString?.() ?? item.user.moments[0]?.createdAt?.toISOString?.(),
+          savedPlacesCount: item.user._count.bookmarks,
+          collectionsCount: item.user._count.collections,
         },
       ),
     ),
+    feedSavedDrops,
   };
+}
+
+export async function searchPublicTravelers(query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.length < 2) {
+    return [];
+  }
+
+  const users = await prisma.user.findMany({
+    where: {
+      AND: [
+        {
+          OR: [
+            {
+              username: {
+                contains: normalizedQuery,
+                mode: 'insensitive',
+              },
+            },
+            {
+              displayName: {
+                contains: normalizedQuery,
+                mode: 'insensitive',
+              },
+            },
+            {
+              bio: {
+                contains: normalizedQuery,
+                mode: 'insensitive',
+              },
+            },
+          ],
+        },
+        {
+          OR: [
+            {
+              moments: {
+                some: {},
+              },
+            },
+            {
+              bookmarks: {
+                some: {},
+              },
+            },
+          ],
+        },
+      ],
+    },
+    include: {
+      badges: true,
+      flags: true,
+      _count: {
+        select: {
+          bookmarks: true,
+          collections: true,
+        },
+      },
+      bookmarks: {
+        orderBy: { createdAt: 'desc' },
+        take: 4,
+        include: {
+          place: {
+            include: {
+              aiEnrichment: true,
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+        },
+      },
+      moments: {
+        orderBy: { createdAt: 'desc' },
+        take: 6,
+        include: {
+          place: {
+            include: {
+              aiEnrichment: true,
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+          media: { orderBy: { sortOrder: 'asc' } },
+        },
+      },
+    },
+    take: 12,
+  });
+
+  const travelers = await Promise.all(
+    users.map(async (user) => {
+      const moments = user.moments.map(mapMomentForClient);
+      const descriptor = await generateTravelerProfileDescriptor({
+        userId: user.id,
+        displayName: user.displayName,
+        moments,
+        bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+      });
+
+      return buildProfileUserWithMatch(user, moments, undefined, {
+        descriptor,
+        recentSavedPlaces: user.bookmarks.map((bookmark) => ({
+          place: mapPlaceForClient(bookmark.place),
+          savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+          savedAtIso: bookmark.createdAt.toISOString(),
+        })),
+        latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString?.() ?? user.moments[0]?.createdAt?.toISOString?.(),
+        savedPlacesCount: user._count.bookmarks,
+        collectionsCount: user._count.collections,
+      });
+    }),
+  );
+
+  return travelers.sort((a, b) => {
+    const aStarts = a.username.toLowerCase().startsWith(normalizedQuery) || (a.displayName ?? '').toLowerCase().startsWith(normalizedQuery);
+    const bStarts = b.username.toLowerCase().startsWith(normalizedQuery) || (b.displayName ?? '').toLowerCase().startsWith(normalizedQuery);
+    if (aStarts !== bStarts) return aStarts ? -1 : 1;
+    return (b.stats.trips + (b.savedPlacesCount ?? 0)) - (a.stats.trips + (a.savedPlacesCount ?? 0));
+  });
 }
 
 export async function getTravelerProfile(travelerId: string, viewerUserId?: string) {

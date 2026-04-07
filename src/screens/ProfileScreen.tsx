@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Bookmark, MessageCircle, PencilLine, Plus, Settings, Share2, Zap } from 'lucide-react';
+import { Bookmark, ChevronDown, MessageCircle, PencilLine, Plus, Settings, Share2, Zap } from 'lucide-react';
 import { api } from '../lib/api';
-import { type Place, type Screen, type User } from '../types';
+import { type Place, type PlaceCollection, type Screen, type User } from '../types';
 
 function getPlaceInteractionTargetId(place: Place) {
   return place.momentId ?? place.id;
@@ -37,23 +37,68 @@ export default function ProfileScreen({
   onEditMoment,
   renderMomentEntryCard,
   renderSavedPlaceCard,
+  ownFeedItems,
+  renderFeedEntryCard,
 }: {
   user: User;
   bookmarkedPlaces: Place[];
-  customCollections: { label: string; places: Place[] }[];
+  customCollections: PlaceCollection[];
   displayFlags: string[];
   onNavigate: (screen: Screen) => void;
   onShareProfile: () => void;
   onSavePlace: (place: Place, nextActive: boolean) => Promise<boolean>;
   onSelectPlace: (place: Place) => void;
-  onOpenCollection: (collection: { label: string; places: Place[] }) => void;
+  onOpenCollection: (collection: PlaceCollection) => void;
   onEditProfile: () => void;
   onEditMoment: (place: Place) => void;
   renderMomentEntryCard: (args: { place: Place; contextNote: string; footer: ReactNode }) => ReactNode;
   renderSavedPlaceCard: (place: Place, index: number) => ReactNode;
+  ownFeedItems: Array<
+    | {
+        type: 'saved' | 'visited';
+        traveler: User;
+        place: Place;
+        activityDate: string;
+        caption?: string;
+        compatibility?: number;
+        sortTimestamp: number;
+      }
+    | {
+        type: 'collection';
+        traveler: User;
+        collectionName: string;
+        collectionPlaces: Place[];
+        activityDate: string;
+        caption?: string;
+        sortTimestamp: number;
+      }
+  >;
+  renderFeedEntryCard: (
+    item:
+      | {
+          type: 'saved' | 'visited';
+          traveler: User;
+          place: Place;
+          activityDate: string;
+          caption?: string;
+          compatibility?: number;
+          sortTimestamp: number;
+        }
+      | {
+          type: 'collection';
+          traveler: User;
+          collectionName: string;
+          collectionPlaces: Place[];
+          activityDate: string;
+          caption?: string;
+          sortTimestamp: number;
+        },
+    index: number,
+  ) => ReactNode;
 }) {
-  const [activeTab, setActiveTab] = useState<'moments' | 'saved' | 'vibin'>('moments');
+  const [activeTab, setActiveTab] = useState<'saved' | 'visited' | 'collections' | 'feed'>('feed');
   const [momentsFilter, setMomentsFilter] = useState<'city' | 'time'>('city');
+  const [expandedSavedCities, setExpandedSavedCities] = useState<string[]>([]);
   const [commentsPlace, setCommentsPlace] = useState<Place | null>(null);
   const [comments, setComments] = useState<Array<{ id: string; user: string; body: string; createdAt?: string }>>([]);
   const [commentDraft, setCommentDraft] = useState('');
@@ -61,16 +106,14 @@ export default function ProfileScreen({
   const [vibedPlaceIds, setVibedPlaceIds] = useState<string[]>([]);
   const [sharedPlaceIds, setSharedPlaceIds] = useState<string[]>([]);
   const [profileCommentCounts, setProfileCommentCounts] = useState<Record<string, number>>({});
-  const [profileVibinCount, setProfileVibinCount] = useState(0);
-  const [followersCount, setFollowersCount] = useState(0);
   const [profileToast, setProfileToast] = useState<string | null>(null);
 
   const ownPlaces = user.travelHistory.flatMap((history) => history.places || []);
   const uniqueBookmarkedPlaces = bookmarkedPlaces.filter((place, index, allPlaces) => (
     allPlaces.findIndex((candidate) => candidate.id === place.id) === index
   ));
-  const travelerSummary = `${ownPlaces.length} places • ${user.stats.cities} cities • ${user.stats.countries} countries`;
   const momentCollections = customCollections.filter((collection) => collection.places.length > 0);
+  const travelerSummary = `${uniqueBookmarkedPlaces.length} saved • ${ownPlaces.length} visited • ${momentCollections.length} collections`;
   const cityCollections = user.travelHistory.filter((history) => (history.places ?? []).length > 0);
   const groupedByTime = Object.values(
     ownPlaces.reduce<Record<string, { label: string; places: Place[] }>>((acc, place) => {
@@ -86,6 +129,11 @@ export default function ProfileScreen({
       return acc;
     }, {}),
   ).filter((group) => group.places.length > 0);
+  const groupedSavedPlaces = uniqueBookmarkedPlaces.reduce<Record<string, Place[]>>((acc, place) => {
+    const city = place.location.split(',')[0]?.trim() ?? place.location;
+    acc[city] = [...(acc[city] ?? []), place];
+    return acc;
+  }, {});
 
   const showProfileToast = (message: string) => {
     setProfileToast(message);
@@ -123,8 +171,6 @@ export default function ProfileScreen({
         setSavedPlaceIds(response.bookmarkedPlaceIds);
         setVibedPlaceIds([...response.vibedPlaceIds, ...response.vibedMomentIds]);
         setProfileCommentCounts({ ...response.placeCommentCounts, ...response.momentCommentCounts });
-        setProfileVibinCount(response.profileVibinCounts[user.id] ?? 0);
-        setFollowersCount(response.profileFollowerCounts[user.id] ?? 0);
       })
       .catch(() => undefined);
   }, [ownPlaces, user.id]);
@@ -276,7 +322,7 @@ export default function ProfileScreen({
 
           <div className="mt-6 rounded-[2rem] bg-white/8 p-4 backdrop-blur-sm">
             <p className="text-sm font-semibold leading-relaxed text-white/80">
-              Your profile is where moments, saves, and vibin stack into a public taste graph.
+              Your profile should make your taste obvious at a glance: what you save, where you have actually been, and how you group places together.
             </p>
           </div>
 
@@ -295,64 +341,59 @@ export default function ProfileScreen({
               <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">saved places</div>
             </div>
             <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
-              <div className="text-lg font-black text-white">{profileVibinCount}</div>
-              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">vibin</div>
+              <div className="text-lg font-black text-white">{ownPlaces.length}</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">visited places</div>
             </div>
             <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
-              <div className="text-lg font-black text-white">{followersCount}</div>
-              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">followers</div>
+              <div className="text-lg font-black text-white">{momentCollections.length}</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">collections</div>
             </div>
           </div>
         </div>
 
         <div className="mb-8 mt-8">
-          <section className="mb-8">
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-[11px] font-black uppercase tracking-[0.18em] text-white/35">Collections</div>
-              <button
-                type="button"
-                onClick={() => onNavigate('add-collection')}
-                className="inline-flex items-center gap-2 rounded-full border border-accent/40 bg-accent/10 px-3 py-2 text-[11px] font-black uppercase tracking-[0.14em] text-accent"
-              >
-                <Plus size={12} />
-                Add collection
-              </button>
-            </div>
-            {momentCollections.length > 0 ? (
-              <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
-                {momentCollections.map((collection) => (
-                  <button key={collection.label} onClick={() => onOpenCollection(collection)} className="min-w-44 rounded-[24px] border border-white/10 bg-white/6 p-4 text-left">
-                    <div className="text-base font-black text-white">{collection.label}</div>
-                    <div className="mt-1 text-xs font-bold uppercase tracking-[0.18em] text-white/35">{collection.places.length} places</div>
-                  </button>
-                ))}
-              </div>
-            ) : (
-              <div className="rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
-                No collections yet. Start one for a trip, season, or theme.
-              </div>
-            )}
-          </section>
-
           <div className="mb-8 inline-flex rounded-full border border-white/10 bg-white/6 p-1">
-            {['moments', 'saved', 'vibin'].map((tab) => (
+            {[
+              { id: 'feed', label: 'feed' },
+              { id: 'saved', label: 'saved' },
+              { id: 'visited', label: 'visited' },
+              { id: 'collections', label: 'collections' },
+            ].map((tab) => (
               <button
-                key={tab}
-                onClick={() => setActiveTab(tab as 'moments' | 'saved' | 'vibin')}
-                className={`rounded-full px-4 py-2 text-sm font-black transition ${activeTab === tab ? 'bg-white text-black' : 'text-white/65'}`}
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as 'saved' | 'visited' | 'collections' | 'feed')}
+                className={`rounded-full px-4 py-2 text-sm font-black transition ${activeTab === tab.id ? 'bg-white text-black' : 'text-white/65'}`}
               >
-                {tab}
+                {tab.label}
               </button>
             ))}
           </div>
 
           <div className="mb-6 flex items-center justify-between">
             <h2 className="text-xl font-black tracking-tighter">
-              {activeTab === 'moments' ? 'Your latest moments' : activeTab === 'saved' ? 'Places saved to your graph' : 'People who sent vibin'}
+              {activeTab === 'feed'
+                ? 'Your taste activity'
+                : activeTab === 'saved'
+                  ? 'Places shaping your taste'
+                  : activeTab === 'visited'
+                    ? 'Places you actually checked into'
+                    : 'Collections you have made'}
             </h2>
           </div>
 
-          {activeTab === 'moments' ? (
+          {activeTab === 'feed' ? (
+            ownFeedItems.length > 0 ? (
+              <div className="space-y-4">
+                {ownFeedItems.map((item, index) => (
+                  <div key={`${item.type}-${index}-${item.activityDate}`}>{renderFeedEntryCard(item, index)}</div>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
+                No activity yet. Save a place, check in, or build a collection to start your feed.
+              </div>
+            )
+          ) : activeTab === 'visited' ? (
             <div className="space-y-8">
               <div className="inline-flex rounded-full border border-white/10 bg-white/6 p-1">
                 <button
@@ -397,10 +438,35 @@ export default function ProfileScreen({
               ))}
             </div>
           ) : activeTab === 'saved' ? (
-            <div className="space-y-4">
+            <div className="space-y-8">
               {uniqueBookmarkedPlaces.length > 0 ? (
-                uniqueBookmarkedPlaces.map((place, index) => (
-                  <div key={`${place.id}-${index}`}>{renderSavedPlaceCard(place, index)}</div>
+                Object.entries(groupedSavedPlaces).map(([city, places]) => (
+                  <section key={city}>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedSavedCities((prev) => prev.includes(city) ? prev.filter((item) => item !== city) : [...prev, city])}
+                      className="mb-4 flex w-full items-center justify-between rounded-[22px] border border-white/10 bg-white/6 px-4 py-4 text-left transition hover:bg-white/8"
+                    >
+                      <div>
+                        <h3 className="text-lg font-black text-white">{city}</h3>
+                        <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.18em] text-white/35">
+                          {places.length} saved
+                        </div>
+                      </div>
+                      <ChevronDown
+                        size={18}
+                        className={`text-white/55 transition-transform ${expandedSavedCities.includes(city) ? 'rotate-180' : ''}`}
+                      />
+                    </button>
+
+                    {expandedSavedCities.includes(city) ? (
+                      <div className="space-y-4">
+                        {places.map((place, index) => (
+                          <div key={`${place.id}-${index}`}>{renderSavedPlaceCard(place, index)}</div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </section>
                 ))
               ) : (
                 <div className="rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
@@ -409,8 +475,50 @@ export default function ProfileScreen({
               )}
             </div>
           ) : (
-            <div className="rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
-              Vibin activity is still empty here until this feed is fully connected to backend notifications.
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-[11px] font-black uppercase tracking-[0.18em] text-white/35">Collections</div>
+                <button
+                  type="button"
+                  onClick={() => onNavigate('add-collection')}
+                  className="inline-flex items-center gap-2 rounded-full border border-accent/40 bg-accent/10 px-3 py-2 text-[11px] font-black uppercase tracking-[0.14em] text-accent"
+                >
+                  <Plus size={12} />
+                  Add collection
+                </button>
+              </div>
+              {momentCollections.length > 0 ? (
+                momentCollections.map((collection) => (
+                  <button
+                    key={collection.label}
+                    type="button"
+                    onClick={() => onOpenCollection(collection)}
+                    className="w-full rounded-[24px] border border-white/10 bg-white/6 p-4 text-left"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-base font-black text-white">{collection.label}</div>
+                        <div className="mt-1 text-xs font-bold uppercase tracking-[0.18em] text-white/35">{collection.places.length} places</div>
+                      </div>
+                      <div className="flex -space-x-2">
+                        {collection.places.slice(0, 3).map((place) => (
+                          <img
+                            key={`${collection.label}-${place.id}`}
+                            src={place.image}
+                            alt={place.name}
+                            className="h-10 w-10 rounded-full border border-zinc-950 object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </button>
+                ))
+              ) : (
+                <div className="rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
+                  No collections yet. Start one for a trip, season, or theme.
+                </div>
+              )}
             </div>
           )}
         </div>

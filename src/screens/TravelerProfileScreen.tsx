@@ -3,7 +3,7 @@ import { AnimatePresence, motion } from 'motion/react';
 import { ArrowRight, Bookmark, MessageCircle, PencilLine, Share2, Zap } from 'lucide-react';
 import PlaceCard from '../components/PlaceCard';
 import { api } from '../lib/api';
-import { type Place, type User } from '../types';
+import { type Place, type PlaceCollection, type User } from '../types';
 
 function getAvatarFallbackUrl(label?: string | null) {
   const initial = (label?.trim().charAt(0) || 'V').toUpperCase();
@@ -49,7 +49,7 @@ export default function TravelerProfileScreen({
   onBack: () => void;
   onSavePlace: (place: Place, nextActive: boolean) => Promise<boolean>;
   onSelectPlace: (p: Place) => void;
-  onOpenCollection: (collection: { label: string; places: Place[] }) => void;
+  onOpenCollection: (collection: PlaceCollection) => void;
   onShareProfile: () => void;
   renderMomentEntryCard: (args: { place: Place; contextNote: string; matchScore?: number; footer: ReactNode }) => ReactNode;
   renderSavedPlaceCard: (place: Place, index: number) => ReactNode;

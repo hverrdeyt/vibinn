@@ -14,6 +14,7 @@ import {
   createMoment,
   getTravelerDiscovery,
   getTravelerProfile,
+  searchPublicTravelers,
   getPlaceTravelerMoments,
   getRelatedPlaces,
   getAccountSettings,
@@ -22,6 +23,7 @@ import {
   getNotifications,
   getNotificationSettings,
   getPrivacySettings,
+  getPublicCollectionById,
   getProfileMe,
   getPublicProfileByUsername,
   getSupport,
@@ -4222,6 +4224,18 @@ app.get('/api/collections', requireAuth, (req: AuthenticatedRequest, res) => {
     .catch((error) => handleError(res, error));
 });
 
+app.get('/api/collections/:id/public', (req, res) => {
+  void getPublicCollectionById(req.params.id)
+    .then((payload) => res.json(payload))
+    .catch((error) => {
+      if (error instanceof Error && error.message === 'Collection not found') {
+        res.status(404).json({ error: error.message });
+        return;
+      }
+      handleError(res, error);
+    });
+});
+
 app.get('/api/bookmarks', requireAuth, (req: AuthenticatedRequest, res) => {
   void getBookmarks(req.authUserId)
     .then((bookmarks) => res.json({ bookmarks }))
@@ -4836,6 +4850,13 @@ app.get('/api/me/interaction-state', requireAuth, async (req: AuthenticatedReque
 app.get('/api/discovery/travelers', requireAuth, (req: AuthenticatedRequest, res) => {
   void getTravelerDiscovery(req.authUserId)
     .then((payload) => res.json(payload))
+    .catch((error) => handleError(res, error));
+});
+
+app.get('/api/discovery/travelers/public-search', (req, res) => {
+  const query = String(req.query.q ?? '').trim();
+  void searchPublicTravelers(query)
+    .then((travelers) => res.json({ travelers }))
     .catch((error) => handleError(res, error));
 });
 

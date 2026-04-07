@@ -281,10 +281,10 @@ export default function PlaceDetailPage({
 
           <div className="mt-4 flex flex-wrap gap-2">
             {typeof data.similarityPercentage === 'number' ? (
-              <InfoChip>{data.similarityPercentage}% similar travelers visited</InfoChip>
+              <InfoChip>{data.similarityPercentage}% of people with similar taste visited</InfoChip>
             ) : null}
             {typeof data.similarTravelerCount === 'number' ? (
-              <InfoChip>{data.similarTravelerCount}+ similar travelers saved this</InfoChip>
+              <InfoChip>{data.similarTravelerCount}+ people with similar taste saved this</InfoChip>
             ) : null}
             {typeof data.rating === 'number' ? (
               // Google Places rating is useful, but intentionally secondary to personalization.
@@ -305,7 +305,7 @@ export default function PlaceDetailPage({
         {hasTravelerMoments ? (
           <section className="space-y-3">
             <div className="flex items-center justify-between">
-              <h3 className="text-lg font-black tracking-[-0.03em] text-white">Travelers like you were here.</h3>
+              <h3 className="text-lg font-black tracking-[-0.03em] text-white">People with your vibe were here.</h3>
               <span className="text-[10px] font-black uppercase tracking-[0.22em] text-white/35">
                 their media
               </span>
@@ -344,10 +344,10 @@ export default function PlaceDetailPage({
           <section className="rounded-[28px] border border-white/10 bg-white/6 p-5">
             <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
               <Sparkles size={14} />
-              Similar travelers
+              Similar people
             </div>
             <h3 className="mt-3 text-lg font-black tracking-[-0.03em] text-white">
-              We haven&apos;t matched traveler moments here yet.
+              We haven&apos;t matched check-ins here yet.
             </h3>
             <p className="mt-2 text-sm font-medium leading-relaxed text-white/68">
               For now, this place is showing up because it fits your taste profile and the place signals we already trust.
@@ -410,7 +410,7 @@ export default function PlaceDetailPage({
                   onClick={onExploreTravelers}
                   className="rounded-full border border-white/10 bg-white/8 px-4 py-3 text-sm font-black text-white transition hover:bg-white/12"
                 >
-                  See travelers with this vibe
+                  See people with this vibe
                 </button>
               ) : null}
               {onExploreMoreLikeThis ? (
@@ -660,7 +660,7 @@ export default function PlaceDetailPage({
                   onClick={onExploreTravelers}
                   className="rounded-full border border-white/10 bg-white/8 px-4 py-3 text-sm font-black text-white transition hover:bg-white/12"
                 >
-                  See travelers with this vibe
+                  See people with this vibe
                 </button>
               ) : null}
             </div>

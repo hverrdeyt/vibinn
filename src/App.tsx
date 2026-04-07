@@ -33,18 +33,17 @@ import {
   CalendarDays,
   ImagePlus,
   Star,
-  WalletCards,
-  SlidersHorizontal,
   Check,
   Mail,
   KeyRound,
   Download,
 } from 'lucide-react';
-import { Screen, User, Place, Interest, Vibe, EventItem } from './types';
+import { Screen, User, Place, PlaceCollection, Interest, Vibe, EventItem } from './types';
 import { MOCK_USER, MOCK_PLACES, SIMILAR_TRAVELERS } from './mockData';
+import { MOCK_REVIEW_QUERY_PARAM, MOCK_REVIEW_SCENARIO, isMockReviewModeEnabled } from './mockReviewData';
 import PlaceCard, { PlaceCardData } from './components/PlaceCard';
 import PlaceDetailPage, { PlaceDetailData } from './components/PlaceDetailPage';
-import TravelerCard, { TravelerCardData } from './components/TravelerCard';
+import { TravelerCardData } from './components/TravelerCard';
 import DetailActionBar from './components/DetailActionBar';
 import { api, ApiError, resolveApiAssetUrl } from './lib/api';
 import { identifyAnalyticsUser, initAnalytics, resetAnalyticsUser, trackEvent, trackPageView } from './lib/analytics';
@@ -145,6 +144,7 @@ const LEGACY_PUBLIC_PROFILE_BASE_PATH = '/u';
 const RESERVED_TOP_LEVEL_PATHS = new Set([
   'app',
   'api',
+  'lists',
   'assets',
   'favicon.ico',
   'robots.txt',
@@ -415,10 +415,15 @@ interface AppRouteState {
   screen: Screen;
   publicProfileUsername?: string | null;
   placeId?: string | null;
+  collectionId?: string | null;
 }
 
 function buildPlaceDetailPath(placeId: string) {
   return `${APP_BASE_PATH}/place/${encodeURIComponent(placeId)}`;
+}
+
+function buildPublicCollectionPath(collectionId: string) {
+  return `/lists/${encodeURIComponent(collectionId)}`;
 }
 
 function screenToAppPath(screen: Screen) {
@@ -428,7 +433,7 @@ function screenToAppPath(screen: Screen) {
     case 'post-preferences-intro':
       return APP_BASE_PATH;
     case 'discover-travelers':
-      return `${APP_BASE_PATH}/travelers`;
+      return `${APP_BASE_PATH}/feed`;
     case 'bookmarks':
       return `${APP_BASE_PATH}/bookmarks`;
     case 'profile':
@@ -480,6 +485,14 @@ function parseAppRoute(pathname: string): AppRouteState {
     }
   }
 
+  const publicCollectionMatch = normalizedPath.match(/^\/lists\/([^/]+)$/);
+  if (publicCollectionMatch) {
+    return {
+      screen: 'collection-detail',
+      collectionId: decodeURIComponent(publicCollectionMatch[1]).trim() || null,
+    };
+  }
+
   const appPath = normalizedPath.startsWith(`${APP_BASE_PATH}/`)
     ? normalizedPath.slice(APP_BASE_PATH.length + 1)
     : '';
@@ -504,6 +517,8 @@ function parseAppRoute(pathname: string): AppRouteState {
     case 'ready':
       return { screen: 'discover-places' };
     case 'travelers':
+      return { screen: 'discover-travelers' };
+    case 'feed':
       return { screen: 'discover-travelers' };
     case 'bookmarks':
       return { screen: 'bookmarks' };
@@ -1406,7 +1421,7 @@ function mapPlaceToCardData(place: Place, index = 0): PlaceCardData {
     country: country ?? '',
     category: getDisplayPlaceCategory(place),
     imageUrl: place.image,
-    rating: [4.8, 4.7, 4.6][index % 3],
+    rating: place.rating,
     priceLevel: getPriceLevel(place),
     hook: place.hook ?? place.description,
     vibeTags: place.tags.slice(0, 3).map((tag) => tag.replace(/-/g, ' ')),
@@ -1527,8 +1542,11 @@ function getPlaceDetailIdFromLocation() {
 
 export default function App() {
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
+  const mockReviewMode = isMockReviewModeEnabled();
+  const mockReviewScenario = mockReviewMode ? MOCK_REVIEW_SCENARIO : null;
   const [currentScreen, setCurrentScreen] = useState<Screen>(() => {
     if (typeof window === 'undefined') return 'landing';
+    const isMockReview = isMockReviewModeEnabled();
     const route = parseAppRoute(window.location.pathname);
     const placeIdFromShareLink = getPlaceDetailIdFromLocation();
     const hasAccess = hasStoredOnboardingCompletion();
@@ -1537,7 +1555,14 @@ export default function App() {
       return route.screen;
     }
 
+    if (route.screen === 'collection-detail') {
+      return route.screen;
+    }
+
     if (route.screen === 'landing') {
+      if (isMockReview) {
+        return 'discover-places';
+      }
       return isNativeApp()
         ? (hasAccess ? 'discover-places' : 'onboarding')
         : 'landing';
@@ -1553,23 +1578,26 @@ export default function App() {
     if (typeof window === 'undefined') return null;
     return parseAppRoute(window.location.pathname).publicProfileUsername ?? null;
   });
+  const [publicCollectionId, setPublicCollectionId] = useState<string | null>(() => {
+    if (typeof window === 'undefined') return null;
+    return parseAppRoute(window.location.pathname).collectionId ?? null;
+  });
   const [publicProfileUser, setPublicProfileUser] = useState<User | null>(null);
   const [isPublicProfileLoading, setIsPublicProfileLoading] = useState(false);
   const [onboardingEntryMode, setOnboardingEntryMode] = useState<'area-first' | 'choice' | 'swipe-direct'>('area-first');
-  const [user, setUser] = useState<User>(MOCK_USER);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [user, setUser] = useState<User>(mockReviewScenario?.user ?? MOCK_USER);
+  const [isAuthenticated, setIsAuthenticated] = useState(mockReviewMode);
   const isAuthenticatedRef = useRef(false);
   const [authReturnScreen, setAuthReturnScreen] = useState<Screen>('discover-places');
   const [authPrompt, setAuthPrompt] = useState('Log in to keep your travel graph synced.');
   const pendingAuthActionRef = useRef<null | (() => void)>(null);
   const isGoogleScriptLoadedRef = useRef(false);
-  const [selectedInterests, setSelectedInterests] = useState<Interest[]>([]);
-  const [selectedVibe, setSelectedVibe] = useState<Vibe | null>(null);
+  const [selectedInterests, setSelectedInterests] = useState<Interest[]>(mockReviewScenario ? [...mockReviewScenario.selectedInterests] : []);
+  const [selectedVibe, setSelectedVibe] = useState<Vibe | null>(mockReviewScenario?.selectedVibe ?? null);
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
   const [selectedTraveler, setSelectedTraveler] = useState<User | null>(null);
   const [placeDetailReturnScreen, setPlaceDetailReturnScreen] = useState<Screen>('discover-places');
-  const [discoverTravelersTab, setDiscoverTravelersTab] = useState<'similar' | 'following'>('following');
   const [isTravelerProfileLoading, setIsTravelerProfileLoading] = useState(false);
   const [placeTravelerMoments, setPlaceTravelerMoments] = useState<Array<{
     id: string;
@@ -1601,9 +1629,9 @@ export default function App() {
       beenTherePlaceIds: string[];
     };
   }>());
-  const [bookmarkedPlaceIds, setBookmarkedPlaceIds] = useState<string[]>([]);
-  const [bookmarkedPlaces, setBookmarkedPlaces] = useState<Place[]>([]);
-  const [dismissedPlaceIds, setDismissedPlaceIds] = useState<string[]>([]);
+  const [bookmarkedPlaceIds, setBookmarkedPlaceIds] = useState<string[]>(mockReviewScenario?.bookmarkedPlaceIds ?? []);
+  const [bookmarkedPlaces, setBookmarkedPlaces] = useState<Place[]>(mockReviewScenario?.bookmarkedPlaces ?? []);
+  const [dismissedPlaceIds, setDismissedPlaceIds] = useState<string[]>(mockReviewScenario?.dismissedPlaceIds ?? []);
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [shareSheetState, setShareSheetState] = useState<null | {
     title: string;
@@ -1617,18 +1645,18 @@ export default function App() {
     fileName: string;
   }>(null);
   const [isProfileRecapGenerating, setIsProfileRecapGenerating] = useState(false);
-  const [savedLocations, setSavedLocations] = useState<SavedLocationOption[]>(INITIAL_SAVED_LOCATIONS);
-  const [activeLocationId, setActiveLocationId] = useState<string>(INITIAL_SAVED_LOCATIONS[0].id);
+  const [savedLocations, setSavedLocations] = useState<SavedLocationOption[]>(mockReviewScenario?.savedLocations ?? INITIAL_SAVED_LOCATIONS);
+  const [activeLocationId, setActiveLocationId] = useState<string>(mockReviewScenario?.activeLocationId ?? INITIAL_SAVED_LOCATIONS[0].id);
   const [deviceLocation, setDeviceLocation] = useState<DeviceLocation | null>(() => getStoredDeviceLocation());
   const [deviceLocationPermission, setDeviceLocationPermission] = useState<'unknown' | 'granted' | 'denied' | 'unsupported'>(() => getStoredDeviceLocationPermission());
   const [isRequestingDeviceLocation, setIsRequestingDeviceLocation] = useState(false);
   const hasRequestedDeviceLocationRef = useRef(false);
   const placeDetailHasHistoryEntryRef = useRef(false);
-  const [discoveryPlaces, setDiscoveryPlaces] = useState<Place[]>([]);
+  const [discoveryPlaces, setDiscoveryPlaces] = useState<Place[]>(mockReviewScenario?.discoveryPlaces ?? []);
   const discoveryRotationSeedRef = useRef(getInitialDiscoveryRotationSeed());
   const [discoverySearchInput, setDiscoverySearchInput] = useState('');
   const [discoverySearchQuery, setDiscoverySearchQuery] = useState('');
-  const [discoveryEvents, setDiscoveryEvents] = useState<EventItem[]>([]);
+  const [discoveryEvents, setDiscoveryEvents] = useState<EventItem[]>(mockReviewScenario?.discoveryEvents ?? []);
   const [savedEventIds, setSavedEventIds] = useState<string[]>([]);
   const [vibedEventIds, setVibedEventIds] = useState<string[]>([]);
   const [sharedEventIds, setSharedEventIds] = useState<string[]>([]);
@@ -1644,9 +1672,11 @@ export default function App() {
   const [showDiscoveryGestureDemo, setShowDiscoveryGestureDemo] = useState(false);
   const postPreferencesIntroTimerRef = useRef<number | null>(null);
   const [isFloatingNavHidden, setIsFloatingNavHidden] = useState(false);
-  const [selectedCollection, setSelectedCollection] = useState<{ label: string; places: Place[] } | null>(null);
-  const [customCollections, setCustomCollections] = useState<{ label: string; places: Place[] }[]>([]);
-  const [myMoments, setMyMoments] = useState<Array<{ id: string; placeId: string }>>([]);
+  const [selectedCollection, setSelectedCollection] = useState<PlaceCollection | null>(null);
+  const [selectedCollectionReturnScreen, setSelectedCollectionReturnScreen] = useState<Screen>('bookmarks');
+  const [selectedCollectionOwner, setSelectedCollectionOwner] = useState<Pick<User, 'avatar' | 'username' | 'displayName'> | null>(null);
+  const [customCollections, setCustomCollections] = useState<PlaceCollection[]>(mockReviewScenario?.customCollections ?? []);
+  const [myMoments, setMyMoments] = useState<Array<{ id: string; placeId: string }>>(mockReviewScenario?.myMoments ?? []);
   const [editableMomentPlace, setEditableMomentPlace] = useState<Place | null>(null);
   const [editableMomentId, setEditableMomentId] = useState<string | null>(null);
   const [createMomentInitialPlace, setCreateMomentInitialPlace] = useState<Place | null>(null);
@@ -1672,6 +1702,28 @@ export default function App() {
   useEffect(() => {
     isAuthenticatedRef.current = isAuthenticated;
   }, [isAuthenticated]);
+
+  useEffect(() => {
+    if (!mockReviewScenario) return;
+
+    isAuthenticatedRef.current = true;
+    setIsAuthenticated(true);
+    setUser(mockReviewScenario.user);
+    setSelectedInterests([...mockReviewScenario.selectedInterests]);
+    setSelectedVibe(mockReviewScenario.selectedVibe);
+    setSavedLocations(mockReviewScenario.savedLocations);
+    setActiveLocationId(mockReviewScenario.activeLocationId);
+    setDiscoveryPlaces(mockReviewScenario.discoveryPlaces);
+    setDiscoveryEvents(mockReviewScenario.discoveryEvents);
+    setBookmarkedPlaceIds(mockReviewScenario.bookmarkedPlaceIds);
+    setBookmarkedPlaces(mockReviewScenario.bookmarkedPlaces);
+    setDismissedPlaceIds(mockReviewScenario.dismissedPlaceIds);
+    setCustomCollections(mockReviewScenario.customCollections);
+    setMyMoments(mockReviewScenario.myMoments);
+    Object.entries(mockReviewScenario.placeDetailBundles).forEach(([placeId, bundle]) => {
+      placeDetailCacheRef.current.set(placeId, bundle);
+    });
+  }, [mockReviewScenario]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1829,7 +1881,16 @@ export default function App() {
       if (route.screen === 'public-profile') {
         placeDetailHasHistoryEntryRef.current = false;
         setPublicProfileUsername(route.publicProfileUsername ?? null);
+        setPublicCollectionId(null);
         setCurrentScreen('public-profile');
+        return;
+      }
+
+      if (route.screen === 'collection-detail' && route.collectionId) {
+        placeDetailHasHistoryEntryRef.current = false;
+        setPublicProfileUsername(null);
+        setPublicCollectionId(route.collectionId);
+        setCurrentScreen('collection-detail');
         return;
       }
 
@@ -1856,6 +1917,7 @@ export default function App() {
 
       placeDetailHasHistoryEntryRef.current = false;
       setPublicProfileUsername(null);
+      setPublicCollectionId(null);
       setCurrentScreen(hasAccess ? route.screen : 'onboarding');
     };
 
@@ -1880,8 +1942,9 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
-    if (window.location.pathname === '/' && currentScreen !== 'landing' && currentScreen !== 'public-profile') {
+    if (window.location.pathname === '/' && currentScreen !== 'landing' && currentScreen !== 'public-profile' && currentScreen !== 'collection-detail') {
       setPublicProfileUsername(null);
+      setPublicCollectionId(null);
       setCurrentScreen(
         isNativeApp()
           ? (hasStoredOnboardingCompletion() ? 'discover-places' : 'onboarding')
@@ -1894,6 +1957,8 @@ export default function App() {
     if (currentScreen === 'public-profile') {
       const username = publicProfileUsername ?? user.username;
       nextPath = `/${encodeURIComponent(username)}`;
+    } else if (currentScreen === 'collection-detail' && publicCollectionId) {
+      nextPath = buildPublicCollectionPath(publicCollectionId);
     } else if (currentScreen === 'place-detail') {
       nextPath = selectedPlace?.id ? buildPlaceDetailPath(selectedPlace.id) : window.location.pathname;
     } else if (currentScreen !== 'landing') {
@@ -1903,7 +1968,7 @@ export default function App() {
     if (`${window.location.pathname}${window.location.search}` !== nextPath) {
       window.history.replaceState({}, '', nextPath);
     }
-  }, [currentScreen, publicProfileUsername, selectedPlace?.id, user.username]);
+  }, [currentScreen, publicProfileUsername, publicCollectionId, selectedPlace?.id, user.username]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1961,7 +2026,34 @@ export default function App() {
   }, [currentScreen, publicProfileUsername, user]);
 
   useEffect(() => {
+    if (currentScreen !== 'collection-detail' || !publicCollectionId) return;
+
+    let isCancelled = false;
+
+    void api.getPublicCollection(publicCollectionId)
+      .then((response) => {
+        if (isCancelled) return;
+        setSelectedCollection(response.collection as PlaceCollection);
+        setSelectedCollectionOwner({
+          avatar: response.owner.avatar,
+          username: response.owner.username,
+          displayName: response.owner.displayName,
+        });
+      })
+      .catch(() => {
+        if (isCancelled) return;
+        showActionToast('Could not load that collection right now');
+        setCurrentScreen('landing');
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentScreen, publicCollectionId]);
+
+  useEffect(() => {
     if (currentScreen === 'landing' || currentScreen === 'public-profile') return;
+    if (currentScreen === 'collection-detail' && publicCollectionId) return;
 
     const hasAccess = hasStoredOnboardingCompletion();
     if (!hasAccess && currentScreen !== 'onboarding') {
@@ -2122,6 +2214,13 @@ export default function App() {
     setCurrentScreen(targetScreen);
   };
 
+  const disableMockReviewMode = () => {
+    if (typeof window === 'undefined') return;
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete(MOCK_REVIEW_QUERY_PARAM);
+    window.location.href = `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`;
+  };
+
   const openPublicProfile = (username?: string) => {
     setPublicProfileUsername(username ?? user.username);
     setCurrentScreen('public-profile');
@@ -2228,6 +2327,16 @@ export default function App() {
   };
 
   const refreshOwnProfile = async (options?: { force?: boolean }) => {
+    if (mockReviewScenario) {
+      setUser(mockReviewScenario.user);
+      setCustomCollections(mockReviewScenario.customCollections);
+      setMyMoments(mockReviewScenario.myMoments);
+      setBookmarkedPlaces(mockReviewScenario.bookmarkedPlaces);
+      setBookmarkedPlaceIds(mockReviewScenario.bookmarkedPlaceIds);
+      ownProfileLastFetchedAtRef.current = Date.now();
+      return;
+    }
+
     const shouldReuseRecentProfile = (
       !options?.force &&
       ownProfileLastFetchedAtRef.current > 0 &&
@@ -2240,6 +2349,7 @@ export default function App() {
       setUser(response.user as User);
       setCustomCollections(
         response.collections.map((collection) => ({
+          id: collection.id,
           label: collection.label,
           places: collection.places as Place[],
         })),
@@ -2271,6 +2381,24 @@ export default function App() {
     };
     includeProfile?: boolean;
   }) => {
+    if (mockReviewScenario) {
+      setUser(mockReviewScenario.user);
+      setBookmarkedPlaces(mockReviewScenario.bookmarkedPlaces);
+      setBookmarkedPlaceIds(mockReviewScenario.bookmarkedPlaceIds);
+      setDismissedPlaceIds(mockReviewScenario.dismissedPlaceIds);
+      setSavedLocations(mockReviewScenario.savedLocations);
+      setActiveLocationId(mockReviewScenario.activeLocationId);
+      setCustomCollections(mockReviewScenario.customCollections);
+      setMyMoments(mockReviewScenario.myMoments);
+      setSelectedInterests([...mockReviewScenario.selectedInterests]);
+      setSelectedVibe(mockReviewScenario.selectedVibe);
+      ownProfileLastFetchedAtRef.current = Date.now();
+      return {
+        selectedInterests: [...mockReviewScenario.selectedInterests] as Interest[],
+        selectedVibe: mockReviewScenario.selectedVibe as Vibe | null,
+      };
+    }
+
     try {
       const [profileResponse, bookmarksResponse, signalsResponse, savedLocationsResponse] = await Promise.all([
         options?.includeProfile ? api.getProfileMe() : Promise.resolve(null),
@@ -2283,6 +2411,7 @@ export default function App() {
         setUser(profileResponse.user as User);
         setCustomCollections(
           profileResponse.collections.map((collection) => ({
+            id: collection.id,
             label: collection.label,
             places: collection.places as Place[],
           })),
@@ -2384,6 +2513,17 @@ export default function App() {
     const resolvedUsername = username ?? user.username;
     if (typeof window === 'undefined') return `/${encodeURIComponent(resolvedUsername)}`;
     return `${window.location.origin}/${encodeURIComponent(resolvedUsername)}`;
+  };
+
+  const buildPublicCollectionShareUrl = (collectionId?: string) => {
+    const resolvedCollectionId = collectionId ?? selectedCollection?.id;
+    if (!resolvedCollectionId) {
+      if (typeof window === 'undefined') return APP_BASE_PATH;
+      return `${window.location.origin}${APP_BASE_PATH}`;
+    }
+    const path = buildPublicCollectionPath(resolvedCollectionId);
+    if (typeof window === 'undefined') return path;
+    return `${window.location.origin}${path}`;
   };
 
   const openShareSheet = (input: { url: string; title: string; text: string; allowRecap?: boolean }) => {
@@ -2798,6 +2938,80 @@ export default function App() {
     setCreateMomentReturnScreen('discover-places');
   };
 
+  const findKnownPlaceById = (placeId: string) => {
+    const knownPlaces = [
+      ...discoveryPlaces,
+      ...bookmarkedPlaces,
+      ...user.travelHistory.flatMap((history) => history.places ?? []),
+      ...customCollections.flatMap((collection) => collection.places),
+    ];
+    return knownPlaces.find((place) => place.id === placeId) ?? null;
+  };
+
+  const applyMockCheckIn = (payload: {
+    placeId: string;
+    visitedDate: string;
+    caption: string;
+    uploadedMedia: string[];
+    rating: number;
+    budgetLevel: '$' | '$$' | '$$$';
+    visitType: 'solo' | 'couple' | 'friends' | 'family';
+    timeOfDay: 'morning' | 'afternoon' | 'sunset' | 'night';
+    privacy: 'public' | 'private';
+    wouldRevisit: 'yes' | 'not_sure' | 'not_interested';
+    vibeTags: string[];
+  }) => {
+    const basePlace = findKnownPlaceById(payload.placeId);
+    if (!basePlace) return;
+
+    const nextMomentId = `mock-checkin-${payload.placeId}-${Date.now()}`;
+    const checkedInPlace: Place = {
+      ...basePlace,
+      momentId: nextMomentId,
+      visitedDate: payload.visitedDate,
+      momentCaption: payload.caption,
+      momentRating: payload.rating,
+      momentWouldRevisit: payload.wouldRevisit,
+      momentVisitType: payload.visitType,
+      momentTimeOfDay: payload.timeOfDay,
+      momentVibeTags: payload.vibeTags,
+      momentMedia: payload.uploadedMedia.length > 0
+        ? payload.uploadedMedia.map((url) => ({ url, mediaType: /\.(mp4|mov|webm|m4v)(\?|#|$)/i.test(url) ? 'video' as const : 'image' as const }))
+        : [{ url: basePlace.image, mediaType: 'image' as const }],
+    };
+
+    setMyMoments((prev) => {
+      const next = [{ id: nextMomentId, placeId: payload.placeId }, ...prev.filter((moment) => moment.placeId !== payload.placeId)];
+      return next;
+    });
+
+    setUser((prev) => {
+      const nextHistory = [...prev.travelHistory];
+      const cityLabel = checkedInPlace.location.split(',')[0]?.trim() ?? checkedInPlace.location;
+      const historyIndex = nextHistory.findIndex((history) => history.cities.includes(cityLabel));
+      if (historyIndex >= 0) {
+        const history = nextHistory[historyIndex];
+        nextHistory[historyIndex] = {
+          ...history,
+          places: [checkedInPlace, ...(history.places ?? []).filter((place) => place.id !== checkedInPlace.id)],
+        };
+      } else {
+        nextHistory.unshift({
+          country: checkedInPlace.location.split(',')[1]?.trim() ?? 'USA',
+          cities: [cityLabel],
+          places: [checkedInPlace],
+        });
+      }
+
+      return {
+        ...prev,
+        travelHistory: nextHistory,
+      };
+    });
+
+    setPlaceDetailInteraction((prev) => ({ ...prev, isBeenThere: true }));
+  };
+
   const openTravelerProfile = async (traveler: User) => {
     trackEvent('View Traveler Detail', {
       traveler_id: traveler.id,
@@ -2807,6 +3021,7 @@ export default function App() {
     setSelectedTraveler(traveler);
     setCurrentScreen('traveler-profile');
 
+    if (mockReviewScenario) return;
     if (!isAuthenticatedRef.current) return;
 
     setIsTravelerProfileLoading(true);
@@ -2829,6 +3044,24 @@ export default function App() {
     }
 
     try {
+      if (mockReviewScenario) {
+        setBookmarkedPlaceIds((prev) => (
+          nextActive
+            ? (prev.includes(place.id) ? prev : [place.id, ...prev])
+            : prev.filter((item) => item !== place.id)
+        ));
+        setBookmarkedPlaces((prev) => (
+          nextActive
+            ? (prev.some((item) => item.id === place.id) ? prev : [place, ...prev])
+            : prev.filter((item) => item.id !== place.id)
+        ));
+        if (options?.dismissAfterSave) {
+          setDismissedPlaceIds((prev) => (prev.includes(place.id) ? prev : [...prev, place.id]));
+        }
+        showActionToast(nextActive ? (options?.toast ?? 'Saved to bookmarks') : 'Removed save');
+        return true;
+      }
+
       if (nextActive) {
         const response = await api.bookmarkPlace({
           placeId: place.id,
@@ -2938,6 +3171,12 @@ export default function App() {
   }, [isAuthenticated, currentScreen]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
+    if (currentScreen !== 'bookmarks') return;
+    void refreshOwnProfile();
+  }, [isAuthenticated, currentScreen]);
+
+  useEffect(() => {
     if (!googleClientId || typeof window === 'undefined') return;
     let didCancel = false;
 
@@ -3031,6 +3270,38 @@ export default function App() {
       };
     },
   ) => {
+    if (mockReviewScenario) {
+      const query = discoverySearchQuery.trim().toLowerCase();
+      const filteredPlaces = mockReviewScenario.discoveryPlaces.filter((place) => {
+        if (!query) return true;
+        const haystack = [
+          place.name,
+          place.location,
+          place.category,
+          place.description,
+          place.hook,
+          ...(place.tags ?? []),
+        ].filter(Boolean).join(' ').toLowerCase();
+        return haystack.includes(query);
+      });
+      const pageSize = page === 1 ? 18 : 10;
+      const start = (page - 1) * pageSize;
+      const nextPlaces = filteredPlaces.slice(start, start + pageSize);
+
+      setDiscoveryPlaces((prev) => (
+        mode === 'append'
+          ? [...prev, ...nextPlaces.filter((place) => !prev.some((item) => item.id === place.id))]
+          : applyRankedVarietyToPlaces(nextPlaces, options?.rotationSeedOverride ?? discoveryRotationSeedRef.current)
+      ));
+      setDiscoveryPage(page);
+      setDiscoveryHasMore(start + pageSize < filteredPlaces.length);
+      setIsDiscoveryPlacesLoading(false);
+      setIsDiscoveryPlacesLoadingMore(false);
+      setIsDiscoveryPlacesRefreshing(false);
+      setIsDiscoveryPlacesError(false);
+      return;
+    }
+
     const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0];
     if (!activeLocation) return;
     const appendScrollTop = mode === 'append' && typeof window !== 'undefined' ? window.scrollY : null;
@@ -3146,6 +3417,13 @@ export default function App() {
     selectedInterests?: Interest[];
     selectedVibe?: Vibe | null;
   }) => {
+    if (mockReviewScenario) {
+      setDiscoveryEvents(mockReviewScenario.discoveryEvents);
+      setIsDiscoveryEventsLoading(false);
+      setIsDiscoveryEventsError(false);
+      return;
+    }
+
     const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? savedLocations[0];
     if (!activeLocation) return;
     const effectiveSelectedInterests = preferencesOverride?.selectedInterests ?? selectedInterests;
@@ -3225,6 +3503,7 @@ export default function App() {
   }, [currentScreen, activeLocationId, savedLocations, selectedInterests, selectedVibe, discoverySearchQuery, discoveryPlaces.length]);
 
   useEffect(() => {
+    if (mockReviewScenario) return;
     if (!api.getStoredAuthToken()) return;
 
     void api.getAuthSession()
@@ -3257,6 +3536,7 @@ export default function App() {
   }, [currentScreen, user.id, user.username]);
 
   useEffect(() => {
+    if (mockReviewScenario) return;
     if (!isAuthenticated) return;
     if (currentScreen !== 'bookmarks') return;
 
@@ -3284,6 +3564,20 @@ export default function App() {
 
   useEffect(() => {
     if (currentScreen !== 'place-detail' || !selectedPlace) {
+      return;
+    }
+
+    if (mockReviewScenario) {
+      const bundle = mockReviewScenario.placeDetailBundles[selectedPlace.id];
+      if (bundle) {
+        setSelectedPlace(bundle.place);
+        setRelatedPlaces(bundle.relatedPlaces);
+        setPlaceTravelerMoments(bundle.travelerMoments);
+        setPlaceDetailInteraction({
+          isSaved: bundle.interactionState.bookmarkedPlaceIds.includes(selectedPlace.id),
+          isBeenThere: bundle.interactionState.beenTherePlaceIds.includes(selectedPlace.id),
+        });
+      }
       return;
     }
 
@@ -3327,6 +3621,17 @@ export default function App() {
   }, [currentScreen, selectedPlace?.id, isAuthenticated]);
 
   useEffect(() => {
+    if (mockReviewScenario) {
+      if (currentScreen !== 'place-detail') {
+        setPlaceFallbackTravelers([]);
+        return;
+      }
+      const combined = [...mockReviewScenario.similarTravelers, ...mockReviewScenario.followedTravelers];
+      const deduped = combined.filter((traveler, index, list) => list.findIndex((item) => item.id === traveler.id) === index);
+      setPlaceFallbackTravelers(deduped.filter((traveler) => (traveler.matchScore ?? 0) >= 80).slice(0, 8));
+      return;
+    }
+
     if (!isAuthenticated || currentScreen !== 'place-detail') {
       setPlaceFallbackTravelers([]);
       return;
@@ -3554,7 +3859,7 @@ export default function App() {
       }}
       onMarkBeenThere={async () => {
         if (!isAuthenticatedRef.current) {
-          openAuthGate('Log in to track places you have been to and post a moment.', 'login');
+          openAuthGate('Log in to check in and track places you have been to.', 'login');
           return;
         }
         setPlaceDetailInteraction((prev) => ({ ...prev, isBeenThere: true }));
@@ -3619,6 +3924,49 @@ export default function App() {
       }}
     />
   ) : null;
+
+  const ownProfileSavedEntries = (user.recentSavedPlaces?.length
+    ? user.recentSavedPlaces
+    : bookmarkedPlaces.slice(0, 8).map((place, index) => ({
+        place,
+        savedAtLabel: index === 0 ? 'just now' : formatRelativeActivityTime(Date.now() - (index + 1) * 3600000),
+        savedAtIso: new Date(Date.now() - index * 3600000).toISOString(),
+      })));
+
+  const ownProfileFeedItems = [
+    ...ownProfileSavedEntries.map((entry, index) => ({
+      id: `${user.id}-saved-${entry.place.id}-${index}`,
+      type: 'saved' as const,
+      traveler: user,
+      place: entry.place,
+      activityDate: entry.savedAtLabel,
+      caption: undefined,
+      compatibility: typeof entry.place.similarityStat === 'number' ? Math.min(entry.place.similarityStat, 98) : undefined,
+      sortTimestamp: entry.savedAtIso
+        ? Date.parse(entry.savedAtIso)
+        : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (index + 1) * 3600000)),
+    })),
+    ...user.travelHistory.flatMap((history) => (history.places ?? []).slice(0, 6)).map((place, index) => ({
+      id: `${user.id}-visited-${place.id}-${index}`,
+      type: 'visited' as const,
+      traveler: user,
+      place,
+      activityDate: formatRelativeActivityTime(place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000),
+      caption: place.momentCaption ?? 'Dropped a check-in here.',
+      compatibility: typeof place.similarityStat === 'number' ? Math.min(place.similarityStat, 98) : undefined,
+      sortTimestamp: place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000,
+    })),
+    ...customCollections.map((collection, index) => ({
+      id: `${user.id}-collection-${collection.id ?? collection.label}-${index}`,
+      type: 'collection' as const,
+      traveler: user,
+      collectionName: collection.label,
+      collectionPlaces: collection.places.slice(0, 4),
+      activityDate: formatRelativeActivityTime(Date.now() - (index + 1) * 86400000),
+      caption: undefined,
+      sortTimestamp: Date.now() - (index + 1) * 86400000,
+    })),
+  ].sort((a, b) => b.sortTimestamp - a.sortTimestamp);
 
   if (
     currentScreen === 'discover-places'
@@ -3747,6 +4095,13 @@ export default function App() {
               }}
               onOpenCollection={(collection) => {
                 setSelectedCollection(collection);
+                setSelectedCollectionReturnScreen('profile');
+                setPublicCollectionId(null);
+                setSelectedCollectionOwner({
+                  avatar: user.avatar,
+                  username: user.username,
+                  displayName: user.displayName,
+                });
                 setCurrentScreen('collection-detail');
               }}
               onEditProfile={() => setCurrentScreen('edit-profile')}
@@ -3788,6 +4143,17 @@ export default function App() {
                   onClick={() => {
                     openPlaceDetail(place, 'profile');
                   }}
+                />
+              )}
+              ownFeedItems={ownProfileFeedItems}
+              renderFeedEntryCard={(item) => (
+                <FollowingFeedCard
+                  item={item}
+                  vibed={false}
+                  vibinCount={0}
+                  commentsCount={0}
+                  onOpenPlace={item.type !== 'collection' ? () => openPlaceDetail(item.place, 'profile') : undefined}
+                  onOpenTraveler={() => setCurrentScreen('profile')}
                 />
               )}
             />
@@ -3862,20 +4228,28 @@ export default function App() {
       case 'add-collection':
         return (
           <AddCollectionScreen
-            moments={user.travelHistory.flatMap((history) => history.places || [])}
-            onBack={() => setCurrentScreen('profile')}
+            savedPlaces={bookmarkedPlaces}
+            onBack={() => setCurrentScreen('bookmarks')}
             onCreateCollection={async (collection) => {
               const response = await api.createCollection({
                 label: collection.label,
                 placeIds: collection.places.map((place) => place.id),
               });
               const nextCollection = {
+                id: response.collection.id,
                 label: response.collection.label,
                 places: response.collection.places as Place[],
               };
               setCustomCollections((prev) => [...prev, nextCollection]);
               setSelectedCollection(nextCollection);
-              await refreshOwnProfile();
+              setSelectedCollectionReturnScreen('bookmarks');
+              setPublicCollectionId(null);
+              setSelectedCollectionOwner({
+                avatar: user.avatar,
+                username: user.username,
+                displayName: user.displayName,
+              });
+              await refreshOwnProfile({ force: true });
               showActionToast('Collection created');
               setCurrentScreen('collection-detail');
             }}
@@ -3900,6 +4274,25 @@ export default function App() {
             place={editableMomentPlace}
             onBack={() => setCurrentScreen('profile')}
             onSave={async (payload) => {
+              if (mockReviewScenario) {
+                applyMockCheckIn({
+                  placeId: editableMomentPlace.id,
+                  visitedDate: payload.visitedDate ?? new Date().toISOString().split('T')[0],
+                  caption: payload.caption ?? '',
+                  uploadedMedia: payload.uploadedMedia ?? [],
+                  rating: payload.rating ?? 4,
+                  budgetLevel: payload.budgetLevel ?? '$$',
+                  visitType: payload.visitType ?? 'solo',
+                  timeOfDay: payload.timeOfDay ?? 'afternoon',
+                  privacy: payload.privacy ?? 'public',
+                  wouldRevisit: payload.wouldRevisit ?? 'yes',
+                  vibeTags: payload.vibeTags ?? [],
+                });
+                resetCreateMomentDraft();
+                showActionToast('Check-in updated');
+                setCurrentScreen('profile');
+                return;
+              }
               await api.updateMoment(editableMomentId, payload);
               await refreshOwnProfile();
               showActionToast('Moment updated');
@@ -3911,8 +4304,21 @@ export default function App() {
         return (
           <BookmarksScreen
             bookmarkedPlaces={bookmarkedPlaces}
+            collections={customCollections}
             onSelectPlace={(place) => {
               openPlaceDetail(place, 'bookmarks');
+            }}
+            onCreateCollection={() => setCurrentScreen('add-collection')}
+            onOpenCollection={(collection) => {
+              setSelectedCollection(collection);
+              setSelectedCollectionReturnScreen('bookmarks');
+              setPublicCollectionId(null);
+              setSelectedCollectionOwner({
+                avatar: user.avatar,
+                username: user.username,
+                displayName: user.displayName,
+              });
+              setCurrentScreen('collection-detail');
             }}
           />
         );
@@ -3927,10 +4333,17 @@ export default function App() {
               setCurrentScreen(nextScreen);
             }}
             onCreateMoment={async (payload) => {
+              if (mockReviewScenario) {
+                applyMockCheckIn(payload);
+                resetCreateMomentDraft();
+                showActionToast('Check-in saved');
+                setCurrentScreen('profile');
+                return;
+              }
               await api.createMoment(payload);
               await refreshOwnProfile();
               resetCreateMomentDraft();
-              showActionToast('Moment saved');
+              showActionToast('Check-in saved');
               setCurrentScreen('profile');
             }}
           />
@@ -3978,8 +4391,11 @@ export default function App() {
         return (
           <TravelerDiscovery
             isAuthenticated={isAuthenticated}
-            activeTab={discoverTravelersTab}
-            onTabChange={setDiscoverTravelersTab}
+            mockReviewData={mockReviewScenario ? {
+              followedTravelers: mockReviewScenario.followedTravelers,
+              similarTravelers: mockReviewScenario.similarTravelers,
+              feedSavedDrops: mockReviewScenario.feedSavedDrops,
+            } : undefined}
             onRequireAuth={(message, action) => openAuthGate(message, 'login', action)}
             onSelectPlace={(p, returnScreen) => {
               openPlaceDetail(p, returnScreen ?? 'discover-places');
@@ -4017,6 +4433,13 @@ export default function App() {
               }}
               onOpenCollection={(collection) => {
                 setSelectedCollection(collection);
+                setSelectedCollectionReturnScreen('traveler-profile');
+                setPublicCollectionId(null);
+                setSelectedCollectionOwner({
+                  avatar: selectedTraveler.avatar,
+                  username: selectedTraveler.username,
+                  displayName: selectedTraveler.displayName,
+                });
                 setCurrentScreen('collection-detail');
               }}
               onShareProfile={() => {
@@ -4050,6 +4473,8 @@ export default function App() {
                   }}
                 />
               )}
+              ownFeedItems={[]}
+              renderFeedEntryCard={() => null}
             />
           </Suspense>
         ) : null;
@@ -4057,9 +4482,20 @@ export default function App() {
         return selectedCollection ? (
           <CollectionDetailScreen
             collection={selectedCollection}
-            onBack={() => setCurrentScreen('traveler-profile')}
+            owner={selectedCollectionOwner}
+            canEdit={selectedCollectionReturnScreen === 'bookmarks' || selectedCollectionReturnScreen === 'profile'}
+            onEdit={() => showActionToast('Collection editing is next up')}
+            onShare={() => {
+              openShareSheet({
+                url: buildPublicCollectionShareUrl(selectedCollection.id),
+                title: selectedCollection.label,
+                text: `Take a look at this collection on Vibinn: ${selectedCollection.label}`,
+                allowRecap: true,
+              });
+            }}
+            onBack={() => setCurrentScreen(selectedCollectionReturnScreen)}
             onSelectPlace={(place) => {
-              openPlaceDetail(place, 'traveler-profile');
+              openPlaceDetail(place, 'collection-detail');
             }}
           />
         ) : null;
@@ -4123,6 +4559,21 @@ export default function App() {
       ? 'min-h-screen bg-zinc-950 relative overflow-hidden'
       : 'max-w-md mx-auto min-h-screen bg-zinc-950 relative overflow-hidden shadow-2xl border-x border-white/8'}
     >
+      {mockReviewMode ? (
+        <div className="pointer-events-none fixed inset-x-0 top-4 z-[95] flex justify-center px-4">
+          <div className="pointer-events-auto flex items-center gap-3 rounded-full border border-accent/35 bg-black/88 px-4 py-2 text-[11px] font-black uppercase tracking-[0.16em] text-accent shadow-[0_18px_40px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+            <span>Mock review mode</span>
+            <button
+              type="button"
+              onClick={disableMockReviewMode}
+              className="rounded-full border border-white/10 bg-white/8 px-3 py-1 text-[10px] text-white"
+            >
+              Exit
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       <AnimatePresence mode="wait">
         <motion.div
           key={currentScreen}
@@ -4158,7 +4609,7 @@ export default function App() {
             type="button"
             onClick={() => {
               if (!isAuthenticated) {
-                openAuthGate('Create an account to add moments and trips to your own profile.', 'register', () => {
+                openAuthGate('Create an account to check in and build your own taste profile.', 'register', () => {
                   resetCreateMomentDraft();
                   setCurrentScreen('create-moment');
                 });
@@ -4168,7 +4619,7 @@ export default function App() {
               setCurrentScreen('create-moment');
             }}
             className="relative -my-5 flex h-16 w-16 items-center justify-center rounded-full border-4 border-zinc-950 bg-accent text-black shadow-[0_18px_40px_rgba(211,255,72,0.28)] transition hover:scale-105 active:scale-[0.98]"
-            aria-label="Add moment or trip"
+            aria-label="Check in"
           >
             <Plus size={26} strokeWidth={2.8} />
           </button>
@@ -4188,7 +4639,7 @@ export default function App() {
           <button 
             onClick={() => {
               if (!isAuthenticated) {
-                openAuthGate('Log in to open your profile and manage your moments.', 'login', () => {
+                openAuthGate('Log in to open your taste profile and manage your check-ins.', 'login', () => {
                   setCurrentScreen('profile');
                 });
                 return;
@@ -4927,18 +5378,18 @@ function EditMomentScreen({
 }
 
 function AddCollectionScreen({
-  moments,
+  savedPlaces,
   onBack,
   onCreateCollection,
 }: {
-  moments: Place[];
+  savedPlaces: Place[];
   onBack: () => void;
   onCreateCollection: (collection: { label: string; places: Place[] }) => void;
 }) {
   const [title, setTitle] = useState('');
-  const [selectedMomentIds, setSelectedMomentIds] = useState<string[]>([]);
+  const [selectedPlaceIds, setSelectedPlaceIds] = useState<string[]>([]);
 
-  const uniqueMoments = moments.filter((place, index, array) => array.findIndex((item) => item.id === place.id) === index);
+  const uniqueSavedPlaces = savedPlaces.filter((place, index, array) => array.findIndex((item) => item.id === place.id) === index);
 
   return (
     <div className="min-h-screen bg-zinc-950 px-4 pb-10 pt-6 text-white">
@@ -4951,8 +5402,8 @@ function AddCollectionScreen({
       </div>
 
       <div className="mb-6">
-        <h1 className="text-3xl font-black tracking-[-0.05em] text-white">Bundle your moments into a collection.</h1>
-        <p className="mt-2 text-sm font-medium text-white/55">Pick moments you already posted, then give the collection a title.</p>
+        <h1 className="text-3xl font-black tracking-[-0.05em] text-white">Bundle your saved places into a collection.</h1>
+        <p className="mt-2 text-sm font-medium text-white/55">Pick places you have saved, then give the collection a title.</p>
       </div>
 
       <div className="rounded-[24px] border border-white/10 bg-white/6 p-4">
@@ -4967,16 +5418,16 @@ function AddCollectionScreen({
       </div>
 
       <div className="mt-6">
-        <div className="mb-3 text-[11px] font-black uppercase tracking-[0.18em] text-white/35">Choose from your moments</div>
+        <div className="mb-3 text-[11px] font-black uppercase tracking-[0.18em] text-white/35">Choose from your saved places</div>
         <div className="space-y-3">
-          {uniqueMoments.map((place) => {
-            const active = selectedMomentIds.includes(place.id);
+          {uniqueSavedPlaces.map((place) => {
+            const active = selectedPlaceIds.includes(place.id);
             return (
               <button
                 key={place.id}
                 type="button"
                 onClick={() =>
-                  setSelectedMomentIds((prev) => prev.includes(place.id) ? prev.filter((id) => id !== place.id) : [...prev, place.id])
+                  setSelectedPlaceIds((prev) => prev.includes(place.id) ? prev.filter((id) => id !== place.id) : [...prev, place.id])
                 }
                 className={`flex w-full items-center gap-3 rounded-[22px] border p-3 text-left transition ${
                   active ? 'border-accent bg-accent/12' : 'border-white/10 bg-white/6 hover:bg-white/8'
@@ -4998,10 +5449,10 @@ function AddCollectionScreen({
 
       <button
         type="button"
-        onClick={() => onCreateCollection({ label: title.trim(), places: uniqueMoments.filter((place) => selectedMomentIds.includes(place.id)) })}
-        disabled={!title.trim() || selectedMomentIds.length === 0}
+        onClick={() => onCreateCollection({ label: title.trim(), places: uniqueSavedPlaces.filter((place) => selectedPlaceIds.includes(place.id)) })}
+        disabled={!title.trim() || selectedPlaceIds.length === 0}
         className={`mt-6 w-full rounded-[1.4rem] px-5 py-4 text-sm font-black transition ${
-          title.trim() && selectedMomentIds.length > 0 ? 'bg-accent text-dark hover:brightness-105' : 'bg-white/10 text-white/35'
+          title.trim() && selectedPlaceIds.length > 0 ? 'bg-accent text-dark hover:brightness-105' : 'bg-white/10 text-white/35'
         }`}
       >
         Create collection
@@ -5053,6 +5504,212 @@ function buildTravelerCardData(traveler: User, index: number, isFollowing = fals
     previewPlaces,
     isFollowing,
   };
+}
+
+function SuggestedTravelerRailCard({
+  traveler,
+  card,
+  onOpenTraveler,
+  onToggleFollow,
+}: {
+  traveler: User;
+  card: TravelerCardData;
+  onOpenTraveler: () => void;
+  onToggleFollow: () => void;
+}) {
+  const visitedCount = traveler.travelHistory.flatMap((trip) => trip.places ?? []).length;
+  const savedCount = traveler.savedPlacesCount ?? traveler.recentSavedPlaces?.length ?? 0;
+  const collectionsCount = traveler.collectionsCount ?? 0;
+
+  return (
+    <div className="flex h-[25.5rem] w-[19rem] shrink-0 flex-col rounded-[28px] border border-white/10 bg-white/6 p-4">
+      <div className="flex items-start gap-3">
+        <button type="button" onClick={onOpenTraveler} className="shrink-0">
+          <img
+            src={traveler.avatar}
+            alt={traveler.username}
+            className="h-14 w-14 rounded-full object-cover"
+            referrerPolicy="no-referrer"
+            onError={(event) => handleAvatarImageError(event, traveler.username)}
+          />
+        </button>
+        <div className="min-w-0 flex-1">
+          <button type="button" onClick={onOpenTraveler} className="block text-left">
+            <div className="truncate text-sm font-black text-white">{traveler.displayName ?? traveler.username}</div>
+            <div className="truncate text-xs font-medium text-white/45">@{traveler.username}</div>
+          </button>
+          <div className="mt-2 text-[13px] font-medium leading-relaxed text-white/72">
+            {card.descriptor || 'Taste worth exploring.'}
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex items-center justify-between gap-3">
+        <div className="rounded-full bg-accent px-3 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-dark">
+          {card.matchScore}% match
+        </div>
+        <button
+          type="button"
+          onClick={onToggleFollow}
+          className={`rounded-full px-4 py-2 text-xs font-black transition ${card.isFollowing ? 'border border-white/10 bg-white/8 text-white' : 'bg-white text-black hover:bg-white/90'}`}
+        >
+          {card.isFollowing ? 'Following' : 'Follow'}
+        </button>
+      </div>
+
+      <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+        <div className="rounded-[18px] border border-white/10 bg-black/20 px-2 py-3">
+          <div className="text-sm font-black text-white">{visitedCount}</div>
+          <div className="mt-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/35">Visited</div>
+        </div>
+        <div className="rounded-[18px] border border-white/10 bg-black/20 px-2 py-3">
+          <div className="text-sm font-black text-white">{savedCount}</div>
+          <div className="mt-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/35">Saved</div>
+        </div>
+        <div className="rounded-[18px] border border-white/10 bg-black/20 px-2 py-3">
+          <div className="text-sm font-black text-white">{collectionsCount}</div>
+          <div className="mt-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/35">Lists</div>
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        {card.previewPlaces.slice(0, 3).map((place) => (
+          <button
+            key={place.id}
+            type="button"
+            onClick={onOpenTraveler}
+            className="overflow-hidden rounded-[16px] border border-white/10 bg-zinc-900"
+          >
+            <img src={place.imageUrl} alt={place.label} className="aspect-[4/5] w-full object-cover" referrerPolicy="no-referrer" />
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function SearchTravelerListCard({
+  traveler,
+  card,
+  onOpenTraveler,
+  onToggleFollow,
+}: {
+  traveler: User;
+  card: TravelerCardData;
+  onOpenTraveler: () => void;
+  onToggleFollow: () => void;
+}) {
+  const visitedCount = traveler.travelHistory.flatMap((trip) => trip.places ?? []).length;
+  const savedCount = traveler.savedPlacesCount ?? traveler.recentSavedPlaces?.length ?? 0;
+  const collectionsCount = traveler.collectionsCount ?? 0;
+
+  return (
+    <div className="rounded-[28px] border border-white/10 bg-white/6 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <button type="button" onClick={onOpenTraveler} className="flex min-w-0 flex-1 items-start gap-3 text-left">
+          <img
+            src={traveler.avatar}
+            alt={traveler.username}
+            className="h-14 w-14 shrink-0 rounded-full object-cover"
+            referrerPolicy="no-referrer"
+            onError={(event) => handleAvatarImageError(event, traveler.username)}
+          />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-black text-white">{traveler.displayName ?? traveler.username}</div>
+            <div className="truncate text-xs font-medium text-white/45">@{traveler.username}</div>
+            <div className="mt-2 text-[13px] font-medium leading-relaxed text-white/72">
+              {card.descriptor || 'Taste worth exploring.'}
+            </div>
+          </div>
+        </button>
+
+        <button
+          type="button"
+          onClick={onToggleFollow}
+          className={`shrink-0 rounded-full px-4 py-2 text-xs font-black transition ${card.isFollowing ? 'border border-white/10 bg-white/8 text-white' : 'bg-white text-black hover:bg-white/90'}`}
+        >
+          {card.isFollowing ? 'Following' : 'Follow'}
+        </button>
+      </div>
+
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        <div className="rounded-full bg-accent px-3 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-dark">
+          {card.matchScore}% match
+        </div>
+        <div className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/55">
+          {visitedCount} visited
+        </div>
+        <div className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/55">
+          {savedCount} saved
+        </div>
+        <div className="rounded-full border border-white/10 bg-black/20 px-3 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/55">
+          {collectionsCount} lists
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatRelativeActivityTime(timestamp: number) {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return 'recently';
+  const diffMs = Date.now() - timestamp;
+  const diffHours = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60)));
+  if (diffHours < 1) return 'just now';
+  if (diffHours < 24) return `${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  if (diffDays < 7) return `${diffDays}d ago`;
+  const diffWeeks = Math.floor(diffDays / 7);
+  if (diffWeeks < 5) return `${diffWeeks}w ago`;
+  const diffMonths = Math.floor(diffDays / 30);
+  if (diffMonths < 12) return `${Math.max(1, diffMonths)}mo ago`;
+  const diffYears = Math.floor(diffDays / 365);
+  return `${Math.max(1, diffYears)}y ago`;
+}
+
+function parseRelativeActivityLabelToTimestamp(label?: string | null) {
+  if (!label) return 0;
+  const normalized = label.trim().toLowerCase();
+  if (!normalized) return 0;
+  if (normalized === 'just now') return Date.now();
+  if (normalized === 'yesterday') return Date.now() - 24 * 60 * 60 * 1000;
+  if (normalized === 'today') return Date.now();
+  if (normalized === 'this week') return Date.now() - 7 * 24 * 60 * 60 * 1000;
+  if (normalized === 'last week') return Date.now() - 7 * 24 * 60 * 60 * 1000;
+  if (normalized === 'this month') return Date.now() - 30 * 24 * 60 * 60 * 1000;
+
+  const shorthandMatch = normalized.match(/^(\d+)\s*(h|d|w|mo|y)\s*ago$/);
+  const wordMatch = normalized.match(/^(\d+)\s*(hour|hours|day|days|week|weeks|month|months|year|years)\s*ago$/);
+  const match = shorthandMatch ?? wordMatch;
+  if (!match) return 0;
+
+  const value = Number(match[1]);
+  const unit = match[2];
+  const hourMs = 60 * 60 * 1000;
+
+  switch (unit) {
+    case 'h':
+    case 'hour':
+    case 'hours':
+      return Date.now() - value * hourMs;
+    case 'd':
+    case 'day':
+    case 'days':
+      return Date.now() - value * 24 * hourMs;
+    case 'w':
+    case 'week':
+    case 'weeks':
+      return Date.now() - value * 7 * 24 * hourMs;
+    case 'mo':
+    case 'month':
+    case 'months':
+      return Date.now() - value * 30 * 24 * hourMs;
+    case 'y':
+    case 'year':
+    case 'years':
+      return Date.now() - value * 365 * 24 * hourMs;
+    default:
+      return 0;
+  }
 }
 
 function isVideoUrl(url: string) {
@@ -5429,6 +6086,152 @@ function TravelerPlaceCard({
   );
 }
 
+function FollowingFeedCard({
+  item,
+  vibed,
+  vibinCount = 0,
+  commentsCount = 0,
+  onOpenPlace,
+  onOpenTraveler,
+  onToggleVibin,
+  onOpenComments,
+}: {
+  item:
+    | {
+        type: 'saved' | 'visited';
+        traveler: User;
+        place: Place;
+        activityDate: string;
+        caption?: string;
+        compatibility?: number;
+        sortTimestamp: number;
+      }
+    | {
+        type: 'collection';
+        traveler: User;
+        collectionName: string;
+        collectionPlaces: Place[];
+        activityDate: string;
+        caption?: string;
+        sortTimestamp: number;
+  };
+  vibed: boolean;
+  vibinCount?: number;
+  commentsCount?: number;
+  onOpenPlace?: () => void;
+  onOpenTraveler: () => void;
+  onToggleVibin?: () => void;
+  onOpenComments?: () => void;
+}) {
+  const activityCopy =
+    item.type === 'saved'
+      ? 'saved a place'
+      : item.type === 'visited'
+        ? 'visited a place'
+        : 'created a collection';
+  return (
+    <div className="rounded-[28px] border border-white/10 bg-white/6 p-4">
+      <div className="flex items-start gap-3">
+        <button type="button" onClick={onOpenTraveler} className="shrink-0">
+          <img
+            src={item.traveler.avatar}
+            alt={item.traveler.username}
+            className="h-11 w-11 rounded-full object-cover"
+            referrerPolicy="no-referrer"
+            onError={(event) => handleAvatarImageError(event, item.traveler.username)}
+          />
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="text-sm text-white">
+                <button type="button" onClick={onOpenTraveler} className="font-black text-left text-white">
+                  {item.traveler.displayName ?? item.traveler.username}
+                </button>
+                <span className="ml-1 font-medium text-white/78">{activityCopy}</span>
+              </div>
+              <div className="text-xs font-medium text-white/45">
+                @{item.traveler.username} • {item.activityDate}
+              </div>
+            </div>
+          </div>
+
+          {item.caption ? (
+            <p className="mt-3 text-sm font-medium leading-relaxed text-white/82">{item.caption}</p>
+          ) : null}
+
+          {item.type === 'collection' ? (
+            <div className="mt-3 overflow-hidden rounded-[22px] border border-white/10 bg-zinc-900/70">
+              <div className="grid grid-cols-2 gap-[1px] bg-white/10">
+                {item.collectionPlaces.slice(0, 4).map((place) => (
+                  <div key={`${item.collectionName}-${place.id}`} className="overflow-hidden bg-black">
+                    <img src={place.image} alt={place.name} className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
+                  </div>
+                ))}
+              </div>
+              <div className="px-4 py-4">
+                <div className="text-sm font-black text-white">{item.collectionName}</div>
+                <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.16em] text-white/35">
+                  {item.collectionPlaces.length} places
+                </div>
+              </div>
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={onOpenPlace}
+              className="mt-3 w-full overflow-hidden rounded-[22px] border border-white/10 bg-zinc-900/70 text-left transition hover:bg-white/8"
+            >
+              <div className="relative aspect-[16/9] w-full overflow-hidden">
+                <img src={item.place.image} alt={item.place.name} className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
+                <div className="absolute inset-x-0 bottom-0 p-4">
+                  <div className="flex items-end justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-black text-white">{item.place.name}</div>
+                      {(item.place.tags ?? []).slice(0, 1).map((tag) => (
+                        <span key={`${item.place.id}-${tag}`} className="mt-2 inline-flex rounded-full border border-white/15 bg-black/35 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-white/80">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                    {typeof item.compatibility === 'number' ? (
+                      <div className="shrink-0 rounded-full bg-accent px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-dark">
+                        {item.compatibility}%
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              </div>
+            </button>
+          )}
+
+          <div className="mt-4 flex items-center gap-4 text-white/60">
+            <button
+              type="button"
+              onClick={onToggleVibin}
+              disabled={!onToggleVibin}
+              className={`inline-flex items-center gap-2 text-sm font-black transition ${vibed ? 'text-accent' : 'hover:text-white'} disabled:cursor-default disabled:opacity-60`}
+            >
+              <Zap size={16} fill={vibed ? 'currentColor' : 'none'} />
+              <span>{vibinCount}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onOpenComments}
+              disabled={!onOpenComments}
+              className="inline-flex items-center gap-2 text-sm font-black transition hover:text-white disabled:cursor-default disabled:opacity-60"
+            >
+              <MessageCircle size={16} />
+              <span>{commentsCount}</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function LocationSearchScreen({
   savedLocations,
   onBack,
@@ -5609,21 +6412,21 @@ function MomentFormScreen({
     mediaType: url.match(/\.(mp4|mov|webm)$/i) ? 'video' as const : 'image' as const,
     status: 'uploaded',
   });
+  const defaultVisitedDate = initialVisitedDate || new Date().toISOString().split('T')[0];
   const [placeQuery, setPlaceQuery] = useState(initialPlace?.name ?? '');
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(initialPlace);
-  const [visitedDate, setVisitedDate] = useState(initialVisitedDate);
+  const [visitedDate, setVisitedDate] = useState(defaultVisitedDate);
   const [caption, setCaption] = useState(initialCaption);
   const [rating, setRating] = useState<number>(initialRating);
-  const [budgetLevel, setBudgetLevel] = useState<'$' | '$$' | '$$$'>(initialBudgetLevel);
+  const [budgetLevel] = useState<'$' | '$$' | '$$$'>(initialBudgetLevel);
   const [uploadedMedia, setUploadedMedia] = useState<DraftMediaItem[]>(
     initialUploadedMedia.map(createMediaItem),
   );
-  const [isAdvancedOpen, setIsAdvancedOpen] = useState(mode === 'edit');
-  const [visitType, setVisitType] = useState<'solo' | 'couple' | 'friends' | 'family'>(initialVisitType);
-  const [timeOfDay, setTimeOfDay] = useState<'morning' | 'afternoon' | 'sunset' | 'night'>(initialTimeOfDay);
-  const [privacy, setPrivacy] = useState<'public' | 'private'>(initialPrivacy);
+  const [visitType] = useState<'solo' | 'couple' | 'friends' | 'family'>(initialVisitType);
+  const [timeOfDay] = useState<'morning' | 'afternoon' | 'sunset' | 'night'>(initialTimeOfDay);
+  const [privacy] = useState<'public' | 'private'>(initialPrivacy);
   const [wouldRevisit, setWouldRevisit] = useState<'yes' | 'not_sure' | 'not_interested'>(initialWouldRevisit);
-  const [vibeTags, setVibeTags] = useState<string[]>(initialVibeTags);
+  const [vibeTags] = useState<string[]>(initialVibeTags);
   const [placeSuggestions, setPlaceSuggestions] = useState<Place[]>([]);
   const [isSearchingPlaces, setIsSearchingPlaces] = useState(false);
   const [isResolvingPlace, setIsResolvingPlace] = useState(false);
@@ -5633,9 +6436,8 @@ function MomentFormScreen({
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ completed: number; total: number; currentFileName: string | null } | null>(null);
 
-  const canSubmit = !!selectedPlace && !!visitedDate && caption.trim().length > 0;
+  const canSubmit = !!selectedPlace && !!visitedDate;
 
-  const quickTags = ['aesthetic', 'quiet', 'crowded', 'date spot', 'hidden gem', 'worth it'];
   const yesterday = new Date();
   yesterday.setDate(yesterday.getDate() - 1);
   const lastSunday = new Date();
@@ -5643,15 +6445,20 @@ function MomentFormScreen({
   const formatDate = (date: Date) => date.toISOString().split('T')[0];
   const captionSuggestions = selectedPlace
     ? [
-        `${selectedPlace.name} honestly lived up to the hype.`,
-        `Would come back here just for the vibe alone.`,
-        `${selectedPlace.location.split(',')[0]} felt different after this stop.`,
+        `${selectedPlace.name} was way better than expected.`,
+        `I would send someone here without overexplaining it.`,
+        `This one actually felt worth the stop.`,
       ]
     : [
-        'Way better than I expected and super easy to stay longer than planned.',
-        'Low effort plan, high reward kind of place.',
-        'One of those spots that actually feels good in real life too.',
+        'Way better than expected.',
+        'Easy yes if you are nearby.',
+        'The vibe actually translated in real life.',
       ];
+
+  const submitCaption = caption.trim()
+    || (selectedPlace
+      ? `${selectedPlace.name} felt like a ${rating >= 4 ? 'strong' : rating === 3 ? 'solid' : 'mixed'} call. ${wouldRevisit === 'yes' ? 'I would come back.' : wouldRevisit === 'not_sure' ? 'Maybe again.' : 'Probably one and done.'}`
+      : '');
 
   const readFileAsDataUrl = (file: Blob) => new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -5777,17 +6584,17 @@ function MomentFormScreen({
           <ArrowRight size={18} className="rotate-180" />
         </button>
         <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
-          {mode === 'create' ? 'Add moment' : 'Edit moment'}
+          {mode === 'create' ? 'Check in' : 'Edit check-in'}
         </div>
         <div className="w-11" />
       </div>
 
       <div className="mb-8">
         <h1 className="text-3xl font-black tracking-[-0.05em] text-white">
-          {mode === 'create' ? 'Add a new travel moment.' : 'Edit your travel moment.'}
+          {mode === 'create' ? 'Check in fast.' : 'Update your check-in.'}
         </h1>
         <p className="mt-2 text-sm font-medium text-white/55">
-          {mode === 'create' ? 'Start with the essentials. Advanced details can come after.' : 'Update the essentials or refine the details below.'}
+          {mode === 'create' ? 'Pick the place, rate it, say if you would go back, and add media if you want.' : 'Tighten the essentials without rebuilding the whole post.'}
         </p>
       </div>
 
@@ -5891,16 +6698,23 @@ function MomentFormScreen({
         </section>
 
         <section className="rounded-[28px] border border-white/10 bg-white/6 p-5">
-          <div className="flex items-center gap-2 text-sm font-black text-white">
-            <CalendarDays size={16} className="text-accent" />
-            <span>Date visited</span>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-black text-white">
+                <CalendarDays size={16} className="text-accent" />
+                <span>Check-in date</span>
+              </div>
+              <div className="mt-1 text-xs font-medium text-white/45">
+                Starts as today, but you can move it if this happened earlier.
+              </div>
+            </div>
+            <input
+              type="date"
+              value={visitedDate}
+              onChange={(event) => setVisitedDate(event.target.value)}
+              className="rounded-[16px] border border-white/10 bg-zinc-900 px-3 py-3 text-sm font-medium text-white outline-none transition focus:ring-2 focus:ring-white/10"
+            />
           </div>
-          <input
-            type="date"
-            value={visitedDate}
-            onChange={(event) => setVisitedDate(event.target.value)}
-            className="mt-4 w-full rounded-[20px] border border-white/10 bg-zinc-900 px-4 py-4 text-sm font-medium text-white outline-none transition focus:ring-2 focus:ring-white/10"
-          />
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               type="button"
@@ -5922,7 +6736,7 @@ function MomentFormScreen({
         <section className="rounded-[28px] border border-white/10 bg-white/6 p-5">
           <div className="flex items-center gap-2 text-sm font-black text-white">
             <ImagePlus size={16} className="text-accent" />
-            <span>Media</span>
+            <span>Photo or video</span>
           </div>
           <label className="mt-4 flex cursor-pointer items-center justify-center rounded-[22px] border border-dashed border-white/20 bg-zinc-900 px-4 py-8 text-center transition hover:bg-white/8">
             <input
@@ -5999,8 +6813,8 @@ function MomentFormScreen({
               }}
             />
             <div>
-              <div className="text-sm font-black text-white">Upload photos or video</div>
-              <div className="mt-1 text-xs font-medium text-white/45">Optional, but it helps your moment feel more alive.</div>
+              <div className="text-sm font-black text-white">Add media if you want</div>
+              <div className="mt-1 text-xs font-medium text-white/45">Optional. The rating and revisit signal matter most.</div>
             </div>
           </label>
           {isUploadingMedia ? (
@@ -6072,13 +6886,13 @@ function MomentFormScreen({
         <section className="rounded-[28px] border border-white/10 bg-white/6 p-5">
           <div className="flex items-center gap-2 text-sm font-black text-white">
             <MessageCircle size={16} className="text-accent" />
-            <span>Caption</span>
+            <span>Overall experience</span>
           </div>
           <textarea
             value={caption}
             onChange={(event) => setCaption(event.target.value)}
             rows={4}
-            placeholder="What did this place actually feel like?"
+            placeholder="What was the overall experience like?"
             className="mt-4 w-full rounded-[20px] border border-white/10 bg-zinc-900 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/35 focus:ring-2 focus:ring-white/10"
           />
           <div className="mt-3 flex flex-wrap gap-2">
@@ -6095,7 +6909,7 @@ function MomentFormScreen({
           </div>
         </section>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <section className="rounded-[28px] border border-white/10 bg-white/6 p-5">
             <div className="flex items-center gap-2 text-sm font-black text-white">
               <Star size={16} className="text-accent" />
@@ -6119,156 +6933,29 @@ function MomentFormScreen({
 
           <section className="rounded-[28px] border border-white/10 bg-white/6 p-5">
             <div className="flex items-center gap-2 text-sm font-black text-white">
-              <WalletCards size={16} className="text-accent" />
-              <span>Budget</span>
+              <Heart size={16} className="text-accent" />
+              <span>Would you revisit?</span>
             </div>
-            <div className="mt-4 flex gap-2">
-              {(['$', '$$', '$$$'] as const).map((value) => (
+            <div className="mt-4 flex flex-wrap gap-2">
+              {[
+                { value: 'yes' as const, label: 'Yes' },
+                { value: 'not_sure' as const, label: 'Maybe' },
+                { value: 'not_interested' as const, label: 'No' },
+              ].map((option) => (
                 <button
-                  key={value}
+                  key={option.value}
                   type="button"
-                  onClick={() => setBudgetLevel(value)}
+                  onClick={() => setWouldRevisit(option.value)}
                   className={`rounded-full border px-4 py-2 text-sm font-black transition ${
-                    budgetLevel === value ? 'border-accent bg-accent text-dark' : 'border-white/10 bg-zinc-900 text-white/70'
+                    wouldRevisit === option.value ? 'border-accent bg-accent text-dark' : 'border-white/10 bg-zinc-900 text-white/70'
                   }`}
                 >
-                  {value}
+                  {option.label}
                 </button>
               ))}
             </div>
           </section>
         </div>
-
-        <section className="overflow-hidden rounded-[28px] border border-white/10 bg-white/6">
-          <button
-            type="button"
-            onClick={() => setIsAdvancedOpen((current) => !current)}
-            className="flex w-full items-center justify-between px-5 py-4 text-left"
-          >
-            <div className="flex items-center gap-2 text-sm font-black text-white">
-              <SlidersHorizontal size={16} className="text-accent" />
-              <span>Advanced settings</span>
-            </div>
-            <ChevronRight
-              size={18}
-              className={`text-white/45 transition-transform ${isAdvancedOpen ? 'rotate-90' : ''}`}
-            />
-          </button>
-
-          <AnimatePresence initial={false}>
-            {isAdvancedOpen ? (
-              <motion.div
-                initial={{ height: 0, opacity: 0 }}
-                animate={{ height: 'auto', opacity: 1 }}
-                exit={{ height: 0, opacity: 0 }}
-                className="overflow-hidden border-t border-white/10"
-              >
-                <div className="space-y-5 p-5">
-                  <div>
-                    <div className="text-xs font-black uppercase tracking-[0.18em] text-white/40">Visit type</div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {(['solo', 'couple', 'friends', 'family'] as const).map((value) => (
-                        <button
-                          key={value}
-                          type="button"
-                          onClick={() => setVisitType(value)}
-                          className={`rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.14em] transition ${
-                            visitType === value ? 'border-accent bg-accent text-dark' : 'border-white/10 bg-zinc-900 text-white/70'
-                          }`}
-                        >
-                          {value}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-xs font-black uppercase tracking-[0.18em] text-white/40">Time of day</div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {(['morning', 'afternoon', 'sunset', 'night'] as const).map((value) => (
-                        <button
-                          key={value}
-                          type="button"
-                          onClick={() => setTimeOfDay(value)}
-                          className={`rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.14em] transition ${
-                            timeOfDay === value ? 'border-accent bg-accent text-dark' : 'border-white/10 bg-zinc-900 text-white/70'
-                          }`}
-                        >
-                          {value}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-xs font-black uppercase tracking-[0.18em] text-white/40">Privacy</div>
-                    <div className="mt-3 flex gap-2">
-                      {(['public', 'private'] as const).map((value) => (
-                        <button
-                          key={value}
-                          type="button"
-                          onClick={() => setPrivacy(value)}
-                          className={`rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.14em] transition ${
-                            privacy === value ? 'border-accent bg-accent text-dark' : 'border-white/10 bg-zinc-900 text-white/70'
-                          }`}
-                        >
-                          {value}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-xs font-black uppercase tracking-[0.18em] text-white/40">Would revisit</div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {[
-                        { value: 'yes' as const, label: 'Yes, I would' },
-                        { value: 'not_sure' as const, label: 'Maybe' },
-                        { value: 'not_interested' as const, label: 'Not interested to revisit' },
-                      ].map((option) => (
-                        <button
-                          key={option.value}
-                          type="button"
-                          onClick={() => setWouldRevisit(option.value)}
-                          className={`rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.14em] transition ${
-                            wouldRevisit === option.value ? 'border-accent bg-accent text-dark' : 'border-white/10 bg-zinc-900 text-white/70'
-                          }`}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-xs font-black uppercase tracking-[0.18em] text-white/40">Vibe tags</div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      {quickTags.map((tag) => {
-                        const active = vibeTags.includes(tag);
-                        return (
-                          <button
-                            key={tag}
-                            type="button"
-                            onClick={() =>
-                              setVibeTags((current) =>
-                                current.includes(tag) ? current.filter((item) => item !== tag) : [...current, tag].slice(0, 3),
-                              )
-                            }
-                            className={`rounded-full border px-4 py-2 text-xs font-black uppercase tracking-[0.14em] transition ${
-                              active ? 'border-accent bg-accent text-dark' : 'border-white/10 bg-zinc-900 text-white/70'
-                            }`}
-                          >
-                            {tag}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  </div>
-                </div>
-              </motion.div>
-            ) : null}
-          </AnimatePresence>
-        </section>
       </div>
 
       <div className="sticky bottom-0 mt-8 bg-gradient-to-t from-zinc-950 via-zinc-950 to-transparent pb-2 pt-6">
@@ -6281,7 +6968,7 @@ function MomentFormScreen({
               await onSubmit({
                   placeId: selectedPlace.id,
                   visitedDate,
-                  caption,
+                  caption: submitCaption,
                   uploadedMedia: uploadedMedia.filter((media) => media.url).map((media) => media.url),
                   rating,
                   budgetLevel,
@@ -6300,7 +6987,7 @@ function MomentFormScreen({
             canSubmit && !isUploadingMedia && !isSubmitting ? 'bg-accent text-dark hover:brightness-105' : 'bg-white/10 text-white/35'
           }`}
         >
-          {isUploadingMedia ? 'Uploading media...' : isSubmitting ? (mode === 'create' ? 'Saving moment...' : 'Updating moment...') : mode === 'create' ? 'Save moment' : 'Update moment'}
+          {isUploadingMedia ? 'Uploading media...' : isSubmitting ? (mode === 'create' ? 'Saving check-in...' : 'Updating check-in...') : mode === 'create' ? 'Save check-in' : 'Update check-in'}
         </button>
       </div>
     </div>
@@ -6343,19 +7030,33 @@ function CreateMomentScreen({
 
 function TravelerDiscovery({
   isAuthenticated,
-  activeTab,
-  onTabChange,
+  mockReviewData,
   onRequireAuth,
   onSelectPlace,
   onSelectTraveler,
 }: {
   isAuthenticated: boolean;
-  activeTab: 'similar' | 'following';
-  onTabChange: (tab: 'similar' | 'following') => void;
+  mockReviewData?: {
+    followedTravelers: User[];
+    similarTravelers: User[];
+    feedSavedDrops: Array<{
+      id: string;
+      travelerId: string;
+      place: Place;
+      caption: string;
+      savedAtLabel: string;
+      savedAtIso?: string;
+    }>;
+  };
   onRequireAuth: (message: string, action: () => void) => void;
   onSelectPlace: (p: Place, returnScreen?: Screen) => void,
   onSelectTraveler: (t: User) => void,
 }) {
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isPeopleSearchOpen, setIsPeopleSearchOpen] = useState(false);
+  const [isSuggestedDismissed, setIsSuggestedDismissed] = useState(false);
+  const [publicSearchTravelers, setPublicSearchTravelers] = useState<Array<{ original: User; card: TravelerCardData }>>([]);
+  const [isPublicSearchLoading, setIsPublicSearchLoading] = useState(false);
   const [vibedFollowingPlaceIds, setVibedFollowingPlaceIds] = useState<string[]>([]);
   const [savedFollowingPlaceIds, setSavedFollowingPlaceIds] = useState<string[]>([]);
   const [sharedFollowingPlaceIds, setSharedFollowingPlaceIds] = useState<string[]>([]);
@@ -6368,9 +7069,18 @@ function TravelerDiscovery({
   const [discoveryTravelers, setDiscoveryTravelers] = useState<{
     followedTravelers: User[];
     similarTravelers: User[];
+    feedSavedDrops: Array<{
+      id: string;
+      travelerId: string;
+      place: Place;
+      caption: string;
+      savedAtLabel: string;
+      savedAtIso?: string;
+    }>;
   }>({
     followedTravelers: [],
     similarTravelers: [],
+    feedSavedDrops: [],
   });
   const followedTravelerIds = new Set(discoveryTravelers.followedTravelers.map((traveler) => traveler.id));
   const similarTravelers = discoveryTravelers.similarTravelers.map((traveler, index) => ({
@@ -6381,26 +7091,132 @@ function TravelerDiscovery({
     original: traveler,
     card: buildTravelerCardData(traveler, index, true),
   }));
+  const displayedFollowedTravelers = mockReviewData
+    ? mockReviewData.followedTravelers.map((traveler, index) => ({
+      original: traveler,
+      card: buildTravelerCardData(traveler, index, true),
+    }))
+    : followedTravelers;
   const fallbackSimilarTravelers = [...similarTravelers, ...followedTravelers].filter(
     (traveler, index, list) => list.findIndex((item) => item.original.id === traveler.original.id) === index,
   );
-  const isSimilarFallback = activeTab === 'similar' && similarTravelers.length === 0;
-  const visibleTravelers = activeTab === 'similar' ? similarTravelers : followedTravelers;
-  const latestFollowedPlaces = followedTravelers.flatMap(({ original }) => {
-    const latestTrip = original.travelHistory[0];
-    const latestPlaces = (latestTrip?.places ?? []).slice(0, 2);
-
-    return latestPlaces.map((place, index) => ({
-      id: `${original.id}-${place.id}-${index}`,
-      place,
+  const followingFeedItems = displayedFollowedTravelers.flatMap(({ original }) => {
+    const recentTrip = original.travelHistory[0];
+    const tripPlaces = recentTrip?.places ?? [];
+    const tripLatestVisitedAt = Math.max(
+      ...tripPlaces
+        .map((place) => (place.visitedDate ? Date.parse(place.visitedDate) : Number.NaN))
+        .filter((value) => Number.isFinite(value)),
+      0,
+    );
+    const recentVisited = tripPlaces.slice(0, 2).map((place, index) => ({
+      id: `${original.id}-visited-${place.id}-${index}`,
+      type: 'visited' as const,
       traveler: original,
-      cityLabel: latestTrip?.cities[0] ?? place.location,
-      visitedTime: index === 0 ? '2 days ago' : 'last week',
+      place,
+      activityDate: formatRelativeActivityTime(place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000),
+      caption: place.momentCaption ?? 'Dropped a check-in here.',
       compatibility: typeof place.similarityStat === 'number' ? Math.min(place.similarityStat, 98) : undefined,
+      sortTimestamp: place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000,
     }));
-  });
-  const hasFollowingFeed = followedTravelers.length > 0 && latestFollowedPlaces.length > 0;
+    const recentSavedSource = mockReviewData?.feedSavedDrops ?? discoveryTravelers.feedSavedDrops ?? [];
+    const recentSaved = mockReviewData
+      ? recentSavedSource
+          .filter((entry) => entry.travelerId === original.id)
+          .map((entry) => ({
+            id: entry.id,
+            type: 'saved' as const,
+            traveler: original,
+            place: entry.place,
+            activityDate: entry.savedAtLabel,
+            caption: entry.caption,
+            compatibility: typeof entry.place.similarityStat === 'number' ? Math.min(entry.place.similarityStat, 98) : undefined,
+            sortTimestamp: entry.savedAtIso
+              ? Date.parse(entry.savedAtIso)
+              : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (recentSavedSource.findIndex((savedEntry) => savedEntry.id === entry.id) + 1) * 3600000)),
+          }))
+      : recentSavedSource.length > 0
+        ? recentSavedSource.filter((entry) => entry.travelerId === original.id).map((entry) => ({
+            id: entry.id,
+            type: 'saved' as const,
+            traveler: original,
+            place: entry.place,
+            activityDate: entry.savedAtLabel,
+            caption: entry.caption,
+            compatibility: typeof entry.place.similarityStat === 'number' ? Math.min(entry.place.similarityStat, 98) : undefined,
+            sortTimestamp: entry.savedAtIso
+              ? Date.parse(entry.savedAtIso)
+              : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (recentSavedSource.findIndex((savedEntry) => savedEntry.id === entry.id) + 1) * 3600000)),
+          }))
+        : (original.recentSavedPlaces ?? []).slice(0, 2).map((entry, index) => ({
+            id: `${original.id}-saved-${entry.place.id}-${index}`,
+            type: 'saved' as const,
+            traveler: original,
+            place: entry.place,
+            activityDate: entry.savedAtLabel,
+            caption: undefined,
+            compatibility: typeof entry.place.similarityStat === 'number' ? Math.min(entry.place.similarityStat, 98) : undefined,
+            sortTimestamp: entry.savedAtIso
+              ? Date.parse(entry.savedAtIso)
+              : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (index + 1) * 3600000)),
+          }));
+    const collections = original.travelHistory
+      .filter((trip) => (trip.places?.length ?? 0) >= 2)
+      .slice(0, 1)
+      .map((trip, index) => ({
+        id: `${original.id}-collection-${trip.cities[0] ?? trip.country}-${index}`,
+        type: 'collection' as const,
+        traveler: original,
+        collectionName: trip.cities[0] ? `${trip.cities[0]} list` : `${trip.country} list`,
+        collectionPlaces: (trip.places ?? []).slice(0, 4),
+        activityDate: formatRelativeActivityTime(original.latestVisitedAtIso ? Date.parse(original.latestVisitedAtIso) : tripLatestVisitedAt || (Date.now() - 7 * 86400000)),
+        caption: `Pulled together a fresh list around ${trip.cities[0] ?? trip.country}.`,
+        sortTimestamp: original.latestVisitedAtIso ? Date.parse(original.latestVisitedAtIso) : tripLatestVisitedAt || (Date.now() - 7 * 86400000),
+      }));
 
+    return [...recentSaved, ...recentVisited, ...collections];
+  }).sort((a, b) => b.sortTimestamp - a.sortTimestamp);
+  const guaranteedMockSavedFeedItems = (mockReviewData?.feedSavedDrops ?? [])
+    .map((entry) => {
+      const traveler = displayedFollowedTravelers.find((item) => item.original.id === entry.travelerId)?.original;
+      if (!traveler) return null;
+      return {
+        id: entry.id,
+        type: 'saved' as const,
+        traveler,
+        place: entry.place,
+        activityDate: entry.savedAtLabel,
+        caption: entry.caption,
+        compatibility: typeof entry.place.similarityStat === 'number' ? Math.min(entry.place.similarityStat, 98) : undefined,
+        sortTimestamp: entry.savedAtIso ? Date.parse(entry.savedAtIso) : parseRelativeActivityLabelToTimestamp(entry.savedAtLabel),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const displayedFollowingFeedItems = mockReviewData
+    ? [...guaranteedMockSavedFeedItems, ...followingFeedItems.filter((item) => item.type !== 'saved')].sort((a, b) => b.sortTimestamp - a.sortTimestamp)
+    : followingFeedItems;
+  const hasFollowingFeed = mockReviewData
+    ? displayedFollowedTravelers.length > 0 || displayedFollowingFeedItems.length > 0
+    : followingFeedItems.length > 0;
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const discoverableTravelers = (similarTravelers.length > 0 ? similarTravelers : fallbackSimilarTravelers)
+    .filter(({ card }) => !card.isFollowing);
+  const searchableTravelers = [...similarTravelers, ...displayedFollowedTravelers].filter(
+    (traveler, index, list) => list.findIndex((item) => item.original.id === traveler.original.id) === index,
+  );
+  const searchResultsTravelers = searchableTravelers.filter(({ original }) => {
+    if (!normalizedSearchQuery) return true;
+    const haystack = [
+      original.username,
+      original.displayName,
+      original.bio,
+    ]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return haystack.includes(normalizedSearchQuery);
+  });
+  const displayedSearchResults = isAuthenticated ? searchResultsTravelers : publicSearchTravelers;
   const showFollowingToast = (message: string) => {
     setFollowingToast(message);
     window.setTimeout(() => {
@@ -6413,6 +7229,15 @@ function TravelerDiscovery({
       setDiscoveryTravelers({
         followedTravelers: [],
         similarTravelers: [],
+        feedSavedDrops: [],
+      });
+      return;
+    }
+    if (mockReviewData) {
+      setDiscoveryTravelers({
+        followedTravelers: mockReviewData.followedTravelers,
+        similarTravelers: mockReviewData.similarTravelers,
+        feedSavedDrops: mockReviewData.feedSavedDrops,
       });
       return;
     }
@@ -6421,10 +7246,59 @@ function TravelerDiscovery({
         setDiscoveryTravelers({
           followedTravelers: response.followedTravelers as User[],
           similarTravelers: response.similarTravelers as User[],
+          feedSavedDrops: (response.feedSavedDrops as Array<{
+            id: string;
+            travelerId: string;
+            place: Place;
+            caption: string;
+            savedAtLabel: string;
+            savedAtIso?: string;
+          }> | undefined) ?? [],
         });
       })
       .catch(() => undefined);
-  }, [isAuthenticated]);
+  }, [isAuthenticated, mockReviewData]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const stored = window.sessionStorage.getItem('vibinn_feed_suggested_dismissed');
+    setIsSuggestedDismissed(stored === '1');
+  }, []);
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      setPublicSearchTravelers([]);
+      setIsPublicSearchLoading(false);
+      return;
+    }
+    if (!isPeopleSearchOpen || normalizedSearchQuery.length < 2) {
+      setPublicSearchTravelers([]);
+      setIsPublicSearchLoading(false);
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      setIsPublicSearchLoading(true);
+      void api.searchPublicTravelers(normalizedSearchQuery)
+        .then((response) => {
+          const travelers = (response.travelers as User[]).map((traveler, index) => ({
+            original: traveler,
+            card: buildTravelerCardData(traveler, index, false),
+          }));
+          setPublicSearchTravelers(travelers);
+        })
+        .catch(() => {
+          setPublicSearchTravelers([]);
+        })
+        .finally(() => {
+          setIsPublicSearchLoading(false);
+        });
+    }, 180);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [isAuthenticated, isPeopleSearchOpen, normalizedSearchQuery]);
 
   useEffect(() => {
     if (!followingCommentsPlace || !isAuthenticated) return;
@@ -6437,10 +7311,18 @@ function TravelerDiscovery({
   }, [followingCommentsPlace, isAuthenticated]);
 
   useEffect(() => {
-    if (!isAuthenticated || latestFollowedPlaces.length === 0) return;
+    if (mockReviewData) {
+      setSavedFollowingPlaceIds([]);
+      setVibedFollowingPlaceIds([]);
+      setFollowingVibinCounts({});
+      setFollowingCommentCounts({});
+      return;
+    }
+    const interactivePlaceItems = followingFeedItems.filter((item) => item.type !== 'collection');
+    if (!isAuthenticated || interactivePlaceItems.length === 0) return;
     void api.getInteractionState({
-      placeIds: latestFollowedPlaces.map((item) => item.place.id),
-      momentIds: latestFollowedPlaces.map((item) => item.place.momentId).filter(Boolean) as string[],
+      placeIds: interactivePlaceItems.map((item) => item.place.id),
+      momentIds: interactivePlaceItems.map((item) => item.place.momentId).filter(Boolean) as string[],
       profileIds: followedTravelers.map((item) => item.original.id),
     })
       .then((response) => {
@@ -6450,43 +7332,113 @@ function TravelerDiscovery({
         setFollowingCommentCounts({ ...response.placeCommentCounts, ...response.momentCommentCounts });
       })
       .catch(() => undefined);
-  }, [isAuthenticated, latestFollowedPlaces.length]);
+  }, [isAuthenticated, followingFeedItems.length, mockReviewData]);
 
   return (
     <div className="min-h-screen bg-zinc-950 px-4 pb-28 pt-12 text-white">
-      <div className="mb-6 inline-flex rounded-full border border-white/10 bg-white/6 p-1">
-        <button
-          type="button"
-          onClick={() => onTabChange('following')}
-          className={`rounded-full px-4 py-2 text-sm font-black transition ${
-            activeTab === 'following' ? 'bg-white text-black' : 'text-white/65'
-          }`}
-        >
-          Following
-        </button>
-        <button
-          type="button"
-          onClick={() => onTabChange('similar')}
-          className={`rounded-full px-4 py-2 text-sm font-black transition ${
-            activeTab === 'similar' ? 'bg-white text-black' : 'text-white/65'
-          }`}
-        >
-          Similar travelers
-        </button>
-      </div>
+      {isPeopleSearchOpen ? (
+        <div className="min-h-screen">
+          <div className="mb-6 flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => setIsPeopleSearchOpen(false)}
+              className="rounded-full bg-white/8 p-3 text-white transition hover:bg-white/12"
+            >
+              <ArrowRight size={18} className="rotate-180" />
+            </button>
+            <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">Search people</div>
+            <div className="w-11" />
+          </div>
+
+          <div className="relative mb-6">
+            <Search className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-white/35" size={18} />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              placeholder="Search people by name, @username, or taste..."
+              className="w-full rounded-[22px] border border-white/10 bg-white/6 py-3.5 pl-11 pr-4 text-sm font-medium text-white outline-none transition placeholder:text-white/35 focus:ring-2 focus:ring-white/10"
+              autoFocus
+            />
+          </div>
+
+          <div className="space-y-4">
+            {normalizedSearchQuery.length === 0 ? null : isPublicSearchLoading ? (
+              <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5 text-sm font-medium text-white/60">
+                Searching people...
+              </div>
+            ) : displayedSearchResults.length === 0 ? (
+              <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5 text-sm font-medium text-white/60">
+                No people matched that search yet. Try a name, username, or bio.
+              </div>
+            ) : (
+              displayedSearchResults.map(({ original, card }) => (
+                <div key={original.id}>
+                  <SearchTravelerListCard
+                    traveler={original}
+                    card={card}
+                    onOpenTraveler={() => onSelectTraveler(original)}
+                    onToggleFollow={async () => {
+                      if (!isAuthenticated) {
+                        onRequireAuth('Log in to follow people whose taste you want to keep up with.', () => undefined);
+                        return;
+                      }
+                      try {
+                        const response = await api.toggleFollow({ targetUserId: original.id });
+                        setDiscoveryTravelers((current) => ({
+                          followedTravelers: response.active
+                            ? current.followedTravelers.some((traveler) => traveler.id === original.id)
+                              ? current.followedTravelers
+                              : [original, ...current.followedTravelers]
+                            : current.followedTravelers.filter((traveler) => traveler.id !== original.id),
+                          similarTravelers: current.similarTravelers,
+                          feedSavedDrops: current.feedSavedDrops,
+                        }));
+                        showFollowingToast(response.active ? 'Followed traveler' : 'Unfollowed traveler');
+                      } catch {
+                        showFollowingToast('Could not update follow right now');
+                      }
+                    }}
+                  />
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      ) : (
+        <>
+          <div className="mb-8 flex items-start justify-between gap-4">
+            <div>
+              <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">Feed</div>
+              <h1 className="mt-2 text-3xl font-black tracking-[-0.05em] text-white">
+                People worth following.
+              </h1>
+              <p className="mt-2 text-sm font-medium leading-relaxed text-white/60">
+                Keep up with saves, check-ins, and fresh people whose picks feel aligned with yours.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsPeopleSearchOpen(true)}
+              className="shrink-0 rounded-full border border-white/10 bg-white/6 p-3 text-white transition hover:bg-white/10"
+              aria-label="Search people"
+            >
+              <Search size={18} />
+            </button>
+          </div>
 
       {!isAuthenticated ? (
         <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5">
           <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
-            Traveler discovery
+            Feed
           </div>
-          <div className="mt-2 text-lg font-black text-white">Log in to unlock traveler matches.</div>
+          <div className="mt-2 text-lg font-black text-white">Log in to unlock your people feed.</div>
           <p className="mt-2 text-sm font-medium leading-relaxed text-white/60">
-            We only show similar travelers and following activity once your profile and taste graph are attached to an account.
+            We only unlock following activity and taste-based people suggestions once your profile is attached to an account.
           </p>
           <button
             type="button"
-            onClick={() => onRequireAuth('Log in to unlock traveler matches and following activity.', () => undefined)}
+            onClick={() => onRequireAuth('Log in to unlock your people feed and follow matching taste.', () => undefined)}
             className="mt-4 rounded-full bg-white px-4 py-3 text-sm font-black text-black transition hover:bg-white/90"
           >
             Log in to continue
@@ -6494,14 +7446,71 @@ function TravelerDiscovery({
         </div>
       ) : null}
 
-      {isAuthenticated && activeTab === 'following' && hasFollowingFeed ? (
+      {isAuthenticated && !isSuggestedDismissed ? (
+        <div className="mb-8">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
+              Suggested people
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setIsSuggestedDismissed(true);
+                if (typeof window !== 'undefined') {
+                  window.sessionStorage.setItem('vibinn_feed_suggested_dismissed', '1');
+                }
+              }}
+              className="rounded-full border border-white/10 bg-white/6 p-2 text-white/55 transition hover:bg-white/10 hover:text-white"
+              aria-label="Dismiss suggested people"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          {discoverableTravelers.length === 0 ? (
+            <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5 text-sm font-medium text-white/60">
+              No people matched that search yet. Try a name, username, or taste keyword.
+            </div>
+          ) : (
+            <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
+              {discoverableTravelers.map(({ original, card }) => (
+                <div key={original.id}>
+                  <SuggestedTravelerRailCard
+                    traveler={original}
+                    card={card}
+                    onOpenTraveler={() => onSelectTraveler(original)}
+                    onToggleFollow={async () => {
+                      try {
+                        const response = await api.toggleFollow({ targetUserId: original.id });
+                        setDiscoveryTravelers((current) => ({
+                          followedTravelers: response.active
+                            ? current.followedTravelers.some((traveler) => traveler.id === original.id)
+                              ? current.followedTravelers
+                              : [original, ...current.followedTravelers]
+                            : current.followedTravelers.filter((traveler) => traveler.id !== original.id),
+                          similarTravelers: current.similarTravelers,
+                          feedSavedDrops: current.feedSavedDrops,
+                        }));
+                        showFollowingToast(response.active ? 'Followed traveler' : 'Unfollowed traveler');
+                      } catch {
+                        showFollowingToast('Could not update follow right now');
+                      }
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      ) : null}
+
+      {isAuthenticated && hasFollowingFeed ? (
         <div className="mb-6">
           <div className="mb-5">
             <div className="mb-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
-              Following
+              People you follow
             </div>
             <div className="flex gap-4 overflow-x-auto pb-2 no-scrollbar">
-              {followedTravelers.map(({ original }) => (
+              {displayedFollowedTravelers.map(({ original }) => (
                 <button
                   key={original.id}
                   type="button"
@@ -6525,146 +7534,68 @@ function TravelerDiscovery({
             </div>
           </div>
 
-          <div className="mb-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
-            Places they visited
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
+              Following activity
+            </div>
+            <div className="text-[10px] font-black uppercase tracking-[0.16em] text-white/25">
+              Latest from your people
+            </div>
           </div>
           <div className="space-y-4">
-            {latestFollowedPlaces.map(({ id, place, traveler, cityLabel, visitedTime, compatibility }) => (
-              <div
-                key={id}
-              >
-                <TravelerPlaceCard
-                  place={place}
-                  contextNote={`${visitedTime} • ${cityLabel}`}
-                  traveler={{ username: traveler.username, avatar: traveler.avatar }}
-                  vibed={vibedFollowingPlaceIds.includes(getPlaceInteractionTargetId(place))}
-                  saved={savedFollowingPlaceIds.includes(place.id)}
-                  shared={sharedFollowingPlaceIds.includes(place.id)}
-                  matchScore={compatibility}
-                  onOpenPlace={() => onSelectPlace(place, 'discover-travelers')}
-                  onOpenTraveler={() => onSelectTraveler(traveler)}
-                  commentsCount={
-                    followingCommentsPlace?.id === place.id
-                      ? followingComments.length || followingCommentCounts[getPlaceInteractionTargetId(place)] || 0
-                      : followingCommentCounts[getPlaceInteractionTargetId(place)] || 0
-                  }
-                  onToggleVibin={async () => {
-                    if (!isAuthenticated) {
-                      onRequireAuth('Log in to send vibin to places from travelers you follow.', () => undefined);
-                      return;
-                    }
-                    const targetId = getPlaceInteractionTargetId(place);
-                    const isActive = vibedFollowingPlaceIds.includes(targetId);
-                    try {
-                      const response = await api.toggleVibin(getPlaceInteractionPayload(place));
-                      setVibedFollowingPlaceIds((prev) =>
-                        isActive ? prev.filter((item) => item !== targetId) : [...prev, targetId],
-                      );
-                      setFollowingVibinCounts((prev) => ({ ...prev, [targetId]: response.count }));
-                      showFollowingToast(isActive ? 'Removed vibin' : 'Sent vibin');
-                    } catch {
-                      showFollowingToast('Could not update vibin right now');
-                    }
-                  }}
-                  onToggleSave={async () => {
-                    if (!isAuthenticated) {
-                      onRequireAuth('Log in to save places from people you follow.', () => undefined);
-                      return;
-                    }
-                    const isActive = savedFollowingPlaceIds.includes(place.id);
-                    try {
-                      if (isActive) {
-                        await api.removeBookmarkPlace(place.id);
-                      } else {
-                        await api.bookmarkPlace({ placeId: place.id });
+            {displayedFollowingFeedItems.map((item) => (
+              <div key={item.id}>
+                <FollowingFeedCard
+                  item={item}
+                  vibed={item.type !== 'collection' && vibedFollowingPlaceIds.includes(getPlaceInteractionTargetId(item.place))}
+                  vibinCount={item.type !== 'collection' ? followingVibinCounts[getPlaceInteractionTargetId(item.place)] || 0 : 0}
+                  commentsCount={item.type !== 'collection'
+                    ? followingCommentsPlace?.id === item.place.id
+                      ? followingComments.length || followingCommentCounts[getPlaceInteractionTargetId(item.place)] || 0
+                      : followingCommentCounts[getPlaceInteractionTargetId(item.place)] || 0
+                    : 0}
+                  onOpenPlace={item.type !== 'collection' ? () => onSelectPlace(item.place, 'discover-travelers') : undefined}
+                  onOpenTraveler={() => onSelectTraveler(item.traveler)}
+                  onToggleVibin={item.type !== 'collection'
+                    ? async () => {
+                        if (!isAuthenticated) {
+                          onRequireAuth('Log in to send vibin to places from people you follow.', () => undefined);
+                          return;
+                        }
+                        const targetId = getPlaceInteractionTargetId(item.place);
+                        const isActive = vibedFollowingPlaceIds.includes(targetId);
+                        try {
+                          const response = await api.toggleVibin(getPlaceInteractionPayload(item.place));
+                          setVibedFollowingPlaceIds((prev) =>
+                            isActive ? prev.filter((entry) => entry !== targetId) : [...prev, targetId],
+                          );
+                          setFollowingVibinCounts((prev) => ({ ...prev, [targetId]: response.count }));
+                          showFollowingToast(isActive ? 'Removed vibin' : 'Sent vibin');
+                        } catch {
+                          showFollowingToast('Could not update vibin right now');
+                        }
                       }
-                      setSavedFollowingPlaceIds((prev) =>
-                        isActive ? prev.filter((item) => item !== place.id) : [...prev, place.id],
-                      );
-                      showFollowingToast(isActive ? 'Removed save' : 'Saved to bookmarks');
-                    } catch {
-                      showFollowingToast('Could not update bookmarks right now');
-                    }
-                  }}
-                  onToggleShare={() =>
-                    setSharedFollowingPlaceIds((prev) =>
-                      prev.includes(place.id) ? prev.filter((item) => item !== place.id) : [...prev, place.id],
-                    )
-                  }
-                  onOpenComments={() => setFollowingCommentsPlace(place)}
+                    : undefined}
+                  onOpenComments={item.type !== 'collection' ? () => setFollowingCommentsPlace(item.place) : undefined}
                 />
               </div>
             ))}
           </div>
         </div>
-      ) : isAuthenticated && activeTab === 'following' ? (
+      ) : isAuthenticated ? (
         <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5">
           <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
-            Following
+            Following activity
           </div>
-          <div className="mt-2 text-lg font-black text-white">Your following feed is empty for now.</div>
+          <div className="mt-2 text-lg font-black text-white">Your following feed is still quiet.</div>
           <p className="mt-2 text-sm font-medium leading-relaxed text-white/60">
-            Follow a few travelers to unlock fresh moments and place drops from people whose trips you want to keep tabs on.
+            Follow a few people so this feed starts filling with real saves and check-ins from taste you want to track.
           </p>
-          <button
-            type="button"
-            onClick={() => onTabChange('similar')}
-            className="mt-4 rounded-full bg-white px-4 py-3 text-sm font-black text-black transition hover:bg-white/90"
-          >
-            See travelers
-          </button>
         </div>
       ) : null}
 
-      {isAuthenticated && activeTab === 'similar' ? (
-        <div className="space-y-4">
-          {similarTravelers.length === 0 ? (
-            <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5">
-              <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
-                Explore travelers
-              </div>
-              <div className="mt-2 text-lg font-black text-white">Your exact matches are still warming up.</div>
-              <p className="mt-2 text-sm font-medium leading-relaxed text-white/60">
-                Showing all available travelers for now, so you can still explore people with useful overlap while the match graph catches up.
-              </p>
-            </div>
-          ) : null}
-
-          {(similarTravelers.length === 0 ? fallbackSimilarTravelers : visibleTravelers).map(({ original, card }) => (
-            <div key={original.id}>
-              <TravelerCard
-                data={
-                  isSimilarFallback
-                    ? {
-                        ...card,
-                        descriptor: card.descriptor || 'community traveler',
-                        relevanceReason: card.relevanceReason || 'Broader community pick while your exact matches are still forming.',
-                        badges: card.badges.length > 0 ? card.badges : ['broad match'],
-                      }
-                    : card
-                }
-                onClick={() => onSelectTraveler(original)}
-                onToggleFollow={async () => {
-                  try {
-                    const response = await api.toggleFollow({ targetUserId: original.id });
-                    setDiscoveryTravelers((current) => ({
-                      followedTravelers: response.active
-                        ? current.followedTravelers.some((traveler) => traveler.id === original.id)
-                          ? current.followedTravelers
-                          : [original, ...current.followedTravelers]
-                        : current.followedTravelers.filter((traveler) => traveler.id !== original.id),
-                      similarTravelers: current.similarTravelers,
-                    }));
-                    showFollowingToast(response.active ? 'Followed traveler' : 'Unfollowed traveler');
-                  } catch {
-                    showFollowingToast('Could not update follow right now');
-                  }
-                }}
-              />
-            </div>
-          ))}
-        </div>
-      ) : null}
+        </>
+      )}
 
       <AnimatePresence>
         {followingCommentsPlace ? (
@@ -6760,11 +7691,19 @@ function TravelerDiscovery({
 
 function BookmarksScreen({
   bookmarkedPlaces,
+  collections,
   onSelectPlace,
+  onCreateCollection,
+  onOpenCollection,
 }: {
   bookmarkedPlaces: Place[],
+  collections: PlaceCollection[],
   onSelectPlace: (p: Place) => void,
+  onCreateCollection: () => void,
+  onOpenCollection: (collection: PlaceCollection) => void,
 }) {
+  const [activeTab, setActiveTab] = useState<'places' | 'collections'>('places');
+  const [expandedCities, setExpandedCities] = useState<string[]>([]);
   const groupedPlaces = bookmarkedPlaces.reduce<Record<string, Place[]>>((acc, place) => {
     const city = place.location.split(',')[0]?.trim() ?? place.location;
     acc[city] = [...(acc[city] ?? []), place];
@@ -6775,42 +7714,139 @@ function BookmarksScreen({
     <div className="min-h-screen bg-zinc-950 px-4 pb-28 pt-12 text-white">
       <div className="mb-8">
         <p className="text-[11px] font-black uppercase tracking-[0.22em] text-white/35">
-          Saved places
+          Saved
         </p>
         <h1 className="mt-2 text-3xl font-black tracking-[-0.05em] text-white">
-          Your bookmarks, sorted by city.
+          Saved places
         </h1>
+        <p className="mt-2 text-sm font-medium text-white/55">
+          Save standouts fast, then turn them into collections when a trip or theme starts coming together.
+        </p>
       </div>
 
-      {bookmarkedPlaces.length === 0 ? (
-        <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
-          <div className="text-lg font-black text-white">No saved places yet.</div>
-          <p className="mt-2 text-sm font-medium text-white/60">
-            Swipe right on a place in discovery and it will show up here.
-          </p>
+      <div className="mb-6">
+        <div className="inline-flex rounded-full border border-white/10 bg-white/6 p-1">
+          <button
+            type="button"
+            onClick={() => setActiveTab('places')}
+            className={`rounded-full px-4 py-2 text-sm font-black transition ${activeTab === 'places' ? 'bg-white text-black' : 'text-white/65'}`}
+          >
+            Saved places
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('collections')}
+            className={`rounded-full px-4 py-2 text-sm font-black transition ${activeTab === 'collections' ? 'bg-white text-black' : 'text-white/65'}`}
+          >
+            Collections
+          </button>
         </div>
-      ) : (
+      </div>
+
+      {activeTab === 'places' ? (
+        bookmarkedPlaces.length === 0 ? (
+          <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
+            <div className="text-lg font-black text-white">No saved places yet.</div>
+            <p className="mt-2 text-sm font-medium text-white/60">
+              Swipe right on a place in discovery and it will show up here.
+            </p>
+          </div>
+        ) : (
         <div className="space-y-8">
           {Object.entries(groupedPlaces).map(([city, places]) => (
             <section key={city}>
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-xl font-black tracking-tight text-white">{city}</h2>
-                <span className="text-[11px] font-bold uppercase tracking-[0.18em] text-white/35">
-                  {places.length} saved
-                </span>
-              </div>
-
-              <div className="space-y-4">
-                {places.map((place, index) => (
-                  <div key={place.id}>
-                    <PlaceCard
-                      data={mapPlaceToCardData(place, index)}
-                      onClick={() => onSelectPlace(place)}
-                    />
+              <button
+                type="button"
+                onClick={() => setExpandedCities((prev) => prev.includes(city) ? prev.filter((item) => item !== city) : [...prev, city])}
+                className="mb-4 flex w-full items-center justify-between rounded-[22px] border border-white/10 bg-white/6 px-4 py-4 text-left transition hover:bg-white/8"
+              >
+                <div>
+                  <h2 className="text-xl font-black tracking-tight text-white">{city}</h2>
+                  <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.18em] text-white/35">
+                    {places.length} saved
                   </div>
+                </div>
+                <ChevronDown
+                  size={18}
+                  className={`text-white/55 transition-transform ${expandedCities.includes(city) ? 'rotate-180' : ''}`}
+                />
+              </button>
+
+              {expandedCities.includes(city) ? (
+                <div className="space-y-4">
+                  {places.map((place, index) => (
+                    <div key={place.id}>
+                      <PlaceCard
+                        data={mapPlaceToCardData(place, index)}
+                        onClick={() => onSelectPlace(place)}
+                      />
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+            </section>
+          ))}
+        </div>
+        )
+      ) : collections.length === 0 ? (
+        <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
+          <div className="text-lg font-black text-white">No collections yet.</div>
+          <p className="mt-2 text-sm font-medium text-white/60">
+            Start one for a trip, mood, or short list of places you want to keep together.
+          </p>
+          <button
+            type="button"
+            onClick={onCreateCollection}
+            className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-[1.25rem] border border-accent/40 bg-accent/10 px-4 py-3 text-[11px] font-black uppercase tracking-[0.14em] text-accent"
+          >
+            <Plus size={12} />
+            New collection
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <button
+            type="button"
+            onClick={onCreateCollection}
+            className="inline-flex w-full items-center justify-center gap-2 rounded-[1.25rem] border border-accent/40 bg-accent/10 px-4 py-3 text-[11px] font-black uppercase tracking-[0.14em] text-accent"
+          >
+            <Plus size={12} />
+            New collection
+          </button>
+          {collections.map((collection) => (
+            <button
+              key={collection.label}
+              type="button"
+              onClick={() => onOpenCollection(collection)}
+              className="w-full rounded-[28px] border border-white/10 bg-white/6 p-5 text-left transition hover:bg-white/8"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="text-lg font-black text-white">{collection.label}</div>
+                  <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.18em] text-white/35">
+                    {collection.places.length} places
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 flex gap-3 overflow-x-auto pb-1 no-scrollbar">
+                {collection.places.map((place) => (
+                  <button
+                    key={place.id}
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onSelectPlace(place);
+                    }}
+                    className="w-40 shrink-0 overflow-hidden rounded-[18px] border border-white/10 bg-zinc-900 text-left"
+                  >
+                    <img src={place.image} alt={place.name} className="aspect-[4/5] w-full object-cover" referrerPolicy="no-referrer" />
+                    <div className="p-3">
+                      <div className="line-clamp-2 text-xs font-black text-white">{place.name}</div>
+                    </div>
+                  </button>
                 ))}
               </div>
-            </section>
+            </button>
           ))}
         </div>
       )}
@@ -7188,10 +8224,18 @@ function EventDetail({
 
 function CollectionDetailScreen({
   collection,
+  owner,
+  canEdit = false,
+  onEdit,
+  onShare,
   onBack,
   onSelectPlace,
 }: {
-  collection: { label: string; places: Place[] };
+  collection: PlaceCollection;
+  owner?: Pick<User, 'avatar' | 'username' | 'displayName'> | null;
+  canEdit?: boolean;
+  onEdit?: () => void;
+  onShare?: () => void;
   onBack: () => void;
   onSelectPlace: (place: Place) => void;
 }) {
@@ -7202,8 +8246,42 @@ function CollectionDetailScreen({
           <ArrowRight size={20} className="rotate-180" />
         </button>
         <div className="px-3 text-sm font-black text-white">{collection.label}</div>
-        <div className="w-12" />
+        <div className="flex items-center gap-2">
+          {canEdit ? (
+            <button
+              type="button"
+              onClick={onEdit}
+              className="rounded-full border border-white/10 bg-white/8 p-2.5 text-white/80 transition hover:bg-white/12"
+              aria-label="Edit collection"
+            >
+              <PencilLine size={16} />
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={onShare}
+            className="rounded-full border border-white/10 bg-white/8 p-2.5 text-white/80 transition hover:bg-white/12"
+            aria-label="Share collection"
+          >
+            <Share2 size={16} />
+          </button>
+        </div>
       </div>
+      {owner ? (
+        <div className="mb-5 flex items-center gap-3 rounded-[22px] border border-white/10 bg-white/6 px-4 py-4">
+          <img
+            src={owner.avatar}
+            alt={owner.username}
+            className="h-12 w-12 rounded-full object-cover"
+            referrerPolicy="no-referrer"
+            onError={(event) => handleAvatarImageError(event, owner.username)}
+          />
+          <div className="min-w-0">
+            <div className="truncate text-sm font-black text-white">{owner.displayName ?? owner.username}</div>
+            <div className="truncate text-xs font-medium text-white/45">@{owner.username}</div>
+          </div>
+        </div>
+      ) : null}
       <div className="space-y-4">
         {collection.places.map((place, index) => (
           <div key={place.id}>

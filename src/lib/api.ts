@@ -272,7 +272,21 @@ export const api = {
     return request<{ events: any[]; pagination: { page: number; limit: number; total: number; hasMore: boolean } }>(`/api/discovery/events?${params.toString()}`);
   },
   getTravelerDiscovery() {
-    return request<{ followedTravelers: any[]; similarTravelers: any[] }>('/api/discovery/travelers');
+    return request<{
+      followedTravelers: any[];
+      similarTravelers: any[];
+      feedSavedDrops?: Array<{
+        id: string;
+        travelerId: string;
+        place: any;
+        caption: string;
+        savedAtLabel: string;
+        savedAtIso?: string;
+      }>;
+    }>('/api/discovery/travelers');
+  },
+  searchPublicTravelers(query: string) {
+    return request<{ travelers: any[] }>(`/api/discovery/travelers/public-search?q=${encodeURIComponent(query)}`);
   },
   getTravelerProfile(id: string) {
     return request<{ traveler: any }>(`/api/travelers/${id}`);
@@ -405,6 +419,12 @@ export const api = {
   },
   getCollections() {
     return request<{ collections: Array<{ id: string; label: string; places: any[] }> }>('/api/collections');
+  },
+  getPublicCollection(id: string) {
+    return request<{
+      collection: { id: string; label: string; places: any[] };
+      owner: { id: string; username: string; displayName?: string; avatar: string };
+    }>(`/api/collections/${encodeURIComponent(id)}/public`);
   },
   getMoments() {
     return request<{ moments: any[] }>('/api/moments');

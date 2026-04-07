@@ -36,6 +36,12 @@ export interface Place {
   momentRating?: number;
 }
 
+export interface PlaceCollection {
+  id?: string;
+  label: string;
+  places: Place[];
+}
+
 export interface User {
   id: string;
   username: string;
@@ -57,6 +63,14 @@ export interface User {
     cities: string[];
     places?: Place[]; // Added places for the collection view
   }[];
+  recentSavedPlaces?: Array<{
+    place: Place;
+    savedAtLabel: string;
+    savedAtIso?: string;
+  }>;
+  latestVisitedAtIso?: string;
+  savedPlacesCount?: number;
+  collectionsCount?: number;
   matchScore?: number;
 }
 
