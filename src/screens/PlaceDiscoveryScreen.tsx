@@ -425,6 +425,7 @@ export default function PlaceDiscoveryScreen({
   getEventPreferenceDebugMatches: (event: EventItem, selectedInterests: Interest[], selectedVibe: Vibe | null) => string[];
 }) {
   const LOCATION_PROMO_DISMISSED_KEY = 'vibinn_location_prompt_dismissed';
+  const VIBE_PROMO_DISMISSED_KEY = 'vibinn_vibe_prompt_dismissed';
   const [isLocationSheetOpen, setIsLocationSheetOpen] = useState(false);
   const [isSearchOpen, setIsSearchOpen] = useState(searchInput.trim().length > 0);
   const [pullDistance, setPullDistance] = useState(0);
@@ -432,6 +433,11 @@ export default function PlaceDiscoveryScreen({
     if (typeof window === 'undefined') return false;
     return window.localStorage.getItem(LOCATION_PROMO_DISMISSED_KEY) === '1';
   });
+  const [isVibePromptDismissed, setIsVibePromptDismissed] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.sessionStorage.getItem(VIBE_PROMO_DISMISSED_KEY) === '1';
+  });
+  const [showStickyVibePrompt, setShowStickyVibePrompt] = useState(false);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const pullStartYRef = useRef<number | null>(null);
   const autoFillLoadMoreRafRef = useRef<number | null>(null);
@@ -511,6 +517,29 @@ export default function PlaceDiscoveryScreen({
       }
     }
   }, [deviceLocationPermission]);
+
+  useEffect(() => {
+    if (hasPreferences) {
+      setShowStickyVibePrompt(false);
+      setIsVibePromptDismissed(false);
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.removeItem(VIBE_PROMO_DISMISSED_KEY);
+      }
+      return;
+    }
+
+    const handleScroll = () => {
+      if (isVibePromptDismissed) {
+        setShowStickyVibePrompt(false);
+        return;
+      }
+      setShowStickyVibePrompt(window.scrollY > 320);
+    };
+
+    handleScroll();
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [hasPreferences, isVibePromptDismissed]);
 
   useEffect(() => {
     if (searchInput.trim().length > 0) {
@@ -710,15 +739,47 @@ export default function PlaceDiscoveryScreen({
         <div className="mb-5 flex items-center justify-between gap-3 rounded-[24px] border border-accent/20 bg-accent/8 px-4 py-3">
           <div className="min-w-0">
             <div className="text-sm font-semibold text-white">Unlock your vibe</div>
-            <div className="text-xs text-white/65">Pick a few preferences so Vibinn can tune these picks around your taste.</div>
+            <div className="text-xs text-white/65">Give AI your taste so these picks feel more you.</div>
           </div>
           <button
             type="button"
             onClick={onOpenPreferences}
             className="shrink-0 rounded-full bg-accent px-4 py-2 text-xs font-black text-black transition hover:bg-accent/90"
           >
-            Pick my vibe
+            Start
           </button>
+        </div>
+      ) : null}
+
+      {!hasPreferences && showStickyVibePrompt && !isVibePromptDismissed ? (
+        <div className="pointer-events-none fixed inset-x-0 bottom-24 z-40 flex justify-center px-4">
+          <div className="pointer-events-auto flex w-full max-w-[25rem] items-center gap-3 rounded-[28px] border border-accent/20 bg-zinc-950/92 px-4 py-3 shadow-[0_18px_50px_rgba(0,0,0,0.35)] backdrop-blur-xl">
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold text-white">Unlock your vibe</div>
+              <div className="text-xs text-white/65">Give AI your taste so these picks feel more you.</div>
+            </div>
+            <button
+              type="button"
+              onClick={onOpenPreferences}
+              className="shrink-0 rounded-full bg-accent px-4 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-black transition hover:bg-accent/90"
+            >
+              Start
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsVibePromptDismissed(true);
+                setShowStickyVibePrompt(false);
+                if (typeof window !== 'undefined') {
+                  window.sessionStorage.setItem(VIBE_PROMO_DISMISSED_KEY, '1');
+                }
+              }}
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-white/10 bg-black/20 text-white/60 transition hover:bg-white/10 hover:text-white"
+              aria-label="Dismiss vibe prompt"
+            >
+              <X size={14} />
+            </button>
+          </div>
         </div>
       ) : null}
 
