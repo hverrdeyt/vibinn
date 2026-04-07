@@ -5060,6 +5060,21 @@ function isRenderableAssetUrl(url?: string | null) {
   return /^(https?:)?\/\//i.test(url) || url.startsWith('/') || url.startsWith('data:') || url.startsWith('blob:');
 }
 
+function normalizeRenderableAssetUrl(url?: string | null) {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+
+  const resolved = resolveApiAssetUrl(trimmed);
+  if (isRenderableAssetUrl(resolved)) return resolved;
+
+  if (/^[a-z0-9/_-]+\.(jpg|jpeg|png|webp|gif|mp4|mov|webm)(\?.*)?$/i.test(trimmed)) {
+    return resolveApiAssetUrl(`/${trimmed.replace(/^\/+/, '')}`);
+  }
+
+  return null;
+}
+
 function handleMediaImageError(event: { currentTarget: HTMLImageElement }, label?: string | null) {
   const fallbackUrl = getAvatarFallbackUrl(label);
   if (event.currentTarget.src === fallbackUrl) return;
@@ -5170,14 +5185,22 @@ function MomentEntryCard({
   matchScore?: number;
   traveler?: { username: string; avatar: string };
 }) {
-  const media = (place.images?.length ? place.images : [place.image]).filter((url) => isRenderableAssetUrl(url)).map((url) => resolveApiAssetUrl(url));
-  const validMomentMedia = (place.momentMedia ?? []).filter((item) => isRenderableAssetUrl(item.url));
+  const media = (place.images?.length ? place.images : [place.image])
+    .map((url) => normalizeRenderableAssetUrl(url))
+    .filter((url): url is string => Boolean(url));
+  const validMomentMedia = (place.momentMedia ?? [])
+    .map((item) => {
+      const normalizedUrl = normalizeRenderableAssetUrl(item.url);
+      if (!normalizedUrl) return null;
+      return {
+        ...item,
+        url: normalizedUrl,
+      };
+    })
+    .filter((item): item is { url: string; mediaType: 'image' | 'video' } => Boolean(item));
   const normalizedMedia = (validMomentMedia.length > 0
     ? validMomentMedia
-    : media.map((url) => ({ url, mediaType: isVideoUrl(url) ? 'video' as const : 'image' as const }))).map((item) => ({
-      ...item,
-      url: resolveApiAssetUrl(item.url),
-    }));
+    : media.map((url) => ({ url, mediaType: isVideoUrl(url) ? 'video' as const : 'image' as const })));
   const primaryMeta = [
     place.momentTimeOfDay,
     place.momentVisitType,
