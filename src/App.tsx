@@ -137,7 +137,6 @@ interface DiscoveryPlacesCacheEntry {
 const ONBOARDING_COMPLETED_KEY = 'vibecheck_onboarding_completed';
 const DEVICE_LOCATION_KEY = 'vibinn_device_location';
 const DEVICE_LOCATION_PERMISSION_KEY = 'vibinn_device_location_permission';
-const HOME_SCREEN_PROMO_DISMISSED_KEY = 'vibinn_home_screen_promo_dismissed';
 const DISCOVERY_CACHE_PREFIX = 'vibinn_discovery_cache:';
 const DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
 const APP_BASE_PATH = '/app';
@@ -800,32 +799,38 @@ function GoogleIdentityButton({
       return;
     }
 
-    buttonRef.current.innerHTML = '';
-    window.google.accounts.id.initialize({
-      client_id: clientId,
-      ux_mode: 'popup',
-      context: text === 'signup_with' ? 'signup' : 'signin',
-      callback: (response) => {
-        if (!response.credential) {
-          setErrorMessage('Google did not return a sign-in credential.');
-          return;
-        }
-        setErrorMessage(null);
-        void onCredential(response.credential).catch((error) => {
-          setErrorMessage(error instanceof Error ? error.message : 'Could not continue with Google right now.');
-        });
-      },
-    });
-    window.google.accounts.id.renderButton(buttonRef.current, {
-      type: 'standard',
-      theme: 'outline',
-      size: 'large',
-      text,
-      shape: 'pill',
-      width: 320,
-      logo_alignment: 'left',
-    });
-    setIsGoogleButtonReady(true);
+    try {
+      buttonRef.current.innerHTML = '';
+      setErrorMessage(null);
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        ux_mode: 'popup',
+        context: text === 'signup_with' ? 'signup' : 'signin',
+        callback: (response) => {
+          if (!response.credential) {
+            setErrorMessage('Google did not return a sign-in credential.');
+            return;
+          }
+          setErrorMessage(null);
+          void onCredential(response.credential).catch((error) => {
+            setErrorMessage(error instanceof Error ? error.message : 'Could not continue with Google right now.');
+          });
+        },
+      });
+      window.google.accounts.id.renderButton(buttonRef.current, {
+        type: 'standard',
+        theme: 'outline',
+        size: 'large',
+        text,
+        shape: 'pill',
+        width: 320,
+        logo_alignment: 'left',
+      });
+      setIsGoogleButtonReady(true);
+    } catch (error) {
+      setIsGoogleButtonReady(false);
+      setErrorMessage(error instanceof Error ? error.message : 'Google sign-in is not ready yet.');
+    }
   }, [clientId, disabled, onCredential, text]);
 
   if (!clientId) {
@@ -1256,6 +1261,18 @@ function shouldExcludeDiscoveryPlace(place: Pick<Place, 'name' | 'category' | 't
   const blockedMatchers = [
     'service',
     'services',
+    'school',
+    'high school',
+    'middle school',
+    'elementary school',
+    'prep school',
+    'academy',
+    'college',
+    'university',
+    'campus',
+    'student center',
+    'education',
+    'educational',
     'repair',
     'cell phone repair',
     'phone repair',
@@ -1498,21 +1515,6 @@ function getStoredDeviceLocationPermission() {
   return 'unknown' as const;
 }
 
-function isStandaloneDisplayMode() {
-  if (typeof window === 'undefined') return false;
-  return window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
-}
-
-function isIosSafariLike() {
-  if (typeof window === 'undefined') return false;
-  const ua = window.navigator.userAgent.toLowerCase();
-  const isIos = /iphone|ipad|ipod/.test(ua);
-  const isWebKit = /webkit/.test(ua);
-  const isCriOs = /crios/.test(ua);
-  const isFxiOS = /fxios/.test(ua);
-  return isIos && isWebKit && !isCriOs && !isFxiOS;
-}
-
 function getPlaceDetailIdFromLocation() {
   if (typeof window === 'undefined') return null;
   const route = parseAppRoute(window.location.pathname);
@@ -1620,13 +1622,6 @@ export default function App() {
   const [isRequestingDeviceLocation, setIsRequestingDeviceLocation] = useState(false);
   const hasRequestedDeviceLocationRef = useRef(false);
   const placeDetailHasHistoryEntryRef = useRef(false);
-  const [deferredInstallPrompt, setDeferredInstallPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstallHelpVisible, setIsInstallHelpVisible] = useState(false);
-  const [isHomeScreenPromoDismissed, setIsHomeScreenPromoDismissed] = useState(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem(HOME_SCREEN_PROMO_DISMISSED_KEY) === '1';
-  });
-  const [hasQualifiedForHomeScreenPromo, setHasQualifiedForHomeScreenPromo] = useState(false);
   const [discoveryPlaces, setDiscoveryPlaces] = useState<Place[]>([]);
   const discoveryRotationSeedRef = useRef(getInitialDiscoveryRotationSeed());
   const [discoverySearchInput, setDiscoverySearchInput] = useState('');
@@ -1793,56 +1788,6 @@ export default function App() {
 
     window.localStorage.setItem(DEVICE_LOCATION_PERMISSION_KEY, deviceLocationPermission);
   }, [deviceLocationPermission]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    if (isHomeScreenPromoDismissed) {
-      window.localStorage.setItem(HOME_SCREEN_PROMO_DISMISSED_KEY, '1');
-      return;
-    }
-
-    window.localStorage.removeItem(HOME_SCREEN_PROMO_DISMISSED_KEY);
-  }, [isHomeScreenPromoDismissed]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    if (hasQualifiedForHomeScreenPromo) return;
-    if (isHomeScreenPromoDismissed) return;
-    if (!isIosSafariLike() || isStandaloneDisplayMode()) return;
-    if (currentScreen !== 'discover-places') return;
-
-    const timeoutId = window.setTimeout(() => {
-      setHasQualifiedForHomeScreenPromo(true);
-    }, 10000);
-
-    return () => window.clearTimeout(timeoutId);
-  }, [currentScreen, hasQualifiedForHomeScreenPromo, isHomeScreenPromoDismissed]);
-
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const handleBeforeInstallPrompt = (event: Event) => {
-      const installEvent = event as BeforeInstallPromptEvent;
-      installEvent.preventDefault();
-      setDeferredInstallPrompt(installEvent);
-    };
-
-    const handleAppInstalled = () => {
-      setDeferredInstallPrompt(null);
-      setIsInstallHelpVisible(false);
-      setIsHomeScreenPromoDismissed(true);
-      showActionToast('Vibinn added to your home screen');
-    };
-
-    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    window.addEventListener('appinstalled', handleAppInstalled);
-
-    return () => {
-      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
-    };
-  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -2436,43 +2381,6 @@ export default function App() {
     setShareSheetState(input);
   };
 
-  const dismissHomeScreenPromo = () => {
-    setIsInstallHelpVisible(false);
-    setIsHomeScreenPromoDismissed(true);
-  };
-
-  const handleHomeScreenPromoAction = async () => {
-    if (deferredInstallPrompt) {
-      try {
-        await deferredInstallPrompt.prompt();
-        const choice = await deferredInstallPrompt.userChoice;
-        setDeferredInstallPrompt(null);
-        if (choice.outcome === 'accepted') {
-          setIsHomeScreenPromoDismissed(true);
-          showActionToast('Vibinn is heading to your home screen');
-        }
-      } catch {
-        showActionToast('Could not open the install prompt right now');
-      }
-      return;
-    }
-
-    if (isIosSafariLike()) {
-      setIsInstallHelpVisible(true);
-      return;
-    }
-
-    showActionToast('Use your browser menu to add Vibinn to your home screen');
-  };
-
-  const shouldShowHomeScreenPromo = !isHomeScreenPromoDismissed
-    && hasQualifiedForHomeScreenPromo
-    && !isNativeApp()
-    && !isStandaloneDisplayMode()
-    && isIosSafariLike()
-    && currentScreen === 'discover-places';
-  const homeScreenPromoSpacerClass = isInstallHelpVisible ? 'h-[8.5rem]' : 'h-[5.5rem]';
-
   const copyText = async (value: string) => {
     if (typeof window === 'undefined' || typeof document === 'undefined') return false;
 
@@ -3020,17 +2928,46 @@ export default function App() {
 
   useEffect(() => {
     if (!googleClientId || typeof window === 'undefined') return;
+    let didCancel = false;
+
+    const markLoaded = () => {
+      if (didCancel) return;
+      if (window.google?.accounts?.id) {
+        isGoogleScriptLoadedRef.current = true;
+      }
+    };
+
     if (window.google?.accounts?.id) {
-      isGoogleScriptLoadedRef.current = true;
+      markLoaded();
       return;
     }
 
     const existingScript = document.querySelector('script[data-google-identity="true"]') as HTMLScriptElement | null;
     if (existingScript) {
-      existingScript.addEventListener('load', () => {
-        isGoogleScriptLoadedRef.current = true;
-      });
-      return;
+      if (existingScript.dataset.loaded === '1') {
+        markLoaded();
+        return;
+      }
+
+      const handleLoad = () => {
+        existingScript.dataset.loaded = '1';
+        markLoaded();
+      };
+      const handleError = () => {
+        if (didCancel) return;
+        isGoogleScriptLoadedRef.current = false;
+      };
+      const timeoutId = window.setTimeout(markLoaded, 2500);
+
+      existingScript.addEventListener('load', handleLoad);
+      existingScript.addEventListener('error', handleError);
+
+      return () => {
+        didCancel = true;
+        window.clearTimeout(timeoutId);
+        existingScript.removeEventListener('load', handleLoad);
+        existingScript.removeEventListener('error', handleError);
+      };
     }
 
     const script = document.createElement('script');
@@ -3039,9 +2976,20 @@ export default function App() {
     script.defer = true;
     script.dataset.googleIdentity = 'true';
     script.onload = () => {
-      isGoogleScriptLoadedRef.current = true;
+      script.dataset.loaded = '1';
+      markLoaded();
+    };
+    script.onerror = () => {
+      if (didCancel) return;
+      isGoogleScriptLoadedRef.current = false;
     };
     document.head.appendChild(script);
+
+    const timeoutId = window.setTimeout(markLoaded, 2500);
+    return () => {
+      didCancel = true;
+      window.clearTimeout(timeoutId);
+    };
   }, [googleClientId]);
 
   const continueWithGoogle = async (idToken: string) => {
@@ -4143,48 +4091,6 @@ export default function App() {
       ? 'min-h-screen bg-zinc-950 relative overflow-hidden'
       : 'max-w-md mx-auto min-h-screen bg-zinc-950 relative overflow-hidden shadow-2xl border-x border-white/8'}
     >
-      {shouldShowHomeScreenPromo ? (
-        <div className="fixed inset-x-0 top-0 z-[70]">
-          <div className="mx-auto max-w-md px-3 pt-[max(env(safe-area-inset-top),0.75rem)]">
-            <div className="overflow-hidden rounded-[1.5rem] border border-white/10 bg-zinc-900/95 shadow-[0_20px_60px_rgba(0,0,0,0.45)] backdrop-blur">
-              <div className="flex items-center gap-3 px-3 py-3">
-                <img
-                  src="/vibinn-icon.png"
-                  alt="Vibinn"
-                  className="h-11 w-11 rounded-[1rem] border border-black/10 bg-accent object-cover"
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="text-sm font-black tracking-tight text-white">Add Vibinn to your home screen</div>
-                  <div className="mt-0.5 text-xs font-medium leading-relaxed text-white/55">
-                    Open it faster and make it feel more like an app.
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={handleHomeScreenPromoAction}
-                  className="rounded-full bg-accent px-3 py-2 text-[11px] font-black uppercase tracking-[0.12em] text-black transition hover:brightness-105"
-                >
-                  Add
-                </button>
-                <button
-                  type="button"
-                  onClick={dismissHomeScreenPromo}
-                  className="rounded-full border border-white/10 bg-white/5 p-2 text-white/55 transition hover:text-white"
-                  aria-label="Dismiss add to home screen prompt"
-                >
-                  <X size={14} />
-                </button>
-              </div>
-              {isInstallHelpVisible ? (
-                <div className="border-t border-white/8 bg-white/[0.03] px-4 py-3 text-xs font-medium leading-relaxed text-white/68">
-                  In Safari on iPhone, tap <span className="font-black text-white">Share</span> then choose <span className="font-black text-white">Add to Home Screen</span>.
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {shouldShowHomeScreenPromo ? <div className={homeScreenPromoSpacerClass} /> : null}
       <AnimatePresence mode="wait">
         <motion.div
           key={currentScreen}
