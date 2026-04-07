@@ -1557,6 +1557,7 @@ export default function App() {
   const [onboardingEntryMode, setOnboardingEntryMode] = useState<'area-first' | 'choice' | 'swipe-direct'>('area-first');
   const [user, setUser] = useState<User>(MOCK_USER);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const isAuthenticatedRef = useRef(false);
   const [authReturnScreen, setAuthReturnScreen] = useState<Screen>('discover-places');
   const [authPrompt, setAuthPrompt] = useState('Log in to keep your travel graph synced.');
   const pendingAuthActionRef = useRef<null | (() => void)>(null);
@@ -1666,6 +1667,10 @@ export default function App() {
   useEffect(() => {
     initAnalytics();
   }, []);
+
+  useEffect(() => {
+    isAuthenticatedRef.current = isAuthenticated;
+  }, [isAuthenticated]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -2798,7 +2803,7 @@ export default function App() {
     setSelectedTraveler(traveler);
     setCurrentScreen('traveler-profile');
 
-    if (!isAuthenticated) return;
+    if (!isAuthenticatedRef.current) return;
 
     setIsTravelerProfileLoading(true);
     try {
@@ -2812,7 +2817,7 @@ export default function App() {
   };
 
   const syncBookmarkState = async (place: Place, nextActive: boolean, options?: { dismissAfterSave?: boolean; toast?: string }) => {
-    if (!isAuthenticated) {
+    if (!isAuthenticatedRef.current) {
       openAuthGate('Log in to save places to your bookmarks.', 'login', () => {
         void syncBookmarkState(place, nextActive, options);
       });
@@ -2869,8 +2874,17 @@ export default function App() {
       selectedInterests,
       selectedVibe,
     };
+    const nextScreen = authReturnScreen === 'login' || authReturnScreen === 'register'
+      ? 'discover-places'
+      : authReturnScreen;
+    const shouldRefreshDiscoveryImmediately = nextScreen === 'discover-places' && currentScreen === 'discover-places';
+
+    isAuthenticatedRef.current = true;
     setIsAuthenticated(true);
     setUser(buildAuthenticatedUserDraft(payload));
+    forceDiscoveryRefreshAfterAuthRef.current = nextScreen === 'discover-places';
+    setCurrentScreen(nextScreen);
+
     if (payload?.id) {
       identifyAnalyticsUser({
         id: payload.id,
@@ -2897,13 +2911,6 @@ export default function App() {
       pendingAction();
       return;
     }
-
-    const nextScreen = currentScreen === 'public-profile' || currentScreen === 'landing'
-      ? currentScreen
-      : authReturnScreen;
-    const shouldRefreshDiscoveryImmediately = nextScreen === 'discover-places' && currentScreen === 'discover-places';
-    forceDiscoveryRefreshAfterAuthRef.current = nextScreen === 'discover-places';
-    setCurrentScreen(nextScreen);
 
     if (shouldRefreshDiscoveryImmediately) {
       setDiscoveryPage(1);
@@ -3244,6 +3251,27 @@ export default function App() {
       });
     }
   }, [currentScreen, user.id, user.username]);
+
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    if (currentScreen !== 'bookmarks') return;
+
+    let isCancelled = false;
+
+    void api.getBookmarks()
+      .then((response) => {
+        if (isCancelled) return;
+        setBookmarkedPlaces(response.bookmarks as Place[]);
+      })
+      .catch(() => {
+        if (isCancelled) return;
+        showActionToast('Could not refresh bookmarks right now');
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [currentScreen, isAuthenticated, bookmarkedPlaceIds.length]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -4402,7 +4430,7 @@ function LoginScreen({
   onOpenRegister: () => void;
   googleClientId?: string;
   onGoogleAuth: (idToken: string) => Promise<{ user: { id: string; displayName?: string; username: string; email?: string } }>;
-  onSuccess: (payload?: { id?: string; name?: string; username?: string; email?: string }) => void;
+  onSuccess: (payload?: { id?: string; name?: string; username?: string; email?: string }) => void | Promise<void>;
 }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -4434,7 +4462,7 @@ function LoginScreen({
             setErrorMessage(null);
             try {
               const response = await onGoogleAuth(idToken);
-              onSuccess({
+              await onSuccess({
                 id: response.user.id,
                 name: response.user.displayName,
                 username: response.user.username,
@@ -4503,7 +4531,7 @@ function LoginScreen({
             setErrorMessage(null);
             try {
               const response = await api.login({ email, password });
-              onSuccess({
+              await onSuccess({
                 id: response.user.id,
                 name: response.user.displayName,
                 username: response.user.username,
@@ -4547,7 +4575,7 @@ function RegisterScreen({
   onOpenLogin: () => void;
   googleClientId?: string;
   onGoogleAuth: (idToken: string) => Promise<{ user: { id: string; displayName?: string; username: string; email?: string } }>;
-  onSuccess: (payload?: { id?: string; name?: string; username?: string; email?: string }) => void;
+  onSuccess: (payload?: { id?: string; name?: string; username?: string; email?: string }) => void | Promise<void>;
 }) {
   const [mode, setMode] = useState<'options' | 'manual'>('options');
   const [name, setName] = useState('');
@@ -4584,7 +4612,7 @@ function RegisterScreen({
               setErrorMessage(null);
               try {
                 const response = await onGoogleAuth(idToken);
-                onSuccess({
+                await onSuccess({
                   id: response.user.id,
                   name: response.user.displayName || 'Google traveler',
                   username: response.user.username,
@@ -4663,7 +4691,7 @@ function RegisterScreen({
                 setErrorMessage(null);
                 try {
                   const response = await api.register({ name, email, password });
-                  onSuccess({
+                  await onSuccess({
                     id: response.user.id,
                     name: response.user.displayName || name,
                     username: response.user.username,
