@@ -96,7 +96,7 @@ export const api = {
     return request<{
       user: any;
       bookmarks: any[];
-      collections: Array<{ id: string; label: string; places: any[] }>;
+      collections: Array<{ id: string; label: string; places: any[]; createdAt?: string }>;
       moments: any[];
     }>('/api/profile/me');
   },
@@ -109,7 +109,7 @@ export const api = {
   getPublicProfile(username: string) {
     return request<{
       user: any;
-      collections: Array<{ id: string; label: string; places: any[] }>;
+      collections: Array<{ id: string; label: string; places: any[]; createdAt?: string }>;
       moments: any[];
     }>(`/api/profiles/${encodeURIComponent(username)}/public`);
   },
@@ -413,17 +413,17 @@ export const api = {
     });
   },
   createCollection(payload: { label: string; placeIds: string[] }) {
-    return request<{ collection: { id: string; label: string; places: any[] } }>('/api/collections', {
+    return request<{ collection: { id: string; label: string; places: any[]; createdAt?: string } }>('/api/collections', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
   },
   getCollections() {
-    return request<{ collections: Array<{ id: string; label: string; places: any[] }> }>('/api/collections');
+    return request<{ collections: Array<{ id: string; label: string; places: any[]; createdAt?: string }> }>('/api/collections');
   },
   getPublicCollection(id: string) {
     return request<{
-      collection: { id: string; label: string; places: any[] };
+      collection: { id: string; label: string; places: any[]; createdAt?: string };
       owner: { id: string; username: string; displayName?: string; avatar: string };
     }>(`/api/collections/${encodeURIComponent(id)}/public`);
   },

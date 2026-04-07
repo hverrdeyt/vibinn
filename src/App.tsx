@@ -1637,6 +1637,7 @@ export default function App() {
   }>());
   const [bookmarkedPlaceIds, setBookmarkedPlaceIds] = useState<string[]>(mockReviewScenario?.bookmarkedPlaceIds ?? []);
   const [bookmarkedPlaces, setBookmarkedPlaces] = useState<Place[]>(mockReviewScenario?.bookmarkedPlaces ?? []);
+  const [isBookmarkedPlacesLoading, setIsBookmarkedPlacesLoading] = useState(false);
   const [dismissedPlaceIds, setDismissedPlaceIds] = useState<string[]>(mockReviewScenario?.dismissedPlaceIds ?? []);
   const [actionToast, setActionToast] = useState<string | null>(null);
   const [shareSheetState, setShareSheetState] = useState<null | {
@@ -2338,6 +2339,7 @@ export default function App() {
       setCustomCollections(mockReviewScenario.customCollections);
       setMyMoments(mockReviewScenario.myMoments);
       setBookmarkedPlaces(mockReviewScenario.bookmarkedPlaces);
+      setIsBookmarkedPlacesLoading(false);
       setBookmarkedPlaceIds(mockReviewScenario.bookmarkedPlaceIds);
       ownProfileLastFetchedAtRef.current = Date.now();
       return;
@@ -2354,10 +2356,12 @@ export default function App() {
       const response = await api.getProfileMe();
       setUser(response.user as User);
       setBookmarkedPlaces(response.bookmarks as Place[]);
+      setIsBookmarkedPlacesLoading(false);
       setCustomCollections(
         response.collections.map((collection) => ({
           id: collection.id,
           label: collection.label,
+          createdAt: collection.createdAt,
           places: collection.places as Place[],
         })),
       );
@@ -2383,6 +2387,7 @@ export default function App() {
     if (mockReviewScenario) {
       setUser(mockReviewScenario.user);
       setBookmarkedPlaces(mockReviewScenario.bookmarkedPlaces);
+      setIsBookmarkedPlacesLoading(false);
       setBookmarkedPlaceIds(mockReviewScenario.bookmarkedPlaceIds);
       setDismissedPlaceIds(mockReviewScenario.dismissedPlaceIds);
       setSavedLocations(mockReviewScenario.savedLocations);
@@ -2411,6 +2416,7 @@ export default function App() {
           profileResponse.collections.map((collection) => ({
             id: collection.id,
             label: collection.label,
+            createdAt: collection.createdAt,
             places: collection.places as Place[],
           })),
         );
@@ -2421,6 +2427,7 @@ export default function App() {
           })),
         );
         setBookmarkedPlaces(profileResponse.bookmarks as Place[]);
+        setIsBookmarkedPlacesLoading(false);
         ownProfileLastFetchedAtRef.current = Date.now();
       }
 
@@ -3537,6 +3544,7 @@ export default function App() {
     if (currentScreen !== 'bookmarks') return;
 
     let isCancelled = false;
+    setIsBookmarkedPlacesLoading(true);
 
     void api.getBookmarks()
       .then((response) => {
@@ -3546,6 +3554,10 @@ export default function App() {
       .catch(() => {
         if (isCancelled) return;
         showActionToast('Could not refresh bookmarks right now');
+      })
+      .finally(() => {
+        if (isCancelled) return;
+        setIsBookmarkedPlacesLoading(false);
       });
 
     return () => {
@@ -3958,9 +3970,9 @@ export default function App() {
       traveler: user,
       collectionName: collection.label,
       collectionPlaces: collection.places.slice(0, 4),
-      activityDate: formatRelativeActivityTime(Date.now() - (index + 1) * 86400000),
+      activityDate: formatRelativeActivityTime(collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000),
       caption: undefined,
-      sortTimestamp: Date.now() - (index + 1) * 86400000,
+      sortTimestamp: collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000,
     })),
   ].sort((a, b) => b.sortTimestamp - a.sortTimestamp);
 
@@ -4234,6 +4246,7 @@ export default function App() {
               const nextCollection = {
                 id: response.collection.id,
                 label: response.collection.label,
+                createdAt: response.collection.createdAt,
                 places: response.collection.places as Place[],
               };
               setCustomCollections((prev) => [...prev, nextCollection]);
@@ -4300,6 +4313,7 @@ export default function App() {
         return (
           <BookmarksScreen
             bookmarkedPlaces={bookmarkedPlaces}
+            isBookmarkedPlacesLoading={isBookmarkedPlacesLoading}
             collections={customCollections}
             onSelectPlace={(place) => {
               openPlaceDetail(place, 'bookmarks');
@@ -5384,6 +5398,7 @@ function AddCollectionScreen({
 }) {
   const [title, setTitle] = useState('');
   const [selectedPlaceIds, setSelectedPlaceIds] = useState<string[]>([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const uniqueSavedPlaces = savedPlaces.filter((place, index, array) => array.findIndex((item) => item.id === place.id) === index);
 
@@ -5445,13 +5460,21 @@ function AddCollectionScreen({
 
       <button
         type="button"
-        onClick={() => onCreateCollection({ label: title.trim(), places: uniqueSavedPlaces.filter((place) => selectedPlaceIds.includes(place.id)) })}
-        disabled={!title.trim() || selectedPlaceIds.length === 0}
+        onClick={async () => {
+          if (isSubmitting || !title.trim() || selectedPlaceIds.length === 0) return;
+          setIsSubmitting(true);
+          try {
+            await onCreateCollection({ label: title.trim(), places: uniqueSavedPlaces.filter((place) => selectedPlaceIds.includes(place.id)) });
+          } finally {
+            setIsSubmitting(false);
+          }
+        }}
+        disabled={!title.trim() || selectedPlaceIds.length === 0 || isSubmitting}
         className={`mt-6 w-full rounded-[1.4rem] px-5 py-4 text-sm font-black transition ${
-          title.trim() && selectedPlaceIds.length > 0 ? 'bg-accent text-dark hover:brightness-105' : 'bg-white/10 text-white/35'
+          title.trim() && selectedPlaceIds.length > 0 && !isSubmitting ? 'bg-accent text-dark hover:brightness-105' : 'bg-white/10 text-white/35'
         }`}
       >
-        Create collection
+        {isSubmitting ? 'Creating...' : 'Create collection'}
       </button>
     </div>
   );
@@ -7051,8 +7074,8 @@ function TravelerDiscovery({
   const [searchQuery, setSearchQuery] = useState('');
   const [isPeopleSearchOpen, setIsPeopleSearchOpen] = useState(false);
   const [isSuggestedDismissed, setIsSuggestedDismissed] = useState(false);
-  const [publicSearchTravelers, setPublicSearchTravelers] = useState<Array<{ original: User; card: TravelerCardData }>>([]);
-  const [isPublicSearchLoading, setIsPublicSearchLoading] = useState(false);
+  const [searchTravelers, setSearchTravelers] = useState<Array<{ original: User; card: TravelerCardData }>>([]);
+  const [isSearchLoading, setIsSearchLoading] = useState(false);
   const [vibedFollowingPlaceIds, setVibedFollowingPlaceIds] = useState<string[]>([]);
   const [savedFollowingPlaceIds, setSavedFollowingPlaceIds] = useState<string[]>([]);
   const [sharedFollowingPlaceIds, setSharedFollowingPlaceIds] = useState<string[]>([]);
@@ -7212,7 +7235,7 @@ function TravelerDiscovery({
       .toLowerCase();
     return haystack.includes(normalizedSearchQuery);
   });
-  const displayedSearchResults = isAuthenticated ? searchResultsTravelers : publicSearchTravelers;
+  const displayedSearchResults = normalizedSearchQuery.length >= 2 ? searchTravelers : searchResultsTravelers;
   const showFollowingToast = (message: string) => {
     setFollowingToast(message);
     window.setTimeout(() => {
@@ -7256,39 +7279,38 @@ function TravelerDiscovery({
   }, [isAuthenticated, mockReviewData]);
 
   useEffect(() => {
-    if (isAuthenticated) {
-      setPublicSearchTravelers([]);
-      setIsPublicSearchLoading(false);
-      return;
-    }
     if (!isPeopleSearchOpen || normalizedSearchQuery.length < 2) {
-      setPublicSearchTravelers([]);
-      setIsPublicSearchLoading(false);
+      setSearchTravelers([]);
+      setIsSearchLoading(false);
       return;
     }
 
     const timeoutId = window.setTimeout(() => {
-      setIsPublicSearchLoading(true);
+      setIsSearchLoading(true);
       void api.searchPublicTravelers(normalizedSearchQuery)
         .then((response) => {
           const travelers = (response.travelers as User[]).map((traveler, index) => ({
             original: traveler,
-            card: buildTravelerCardData(traveler, index, false),
+            card: buildTravelerCardData(
+              traveler,
+              index,
+              followedTravelerIds.has(traveler.id),
+            ),
           }));
-          setPublicSearchTravelers(travelers);
+          setSearchTravelers(travelers);
         })
         .catch(() => {
-          setPublicSearchTravelers([]);
+          setSearchTravelers([]);
         })
         .finally(() => {
-          setIsPublicSearchLoading(false);
+          setIsSearchLoading(false);
         });
     }, 180);
 
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [isAuthenticated, isPeopleSearchOpen, normalizedSearchQuery]);
+  }, [followedTravelerIds, isPeopleSearchOpen, normalizedSearchQuery]);
 
   useEffect(() => {
     if (!followingCommentsPlace || !isAuthenticated) return;
@@ -7353,7 +7375,7 @@ function TravelerDiscovery({
           </div>
 
           <div className="space-y-4">
-            {normalizedSearchQuery.length === 0 ? null : isPublicSearchLoading ? (
+            {normalizedSearchQuery.length === 0 ? null : isSearchLoading ? (
               <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5 text-sm font-medium text-white/60">
                 Searching people...
               </div>
@@ -7401,10 +7423,10 @@ function TravelerDiscovery({
             <div>
               <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">Feed</div>
               <h1 className="mt-2 text-3xl font-black tracking-[-0.05em] text-white">
-                People worth following.
+                Get inspired
               </h1>
               <p className="mt-2 text-sm font-medium leading-relaxed text-white/60">
-                Keep up with saves, check-ins, and fresh people whose picks feel aligned with yours.
+                Keep up with people that has same vibes with yours.
               </p>
             </div>
             <button
@@ -7678,12 +7700,14 @@ function TravelerDiscovery({
 
 function BookmarksScreen({
   bookmarkedPlaces,
+  isBookmarkedPlacesLoading = false,
   collections,
   onSelectPlace,
   onCreateCollection,
   onOpenCollection,
 }: {
   bookmarkedPlaces: Place[],
+  isBookmarkedPlacesLoading?: boolean,
   collections: PlaceCollection[],
   onSelectPlace: (p: Place) => void,
   onCreateCollection: () => void,
@@ -7731,7 +7755,14 @@ function BookmarksScreen({
       </div>
 
       {activeTab === 'places' ? (
-        bookmarkedPlaces.length === 0 ? (
+        isBookmarkedPlacesLoading ? (
+          <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
+            <div className="text-lg font-black text-white">Loading saved places...</div>
+            <p className="mt-2 text-sm font-medium text-white/60">
+              Pulling the latest places you saved.
+            </p>
+          </div>
+        ) : bookmarkedPlaces.length === 0 ? (
           <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
             <div className="text-lg font-black text-white">No saved places yet.</div>
             <p className="mt-2 text-sm font-medium text-white/60">

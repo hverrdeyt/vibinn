@@ -40,6 +40,7 @@ export interface PlaceCollection {
   id?: string;
   label: string;
   places: Place[];
+  createdAt?: string;
 }
 
 export interface User {

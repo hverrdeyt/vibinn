@@ -380,6 +380,7 @@ export async function getProfileMe(userId?: string) {
     collections: user.collections.map((collection) => ({
       id: collection.id,
       label: collection.title,
+      createdAt: collection.createdAt.toISOString(),
       places: collection.places.map((item) => mapPlaceForClient(item.place)),
     })),
     moments,
@@ -418,6 +419,7 @@ export async function getPublicCollectionById(collectionId: string) {
     collection: {
       id: collection.id,
       label: collection.title,
+      createdAt: collection.createdAt.toISOString(),
       places: collection.places.map((item) => mapPlaceForClient(item.place)),
     },
     owner: {
@@ -500,6 +502,7 @@ export async function getPublicProfileByUsername(username: string) {
     collections: user.collections.map((collection) => ({
       id: collection.id,
       label: collection.title,
+      createdAt: collection.createdAt.toISOString(),
       places: collection.places.map((item) => mapPlaceForClient(item.place)),
     })),
     moments,
@@ -638,9 +641,23 @@ export async function getTravelerDiscovery(userId?: string) {
   const fallbackTravelers = await prisma.user.findMany({
         where: {
           id: { not: currentUser.id },
-          moments: {
-            some: {},
-          },
+          OR: [
+            {
+              moments: {
+                some: {},
+              },
+            },
+            {
+              bookmarks: {
+                some: {},
+              },
+            },
+            {
+              collections: {
+                some: {},
+              },
+            },
+          ],
         },
         include: {
           badges: true,
@@ -1221,18 +1238,62 @@ export async function getCollections(userId?: string) {
   return collections.map((collection) => ({
     id: collection.id,
     label: collection.title,
+    createdAt: collection.createdAt.toISOString(),
     places: collection.places.map((item) => mapPlaceForClient(item.place)),
   }));
 }
 
 export async function createCollection(userId: string | undefined, payload: { label: string; placeIds: string[] }) {
   const currentUser = await getCurrentUser(prisma, userId);
+  const normalizedTitle = payload.label.trim();
+  const normalizedPlaceIds = Array.from(new Set(payload.placeIds.filter(Boolean)));
+  const recentDuplicate = await prisma.collection.findFirst({
+    where: {
+      userId: currentUser.id,
+      title: normalizedTitle,
+      createdAt: {
+        gte: new Date(Date.now() - 30 * 1000),
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      places: {
+        orderBy: { sortOrder: 'asc' },
+        include: {
+          place: {
+            include: {
+              aiEnrichment: true,
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (recentDuplicate) {
+    const existingPlaceIds = recentDuplicate.places.map((item) => item.placeId);
+    const isSameComposition = (
+      existingPlaceIds.length === normalizedPlaceIds.length
+      && existingPlaceIds.every((placeId, index) => placeId === normalizedPlaceIds[index])
+    );
+
+    if (isSameComposition) {
+      return {
+        id: recentDuplicate.id,
+        label: recentDuplicate.title,
+        createdAt: recentDuplicate.createdAt.toISOString(),
+        places: recentDuplicate.places.map((item) => mapPlaceForClient(item.place)),
+      };
+    }
+  }
+
   const collection = await prisma.collection.create({
     data: {
       userId: currentUser.id,
-      title: payload.label,
+      title: normalizedTitle,
       places: {
-        create: payload.placeIds.map((placeId, index) => ({
+        create: normalizedPlaceIds.map((placeId, index) => ({
           placeId,
           sortOrder: index,
         })),
@@ -1256,6 +1317,7 @@ export async function createCollection(userId: string | undefined, payload: { la
   return {
     id: collection.id,
     label: collection.title,
+    createdAt: collection.createdAt.toISOString(),
     places: collection.places.map((item) => mapPlaceForClient(item.place)),
   };
 }
