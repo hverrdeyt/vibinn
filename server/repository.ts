@@ -634,8 +634,7 @@ export async function getTravelerDiscovery(userId?: string) {
   ]);
 
   const vibinMap = new Map(profileVibins.map((item) => [item.targetId, item._count._all]));
-  const fallbackTravelers = similarUsers.length === 0
-    ? await prisma.user.findMany({
+  const fallbackTravelers = await prisma.user.findMany({
         where: {
           id: { not: currentUser.id },
           moments: {
@@ -678,8 +677,7 @@ export async function getTravelerDiscovery(userId?: string) {
         },
         orderBy: { createdAt: 'desc' },
         take: 24,
-      })
-    : [];
+      });
   const fallbackTravelerIds = new Set(fallbackTravelers.map((traveler) => traveler.id));
 
   const followedTravelerDescriptors = await Promise.all(
@@ -695,10 +693,10 @@ export async function getTravelerDiscovery(userId?: string) {
   );
 
   const similarTravelerDescriptors = await Promise.all(
-    (similarUsers.length > 0
-      ? similarUsers.map((item) => item.traveler)
-      : fallbackTravelers
-    ).map(async (traveler) => {
+    [
+      ...similarUsers.map((item) => item.traveler),
+      ...fallbackTravelers.filter((traveler) => !similarUsers.some((item) => item.traveler.id === traveler.id)),
+    ].map(async (traveler) => {
       const descriptor = await generateTravelerProfileDescriptor({
         userId: traveler.id,
         displayName: traveler.displayName,
@@ -747,21 +745,24 @@ export async function getTravelerDiscovery(userId?: string) {
         },
       ),
     ),
-    similarTravelers: (
-      similarUsers.length > 0
-        ? similarUsers.map((item) => ({
-            user: item.traveler,
-            matchScore: item.matchScore,
-            relevanceReason: item.relevanceReason,
-          }))
-        : fallbackTravelers
-            .filter((traveler) => !followedUsers.some((follow) => follow.targetUser.id === traveler.id))
-            .map((traveler, index) => ({
-              user: traveler,
-              matchScore: Math.max(58, 76 - index),
-              relevanceReason: 'Community traveler worth exploring while your exact matches warm up.',
-            }))
-    ).map((item) =>
+    similarTravelers: [
+      ...similarUsers.map((item) => ({
+        user: item.traveler,
+        matchScore: item.matchScore,
+        relevanceReason: item.relevanceReason,
+      })),
+      ...fallbackTravelers
+        .filter((traveler) =>
+          !followedUsers.some((follow) => follow.targetUser.id === traveler.id)
+          && !similarUsers.some((item) => item.traveler.id === traveler.id),
+        )
+        .slice(0, Math.max(0, 12 - similarUsers.length))
+        .map((traveler, index) => ({
+          user: traveler,
+          matchScore: Math.max(58, 76 - index),
+          relevanceReason: 'Community traveler worth exploring while your exact matches warm up.',
+        })),
+    ].map((item) =>
       buildProfileUserWithMatch(
         item.user,
         item.user.moments.map(mapMomentForClient),
@@ -770,7 +771,7 @@ export async function getTravelerDiscovery(userId?: string) {
           relevanceReason: item.relevanceReason,
           vibinCount: vibinMap.get(item.user.id) ?? 0,
           descriptor: similarDescriptorMap.get(item.user.id)
-            ?? (similarUsers.length === 0 && fallbackTravelerIds.has(item.user.id) ? 'community traveler' : undefined),
+            ?? (fallbackTravelerIds.has(item.user.id) ? 'community traveler' : undefined),
           recentSavedPlaces: item.user.bookmarks.map((bookmark) => ({
             place: mapPlaceForClient(bookmark.place),
             savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),

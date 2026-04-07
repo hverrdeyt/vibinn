@@ -426,6 +426,12 @@ function buildPublicCollectionPath(collectionId: string) {
   return `/lists/${encodeURIComponent(collectionId)}`;
 }
 
+function getSafePlaceImage(place: Pick<Place, 'image' | 'images' | 'name'>) {
+  const candidate = [place.image, ...(place.images ?? [])].find((value) => typeof value === 'string' && value.trim().length > 0);
+  if (candidate) return candidate;
+  return `https://placehold.co/1200x675/111111/D3FF48?text=${encodeURIComponent(place.name || 'Vibinn')}`;
+}
+
 function screenToAppPath(screen: Screen) {
   switch (screen) {
     case 'discover-places':
@@ -1420,7 +1426,7 @@ function mapPlaceToCardData(place: Place, index = 0): PlaceCardData {
     city: city ?? place.location,
     country: country ?? '',
     category: getDisplayPlaceCategory(place),
-    imageUrl: place.image,
+    imageUrl: getSafePlaceImage(place),
     rating: place.rating,
     priceLevel: getPriceLevel(place),
     hook: place.hook ?? place.description,
@@ -6165,7 +6171,7 @@ function FollowingFeedCard({
               <div className="grid grid-cols-2 gap-[1px] bg-white/10">
                 {item.collectionPlaces.slice(0, 4).map((place) => (
                   <div key={`${item.collectionName}-${place.id}`} className="overflow-hidden bg-black">
-                    <img src={place.image} alt={place.name} className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
+                    <img src={getSafePlaceImage(place)} alt={place.name} className="aspect-square w-full object-cover" referrerPolicy="no-referrer" />
                   </div>
                 ))}
               </div>
@@ -6183,7 +6189,7 @@ function FollowingFeedCard({
               className="mt-3 w-full overflow-hidden rounded-[22px] border border-white/10 bg-zinc-900/70 text-left transition hover:bg-white/8"
             >
               <div className="relative aspect-[16/9] w-full overflow-hidden">
-                <img src={item.place.image} alt={item.place.name} className="h-full w-full object-cover" referrerPolicy="no-referrer" />
+                <img src={getSafePlaceImage(item.place)} alt={item.place.name} className="h-full w-full object-cover" referrerPolicy="no-referrer" />
                 <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent" />
                 <div className="absolute inset-x-0 bottom-0 p-4">
                   <div className="flex items-end justify-between gap-3">
@@ -7260,12 +7266,6 @@ function TravelerDiscovery({
   }, [isAuthenticated, mockReviewData]);
 
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const stored = window.sessionStorage.getItem('vibinn_feed_suggested_dismissed');
-    setIsSuggestedDismissed(stored === '1');
-  }, []);
-
-  useEffect(() => {
     if (isAuthenticated) {
       setPublicSearchTravelers([]);
       setIsPublicSearchLoading(false);
@@ -7456,9 +7456,6 @@ function TravelerDiscovery({
               type="button"
               onClick={() => {
                 setIsSuggestedDismissed(true);
-                if (typeof window !== 'undefined') {
-                  window.sessionStorage.setItem('vibinn_feed_suggested_dismissed', '1');
-                }
               }}
               className="rounded-full border border-white/10 bg-white/6 p-2 text-white/55 transition hover:bg-white/10 hover:text-white"
               aria-label="Dismiss suggested people"
