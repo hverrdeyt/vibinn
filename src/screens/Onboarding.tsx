@@ -1,6 +1,6 @@
 import { AnimatePresence, motion, useMotionValue, useTransform } from 'motion/react';
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from 'react';
-import { ArrowRight, Sparkles } from 'lucide-react';
+import { ArrowRight, Search, Sparkles } from 'lucide-react';
 import { type Interest, type Vibe } from '../types';
 import { api } from '../lib/api';
 import { trackEvent } from '../lib/analytics';
@@ -59,6 +59,7 @@ export default function Onboarding({
   const [areaQuery, setAreaQuery] = useState('');
   const [areaResults, setAreaResults] = useState<SavedLocationOption[]>([]);
   const [isAreaSearching, setIsAreaSearching] = useState(false);
+  const [isAreaPickerOpen, setIsAreaPickerOpen] = useState(false);
   const previousEntryModeRef = useRef(entryMode);
   const activeLocation = savedLocations.find((location) => location.id === activeLocationId) ?? null;
   const onboardingEventBase = {
@@ -310,105 +311,26 @@ export default function Onboarding({
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 12 }}
               transition={{ delay: 0.05, duration: 0.28, ease: 'easeOut' }}
-              className="flex min-h-0 flex-1 flex-col space-y-4"
+              className="flex min-h-0 flex-1 flex-col space-y-5"
             >
-              <div className="shrink-0 space-y-3">
-                {savedLocations.map((location) => {
-                  const isActive = location.id === activeLocationId;
-                  return (
-                    <button
-                      key={location.id}
-                      type="button"
-                      onClick={() => {
-                        onSelectInitialLocation(location.id);
-                        trackEvent('Change area onboarding', {
-                          ...onboardingEventBase,
-                          location_id: location.id,
-                          location_label: location.label,
-                          location_type: location.type,
-                        });
-                      }}
-                      className={`flex w-full items-center justify-between rounded-[1.4rem] border px-5 py-5 text-left transition ${
-                        isActive
-                          ? 'border-accent bg-accent text-black'
-                          : 'border-white/10 bg-white/6 text-white hover:bg-white/10'
-                      }`}
-                    >
-                      <div>
-                        <div className="text-lg font-black">{location.label}</div>
-                        <div className={`mt-1 text-[10px] font-bold uppercase tracking-[0.18em] ${
-                          isActive ? 'text-black/60' : 'text-white/40'
-                        }`}>
-                          {location.type}
-                        </div>
-                      </div>
-                      {isActive ? (
-                        <span className="text-[10px] font-black uppercase tracking-[0.18em]">Selected</span>
-                      ) : null}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="min-h-0 flex-1 overflow-y-auto rounded-[1.4rem] border border-white/10 bg-white/6 p-4">
-                <div className="text-xs font-black uppercase tracking-[0.16em] text-white/45">
-                  Change area
-                </div>
-                <input
-                  type="text"
-                  value={areaQuery}
-                  onChange={(event) => setAreaQuery(event.target.value)}
-                  placeholder="Search Bandung, West Java, Japan..."
-                  className="mt-3 w-full rounded-xl border border-white/10 bg-black/20 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
-                />
-
-                <div className="mt-3 space-y-2">
-                  {areaQuery.trim().length > 0 && areaQuery.trim().length < 3 ? (
-                    <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm font-medium text-white/55">
-                      Type at least 3 letters to search locations.
+              <div className="shrink-0">
+                <div className="mb-2 text-[11px] font-black uppercase tracking-[0.18em] text-white/45">Area</div>
+                <div className="flex items-center justify-between gap-4 rounded-[1.4rem] border border-white/10 bg-white/6 px-5 py-5">
+                  <div className="min-w-0">
+                    <div className="text-2xl font-black tracking-[-0.05em] text-accent">
+                      {activeLocation?.label ?? 'Boston'}
                     </div>
-                  ) : null}
-
-                  {isAreaSearching ? (
-                    <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm font-medium text-white/55">
-                      Searching locations...
+                    <div className="mt-1 text-[10px] font-bold uppercase tracking-[0.18em] text-white/40">
+                      {activeLocation?.type ?? 'city'}
                     </div>
-                  ) : null}
-
-                  {!isAreaSearching && areaQuery.trim().length >= 3 && areaResults.length === 0 ? (
-                    <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm font-medium text-white/55">
-                      No location matched yet. Try another city, province, or country.
-                    </div>
-                  ) : null}
-
-                  {areaResults.map((location) => (
-                    <button
-                      key={location.id}
-                      type="button"
-                      onClick={async () => {
-                        await onAddInitialLocation(location);
-                        trackEvent('Change area onboarding', {
-                          ...onboardingEventBase,
-                          location_id: location.id,
-                          location_label: location.label,
-                          location_type: location.type,
-                        });
-                        setAreaQuery('');
-                        setAreaResults([]);
-                      }}
-                      className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-black/20 px-4 py-4 text-left transition hover:bg-white/10"
-                    >
-                      <div>
-                        <div className="text-base font-black text-white">{location.label}</div>
-                        <div className="mt-1 text-[10px] font-bold uppercase tracking-[0.18em] text-white/40">
-                          {location.type}
-                        </div>
-                      </div>
-                      <span className="rounded-full bg-accent px-3 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-black">
-                        Select
-                      </span>
-                    </button>
-                  ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsAreaPickerOpen(true)}
+                    className="shrink-0 rounded-full border border-white/10 bg-white/8 px-4 py-2 text-[11px] font-black uppercase tracking-[0.16em] text-white transition hover:bg-white/12"
+                  >
+                    Change
+                  </button>
                 </div>
               </div>
 
@@ -428,6 +350,145 @@ export default function Onboarding({
               >
                 {entryMode === 'area-first' ? 'Show picks' : 'Continue'}
               </button>
+
+              <AnimatePresence>
+                {isAreaPickerOpen ? (
+                  <>
+                    <motion.button
+                      type="button"
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      onClick={() => setIsAreaPickerOpen(false)}
+                      className="fixed inset-0 z-40 bg-black/65"
+                    />
+                    <motion.div
+                      initial={{ y: '100%' }}
+                      animate={{ y: 0 }}
+                      exit={{ y: '100%' }}
+                      transition={{ type: 'spring', stiffness: 280, damping: 30 }}
+                      className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pt-4 pb-8 shadow-[0_-20px_60px_rgba(0,0,0,0.45)]"
+                    >
+                      <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
+                      <div className="mt-5">
+                        <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
+                          Change area
+                        </div>
+                        <div className="mt-1 text-2xl font-black tracking-[-0.04em] text-white">
+                          Pick where discovery starts.
+                        </div>
+                      </div>
+                      <div className="relative mt-4">
+                        <Search size={16} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-white/35" />
+                        <input
+                          type="text"
+                          value={areaQuery}
+                          onChange={(event) => setAreaQuery(event.target.value)}
+                          placeholder="Search Bandung, West Java, Japan..."
+                          className="w-full rounded-xl border border-white/10 bg-black/20 py-4 pl-11 pr-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+                        />
+                      </div>
+                      <div className="mt-3 max-h-[50svh] space-y-2 overflow-y-auto pr-1">
+                        {areaQuery.trim().length > 0 && areaQuery.trim().length < 3 ? (
+                          <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm font-medium text-white/55">
+                            Type at least 3 letters to search locations.
+                          </div>
+                        ) : null}
+                        {isAreaSearching ? (
+                          <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm font-medium text-white/55">
+                            Searching locations...
+                          </div>
+                        ) : null}
+                        {!isAreaSearching && areaQuery.trim().length >= 3 && areaResults.length === 0 ? (
+                          <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-sm font-medium text-white/55">
+                            No location matched yet. Try another city, province, or country.
+                          </div>
+                        ) : null}
+                        {areaQuery.trim().length >= 3 && areaResults.length > 0 ? (
+                          <>
+                            <div className="px-1 pt-1 text-[10px] font-black uppercase tracking-[0.16em] text-white/40">
+                              Search results
+                            </div>
+                            {areaResults.map((location) => (
+                              <button
+                                key={location.id}
+                                type="button"
+                                onClick={async () => {
+                                  await onAddInitialLocation(location);
+                                  trackEvent('Change area onboarding', {
+                                    ...onboardingEventBase,
+                                    location_id: location.id,
+                                    location_label: location.label,
+                                    location_type: location.type,
+                                  });
+                                  setAreaQuery('');
+                                  setAreaResults([]);
+                                  setIsAreaPickerOpen(false);
+                                }}
+                                className="flex w-full items-center justify-between rounded-xl border border-white/10 bg-black/20 px-4 py-4 text-left transition hover:bg-white/10"
+                              >
+                                <div>
+                                  <div className="text-base font-black text-white">{location.label}</div>
+                                  <div className="mt-1 text-[10px] font-bold uppercase tracking-[0.18em] text-white/40">
+                                    {location.type}
+                                  </div>
+                                </div>
+                                <span className="rounded-full bg-accent px-3 py-1 text-[10px] font-black uppercase tracking-[0.14em] text-black">
+                                  Select
+                                </span>
+                              </button>
+                            ))}
+                          </>
+                        ) : null}
+                        {areaQuery.trim().length < 3 ? (
+                          <>
+                            <div className="px-1 pt-1 text-[10px] font-black uppercase tracking-[0.16em] text-white/40">
+                              Saved areas
+                            </div>
+                            {savedLocations.map((location) => {
+                              const isActive = location.id === activeLocationId;
+                              return (
+                                <button
+                                  key={location.id}
+                                  type="button"
+                                  onClick={() => {
+                                    onSelectInitialLocation(location.id);
+                                    trackEvent('Change area onboarding', {
+                                      ...onboardingEventBase,
+                                      location_id: location.id,
+                                      location_label: location.label,
+                                      location_type: location.type,
+                                    });
+                                    setAreaQuery('');
+                                    setIsAreaPickerOpen(false);
+                                  }}
+                                  className={`flex w-full items-center justify-between rounded-xl border px-4 py-4 text-left transition ${
+                                    isActive
+                                      ? 'border-accent bg-accent text-black'
+                                      : 'border-white/10 bg-black/20 text-white hover:bg-white/10'
+                                  }`}
+                                >
+                                  <div>
+                                    <div className="text-base font-black">{location.label}</div>
+                                    <div className={`mt-1 text-[10px] font-bold uppercase tracking-[0.18em] ${
+                                      isActive ? 'text-black/60' : 'text-white/40'
+                                    }`}>
+                                      {location.type}
+                                    </div>
+                                  </div>
+                                  {isActive ? (
+                                    <span className="text-[10px] font-black uppercase tracking-[0.18em]">Selected</span>
+                                  ) : null}
+                                </button>
+                              );
+                            })}
+                          </>
+                        ) : null}
+                      </div>
+                    </motion.div>
+                  </>
+                ) : null}
+              </AnimatePresence>
             </motion.div>
           ) : null}
         </AnimatePresence>
