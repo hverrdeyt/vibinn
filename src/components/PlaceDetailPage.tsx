@@ -670,8 +670,11 @@ export default function PlaceDetailPage({
 
       <DetailActionBar
         primaryActive={isSaved}
+        primaryOnRight
         primaryLabel="Save"
         primaryActiveLabel="Saved"
+        primaryActiveClassName="border border-accent bg-accent text-dark hover:brightness-105"
+        primaryInactiveClassName="border border-accent bg-transparent text-accent hover:bg-accent/12"
         primaryIcon={<Bookmark size={16} />}
         onPrimary={() => onSave?.(data)}
         secondaryLabel={isBeenThere ? 'Visited' : 'Been there'}
