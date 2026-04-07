@@ -376,6 +376,7 @@ export async function getProfileMe(userId?: string) {
       collectionsCount: user.collections.length,
       latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString(),
     }),
+    bookmarks: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
     collections: user.collections.map((collection) => ({
       id: collection.id,
       label: collection.title,

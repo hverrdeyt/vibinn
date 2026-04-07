@@ -95,6 +95,7 @@ export const api = {
   getProfileMe() {
     return request<{
       user: any;
+      bookmarks: any[];
       collections: Array<{ id: string; label: string; places: any[] }>;
       moments: any[];
     }>('/api/profile/me');

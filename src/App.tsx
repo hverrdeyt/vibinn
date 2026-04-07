@@ -2353,6 +2353,7 @@ export default function App() {
     try {
       const response = await api.getProfileMe();
       setUser(response.user as User);
+      setBookmarkedPlaces(response.bookmarks as Place[]);
       setCustomCollections(
         response.collections.map((collection) => ({
           id: collection.id,
@@ -2367,14 +2368,6 @@ export default function App() {
         })),
       );
       ownProfileLastFetchedAtRef.current = Date.now();
-
-      if (options?.force || bookmarkedPlaces.length === 0) {
-        void api.getBookmarks()
-          .then((bookmarksResponse) => {
-            setBookmarkedPlaces(bookmarksResponse.bookmarks as Place[]);
-          })
-          .catch(() => undefined);
-      }
     } catch {
       showActionToast('Could not sync profile right now');
     }
@@ -2406,9 +2399,8 @@ export default function App() {
     }
 
     try {
-      const [profileResponse, bookmarksResponse, signalsResponse, savedLocationsResponse] = await Promise.all([
+      const [profileResponse, signalsResponse, savedLocationsResponse] = await Promise.all([
         options?.includeProfile ? api.getProfileMe() : Promise.resolve(null),
-        options?.includeProfile ? api.getBookmarks().catch(() => ({ bookmarks: [] as any[] })) : Promise.resolve(null),
         api.getPersonalizationSignals().catch(() => null),
         api.getSavedLocations().catch(() => null),
       ]);
@@ -2428,9 +2420,7 @@ export default function App() {
             placeId: String(moment.placeId),
           })),
         );
-        if (bookmarksResponse) {
-          setBookmarkedPlaces(bookmarksResponse.bookmarks as Place[]);
-        }
+        setBookmarkedPlaces(profileResponse.bookmarks as Place[]);
         ownProfileLastFetchedAtRef.current = Date.now();
       }
 
