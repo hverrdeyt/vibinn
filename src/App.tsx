@@ -139,6 +139,7 @@ const DEVICE_LOCATION_KEY = 'vibinn_device_location';
 const DEVICE_LOCATION_PERMISSION_KEY = 'vibinn_device_location_permission';
 const DISCOVERY_CACHE_PREFIX = 'vibinn_discovery_cache:';
 const DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
+const OWN_PROFILE_CACHE_TTL_MS = 3 * 60 * 1000;
 const APP_BASE_PATH = '/app';
 const LEGACY_PUBLIC_PROFILE_BASE_PATH = '/u';
 const RESERVED_TOP_LEVEL_PATHS = new Set([
@@ -2230,16 +2231,12 @@ export default function App() {
     const shouldReuseRecentProfile = (
       !options?.force &&
       ownProfileLastFetchedAtRef.current > 0 &&
-      Date.now() - ownProfileLastFetchedAtRef.current < 30_000
+      Date.now() - ownProfileLastFetchedAtRef.current < OWN_PROFILE_CACHE_TTL_MS
     );
     if (shouldReuseRecentProfile) return;
 
     try {
-      const [profileResponse, bookmarksResponse] = await Promise.all([
-        api.getProfileMe(),
-        api.getBookmarks().catch(() => ({ bookmarks: [] as any[] })),
-      ]);
-      const response = profileResponse;
+      const response = await api.getProfileMe();
       setUser(response.user as User);
       setCustomCollections(
         response.collections.map((collection) => ({
@@ -2253,8 +2250,15 @@ export default function App() {
           placeId: String(moment.placeId),
         })),
       );
-      setBookmarkedPlaces(bookmarksResponse.bookmarks as Place[]);
       ownProfileLastFetchedAtRef.current = Date.now();
+
+      if (options?.force || bookmarkedPlaces.length === 0) {
+        void api.getBookmarks()
+          .then((bookmarksResponse) => {
+            setBookmarkedPlaces(bookmarksResponse.bookmarks as Place[]);
+          })
+          .catch(() => undefined);
+      }
     } catch {
       showActionToast('Could not sync profile right now');
     }
@@ -3538,7 +3542,7 @@ export default function App() {
       }} 
       interactionState={placeDetailInteraction}
       onSavePlace={async (placeToSave, nextActive) => {
-        if (!isAuthenticated) {
+        if (!isAuthenticatedRef.current) {
           openAuthGate('Log in to save places to your bookmarks.', 'login');
           return false;
         }
@@ -3549,7 +3553,7 @@ export default function App() {
         return updated;
       }}
       onMarkBeenThere={async () => {
-        if (!isAuthenticated) {
+        if (!isAuthenticatedRef.current) {
           openAuthGate('Log in to track places you have been to and post a moment.', 'login');
           return;
         }
