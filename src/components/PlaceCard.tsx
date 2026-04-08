@@ -46,6 +46,9 @@ interface PlaceCardProps {
   onClick?: (place: PlaceCardData) => void;
   className?: string;
   priority?: boolean;
+  showFullRecommendation?: boolean;
+  showFullHook?: boolean;
+  hideRecommendationSection?: boolean;
 }
 
 const priceLevelMap: Record<number, string> = {
@@ -60,6 +63,9 @@ export function PlaceCard({
   onClick,
   className = '',
   priority = false,
+  showFullRecommendation = false,
+  showFullHook = false,
+  hideRecommendationSection = false,
 }: PlaceCardProps) {
   const vibeTags = data.vibeTags.slice(0, 2);
   const priceLabel = data.priceLevel ? priceLevelMap[data.priceLevel] : undefined;
@@ -124,7 +130,7 @@ export function PlaceCard({
 
         <div className="absolute inset-x-4 bottom-4">
           {/* AI-generated hook is the loudest line because it sells the vibe in a single scroll-stopping beat. */}
-          <p className="truncate text-[1.35rem] font-black leading-tight tracking-[-0.04em] text-white">
+          <p className={`text-[1.35rem] font-black leading-tight tracking-[-0.04em] text-white ${showFullHook ? 'line-clamp-3' : 'truncate'}`}>
             {data.hook}
           </p>
         </div>
@@ -150,16 +156,18 @@ export function PlaceCard({
           </div>
         </div>
 
-        <div className="rounded-[20px] bg-white/6 px-4 py-3">
-          {/* Recommendation is compressed into one fast-scanning line for list view clarity. */}
-          <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-accent">
-            <Sparkles size={13} />
-            For your vibe
+        {hideRecommendationSection ? null : (
+          <div className="rounded-[20px] bg-white/6 px-4 py-3">
+            {/* Recommendation is compressed into one fast-scanning line for list view clarity. */}
+            <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-[0.18em] text-accent">
+              <Sparkles size={13} />
+              For your vibe
+            </div>
+            <p className={`mt-1.5 text-sm font-semibold leading-snug text-white ${showFullRecommendation ? '' : 'truncate'}`}>
+              {data.recommendationReason}
+            </p>
           </div>
-          <p className="mt-1.5 truncate text-sm font-semibold leading-snug text-white">
-            {data.recommendationReason}
-          </p>
-        </div>
+        )}
 
         {metaItems.length > 0 ? (
           <div className="truncate text-xs font-bold text-white/55">

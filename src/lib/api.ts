@@ -18,11 +18,21 @@ export class ApiError extends Error {
 
 const AUTH_TOKEN_KEY = 'vibecheck_auth_token';
 const DEFAULT_NATIVE_API_BASE_URL = 'https://api.vibinn.club';
+function isPrivateLanHost(hostname: string) {
+  return /^(10|127)\./.test(hostname)
+    || /^192\.168\./.test(hostname)
+    || /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)
+    || hostname === 'localhost';
+}
+
 const API_BASE_URL = (() => {
   const configuredBaseUrl = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, '') ?? '';
   if (configuredBaseUrl) return configuredBaseUrl;
   if (typeof window !== 'undefined' && isNativeApp()) {
     return DEFAULT_NATIVE_API_BASE_URL;
+  }
+  if (typeof window !== 'undefined' && isPrivateLanHost(window.location.hostname)) {
+    return `${window.location.protocol}//${window.location.hostname}:3001`;
   }
   return '';
 })();
@@ -109,6 +119,7 @@ export const api = {
   getPublicProfile(username: string) {
     return request<{
       user: any;
+      bookmarks: any[];
       collections: Array<{ id: string; label: string; places: any[]; createdAt?: string }>;
       moments: any[];
     }>(`/api/profiles/${encodeURIComponent(username)}/public`);
@@ -289,8 +300,15 @@ export const api = {
   searchPublicTravelers(query: string) {
     return request<{ travelers: any[] }>(`/api/discovery/travelers/public-search?q=${encodeURIComponent(query)}`);
   },
+  getPublicTravelerSuggestions(limit = 12) {
+    return request<{ travelers: any[] }>(`/api/discovery/travelers/public-suggestions?limit=${encodeURIComponent(String(limit))}`);
+  },
   getTravelerProfile(id: string) {
-    return request<{ traveler: any }>(`/api/travelers/${id}`);
+    return request<{
+      traveler: any;
+      bookmarks: any[];
+      collections: Array<{ id: string; label: string; places: any[]; createdAt?: string }>;
+    }>(`/api/travelers/${id}`);
   },
   getPlaceTravelerMoments(id: string) {
     return request<{ travelerMoments: Array<{

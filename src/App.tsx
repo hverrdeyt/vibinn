@@ -139,6 +139,11 @@ const DEVICE_LOCATION_PERMISSION_KEY = 'vibinn_device_location_permission';
 const DISCOVERY_CACHE_PREFIX = 'vibinn_discovery_cache:';
 const DISCOVERY_CACHE_TTL_MS = 5 * 60 * 1000;
 const OWN_PROFILE_CACHE_TTL_MS = 3 * 60 * 1000;
+const BOOKMARKS_CACHE_TTL_MS = 2 * 60 * 1000;
+const TRAVELER_FEED_CACHE_TTL_MS = 2 * 60 * 1000;
+const TRAVELER_PROFILE_CACHE_TTL_MS = 2 * 60 * 1000;
+const TRAVELER_FEED_CACHE_KEY = 'vibinn_traveler_feed_cache:v2';
+const PUBLIC_SUGGESTIONS_CACHE_KEY = 'vibinn_public_suggestions_cache:v2';
 const APP_BASE_PATH = '/app';
 const LEGACY_PUBLIC_PROFILE_BASE_PATH = '/u';
 const RESERVED_TOP_LEVEL_PATHS = new Set([
@@ -187,6 +192,34 @@ function escapeXml(value: string) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function readSessionJsonCache<T>(key: string, ttlMs: number) {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { cachedAt: number; data: T };
+    if (!parsed?.cachedAt || Date.now() - parsed.cachedAt > ttlMs) {
+      window.sessionStorage.removeItem(key);
+      return null;
+    }
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+function writeSessionJsonCache<T>(key: string, data: T) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(key, JSON.stringify({
+      cachedAt: Date.now(),
+      data,
+    }));
+  } catch {
+    // ignore storage failures
+  }
 }
 
 function slugifyFilename(value: string) {
@@ -424,6 +457,10 @@ function buildPlaceDetailPath(placeId: string) {
 
 function buildPublicCollectionPath(collectionId: string) {
   return `/lists/${encodeURIComponent(collectionId)}`;
+}
+
+function buildCanonicalProfilePath(username: string) {
+  return `${LEGACY_PUBLIC_PROFILE_BASE_PATH}/${encodeURIComponent(username)}`;
 }
 
 function getSafePlaceImage(place: Pick<Place, 'image' | 'images' | 'name'>) {
@@ -1589,7 +1626,11 @@ export default function App() {
     return parseAppRoute(window.location.pathname).collectionId ?? null;
   });
   const [publicProfileUser, setPublicProfileUser] = useState<User | null>(null);
+  const [publicProfileBookmarkedPlaces, setPublicProfileBookmarkedPlaces] = useState<Place[]>([]);
+  const [publicProfileCollections, setPublicProfileCollections] = useState<PlaceCollection[]>([]);
   const [isPublicProfileLoading, setIsPublicProfileLoading] = useState(false);
+  const [isPublicCollectionLoading, setIsPublicCollectionLoading] = useState(false);
+  const [publicCollectionError, setPublicCollectionError] = useState<string | null>(null);
   const [onboardingEntryMode, setOnboardingEntryMode] = useState<'area-first' | 'choice' | 'swipe-direct'>('area-first');
   const [user, setUser] = useState<User>(mockReviewScenario?.user ?? MOCK_USER);
   const [isAuthenticated, setIsAuthenticated] = useState(mockReviewMode);
@@ -1603,6 +1644,9 @@ export default function App() {
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(null);
   const [selectedEvent, setSelectedEvent] = useState<EventItem | null>(null);
   const [selectedTraveler, setSelectedTraveler] = useState<User | null>(null);
+  const [selectedTravelerBookmarkedPlaces, setSelectedTravelerBookmarkedPlaces] = useState<Place[]>([]);
+  const [selectedTravelerCollections, setSelectedTravelerCollections] = useState<PlaceCollection[]>([]);
+  const [selectedTravelerHasHydratedDetail, setSelectedTravelerHasHydratedDetail] = useState(false);
   const [placeDetailReturnScreen, setPlaceDetailReturnScreen] = useState<Screen>('discover-places');
   const [isTravelerProfileLoading, setIsTravelerProfileLoading] = useState(false);
   const [placeTravelerMoments, setPlaceTravelerMoments] = useState<Array<{
@@ -1701,6 +1745,8 @@ export default function App() {
   const forceDiscoveryRefreshAfterAuthRef = useRef(false);
   const lastDiscoveryContextKeyRef = useRef('');
   const ownProfileLastFetchedAtRef = useRef<number>(0);
+  const bookmarkedPlacesLastFetchedAtRef = useRef<number>(0);
+  const travelerProfileCacheRef = useRef(new Map<string, { cachedAt: number; traveler: User; bookmarks: Place[]; collections: PlaceCollection[] }>());
 
   useEffect(() => {
     initAnalytics();
@@ -1949,6 +1995,25 @@ export default function App() {
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
+    const route = parseAppRoute(window.location.pathname);
+    if (route.screen === 'collection-detail' && route.collectionId) {
+      if (currentScreen !== 'collection-detail' || publicCollectionId !== route.collectionId) {
+        setPublicProfileUsername(null);
+        setPublicCollectionId(route.collectionId);
+        setCurrentScreen('collection-detail');
+      }
+      return;
+    }
+
+    if (route.screen === 'public-profile' && route.publicProfileUsername) {
+      if (currentScreen !== 'public-profile' || publicProfileUsername !== route.publicProfileUsername) {
+        setPublicCollectionId(null);
+        setPublicProfileUsername(route.publicProfileUsername);
+        setCurrentScreen('public-profile');
+      }
+      return;
+    }
+
     if (window.location.pathname === '/' && currentScreen !== 'landing' && currentScreen !== 'public-profile' && currentScreen !== 'collection-detail') {
       setPublicProfileUsername(null);
       setPublicCollectionId(null);
@@ -1963,7 +2028,9 @@ export default function App() {
     let nextPath = '/';
     if (currentScreen === 'public-profile') {
       const username = publicProfileUsername ?? user.username;
-      nextPath = `/${encodeURIComponent(username)}`;
+      nextPath = buildCanonicalProfilePath(username);
+    } else if (currentScreen === 'traveler-profile' && selectedTraveler?.username) {
+      nextPath = buildCanonicalProfilePath(selectedTraveler.username);
     } else if (currentScreen === 'collection-detail' && publicCollectionId) {
       nextPath = buildPublicCollectionPath(publicCollectionId);
     } else if (currentScreen === 'place-detail') {
@@ -1975,7 +2042,7 @@ export default function App() {
     if (`${window.location.pathname}${window.location.search}` !== nextPath) {
       window.history.replaceState({}, '', nextPath);
     }
-  }, [currentScreen, publicProfileUsername, publicCollectionId, selectedPlace?.id, user.username]);
+  }, [currentScreen, publicProfileUsername, publicCollectionId, selectedPlace?.id, selectedTraveler?.username, user.username]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -1994,18 +2061,33 @@ export default function App() {
     if (currentScreen !== 'public-profile') {
       setIsPublicProfileLoading(false);
       setPublicProfileUser(null);
+      setPublicProfileBookmarkedPlaces([]);
+      setPublicProfileCollections([]);
       return;
     }
 
-    const localResolvedUser = resolvePublicProfileUser(publicProfileUsername, user);
-    if (localResolvedUser) {
-      setPublicProfileUser(localResolvedUser);
-      setIsPublicProfileLoading(false);
-      return;
+    if (mockReviewScenario) {
+      const localResolvedUser = resolvePublicProfileUser(publicProfileUsername, user);
+      if (localResolvedUser) {
+        setPublicProfileUser(localResolvedUser);
+        setPublicProfileBookmarkedPlaces(localResolvedUser.recentSavedPlaces?.map((entry) => entry.place) ?? []);
+        setPublicProfileCollections(
+          (localResolvedUser.recentCollections ?? []).map((collection) => ({
+            id: collection.id,
+            label: collection.label,
+            createdAt: collection.createdAt,
+            places: collection.places,
+          })),
+        );
+        setIsPublicProfileLoading(false);
+        return;
+      }
     }
 
     if (!publicProfileUsername?.trim()) {
       setPublicProfileUser(null);
+      setPublicProfileBookmarkedPlaces([]);
+      setPublicProfileCollections([]);
       setIsPublicProfileLoading(false);
       return;
     }
@@ -2017,10 +2099,21 @@ export default function App() {
       .then((response) => {
         if (isCancelled) return;
         setPublicProfileUser(response.user as User);
+        setPublicProfileBookmarkedPlaces((response.bookmarks ?? []) as Place[]);
+        setPublicProfileCollections(
+          (response.collections ?? []).map((collection) => ({
+            id: collection.id,
+            label: collection.label,
+            createdAt: collection.createdAt,
+            places: collection.places as Place[],
+          })),
+        );
       })
       .catch(() => {
         if (isCancelled) return;
         setPublicProfileUser(null);
+        setPublicProfileBookmarkedPlaces([]);
+        setPublicProfileCollections([]);
       })
       .finally(() => {
         if (isCancelled) return;
@@ -2030,12 +2123,15 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, [currentScreen, publicProfileUsername, user]);
+  }, [currentScreen, publicProfileUsername, user, mockReviewScenario]);
 
   useEffect(() => {
     if (currentScreen !== 'collection-detail' || !publicCollectionId) return;
 
     let isCancelled = false;
+    setSelectedCollectionReturnScreen('landing');
+    setIsPublicCollectionLoading(true);
+    setPublicCollectionError(null);
 
     void api.getPublicCollection(publicCollectionId)
       .then((response) => {
@@ -2049,8 +2145,13 @@ export default function App() {
       })
       .catch(() => {
         if (isCancelled) return;
-        showActionToast('Could not load that collection right now');
-        setCurrentScreen('landing');
+        setSelectedCollection(null);
+        setSelectedCollectionOwner(null);
+        setPublicCollectionError('Collection not found');
+      })
+      .finally(() => {
+        if (isCancelled) return;
+        setIsPublicCollectionLoading(false);
       });
 
     return () => {
@@ -2229,7 +2330,14 @@ export default function App() {
   };
 
   const openPublicProfile = (username?: string) => {
-    setPublicProfileUsername(username ?? user.username);
+    const resolvedUsername = username ?? user.username;
+    if (typeof window !== 'undefined') {
+      const nextPath = buildCanonicalProfilePath(resolvedUsername);
+      if (`${window.location.pathname}${window.location.search}` !== nextPath) {
+        window.history.pushState({}, '', nextPath);
+      }
+    }
+    setPublicProfileUsername(resolvedUsername);
     setCurrentScreen('public-profile');
   };
 
@@ -2341,6 +2449,7 @@ export default function App() {
       setBookmarkedPlaces(mockReviewScenario.bookmarkedPlaces);
       setIsBookmarkedPlacesLoading(false);
       setBookmarkedPlaceIds(mockReviewScenario.bookmarkedPlaceIds);
+      bookmarkedPlacesLastFetchedAtRef.current = Date.now();
       ownProfileLastFetchedAtRef.current = Date.now();
       return;
     }
@@ -2357,6 +2466,7 @@ export default function App() {
       setUser(response.user as User);
       setBookmarkedPlaces(response.bookmarks as Place[]);
       setIsBookmarkedPlacesLoading(false);
+      bookmarkedPlacesLastFetchedAtRef.current = Date.now();
       setCustomCollections(
         response.collections.map((collection) => ({
           id: collection.id,
@@ -2389,6 +2499,7 @@ export default function App() {
       setBookmarkedPlaces(mockReviewScenario.bookmarkedPlaces);
       setIsBookmarkedPlacesLoading(false);
       setBookmarkedPlaceIds(mockReviewScenario.bookmarkedPlaceIds);
+      bookmarkedPlacesLastFetchedAtRef.current = Date.now();
       setDismissedPlaceIds(mockReviewScenario.dismissedPlaceIds);
       setSavedLocations(mockReviewScenario.savedLocations);
       setActiveLocationId(mockReviewScenario.activeLocationId);
@@ -2428,6 +2539,7 @@ export default function App() {
         );
         setBookmarkedPlaces(profileResponse.bookmarks as Place[]);
         setIsBookmarkedPlacesLoading(false);
+        bookmarkedPlacesLastFetchedAtRef.current = Date.now();
         ownProfileLastFetchedAtRef.current = Date.now();
       }
 
@@ -2514,8 +2626,9 @@ export default function App() {
 
   const buildPublicProfileShareUrl = (username?: string) => {
     const resolvedUsername = username ?? user.username;
-    if (typeof window === 'undefined') return `/${encodeURIComponent(resolvedUsername)}`;
-    return `${window.location.origin}/${encodeURIComponent(resolvedUsername)}`;
+    const path = buildCanonicalProfilePath(resolvedUsername);
+    if (typeof window === 'undefined') return path;
+    return `${window.location.origin}${path}`;
   };
 
   const buildPublicCollectionShareUrl = (collectionId?: string) => {
@@ -3021,16 +3134,53 @@ export default function App() {
       username: traveler.username,
       source_screen: currentScreen,
     });
+    if (typeof window !== 'undefined' && traveler.username) {
+      const nextPath = buildCanonicalProfilePath(traveler.username);
+      if (`${window.location.pathname}${window.location.search}` !== nextPath) {
+        window.history.pushState({}, '', nextPath);
+      }
+    }
     setSelectedTraveler(traveler);
+    setSelectedTravelerBookmarkedPlaces([]);
+    setSelectedTravelerCollections([]);
+    setSelectedTravelerHasHydratedDetail(false);
     setCurrentScreen('traveler-profile');
 
     if (mockReviewScenario) return;
     if (!isAuthenticatedRef.current) return;
 
-    setIsTravelerProfileLoading(true);
+    const cachedTraveler = travelerProfileCacheRef.current.get(traveler.id);
+    const hasFreshCache = cachedTraveler && Date.now() - cachedTraveler.cachedAt < TRAVELER_PROFILE_CACHE_TTL_MS;
+    if (hasFreshCache) {
+      setSelectedTraveler(cachedTraveler.traveler);
+      setSelectedTravelerBookmarkedPlaces(cachedTraveler.bookmarks);
+      setSelectedTravelerCollections(cachedTraveler.collections);
+      setSelectedTravelerHasHydratedDetail(true);
+      setIsTravelerProfileLoading(false);
+      return;
+    }
+
+    setIsTravelerProfileLoading(!cachedTraveler);
     try {
       const response = await api.getTravelerProfile(traveler.id);
-      setSelectedTraveler(response.traveler as User);
+      const nextTraveler = response.traveler as User;
+      const nextBookmarks = (response.bookmarks ?? []) as Place[];
+      const nextCollections = (response.collections ?? []).map((collection) => ({
+        id: collection.id,
+        label: collection.label,
+        createdAt: collection.createdAt,
+        places: collection.places as Place[],
+      }));
+      setSelectedTraveler(nextTraveler);
+      setSelectedTravelerBookmarkedPlaces(nextBookmarks);
+      setSelectedTravelerCollections(nextCollections);
+      setSelectedTravelerHasHydratedDetail(true);
+      travelerProfileCacheRef.current.set(traveler.id, {
+        cachedAt: Date.now(),
+        traveler: nextTraveler,
+        bookmarks: nextBookmarks,
+        collections: nextCollections,
+      });
     } catch {
       showActionToast('Could not load the latest traveler details');
     } finally {
@@ -3139,20 +3289,19 @@ export default function App() {
       });
     }
 
-    const hydratedPreferences = await applyAuthenticatedBootstrapState({
-      guestPreferences,
-      includeProfile: false,
-    });
-
     const pendingAction = pendingAuthActionRef.current;
     pendingAuthActionRef.current = null;
 
     if (pendingAction) {
       pendingAction();
-      return;
     }
 
-    if (shouldRefreshDiscoveryImmediately) {
+    void applyAuthenticatedBootstrapState({
+      guestPreferences,
+      includeProfile: false,
+    }).then((hydratedPreferences) => {
+      if (pendingAction) return;
+      if (!shouldRefreshDiscoveryImmediately) return;
       setDiscoveryPage(1);
       setDiscoveryHasMore(true);
       const rotationSeed = bumpDiscoveryRotationSeed();
@@ -3164,7 +3313,7 @@ export default function App() {
       window.setTimeout(() => {
         void loadDiscoveryEvents(hydratedPreferences);
       }, 650);
-    }
+    });
   };
 
   useEffect(() => {
@@ -3544,12 +3693,22 @@ export default function App() {
     if (currentScreen !== 'bookmarks') return;
 
     let isCancelled = false;
-    setIsBookmarkedPlacesLoading(true);
+    const hasFreshBookmarks = (
+      bookmarkedPlacesLastFetchedAtRef.current > 0
+      && Date.now() - bookmarkedPlacesLastFetchedAtRef.current < BOOKMARKS_CACHE_TTL_MS
+    );
+    if (hasFreshBookmarks) {
+      setIsBookmarkedPlacesLoading(false);
+      return;
+    }
+
+    setIsBookmarkedPlacesLoading(bookmarkedPlaces.length === 0);
 
     void api.getBookmarks()
       .then((response) => {
         if (isCancelled) return;
         setBookmarkedPlaces(response.bookmarks as Place[]);
+        bookmarkedPlacesLastFetchedAtRef.current = Date.now();
       })
       .catch(() => {
         if (isCancelled) return;
@@ -3563,7 +3722,7 @@ export default function App() {
     return () => {
       isCancelled = true;
     };
-  }, [currentScreen, isAuthenticated, bookmarkedPlaceIds.length]);
+  }, [currentScreen, isAuthenticated, bookmarkedPlaces.length]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -3684,7 +3843,53 @@ export default function App() {
   }, []);
 
   const renderScreen = () => {
-    const resolvedPublicProfileUser = publicProfileUser ?? resolvePublicProfileUser(publicProfileUsername, user);
+    const resolvedPublicProfileUser = publicProfileUser;
+    const resolvedPublicProfileBookmarkedPlaces = publicProfileBookmarkedPlaces.length > 0
+      ? publicProfileBookmarkedPlaces
+      : (resolvedPublicProfileUser?.recentSavedPlaces?.map((entry) => entry.place) ?? []);
+    const resolvedPublicProfileCollections = publicProfileCollections.length > 0
+      ? publicProfileCollections
+      : ((resolvedPublicProfileUser?.recentCollections ?? []).map((collection) => ({
+          id: collection.id,
+          label: collection.label,
+          createdAt: collection.createdAt,
+          places: collection.places,
+        })));
+    const publicProfileFeedItems = resolvedPublicProfileUser ? [
+      ...((resolvedPublicProfileUser.recentSavedPlaces ?? []).map((entry, index) => ({
+        id: `${resolvedPublicProfileUser.id}-saved-${entry.place.id}-${index}`,
+        type: 'saved' as const,
+        traveler: resolvedPublicProfileUser,
+        place: entry.place,
+        activityDate: entry.savedAtLabel,
+        caption: undefined,
+        compatibility: undefined,
+        sortTimestamp: entry.savedAtIso
+          ? Date.parse(entry.savedAtIso)
+          : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (index + 1) * 3600000)),
+      }))),
+      ...resolvedPublicProfileUser.travelHistory.flatMap((history) => (history.places ?? []).slice(0, 6)).map((place, index) => ({
+        id: `${resolvedPublicProfileUser.id}-visited-${place.id}-${index}`,
+        type: 'visited' as const,
+        traveler: resolvedPublicProfileUser,
+        place,
+        activityDate: formatRelativeActivityTime(place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000),
+        caption: place.momentCaption ?? 'Dropped a check-in here.',
+        compatibility: undefined,
+        sortTimestamp: place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000,
+      })),
+      ...resolvedPublicProfileCollections.map((collection, index) => ({
+        id: `${resolvedPublicProfileUser.id}-collection-${collection.id ?? collection.label}-${index}`,
+        type: 'collection' as const,
+        traveler: resolvedPublicProfileUser,
+        collectionId: collection.id,
+        collectionName: collection.label,
+        collectionPlaces: collection.places.slice(0, 4),
+        activityDate: formatRelativeActivityTime(collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000),
+        caption: undefined,
+        sortTimestamp: collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000,
+      })),
+    ].sort((a, b) => b.sortTimestamp - a.sortTimestamp) : [];
 
   const discoveryPlacesScreen = (
     <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
@@ -3949,7 +4154,7 @@ export default function App() {
       place: entry.place,
       activityDate: entry.savedAtLabel,
       caption: undefined,
-      compatibility: typeof entry.place.similarityStat === 'number' ? Math.min(entry.place.similarityStat, 98) : undefined,
+      compatibility: undefined,
       sortTimestamp: entry.savedAtIso
         ? Date.parse(entry.savedAtIso)
         : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (index + 1) * 3600000)),
@@ -3961,13 +4166,14 @@ export default function App() {
       place,
       activityDate: formatRelativeActivityTime(place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000),
       caption: place.momentCaption ?? 'Dropped a check-in here.',
-      compatibility: typeof place.similarityStat === 'number' ? Math.min(place.similarityStat, 98) : undefined,
+      compatibility: undefined,
       sortTimestamp: place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000,
     })),
     ...customCollections.map((collection, index) => ({
       id: `${user.id}-collection-${collection.id ?? collection.label}-${index}`,
       type: 'collection' as const,
       traveler: user,
+      collectionId: collection.id,
       collectionName: collection.label,
       collectionPlaces: collection.places.slice(0, 4),
       activityDate: formatRelativeActivityTime(collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000),
@@ -3975,6 +4181,42 @@ export default function App() {
       sortTimestamp: collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000,
     })),
   ].sort((a, b) => b.sortTimestamp - a.sortTimestamp);
+
+  const selectedTravelerFeedItems = selectedTraveler ? [
+    ...((selectedTraveler.recentSavedPlaces ?? []).map((entry, index) => ({
+      id: `${selectedTraveler.id}-saved-${entry.place.id}-${index}`,
+      type: 'saved' as const,
+      traveler: selectedTraveler,
+      place: entry.place,
+      activityDate: entry.savedAtLabel,
+      caption: undefined,
+      compatibility: undefined,
+      sortTimestamp: entry.savedAtIso
+        ? Date.parse(entry.savedAtIso)
+        : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (index + 1) * 3600000)),
+    }))),
+    ...selectedTraveler.travelHistory.flatMap((history) => (history.places ?? []).slice(0, 6)).map((place, index) => ({
+      id: `${selectedTraveler.id}-visited-${place.id}-${index}`,
+      type: 'visited' as const,
+      traveler: selectedTraveler,
+      place,
+      activityDate: formatRelativeActivityTime(place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000),
+      caption: place.momentCaption ?? 'Dropped a check-in here.',
+      compatibility: undefined,
+      sortTimestamp: place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000,
+    })),
+    ...selectedTravelerCollections.map((collection, index) => ({
+      id: `${selectedTraveler.id}-collection-${collection.label}-${index}`,
+      type: 'collection' as const,
+      traveler: selectedTraveler,
+      collectionId: collection.id,
+      collectionName: collection.label,
+      collectionPlaces: collection.places.slice(0, 4),
+      activityDate: formatRelativeActivityTime(collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000),
+      caption: undefined,
+      sortTimestamp: collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000,
+    })),
+  ].sort((a, b) => b.sortTimestamp - a.sortTimestamp) : [];
 
   if (
     currentScreen === 'discover-places'
@@ -4154,14 +4396,16 @@ export default function App() {
                 />
               )}
               ownFeedItems={ownProfileFeedItems}
-              renderFeedEntryCard={(item) => (
+              renderFeedEntryCard={(item, _index, controls) => (
                 <FollowingFeedCard
                   item={item}
-                  vibed={false}
-                  vibinCount={0}
-                  commentsCount={0}
+                  vibed={controls?.vibed ?? false}
+                  vibinCount={controls?.vibinCount ?? 0}
+                  commentsCount={controls?.commentsCount ?? 0}
                   onOpenPlace={item.type !== 'collection' ? () => openPlaceDetail(item.place, 'profile') : undefined}
                   onOpenTraveler={() => setCurrentScreen('profile')}
+                  onToggleVibin={controls?.onToggleVibin}
+                  onOpenComments={controls?.onOpenComments}
                 />
               )}
             />
@@ -4422,12 +4666,12 @@ export default function App() {
           />
         );
       case 'traveler-profile':
-        return isTravelerProfileLoading ? (
+        return isTravelerProfileLoading || !selectedTravelerHasHydratedDetail ? (
           <div className="min-h-screen bg-zinc-950 px-4 pb-24 pt-16 text-white">
             <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-6">
               <div className="text-lg font-black text-white">Loading traveler profile...</div>
               <p className="mt-2 text-sm font-medium text-white/55">
-                Pulling the latest moments, stats, and overlap from the backend.
+                Pulling the latest saved places, collections, and feed from the backend.
               </p>
             </div>
           </div>
@@ -4435,6 +4679,7 @@ export default function App() {
           <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
             <TravelerProfileScreen
               user={selectedTraveler}
+              bookmarkedPlaces={selectedTravelerBookmarkedPlaces}
               displayFlags={(selectedTraveler.flags?.length ? selectedTraveler.flags : deriveFlagsFromTravelHistory(selectedTraveler.travelHistory)).slice(0, 5)}
               onBack={() => setCurrentScreen('discover-travelers')}
               onSavePlace={(placeToSave, nextActive) => syncBookmarkState(placeToSave, nextActive)}
@@ -4483,8 +4728,20 @@ export default function App() {
                   }}
                 />
               )}
-              ownFeedItems={[]}
-              renderFeedEntryCard={() => null}
+              feedItems={selectedTravelerFeedItems}
+              renderFeedEntryCard={(item, _index, controls) => (
+                <FollowingFeedCard
+                  item={item}
+                  vibed={controls?.vibed ?? false}
+                  vibinCount={controls?.vibinCount ?? 0}
+                  commentsCount={controls?.commentsCount ?? 0}
+                  onOpenPlace={item.type === 'collection' ? undefined : () => openPlaceDetail(item.place, 'traveler-profile')}
+                  onOpenTraveler={() => setCurrentScreen('traveler-profile')}
+                  onToggleVibin={controls?.onToggleVibin}
+                  onOpenComments={controls?.onOpenComments}
+                />
+              )}
+              customCollections={selectedTravelerCollections}
             />
           </Suspense>
         ) : null;
@@ -4493,7 +4750,7 @@ export default function App() {
           <CollectionDetailScreen
             collection={selectedCollection}
             owner={selectedCollectionOwner}
-            canEdit={selectedCollectionReturnScreen === 'bookmarks' || selectedCollectionReturnScreen === 'profile'}
+            canEdit={!publicCollectionId && (selectedCollectionReturnScreen === 'bookmarks' || selectedCollectionReturnScreen === 'profile')}
             onEdit={() => showActionToast('Collection editing is next up')}
             onShare={() => {
               openShareSheet({
@@ -4503,11 +4760,48 @@ export default function App() {
                 allowRecap: true,
               });
             }}
-            onBack={() => setCurrentScreen(selectedCollectionReturnScreen)}
+            onBack={() => {
+              if (publicCollectionId) {
+                if (typeof window !== 'undefined' && window.history.length > 1) {
+                  window.history.back();
+                } else {
+                  setCurrentScreen('landing');
+                }
+                return;
+              }
+              setCurrentScreen(selectedCollectionReturnScreen);
+            }}
             onSelectPlace={(place) => {
               openPlaceDetail(place, 'collection-detail');
             }}
           />
+        ) : publicCollectionId ? (
+          isPublicCollectionLoading ? (
+            <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-6 text-center text-white">
+              <div className="rounded-[2rem] border border-white/10 bg-white/6 px-6 py-8">
+                <h1 className="text-2xl font-black tracking-tight">Loading collection</h1>
+                <p className="mt-3 text-sm font-medium leading-relaxed text-white/60">
+                  Pulling this shared list now.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-6 text-center text-white">
+              <div className="rounded-[2rem] border border-white/10 bg-white/6 px-6 py-8">
+                <h1 className="text-2xl font-black tracking-tight">{publicCollectionError ?? 'Collection not found'}</h1>
+                <p className="mt-3 text-sm font-medium leading-relaxed text-white/60">
+                  This shared collection is not available in the current environment.
+                </p>
+                <button
+                  type="button"
+                  onClick={openApp}
+                  className="mt-5 rounded-[1.25rem] bg-accent px-6 py-4 text-sm font-black uppercase tracking-[0.14em] text-black transition hover:brightness-105"
+                >
+                  Open app
+                </button>
+              </div>
+            </div>
+          )
         ) : null;
       case 'discover-places':
         return discoveryPlacesScreen;
@@ -4529,9 +4823,45 @@ export default function App() {
           <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
             <PublicProfileScreen
               user={resolvedPublicProfileUser}
+              bookmarkedPlaces={resolvedPublicProfileBookmarkedPlaces}
+              customCollections={resolvedPublicProfileCollections}
               onOpenApp={openApp}
+              onOpenCollection={(collection) => {
+                setSelectedCollection(collection);
+                setSelectedCollectionReturnScreen('public-profile');
+                setPublicCollectionId(collection.id ?? null);
+                setSelectedCollectionOwner({
+                  avatar: resolvedPublicProfileUser.avatar,
+                  username: resolvedPublicProfileUser.username,
+                  displayName: resolvedPublicProfileUser.displayName,
+                });
+                setCurrentScreen('collection-detail');
+              }}
               displayFlags={(resolvedPublicProfileUser.flags?.length ? resolvedPublicProfileUser.flags : deriveFlagsFromTravelHistory(resolvedPublicProfileUser.travelHistory)).slice(0, 5)}
               publicMomentsCount={resolvedPublicProfileUser.travelHistory.flatMap((item) => item.places ?? []).length}
+              feedItems={publicProfileFeedItems}
+              renderFeedEntryCard={(item, index) => (
+                <FollowingFeedCard
+                  item={item}
+                  vibed={false}
+                  vibinCount={0}
+                  commentsCount={0}
+                  onOpenPlace={item.type === 'collection' ? undefined : openApp}
+                  onOpenTraveler={openApp}
+                />
+              )}
+              renderSavedPlaceCard={(place, index) => (
+                <PlaceCard
+                  data={{
+                    ...mapPlaceToCardData(place, index),
+                    visitedByFollowingAvatars: [],
+                    contextNote: 'saved to their vibe graph',
+                  }}
+                  showFullHook
+                  hideRecommendationSection
+                  onClick={openApp}
+                />
+              )}
               renderMomentCard={(place, index) => (
                 <MomentEntryCard
                   place={place}
@@ -4996,7 +5326,7 @@ function LoginScreen({
             setErrorMessage(null);
             try {
               const response = await api.login({ email, password });
-              await onSuccess({
+              void onSuccess({
                 id: response.user.id,
                 name: response.user.displayName,
                 username: response.user.username,
@@ -5077,7 +5407,7 @@ function RegisterScreen({
               setErrorMessage(null);
               try {
                 const response = await onGoogleAuth(idToken);
-                await onSuccess({
+                void onSuccess({
                   id: response.user.id,
                   name: response.user.displayName || 'Google traveler',
                   username: response.user.username,
@@ -5156,7 +5486,7 @@ function RegisterScreen({
                 setErrorMessage(null);
                 try {
                   const response = await api.register({ name, email, password });
-                  await onSuccess({
+                  void onSuccess({
                     id: response.user.id,
                     name: response.user.displayName || name,
                     username: response.user.username,
@@ -5481,7 +5811,7 @@ function AddCollectionScreen({
 }
 
 function buildTravelerCardData(traveler: User, index: number, isFollowing = false): TravelerCardData {
-  const previewPlaces = traveler.travelHistory
+  const visitedPreviewPlaces = traveler.travelHistory
     .flatMap((trip) => trip.places ?? [])
     .flatMap((place) => {
       const mediaItems = (place.momentMedia?.map((item, mediaIndex) => ({
@@ -5500,7 +5830,19 @@ function buildTravelerCardData(traveler: User, index: number, isFollowing = fals
         imageUrl: fallbackImage,
         label: place.name,
       }] : [];
-    })
+    });
+  const savedPreviewPlaces = (traveler.recentSavedPlaces ?? [])
+    .flatMap((entry) => {
+      const place = entry.place;
+      const fallbackImage = place.images?.[0] ?? place.image;
+      return fallbackImage ? [{
+        id: `saved-${place.id}`,
+        imageUrl: fallbackImage,
+        label: place.name,
+      }] : [];
+    });
+  const previewPlaces = [...visitedPreviewPlaces, ...savedPreviewPlaces]
+    .filter((item, itemIndex, items) => items.findIndex((candidate) => candidate.imageUrl === item.imageUrl) === itemIndex)
     .slice(0, 5);
 
   return {
@@ -5599,7 +5941,13 @@ function SuggestedTravelerRailCard({
             onClick={onOpenTraveler}
             className="overflow-hidden rounded-[16px] border border-white/10 bg-zinc-900"
           >
-            <img src={place.imageUrl} alt={place.label} className="aspect-[4/5] w-full object-cover" referrerPolicy="no-referrer" />
+            <img
+              src={place.imageUrl}
+              alt={place.label}
+              className="aspect-[4/5] w-full object-cover"
+              referrerPolicy="no-referrer"
+              onError={(event) => handleMediaImageError(event, place.label)}
+            />
           </button>
         ))}
       </div>
@@ -6127,6 +6475,7 @@ function FollowingFeedCard({
       }
     | {
         type: 'collection';
+        collectionId?: string;
         traveler: User;
         collectionName: string;
         collectionPlaces: Place[];
@@ -6175,7 +6524,7 @@ function FollowingFeedCard({
             </div>
           </div>
 
-          {item.caption ? (
+          {item.type !== 'saved' && item.caption ? (
             <p className="mt-3 text-sm font-medium leading-relaxed text-white/82">{item.caption}</p>
           ) : null}
 
@@ -7071,19 +7420,26 @@ function TravelerDiscovery({
   onSelectPlace: (p: Place, returnScreen?: Screen) => void,
   onSelectTraveler: (t: User) => void,
 }) {
+  type FollowingCommentsTarget =
+    | { targetType: 'MOMENT' | 'PLACE'; targetId: string; name: string; momentId?: string }
+    | { targetType: 'COLLECTION'; targetId: string; name: string };
   const [searchQuery, setSearchQuery] = useState('');
   const [isPeopleSearchOpen, setIsPeopleSearchOpen] = useState(false);
   const [isSuggestedDismissed, setIsSuggestedDismissed] = useState(false);
   const [searchTravelers, setSearchTravelers] = useState<Array<{ original: User; card: TravelerCardData }>>([]);
   const [isSearchLoading, setIsSearchLoading] = useState(false);
+  const [publicSuggestedTravelers, setPublicSuggestedTravelers] = useState<Array<{ original: User; card: TravelerCardData }>>([]);
   const [vibedFollowingPlaceIds, setVibedFollowingPlaceIds] = useState<string[]>([]);
+  const [vibedFollowingCollectionIds, setVibedFollowingCollectionIds] = useState<string[]>([]);
   const [savedFollowingPlaceIds, setSavedFollowingPlaceIds] = useState<string[]>([]);
   const [sharedFollowingPlaceIds, setSharedFollowingPlaceIds] = useState<string[]>([]);
-  const [followingCommentsPlace, setFollowingCommentsPlace] = useState<Place | null>(null);
+  const [followingCommentsTarget, setFollowingCommentsTarget] = useState<FollowingCommentsTarget | null>(null);
   const [followingComments, setFollowingComments] = useState<Array<{ id: string; user: string; body: string; createdAt: string }>>([]);
   const [followingCommentDraft, setFollowingCommentDraft] = useState('');
   const [followingVibinCounts, setFollowingVibinCounts] = useState<Record<string, number>>({});
   const [followingCommentCounts, setFollowingCommentCounts] = useState<Record<string, number>>({});
+  const [followingCollectionVibinCounts, setFollowingCollectionVibinCounts] = useState<Record<string, number>>({});
+  const [followingCollectionCommentCounts, setFollowingCollectionCommentCounts] = useState<Record<string, number>>({});
   const [followingToast, setFollowingToast] = useState<string | null>(null);
   const [discoveryTravelers, setDiscoveryTravelers] = useState<{
     followedTravelers: User[];
@@ -7101,7 +7457,35 @@ function TravelerDiscovery({
     similarTravelers: [],
     feedSavedDrops: [],
   });
+  useEffect(() => {
+    const cachedFeed = readSessionJsonCache<{
+      followedTravelers: User[];
+      similarTravelers: User[];
+      feedSavedDrops: Array<{
+        id: string;
+        travelerId: string;
+        place: Place;
+        caption: string;
+        savedAtLabel: string;
+        savedAtIso?: string;
+      }>;
+    }>(TRAVELER_FEED_CACHE_KEY, TRAVELER_FEED_CACHE_TTL_MS);
+    if (cachedFeed) {
+      setDiscoveryTravelers(cachedFeed);
+    }
+
+    const cachedSuggestions = readSessionJsonCache<User[]>(PUBLIC_SUGGESTIONS_CACHE_KEY, TRAVELER_FEED_CACHE_TTL_MS);
+    if (cachedSuggestions) {
+      setPublicSuggestedTravelers(
+        cachedSuggestions.map((traveler, index) => ({
+          original: traveler,
+          card: buildTravelerCardData(traveler, index, false),
+        })),
+      );
+    }
+  }, []);
   const followedTravelerIds = new Set(discoveryTravelers.followedTravelers.map((traveler) => traveler.id));
+  const followedTravelerIdsKey = discoveryTravelers.followedTravelers.map((traveler) => traveler.id).sort().join(',');
   const similarTravelers = discoveryTravelers.similarTravelers.map((traveler, index) => ({
     original: traveler,
     card: buildTravelerCardData(traveler, index, followedTravelerIds.has(traveler.id)),
@@ -7135,7 +7519,7 @@ function TravelerDiscovery({
       place,
       activityDate: formatRelativeActivityTime(place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000),
       caption: place.momentCaption ?? 'Dropped a check-in here.',
-      compatibility: typeof place.similarityStat === 'number' ? Math.min(place.similarityStat, 98) : undefined,
+      compatibility: undefined,
       sortTimestamp: place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000,
     }));
     const recentSavedSource = mockReviewData?.feedSavedDrops ?? discoveryTravelers.feedSavedDrops ?? [];
@@ -7149,7 +7533,7 @@ function TravelerDiscovery({
             place: entry.place,
             activityDate: entry.savedAtLabel,
             caption: entry.caption,
-            compatibility: typeof entry.place.similarityStat === 'number' ? Math.min(entry.place.similarityStat, 98) : undefined,
+            compatibility: undefined,
             sortTimestamp: entry.savedAtIso
               ? Date.parse(entry.savedAtIso)
               : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (recentSavedSource.findIndex((savedEntry) => savedEntry.id === entry.id) + 1) * 3600000)),
@@ -7162,7 +7546,7 @@ function TravelerDiscovery({
             place: entry.place,
             activityDate: entry.savedAtLabel,
             caption: entry.caption,
-            compatibility: typeof entry.place.similarityStat === 'number' ? Math.min(entry.place.similarityStat, 98) : undefined,
+            compatibility: undefined,
             sortTimestamp: entry.savedAtIso
               ? Date.parse(entry.savedAtIso)
               : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (recentSavedSource.findIndex((savedEntry) => savedEntry.id === entry.id) + 1) * 3600000)),
@@ -7174,23 +7558,24 @@ function TravelerDiscovery({
             place: entry.place,
             activityDate: entry.savedAtLabel,
             caption: undefined,
-            compatibility: typeof entry.place.similarityStat === 'number' ? Math.min(entry.place.similarityStat, 98) : undefined,
+            compatibility: undefined,
             sortTimestamp: entry.savedAtIso
               ? Date.parse(entry.savedAtIso)
               : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (index + 1) * 3600000)),
           }));
-    const collections = original.travelHistory
-      .filter((trip) => (trip.places?.length ?? 0) >= 2)
+    const collections = (original.recentCollections ?? [])
+      .filter((collection) => (collection.places?.length ?? 0) >= 2)
       .slice(0, 1)
-      .map((trip, index) => ({
-        id: `${original.id}-collection-${trip.cities[0] ?? trip.country}-${index}`,
+      .map((collection, index) => ({
+        id: `${original.id}-collection-${collection.id ?? collection.label}-${index}`,
         type: 'collection' as const,
         traveler: original,
-        collectionName: trip.cities[0] ? `${trip.cities[0]} list` : `${trip.country} list`,
-        collectionPlaces: (trip.places ?? []).slice(0, 4),
-        activityDate: formatRelativeActivityTime(original.latestVisitedAtIso ? Date.parse(original.latestVisitedAtIso) : tripLatestVisitedAt || (Date.now() - 7 * 86400000)),
-        caption: `Pulled together a fresh list around ${trip.cities[0] ?? trip.country}.`,
-        sortTimestamp: original.latestVisitedAtIso ? Date.parse(original.latestVisitedAtIso) : tripLatestVisitedAt || (Date.now() - 7 * 86400000),
+        collectionId: collection.id,
+        collectionName: collection.label,
+        collectionPlaces: (collection.places ?? []).slice(0, 4),
+        activityDate: formatRelativeActivityTime(collection.createdAt ? Date.parse(collection.createdAt) : (original.latestVisitedAtIso ? Date.parse(original.latestVisitedAtIso) : tripLatestVisitedAt || (Date.now() - 7 * 86400000))),
+        caption: undefined,
+        sortTimestamp: collection.createdAt ? Date.parse(collection.createdAt) : (original.latestVisitedAtIso ? Date.parse(original.latestVisitedAtIso) : tripLatestVisitedAt || (Date.now() - 7 * 86400000)),
       }));
 
     return [...recentSaved, ...recentVisited, ...collections];
@@ -7206,7 +7591,7 @@ function TravelerDiscovery({
         place: entry.place,
         activityDate: entry.savedAtLabel,
         caption: entry.caption,
-        compatibility: typeof entry.place.similarityStat === 'number' ? Math.min(entry.place.similarityStat, 98) : undefined,
+        compatibility: undefined,
         sortTimestamp: entry.savedAtIso ? Date.parse(entry.savedAtIso) : parseRelativeActivityLabelToTimestamp(entry.savedAtLabel),
       };
     })
@@ -7220,6 +7605,11 @@ function TravelerDiscovery({
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
   const discoverableTravelers = (similarTravelers.length > 0 ? similarTravelers : fallbackSimilarTravelers)
     .filter(({ card }) => !card.isFollowing);
+  const displayedSuggestedTravelers = (
+    discoverableTravelers.length > 0
+      ? discoverableTravelers
+      : publicSuggestedTravelers.filter(({ card }) => !card.isFollowing)
+  );
   const searchableTravelers = [...similarTravelers, ...displayedFollowedTravelers].filter(
     (traveler, index, list) => list.findIndex((item) => item.original.id === traveler.original.id) === index,
   );
@@ -7250,33 +7640,93 @@ function TravelerDiscovery({
         similarTravelers: [],
         feedSavedDrops: [],
       });
-      return;
-    }
-    if (mockReviewData) {
+    } else if (mockReviewData) {
       setDiscoveryTravelers({
         followedTravelers: mockReviewData.followedTravelers,
         similarTravelers: mockReviewData.similarTravelers,
         feedSavedDrops: mockReviewData.feedSavedDrops,
       });
+    } else {
+      const cachedFeed = readSessionJsonCache<{
+        followedTravelers: User[];
+        similarTravelers: User[];
+        feedSavedDrops: Array<{
+          id: string;
+          travelerId: string;
+          place: Place;
+          caption: string;
+          savedAtLabel: string;
+          savedAtIso?: string;
+        }>;
+      }>(TRAVELER_FEED_CACHE_KEY, TRAVELER_FEED_CACHE_TTL_MS);
+      if (cachedFeed) {
+        setDiscoveryTravelers(cachedFeed);
+        return;
+      }
+
+      void api.getTravelerDiscovery()
+        .then((response) => {
+          const nextFeed = {
+            followedTravelers: response.followedTravelers as User[],
+            similarTravelers: response.similarTravelers as User[],
+            feedSavedDrops: (response.feedSavedDrops as Array<{
+              id: string;
+              travelerId: string;
+              place: Place;
+              caption: string;
+              savedAtLabel: string;
+              savedAtIso?: string;
+            }> | undefined) ?? [],
+          };
+          setDiscoveryTravelers(nextFeed);
+          writeSessionJsonCache(TRAVELER_FEED_CACHE_KEY, nextFeed);
+        })
+        .catch(() => undefined);
+    }
+  }, [isAuthenticated, mockReviewData]);
+
+  useEffect(() => {
+    if (mockReviewData) {
+      setPublicSuggestedTravelers(
+        mockReviewData.similarTravelers.map((traveler, index) => ({
+          original: traveler,
+          card: buildTravelerCardData(traveler, index, followedTravelerIds.has(traveler.id)),
+        })),
+      );
       return;
     }
-    void api.getTravelerDiscovery()
+
+    const cachedSuggestions = readSessionJsonCache<User[]>(PUBLIC_SUGGESTIONS_CACHE_KEY, TRAVELER_FEED_CACHE_TTL_MS);
+    if (cachedSuggestions) {
+      setPublicSuggestedTravelers(
+        cachedSuggestions
+          .filter((traveler) => !followedTravelerIds.has(traveler.id))
+          .map((traveler, index) => ({
+            original: traveler,
+            card: buildTravelerCardData(traveler, index, followedTravelerIds.has(traveler.id)),
+          })),
+      );
+      return;
+    }
+
+    void api.getPublicTravelerSuggestions(12)
       .then((response) => {
-        setDiscoveryTravelers({
-          followedTravelers: response.followedTravelers as User[],
-          similarTravelers: response.similarTravelers as User[],
-          feedSavedDrops: (response.feedSavedDrops as Array<{
-            id: string;
-            travelerId: string;
-            place: Place;
-            caption: string;
-            savedAtLabel: string;
-            savedAtIso?: string;
-          }> | undefined) ?? [],
-        });
+        const nextTravelers = (response.travelers as User[])
+          .filter((traveler) => !followedTravelerIds.has(traveler.id))
+          .map((traveler, index) => ({
+            original: traveler,
+            card: buildTravelerCardData(traveler, index, followedTravelerIds.has(traveler.id)),
+          }));
+        setPublicSuggestedTravelers(nextTravelers);
+        writeSessionJsonCache(
+          PUBLIC_SUGGESTIONS_CACHE_KEY,
+          nextTravelers.map((item) => item.original),
+        );
       })
-      .catch(() => undefined);
-  }, [isAuthenticated, mockReviewData]);
+      .catch(() => {
+        setPublicSuggestedTravelers([]);
+      });
+  }, [followedTravelerIdsKey, isAuthenticated, mockReviewData]);
 
   useEffect(() => {
     if (!isPeopleSearchOpen || normalizedSearchQuery.length < 2) {
@@ -7310,24 +7760,27 @@ function TravelerDiscovery({
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [followedTravelerIds, isPeopleSearchOpen, normalizedSearchQuery]);
+  }, [followedTravelerIdsKey, isPeopleSearchOpen, normalizedSearchQuery]);
 
   useEffect(() => {
-    if (!followingCommentsPlace || !isAuthenticated) return;
+    if (!followingCommentsTarget || !isAuthenticated) return;
     void api.getComments({
-      targetType: getPlaceInteractionTargetType(followingCommentsPlace),
-      targetId: getPlaceInteractionTargetId(followingCommentsPlace),
+      targetType: followingCommentsTarget.targetType,
+      targetId: followingCommentsTarget.targetId,
     })
       .then((response) => setFollowingComments(response.comments))
       .catch(() => undefined);
-  }, [followingCommentsPlace, isAuthenticated]);
+  }, [followingCommentsTarget, isAuthenticated]);
 
   useEffect(() => {
     if (mockReviewData) {
       setSavedFollowingPlaceIds([]);
       setVibedFollowingPlaceIds([]);
+      setVibedFollowingCollectionIds([]);
       setFollowingVibinCounts({});
       setFollowingCommentCounts({});
+      setFollowingCollectionVibinCounts({});
+      setFollowingCollectionCommentCounts({});
       return;
     }
     const interactivePlaceItems = followingFeedItems.filter((item) => item.type !== 'collection');
@@ -7458,7 +7911,7 @@ function TravelerDiscovery({
         </div>
       ) : null}
 
-      {isAuthenticated && !isSuggestedDismissed ? (
+      {!isSuggestedDismissed ? (
         <div className="mb-8">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
@@ -7475,19 +7928,23 @@ function TravelerDiscovery({
               <X size={14} />
             </button>
           </div>
-          {discoverableTravelers.length === 0 ? (
+          {displayedSuggestedTravelers.length === 0 ? (
             <div className="rounded-[28px] border border-white/10 bg-white/6 px-5 py-5 text-sm font-medium text-white/60">
-              No people matched that search yet. Try a name, username, or taste keyword.
+              We are still lining up people worth following for you.
             </div>
           ) : (
             <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
-              {discoverableTravelers.map(({ original, card }) => (
+              {displayedSuggestedTravelers.map(({ original, card }) => (
                 <div key={original.id}>
                   <SuggestedTravelerRailCard
                     traveler={original}
                     card={card}
                     onOpenTraveler={() => onSelectTraveler(original)}
                     onToggleFollow={async () => {
+                      if (!isAuthenticated) {
+                        onRequireAuth('Log in to follow people whose taste you want to keep up with.', () => undefined);
+                        return;
+                      }
                       try {
                         const response = await api.toggleFollow({ targetUserId: original.id });
                         setDiscoveryTravelers((current) => ({
@@ -7556,13 +8013,21 @@ function TravelerDiscovery({
               <div key={item.id}>
                 <FollowingFeedCard
                   item={item}
-                  vibed={item.type !== 'collection' && vibedFollowingPlaceIds.includes(getPlaceInteractionTargetId(item.place))}
-                  vibinCount={item.type !== 'collection' ? followingVibinCounts[getPlaceInteractionTargetId(item.place)] || 0 : 0}
+                  vibed={item.type !== 'collection'
+                    ? vibedFollowingPlaceIds.includes(getPlaceInteractionTargetId(item.place))
+                    : Boolean(item.collectionId && vibedFollowingCollectionIds.includes(item.collectionId))}
+                  vibinCount={item.type !== 'collection'
+                    ? followingVibinCounts[getPlaceInteractionTargetId(item.place)] || 0
+                    : (item.collectionId ? followingCollectionVibinCounts[item.collectionId] || 0 : 0)}
                   commentsCount={item.type !== 'collection'
-                    ? followingCommentsPlace?.id === item.place.id
+                    ? followingCommentsTarget?.targetType !== 'COLLECTION' && followingCommentsTarget?.targetId === getPlaceInteractionTargetId(item.place)
                       ? followingComments.length || followingCommentCounts[getPlaceInteractionTargetId(item.place)] || 0
                       : followingCommentCounts[getPlaceInteractionTargetId(item.place)] || 0
-                    : 0}
+                    : (item.collectionId
+                        ? (followingCommentsTarget?.targetType === 'COLLECTION' && followingCommentsTarget.targetId === item.collectionId
+                          ? followingComments.length || followingCollectionCommentCounts[item.collectionId] || 0
+                          : followingCollectionCommentCounts[item.collectionId] || 0)
+                        : 0)}
                   onOpenPlace={item.type !== 'collection' ? () => onSelectPlace(item.place, 'discover-travelers') : undefined}
                   onOpenTraveler={() => onSelectTraveler(item.traveler)}
                   onToggleVibin={item.type !== 'collection'
@@ -7584,8 +8049,43 @@ function TravelerDiscovery({
                           showFollowingToast('Could not update vibin right now');
                         }
                       }
-                    : undefined}
-                  onOpenComments={item.type !== 'collection' ? () => setFollowingCommentsPlace(item.place) : undefined}
+                    : item.collectionId
+                      ? async () => {
+                          if (!isAuthenticated) {
+                            onRequireAuth('Log in to send vibin to collections from people you follow.', () => undefined);
+                            return;
+                          }
+                          const isActive = vibedFollowingCollectionIds.includes(item.collectionId);
+                          try {
+                            const response = await api.toggleVibin({
+                              targetType: 'COLLECTION',
+                              targetId: item.collectionId,
+                              receiverUserId: item.traveler.id,
+                            });
+                            setVibedFollowingCollectionIds((prev) =>
+                              isActive ? prev.filter((entry) => entry !== item.collectionId) : [...prev, item.collectionId],
+                            );
+                            setFollowingCollectionVibinCounts((prev) => ({ ...prev, [item.collectionId]: response.count }));
+                            showFollowingToast(response.active ? 'Sent vibin' : 'Removed vibin');
+                          } catch {
+                            showFollowingToast('Could not update vibin right now');
+                          }
+                        }
+                      : undefined}
+                  onOpenComments={item.type !== 'collection'
+                    ? () => setFollowingCommentsTarget({
+                        targetType: getPlaceInteractionTargetType(item.place),
+                        targetId: getPlaceInteractionTargetId(item.place),
+                        name: item.place.name,
+                        momentId: item.place.momentId,
+                      })
+                    : item.collectionId
+                      ? () => setFollowingCommentsTarget({
+                          targetType: 'COLLECTION',
+                          targetId: item.collectionId,
+                          name: item.collectionName,
+                        })
+                      : undefined}
                 />
               </div>
             ))}
@@ -7607,14 +8107,14 @@ function TravelerDiscovery({
       )}
 
       <AnimatePresence>
-        {followingCommentsPlace ? (
+        {followingCommentsTarget ? (
           <>
             <motion.button
               type="button"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setFollowingCommentsPlace(null)}
+              onClick={() => setFollowingCommentsTarget(null)}
               className="fixed inset-0 z-[70] bg-black/60"
             />
             <motion.div
@@ -7625,7 +8125,7 @@ function TravelerDiscovery({
               className="fixed inset-x-0 bottom-0 z-[80] mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pb-8 pt-4"
             >
               <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
-              <div className="mt-4 text-center text-lg font-black text-white">Comments on {followingCommentsPlace.name}</div>
+              <div className="mt-4 text-center text-lg font-black text-white">Comments on {followingCommentsTarget.name}</div>
               <div className="mt-5 space-y-4">
                 {followingComments.length > 0 ? (
                   followingComments.map((comment) => (
@@ -7650,23 +8150,30 @@ function TravelerDiscovery({
                 <button
                   className="rounded-full bg-accent px-4 py-3 text-sm font-black text-dark"
                   onClick={async () => {
-                    if (!followingCommentsPlace || !followingCommentDraft.trim()) return;
+                    if (!followingCommentsTarget || !followingCommentDraft.trim()) return;
                     if (!isAuthenticated) {
                       onRequireAuth('Log in to comment on places from travelers you follow.', () => undefined);
                       return;
                     }
                     try {
                       const response = await api.createComment({
-                        targetType: getPlaceInteractionTargetType(followingCommentsPlace),
-                        targetId: getPlaceInteractionTargetId(followingCommentsPlace),
+                        targetType: followingCommentsTarget.targetType,
+                        targetId: followingCommentsTarget.targetId,
                         body: followingCommentDraft.trim(),
-                        momentId: followingCommentsPlace.momentId,
+                        momentId: followingCommentsTarget.targetType === 'COLLECTION' ? undefined : followingCommentsTarget.momentId,
                       });
                       setFollowingComments((prev) => [response.comment, ...prev]);
-                      setFollowingCommentCounts((prev) => ({
-                        ...prev,
-                        [getPlaceInteractionTargetId(followingCommentsPlace)]: response.count,
-                      }));
+                      if (followingCommentsTarget.targetType === 'COLLECTION') {
+                        setFollowingCollectionCommentCounts((prev) => ({
+                          ...prev,
+                          [followingCommentsTarget.targetId]: response.count,
+                        }));
+                      } else {
+                        setFollowingCommentCounts((prev) => ({
+                          ...prev,
+                          [followingCommentsTarget.targetId]: response.count,
+                        }));
+                      }
                       setFollowingCommentDraft('');
                       showFollowingToast('Comment sent');
                     } catch {
@@ -7796,6 +8303,9 @@ function BookmarksScreen({
                     <div key={place.id}>
                       <PlaceCard
                         data={mapPlaceToCardData(place, index)}
+                        showFullHook
+                        showFullRecommendation
+                        hideRecommendationSection
                         onClick={() => onSelectPlace(place)}
                       />
                     </div>
@@ -8303,7 +8813,12 @@ function CollectionDetailScreen({
       <div className="space-y-4">
         {collection.places.map((place, index) => (
           <div key={place.id}>
-            <PlaceCard data={mapPlaceToCardData(place, index)} onClick={() => onSelectPlace(place)} />
+            <PlaceCard
+              data={mapPlaceToCardData(place, index)}
+              showFullHook
+              hideRecommendationSection
+              onClick={() => onSelectPlace(place)}
+            />
           </div>
         ))}
       </div>

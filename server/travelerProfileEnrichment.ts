@@ -6,7 +6,7 @@ dotenv.config();
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5-mini';
 
-const descriptorCache = new Map<string, { signature: string; summary: string }>();
+const descriptorCache = new Map<string, { signature: string; summary: string; pendingSignature?: string }>();
 
 type TravelerDescriptorInput = {
   userId: string;
@@ -33,6 +33,11 @@ function normalizeKeyword(value: string) {
   return value.toLowerCase().replace(/[_-]+/g, ' ').trim();
 }
 
+function bumpCount(map: Map<string, number>, key: string, weight: number) {
+  if (!key) return;
+  map.set(key, (map.get(key) ?? 0) + weight);
+}
+
 function sanitizeSingleSentence(value: string) {
   const trimmed = value.replace(/\s+/g, ' ').trim();
   if (!trimmed) return '';
@@ -48,6 +53,9 @@ function pickTravelerArchetype(input: TravelerDescriptorInput) {
       moment.place.category ?? '',
       ...(moment.place.tags ?? []),
       moment.caption ?? '',
+      ...(moment.vibeTags ?? []),
+      moment.place.category ?? '',
+      ...(moment.place.tags ?? []),
     ]),
     ...input.bookmarkedPlaces.flatMap((place) => [
       place.category ?? '',
@@ -123,29 +131,40 @@ function buildHeuristicTravelerDescriptor(input: TravelerDescriptorInput) {
     for (const tag of moment.vibeTags ?? []) {
       const normalized = normalizeKeyword(tag);
       if (!normalized) continue;
-      vibeCounts.set(normalized, (vibeCounts.get(normalized) ?? 0) + 1);
+      bumpCount(vibeCounts, normalized, 3);
     }
 
     const normalizedCategory = normalizeKeyword(moment.place.category ?? '');
     if (normalizedCategory) {
-      categoryCounts.set(normalizedCategory, (categoryCounts.get(normalizedCategory) ?? 0) + 1);
+      bumpCount(categoryCounts, normalizedCategory, 3);
     }
 
     const city = moment.place.location?.split(',')[0]?.trim();
     if (city) {
-      cityCounts.set(city, (cityCounts.get(city) ?? 0) + 1);
+      bumpCount(cityCounts, city, 2);
+    }
+
+    for (const tag of moment.place.tags ?? []) {
+      const normalized = normalizeKeyword(tag);
+      if (!normalized) continue;
+      bumpCount(vibeCounts, normalized, 2);
     }
   }
 
   for (const place of input.bookmarkedPlaces) {
     const normalizedCategory = normalizeKeyword(place.category ?? '');
     if (normalizedCategory) {
-      categoryCounts.set(normalizedCategory, (categoryCounts.get(normalizedCategory) ?? 0) + 1);
+      bumpCount(categoryCounts, normalizedCategory, 1);
     }
     for (const tag of place.tags ?? []) {
       const normalized = normalizeKeyword(tag);
       if (!normalized) continue;
-      vibeCounts.set(normalized, (vibeCounts.get(normalized) ?? 0) + 1);
+      bumpCount(vibeCounts, normalized, 1);
+    }
+
+    const city = place.location?.split(',')[0]?.trim();
+    if (city) {
+      bumpCount(cityCounts, city, 1);
     }
   }
 
@@ -203,17 +222,10 @@ function buildDescriptorSignature(input: TravelerDescriptorInput) {
   return crypto.createHash('sha1').update(JSON.stringify(signaturePayload)).digest('hex');
 }
 
-export async function generateTravelerProfileDescriptor(input: TravelerDescriptorInput) {
-  const signature = buildDescriptorSignature(input);
-  const cached = descriptorCache.get(input.userId);
-  if (cached?.signature === signature) {
-    return cached.summary;
-  }
-
+async function computeTravelerDescriptorSummary(input: TravelerDescriptorInput) {
   const heuristicSummary = buildHeuristicTravelerDescriptor(input);
 
   if (!OPENAI_API_KEY) {
-    descriptorCache.set(input.userId, { signature, summary: heuristicSummary });
     return heuristicSummary;
   }
 
@@ -247,7 +259,7 @@ export async function generateTravelerProfileDescriptor(input: TravelerDescripto
             content: [
               {
                 type: 'input_text',
-                text: 'You write ultra-short traveler taste descriptors. Return strict JSON: {"summary":"..."} only. The summary must be exactly one sentence, compelling, natural, under 120 characters, and position the person as a specific kind of traveler first, then hint at their taste. Example shape: "A late-night city traveler with a soft spot for underrated cocktail bars." Avoid generic words like passionate, loves to travel, explorer, wanderlust, or travel lover. No emojis. No hashtags.',
+                text: 'You write ultra-short traveler taste descriptors. Return strict JSON: {"summary":"..."} only. The summary must be exactly one sentence, compelling, natural, under 120 characters, and position the person as a specific kind of traveler first, then hint at their taste. Use visited places and moments as the primary signal. Use saved places as a secondary signal that can refine the taste, but should not overpower visits. Example shape: "A late-night city traveler with a soft spot for underrated cocktail bars." Avoid generic words like passionate, loves to travel, explorer, wanderlust, or travel lover. No emojis. No hashtags.',
               },
             ],
           },
@@ -274,11 +286,48 @@ export async function generateTravelerProfileDescriptor(input: TravelerDescripto
     }
 
     const payload = await response.json() as any;
-    const summary = parseStructuredSummary(payload) || heuristicSummary;
-    descriptorCache.set(input.userId, { signature, summary });
-    return summary;
+    return parseStructuredSummary(payload) || heuristicSummary;
   } catch {
-    descriptorCache.set(input.userId, { signature, summary: heuristicSummary });
     return heuristicSummary;
   }
+}
+
+export function queueTravelerProfileDescriptorRefresh(input: TravelerDescriptorInput) {
+  const signature = buildDescriptorSignature(input);
+  const cached = descriptorCache.get(input.userId);
+  if (cached?.signature === signature || cached?.pendingSignature === signature) {
+    return;
+  }
+
+  descriptorCache.set(input.userId, {
+    signature: cached?.signature ?? signature,
+    summary: cached?.summary ?? buildHeuristicTravelerDescriptor(input),
+    pendingSignature: signature,
+  });
+
+  void computeTravelerDescriptorSummary(input)
+    .then((summary) => {
+      descriptorCache.set(input.userId, { signature, summary });
+    })
+    .catch(() => {
+      const fallbackSummary = buildHeuristicTravelerDescriptor(input);
+      descriptorCache.set(input.userId, { signature, summary: fallbackSummary });
+    });
+}
+
+export async function generateTravelerProfileDescriptor(input: TravelerDescriptorInput) {
+  const signature = buildDescriptorSignature(input);
+  const cached = descriptorCache.get(input.userId);
+  if (cached?.signature === signature) {
+    return cached.summary;
+  }
+
+  if (cached?.summary) {
+    queueTravelerProfileDescriptorRefresh(input);
+    return cached.summary;
+  }
+
+  const summary = await computeTravelerDescriptorSummary(input);
+  descriptorCache.set(input.userId, { signature, summary });
+  return summary;
 }

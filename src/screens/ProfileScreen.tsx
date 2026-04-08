@@ -12,6 +12,10 @@ function getPlaceInteractionTargetType(place: Place): 'MOMENT' | 'PLACE' {
   return place.momentId ? 'MOMENT' : 'PLACE';
 }
 
+type CommentsTarget =
+  | { targetType: 'MOMENT' | 'PLACE'; targetId: string; name: string; momentId?: string }
+  | { targetType: 'COLLECTION'; targetId: string; name: string };
+
 function getAvatarFallbackUrl(label?: string | null) {
   const initial = (label?.trim().charAt(0) || 'V').toUpperCase();
   return `https://placehold.co/400x400/111111/D3FF48?text=${encodeURIComponent(initial)}`;
@@ -65,6 +69,7 @@ export default function ProfileScreen({
       }
     | {
         type: 'collection';
+        collectionId?: string;
         traveler: User;
         collectionName: string;
         collectionPlaces: Place[];
@@ -86,6 +91,7 @@ export default function ProfileScreen({
         }
       | {
           type: 'collection';
+          collectionId?: string;
           traveler: User;
           collectionName: string;
           collectionPlaces: Place[];
@@ -94,16 +100,26 @@ export default function ProfileScreen({
           sortTimestamp: number;
         },
     index: number,
+    controls?: {
+      vibed: boolean;
+      vibinCount: number;
+      commentsCount: number;
+      onToggleVibin?: () => void;
+      onOpenComments?: () => void;
+    },
   ) => ReactNode;
 }) {
   const [activeTab, setActiveTab] = useState<'saved' | 'visited' | 'collections' | 'feed'>('feed');
   const [momentsFilter, setMomentsFilter] = useState<'city' | 'time'>('city');
   const [expandedSavedCities, setExpandedSavedCities] = useState<string[]>([]);
-  const [commentsPlace, setCommentsPlace] = useState<Place | null>(null);
+  const [commentsTarget, setCommentsTarget] = useState<CommentsTarget | null>(null);
   const [comments, setComments] = useState<Array<{ id: string; user: string; body: string; createdAt?: string }>>([]);
   const [commentDraft, setCommentDraft] = useState('');
   const [savedPlaceIds, setSavedPlaceIds] = useState<string[]>([]);
   const [vibedPlaceIds, setVibedPlaceIds] = useState<string[]>([]);
+  const [vibedCollectionIds, setVibedCollectionIds] = useState<string[]>([]);
+  const [collectionVibinCounts, setCollectionVibinCounts] = useState<Record<string, number>>({});
+  const [collectionCommentCounts, setCollectionCommentCounts] = useState<Record<string, number>>({});
   const [sharedPlaceIds, setSharedPlaceIds] = useState<string[]>([]);
   const [profileCommentCounts, setProfileCommentCounts] = useState<Record<string, number>>({});
   const [profileToast, setProfileToast] = useState<string | null>(null);
@@ -134,6 +150,16 @@ export default function ProfileScreen({
     acc[city] = [...(acc[city] ?? []), place];
     return acc;
   }, {});
+  const uniqueBookmarkedPlaceIdsKey = uniqueBookmarkedPlaces.map((place) => place.id).join(',');
+  const collectionIdByName = Object.fromEntries(momentCollections.map((collection) => [collection.label, collection.id]));
+  const ownFeedInteractionPlaces = ownFeedItems
+    .filter((item): item is Extract<typeof ownFeedItems[number], { type: 'saved' | 'visited' }> => item.type !== 'collection')
+    .map((item) => item.place);
+  const ownFeedPlaceIds = Array.from(new Set(ownFeedInteractionPlaces.map((place) => place.id)));
+  const ownFeedMomentIds = Array.from(new Set(
+    ownFeedInteractionPlaces.map((place) => place.momentId).filter(Boolean) as string[],
+  ));
+  const ownFeedInteractionKey = `${user.id}:${ownFeedPlaceIds.join(',')}:${ownFeedMomentIds.join(',')}`;
 
   const showProfileToast = (message: string) => {
     setProfileToast(message);
@@ -144,13 +170,13 @@ export default function ProfileScreen({
 
   useEffect(() => {
     setSavedPlaceIds(uniqueBookmarkedPlaces.map((place) => place.id));
-  }, [uniqueBookmarkedPlaces]);
+  }, [uniqueBookmarkedPlaceIdsKey]);
 
   useEffect(() => {
-    if (!commentsPlace) return;
+    if (!commentsTarget) return;
     void api.getComments({
-      targetType: getPlaceInteractionTargetType(commentsPlace),
-      targetId: getPlaceInteractionTargetId(commentsPlace),
+      targetType: commentsTarget.targetType,
+      targetId: commentsTarget.targetId,
     })
       .then((response) => {
         setComments(response.comments);
@@ -158,22 +184,26 @@ export default function ProfileScreen({
       .catch(() => {
         setComments([]);
       });
-  }, [commentsPlace]);
+  }, [commentsTarget]);
 
   useEffect(() => {
-    const placeIds = ownPlaces.map((place) => place.id);
+    let isCancelled = false;
     void api.getInteractionState({
-      placeIds,
-      momentIds: ownPlaces.map((place) => place.momentId).filter(Boolean) as string[],
+      placeIds: ownFeedPlaceIds,
+      momentIds: ownFeedMomentIds,
       profileIds: [user.id],
     })
       .then((response) => {
+        if (isCancelled) return;
         setSavedPlaceIds(response.bookmarkedPlaceIds);
         setVibedPlaceIds([...response.vibedPlaceIds, ...response.vibedMomentIds]);
         setProfileCommentCounts({ ...response.placeCommentCounts, ...response.momentCommentCounts });
       })
       .catch(() => undefined);
-  }, [ownPlaces, user.id]);
+    return () => {
+      isCancelled = true;
+    };
+  }, [ownFeedInteractionKey, user.id]);
 
   const renderInteractionFooter = (place: Place) => (
     <div className="space-y-3">
@@ -205,13 +235,24 @@ export default function ProfileScreen({
         </button>
         <button
           type="button"
-          onClick={() => setCommentsPlace(place)}
+          onClick={() => setCommentsTarget({
+            targetType: getPlaceInteractionTargetType(place),
+            targetId: getPlaceInteractionTargetId(place),
+            name: place.name,
+            momentId: place.momentId,
+          })}
           className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition ${
-            commentsPlace?.id === place.id ? 'border-accent bg-accent text-dark' : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
+            commentsTarget?.targetType !== 'COLLECTION' && commentsTarget?.targetId === getPlaceInteractionTargetId(place)
+              ? 'border-accent bg-accent text-dark'
+              : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
           }`}
         >
           <MessageCircle size={14} />
-          <span>{commentsPlace?.id === place.id ? comments.length : 0}</span>
+          <span>
+            {commentsTarget?.targetType !== 'COLLECTION' && commentsTarget?.targetId === getPlaceInteractionTargetId(place)
+              ? comments.length || profileCommentCounts[getPlaceInteractionTargetId(place)] || 0
+              : profileCommentCounts[getPlaceInteractionTargetId(place)] || 0}
+          </span>
         </button>
         <button
           type="button"
@@ -246,13 +287,26 @@ export default function ProfileScreen({
 
       <div className="w-full rounded-[20px] border border-white/10 bg-white/6 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
-          <div className="text-xs font-black text-white/75">{commentsPlace?.id === place.id ? comments.length : 0} comments</div>
-          <button type="button" onClick={() => setCommentsPlace(place)} className="text-xs font-black text-accent">
+          <div className="text-xs font-black text-white/75">
+            {commentsTarget?.targetType !== 'COLLECTION' && commentsTarget?.targetId === getPlaceInteractionTargetId(place)
+              ? comments.length || profileCommentCounts[getPlaceInteractionTargetId(place)] || 0
+              : profileCommentCounts[getPlaceInteractionTargetId(place)] || 0} comments
+          </div>
+          <button
+            type="button"
+            onClick={() => setCommentsTarget({
+              targetType: getPlaceInteractionTargetType(place),
+              targetId: getPlaceInteractionTargetId(place),
+              name: place.name,
+              momentId: place.momentId,
+            })}
+            className="text-xs font-black text-accent"
+          >
             Write a comment
           </button>
         </div>
         <div className="mt-2 space-y-1">
-          {commentsPlace?.id === place.id && comments.length > 0 ? (
+          {commentsTarget?.targetType !== 'COLLECTION' && commentsTarget?.targetId === getPlaceInteractionTargetId(place) && comments.length > 0 ? (
             comments.slice(0, 2).map((comment) => (
               <div key={comment.id} className="text-sm text-white/72">
                 <span className="font-black text-white">@{comment.user}</span> {comment.body}
@@ -384,9 +438,86 @@ export default function ProfileScreen({
           {activeTab === 'feed' ? (
             ownFeedItems.length > 0 ? (
               <div className="space-y-4">
-                {ownFeedItems.map((item, index) => (
-                  <div key={`${item.type}-${index}-${item.activityDate}`}>{renderFeedEntryCard(item, index)}</div>
-                ))}
+                {ownFeedItems.map((item, index) => {
+                  const resolvedCollectionId = item.type === 'collection'
+                    ? (item.collectionId ?? collectionIdByName[item.collectionName] ?? undefined)
+                    : undefined;
+                  const controls = item.type === 'collection'
+                    ? {
+                        vibed: resolvedCollectionId ? vibedCollectionIds.includes(resolvedCollectionId) : false,
+                        vibinCount: resolvedCollectionId ? (collectionVibinCounts[resolvedCollectionId] ?? 0) : 0,
+                        commentsCount: resolvedCollectionId
+                          ? (
+                              commentsTarget?.targetType === 'COLLECTION' && commentsTarget.targetId === resolvedCollectionId
+                                ? comments.length || collectionCommentCounts[resolvedCollectionId] || 0
+                                : collectionCommentCounts[resolvedCollectionId] || 0
+                            )
+                          : 0,
+                        onToggleVibin: resolvedCollectionId
+                          ? async () => {
+                              const isActive = vibedCollectionIds.includes(resolvedCollectionId);
+                              try {
+                                const response = await api.toggleVibin({
+                                  targetType: 'COLLECTION',
+                                  targetId: resolvedCollectionId,
+                                  receiverUserId: item.traveler.id,
+                                });
+                                setVibedCollectionIds((prev) => (
+                                  isActive ? prev.filter((id) => id !== resolvedCollectionId) : [...prev, resolvedCollectionId]
+                                ));
+                                setCollectionVibinCounts((prev) => ({ ...prev, [resolvedCollectionId]: response.count }));
+                                showProfileToast(response.active ? 'Sent vibin' : 'Removed vibin');
+                              } catch {
+                                showProfileToast('Could not update vibin right now');
+                              }
+                            }
+                          : undefined,
+                        onOpenComments: resolvedCollectionId
+                          ? () => setCommentsTarget({
+                              targetType: 'COLLECTION',
+                              targetId: resolvedCollectionId,
+                              name: item.collectionName,
+                            })
+                          : undefined,
+                      }
+                    : {
+                        vibed: vibedPlaceIds.includes(getPlaceInteractionTargetId(item.place)),
+                        vibinCount: vibedPlaceIds.includes(getPlaceInteractionTargetId(item.place)) ? 1 : 0,
+                        commentsCount:
+                          commentsTarget?.targetType !== 'COLLECTION' && commentsTarget?.targetId === getPlaceInteractionTargetId(item.place)
+                            ? comments.length || profileCommentCounts[getPlaceInteractionTargetId(item.place)] || 0
+                            : profileCommentCounts[getPlaceInteractionTargetId(item.place)] || 0,
+                        onToggleVibin: async () => {
+                          const targetId = getPlaceInteractionTargetId(item.place);
+                          const isActive = vibedPlaceIds.includes(targetId);
+                          try {
+                            const response = await api.toggleVibin({
+                              targetType: getPlaceInteractionTargetType(item.place),
+                              targetId,
+                              receiverUserId: item.place.ownerUserId,
+                              momentId: item.place.momentId,
+                            });
+                            setVibedPlaceIds((prev) => (
+                              isActive ? prev.filter((id) => id !== targetId) : [...prev, targetId]
+                            ));
+                            showProfileToast(response.active ? 'Sent vibin' : 'Removed vibin');
+                          } catch {
+                            showProfileToast('Could not update vibin right now');
+                          }
+                        },
+                        onOpenComments: () => setCommentsTarget({
+                          targetType: getPlaceInteractionTargetType(item.place),
+                          targetId: getPlaceInteractionTargetId(item.place),
+                          name: item.place.name,
+                          momentId: item.place.momentId,
+                        }),
+                      };
+                  return (
+                    <div key={`${item.type}-${index}-${item.activityDate}`}>
+                      {renderFeedEntryCard(item, index, controls)}
+                    </div>
+                  );
+                })}
               </div>
             ) : (
               <div className="rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
@@ -525,14 +656,14 @@ export default function ProfileScreen({
       </div>
 
       <AnimatePresence>
-        {commentsPlace ? (
+        {commentsTarget ? (
           <>
             <motion.button
               type="button"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setCommentsPlace(null)}
+              onClick={() => setCommentsTarget(null)}
               className="fixed inset-0 z-40 bg-black/60"
             />
             <motion.div
@@ -543,7 +674,7 @@ export default function ProfileScreen({
               className="safe-bottom-pad fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pt-4"
             >
               <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
-              <div className="mt-4 text-center text-lg font-black text-white">Comments on {commentsPlace.name}</div>
+              <div className="mt-4 text-center text-lg font-black text-white">Comments on {commentsTarget.name}</div>
               <div className="mt-5 space-y-4">
                 {comments.length > 0 ? (
                   comments.map((comment) => (
@@ -570,19 +701,26 @@ export default function ProfileScreen({
                 <button
                   className="rounded-full bg-accent px-4 py-3 text-sm font-black text-dark"
                   onClick={async () => {
-                    if (!commentsPlace || !commentDraft.trim()) return;
+                    if (!commentsTarget || !commentDraft.trim()) return;
                     try {
                       const response = await api.createComment({
-                        targetType: getPlaceInteractionTargetType(commentsPlace),
-                        targetId: getPlaceInteractionTargetId(commentsPlace),
+                        targetType: commentsTarget.targetType,
+                        targetId: commentsTarget.targetId,
                         body: commentDraft.trim(),
-                        momentId: commentsPlace.momentId,
+                        momentId: commentsTarget.targetType === 'COLLECTION' ? undefined : commentsTarget.momentId,
                       });
                       setComments((prev) => [response.comment, ...prev]);
-                      setProfileCommentCounts((prev) => ({
-                        ...prev,
-                        [getPlaceInteractionTargetId(commentsPlace)]: response.count,
-                      }));
+                      if (commentsTarget.targetType === 'COLLECTION') {
+                        setCollectionCommentCounts((prev) => ({
+                          ...prev,
+                          [commentsTarget.targetId]: response.count,
+                        }));
+                      } else {
+                        setProfileCommentCounts((prev) => ({
+                          ...prev,
+                          [commentsTarget.targetId]: response.count,
+                        }));
+                      }
                       setCommentDraft('');
                       showProfileToast('Comment sent');
                     } catch {

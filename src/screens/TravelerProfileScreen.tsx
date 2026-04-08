@@ -1,7 +1,6 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { ArrowRight, Bookmark, MessageCircle, PencilLine, Share2, Zap } from 'lucide-react';
-import PlaceCard from '../components/PlaceCard';
+import { ArrowRight, Bookmark, ChevronDown, MessageCircle, Share2, Zap } from 'lucide-react';
 import { api } from '../lib/api';
 import { type Place, type PlaceCollection, type User } from '../types';
 
@@ -33,8 +32,14 @@ function getPlaceInteractionPayload(place: Place) {
   };
 }
 
+type CommentsTarget =
+  | { targetType: 'MOMENT' | 'PLACE'; targetId: string; name: string; momentId?: string }
+  | { targetType: 'COLLECTION'; targetId: string; name: string };
+
 export default function TravelerProfileScreen({
   user,
+  bookmarkedPlaces,
+  customCollections,
   displayFlags,
   onBack,
   onSavePlace,
@@ -43,8 +48,12 @@ export default function TravelerProfileScreen({
   onShareProfile,
   renderMomentEntryCard,
   renderSavedPlaceCard,
+  feedItems,
+  renderFeedEntryCard,
 }: {
   user: User;
+  bookmarkedPlaces: Place[];
+  customCollections: PlaceCollection[];
   displayFlags: string[];
   onBack: () => void;
   onSavePlace: (place: Place, nextActive: boolean) => Promise<boolean>;
@@ -53,28 +62,84 @@ export default function TravelerProfileScreen({
   onShareProfile: () => void;
   renderMomentEntryCard: (args: { place: Place; contextNote: string; matchScore?: number; footer: ReactNode }) => ReactNode;
   renderSavedPlaceCard: (place: Place, index: number) => ReactNode;
+  feedItems: Array<
+    | {
+        type: 'saved' | 'visited';
+        traveler: User;
+        place: Place;
+        activityDate: string;
+        caption?: string;
+        compatibility?: number;
+        sortTimestamp: number;
+      }
+    | {
+        type: 'collection';
+        collectionId?: string;
+        traveler: User;
+        collectionName: string;
+        collectionPlaces: Place[];
+        activityDate: string;
+        caption?: string;
+        sortTimestamp: number;
+      }
+  >;
+  renderFeedEntryCard: (
+    item:
+      | {
+          type: 'saved' | 'visited';
+          traveler: User;
+          place: Place;
+          activityDate: string;
+          caption?: string;
+          compatibility?: number;
+          sortTimestamp: number;
+        }
+      | {
+          type: 'collection';
+          collectionId?: string;
+          traveler: User;
+          collectionName: string;
+          collectionPlaces: Place[];
+          activityDate: string;
+          caption?: string;
+          sortTimestamp: number;
+        },
+    index: number,
+    controls?: {
+      vibed: boolean;
+      vibinCount: number;
+      commentsCount: number;
+      onToggleVibin?: () => void;
+      onOpenComments?: () => void;
+    },
+  ) => ReactNode;
 }) {
-  const [activeTab, setActiveTab] = useState<'moments' | 'saved' | 'vibe'>('moments');
+  const [activeTab, setActiveTab] = useState<'feed' | 'saved' | 'visited' | 'collections'>('feed');
   const [momentsFilter, setMomentsFilter] = useState<'city' | 'time'>('city');
-  const [commentsPlace, setCommentsPlace] = useState<Place | null>(null);
+  const [expandedSavedCities, setExpandedSavedCities] = useState<string[]>([]);
+  const [commentsTarget, setCommentsTarget] = useState<CommentsTarget | null>(null);
   const [isFollowing, setIsFollowing] = useState(false);
-  const [profileVibed, setProfileVibed] = useState(false);
   const [vibedPlaceIds, setVibedPlaceIds] = useState<string[]>([]);
+  const [vibedCollectionIds, setVibedCollectionIds] = useState<string[]>([]);
   const [savedProfilePlaceIds, setSavedProfilePlaceIds] = useState<string[]>([]);
   const [sharedPlaceIds, setSharedPlaceIds] = useState<string[]>([]);
   const [placeVibinCounts, setPlaceVibinCounts] = useState<Record<string, number>>({});
   const [profileCommentCounts, setProfileCommentCounts] = useState<Record<string, number>>({});
-  const [profileVibinCount, setProfileVibinCount] = useState(0);
+  const [collectionCommentCounts, setCollectionCommentCounts] = useState<Record<string, number>>({});
+  const [collectionVibinCounts, setCollectionVibinCounts] = useState<Record<string, number>>({});
   const [followersCount, setFollowersCount] = useState(0);
   const [comments, setComments] = useState<Array<{ id: string; user: string; body: string; createdAt: string }>>([]);
   const [commentDraft, setCommentDraft] = useState('');
   const [profileToast, setProfileToast] = useState<string | null>(null);
 
-  const diaryPlaces = user.travelHistory.flatMap((history) => history.places || []);
-  const matchSummary = user.matchScore ? `${user.matchScore}% match` : '';
-  const travelerSummary = `${diaryPlaces.length} places • ${user.stats.cities} cities • ${user.stats.countries} countries`;
-  const momentCollections: Array<{ label: string; places: Place[] }> = [];
-  const cityCollections = user.travelHistory.filter((history) => (history.places ?? []).length > 0);
+  const safeBookmarkedPlaces = bookmarkedPlaces ?? [];
+  const safeCollections = customCollections ?? [];
+  const diaryPlaces = (user.travelHistory ?? []).flatMap((history) => history.places || []);
+  const uniqueBookmarkedPlaces = safeBookmarkedPlaces
+    .filter((place, index, places) => places.findIndex((candidate) => candidate.id === place.id) === index);
+  const travelerSummary = `${uniqueBookmarkedPlaces.length} saved • ${diaryPlaces.length} visited • ${user.stats.cities} cities`;
+  const momentCollections = safeCollections.filter((collection) => collection.places.length > 0);
+  const cityCollections = (user.travelHistory ?? []).filter((history) => (history.places ?? []).length > 0);
   const groupedByTime = Object.values(
     diaryPlaces.reduce<Record<string, { label: string; places: Place[] }>>((acc, place) => {
       const date = place.visitedDate ? new Date(place.visitedDate) : null;
@@ -87,6 +152,20 @@ export default function TravelerProfileScreen({
       return acc;
     }, {}),
   ).filter((group) => group.places.length > 0);
+  const groupedSavedPlaces = uniqueBookmarkedPlaces.reduce<Record<string, Place[]>>((acc, place) => {
+    const city = place.location.split(',')[0]?.trim() ?? place.location;
+    acc[city] = [...(acc[city] ?? []), place];
+    return acc;
+  }, {});
+  const collectionIdByName = Object.fromEntries(momentCollections.map((collection) => [collection.label, collection.id]));
+  const feedInteractionPlaces = feedItems
+    .filter((item): item is Extract<typeof feedItems[number], { type: 'saved' | 'visited' }> => item.type !== 'collection')
+    .map((item) => item.place);
+  const feedPlaceIds = Array.from(new Set(feedInteractionPlaces.map((place) => place.id)));
+  const feedMomentIds = Array.from(new Set(
+    feedInteractionPlaces.map((place) => place.momentId).filter(Boolean) as string[],
+  ));
+  const feedInteractionKey = `${user.id}:${feedPlaceIds.join(',')}:${feedMomentIds.join(',')}`;
 
   const showProfileToast = (message: string) => {
     setProfileToast(message);
@@ -96,10 +175,10 @@ export default function TravelerProfileScreen({
   };
 
   useEffect(() => {
-    if (!commentsPlace) return;
+    if (!commentsTarget) return;
     void api.getComments({
-      targetType: getPlaceInteractionTargetType(commentsPlace),
-      targetId: getPlaceInteractionTargetId(commentsPlace),
+      targetType: commentsTarget.targetType,
+      targetId: commentsTarget.targetId,
     })
       .then((response) => {
         setComments(response.comments);
@@ -107,27 +186,29 @@ export default function TravelerProfileScreen({
       .catch(() => {
         setComments([]);
       });
-  }, [commentsPlace]);
+  }, [commentsTarget]);
 
   useEffect(() => {
-    const placeIds = diaryPlaces.map((place) => place.id);
+    let isCancelled = false;
     void api.getInteractionState({
-      placeIds,
-      momentIds: diaryPlaces.map((place) => place.momentId).filter(Boolean) as string[],
+      placeIds: feedPlaceIds,
+      momentIds: feedMomentIds,
       profileIds: [user.id],
     })
       .then((response) => {
+        if (isCancelled) return;
         setSavedProfilePlaceIds(response.bookmarkedPlaceIds);
         setVibedPlaceIds([...response.vibedPlaceIds, ...response.vibedMomentIds]);
         setPlaceVibinCounts({ ...response.placeVibinCounts, ...response.momentVibinCounts });
         setProfileCommentCounts({ ...response.placeCommentCounts, ...response.momentCommentCounts });
         setIsFollowing(response.followedUserIds.includes(user.id));
-        setProfileVibed(response.vibedProfileIds.includes(user.id));
         setFollowersCount(response.profileFollowerCounts[user.id] ?? 0);
-        setProfileVibinCount(response.profileVibinCounts[user.id] ?? 0);
       })
       .catch(() => undefined);
-  }, [diaryPlaces, user.id]);
+    return () => {
+      isCancelled = true;
+    };
+  }, [feedInteractionKey, user.id]);
 
   const renderInteractionFooter = (place: Place) => (
     <div className="space-y-3">
@@ -157,16 +238,21 @@ export default function TravelerProfileScreen({
         </button>
         <button
           type="button"
-          onClick={() => setCommentsPlace(place)}
+          onClick={() => setCommentsTarget({
+            targetType: getPlaceInteractionTargetType(place),
+            targetId: getPlaceInteractionTargetId(place),
+            name: place.name,
+            momentId: place.momentId,
+          })}
           className={`inline-flex items-center gap-2 rounded-full border px-3 py-2 text-xs font-black transition ${
-            commentsPlace?.id === place.id
+            commentsTarget?.targetType !== 'COLLECTION' && commentsTarget?.targetId === getPlaceInteractionTargetId(place)
               ? 'border-accent bg-accent text-dark'
               : 'border-white/10 bg-white/8 text-white hover:bg-white/12'
           }`}
         >
           <MessageCircle size={14} />
           <span>
-            {commentsPlace?.id === place.id
+            {commentsTarget?.targetType !== 'COLLECTION' && commentsTarget?.targetId === getPlaceInteractionTargetId(place)
               ? comments.length || profileCommentCounts[getPlaceInteractionTargetId(place)] || 0
               : profileCommentCounts[getPlaceInteractionTargetId(place)] || 0}
           </span>
@@ -209,20 +295,25 @@ export default function TravelerProfileScreen({
       <div className="w-full rounded-[20px] border border-white/10 bg-white/6 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="text-xs font-black text-white/75">
-            {commentsPlace?.id === place.id
+            {commentsTarget?.targetType !== 'COLLECTION' && commentsTarget?.targetId === getPlaceInteractionTargetId(place)
               ? comments.length || profileCommentCounts[getPlaceInteractionTargetId(place)] || 0
               : profileCommentCounts[getPlaceInteractionTargetId(place)] || 0} comments
           </div>
           <button
             type="button"
-            onClick={() => setCommentsPlace(place)}
+            onClick={() => setCommentsTarget({
+              targetType: getPlaceInteractionTargetType(place),
+              targetId: getPlaceInteractionTargetId(place),
+              name: place.name,
+              momentId: place.momentId,
+            })}
             className="text-xs font-black text-accent"
           >
             Write a comment
           </button>
         </div>
         <div className="mt-2 space-y-1">
-          {commentsPlace?.id === place.id && comments.length > 0 ? (
+          {commentsTarget?.targetType !== 'COLLECTION' && commentsTarget?.targetId === getPlaceInteractionTargetId(place) && comments.length > 0 ? (
             comments.slice(0, 2).map((comment) => (
               <div key={comment.id} className="text-sm text-white/72">
                 <span className="font-black text-white">@{comment.user}</span> {comment.body}
@@ -263,20 +354,14 @@ export default function TravelerProfileScreen({
             </motion.div>
 
             <div className="min-w-0 flex-1">
-              <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <h1 className="text-2xl font-black tracking-tighter">{user.username}</h1>
+                  <h1 className="line-clamp-2 pr-2 text-2xl font-black leading-tight tracking-tighter">{user.username}</h1>
                   <p className="text-sm font-black text-white/60">@{user.username}</p>
                   <p className="mt-1 font-medium leading-tight text-white/65">{user.bio}</p>
-                  {user.descriptor ? (
-                    <div className="mt-3 rounded-[1.25rem] border border-accent/25 bg-accent/10 px-3 py-3">
-                      <div className="text-[10px] font-black uppercase tracking-[0.18em] text-accent/80">Travel taste</div>
-                      <p className="mt-1 max-w-[22rem] text-sm font-semibold leading-relaxed text-accent">{user.descriptor}</p>
-                    </div>
-                  ) : null}
                 </div>
                 {user.matchScore ? (
-                  <div className="shrink-0 rounded-full bg-accent px-3 py-1.5 text-xs font-black text-dark">
+                  <div className="mt-1 shrink-0 rounded-full bg-accent px-3 py-1.5 text-xs font-black text-dark">
                     {user.matchScore}% match
                   </div>
                 ) : null}
@@ -298,13 +383,18 @@ export default function TravelerProfileScreen({
             </div>
           </div>
 
-          {!user.descriptor && matchSummary ? (
+          {user.descriptor ? (
+            <div className="mt-6 rounded-[1.6rem] border border-accent/25 bg-accent/10 px-4 py-4">
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-accent/80">Travel taste</div>
+              <p className="mt-2 text-sm font-semibold leading-relaxed text-accent">{user.descriptor}</p>
+            </div>
+          ) : user.matchScore ? (
             <div className="mt-6 rounded-[2rem] bg-white/8 p-4 backdrop-blur-sm">
-              <p className="text-sm font-semibold leading-relaxed text-white/80">{matchSummary}</p>
+              <p className="text-sm font-semibold leading-relaxed text-white/80">{user.matchScore}% match</p>
             </div>
           ) : null}
 
-          <div className="mt-5 flex gap-3">
+          <div className="mt-5">
             <button
               type="button"
               onClick={async () => {
@@ -317,89 +407,148 @@ export default function TravelerProfileScreen({
                   showProfileToast('Could not update follow right now');
                 }
               }}
-              className={`flex-1 rounded-[1.25rem] px-5 py-4 text-sm font-black transition ${
+              className={`w-full rounded-[1.25rem] px-5 py-4 text-sm font-black transition ${
                 isFollowing ? 'border border-white/10 bg-white/8 text-white hover:bg-white/12' : 'bg-accent text-dark hover:brightness-105'
               }`}
             >
               {isFollowing ? 'Following' : 'Follow'}
             </button>
-            <button
-              type="button"
-              onClick={async () => {
-                try {
-                  const response = await api.toggleVibin({
-                    targetType: 'PROFILE',
-                    targetId: user.id,
-                    receiverUserId: user.id,
-                  });
-                  setProfileVibed(response.active);
-                  setProfileVibinCount(response.count);
-                  showProfileToast(response.active ? 'Sent vibin' : 'Removed vibin');
-                } catch {
-                  showProfileToast('Could not update vibin right now');
-                }
-              }}
-              className="rounded-[1.25rem] border border-white/10 bg-white/8 px-4 py-4 text-white transition hover:bg-white/12"
-              aria-label="Vibe with traveler profile"
-            >
-              <Zap size={18} className={profileVibed ? 'text-accent' : ''} />
-            </button>
           </div>
 
           <div className="mt-6 grid grid-cols-3 gap-3">
             <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
-              <div className="text-lg font-black text-white">{diaryPlaces.length}</div>
+              <div className="text-lg font-black text-white">{uniqueBookmarkedPlaces.length}</div>
               <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">saved places</div>
             </div>
             <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
-              <div className="text-lg font-black text-white">{profileVibinCount}</div>
-              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">vibin</div>
+              <div className="text-lg font-black text-white">{diaryPlaces.length}</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">visited places</div>
             </div>
             <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
-              <div className="text-lg font-black text-white">{followersCount}</div>
-              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">followers</div>
+              <div className="text-lg font-black text-white">{momentCollections.length}</div>
+              <div className="text-[10px] font-black uppercase tracking-[0.18em] text-white/35">collections</div>
             </div>
           </div>
         </div>
 
         <div className="mb-8 mt-8">
-          {momentCollections.length > 0 ? (
-            <section className="mb-8">
-              <div className="mb-3 text-[11px] font-black uppercase tracking-[0.18em] text-white/35">Collections</div>
-              <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">
-                {momentCollections.map((collection) => (
-                  <button
-                    key={collection.label}
-                    onClick={() => onOpenCollection(collection)}
-                    className="min-w-44 rounded-[24px] border border-white/10 bg-white/6 p-4 text-left"
-                  >
-                    <div className="text-base font-black text-white">{collection.label}</div>
-                    <div className="mt-1 text-xs font-bold uppercase tracking-[0.18em] text-white/35">{collection.places.length} places</div>
-                  </button>
-                ))}
-              </div>
-            </section>
-          ) : null}
-
           <div className="mb-8 inline-flex rounded-full border border-white/10 bg-white/6 p-1">
-            {['moments', 'saved', 'vibe'].map((tab) => (
+            {[
+              { id: 'feed', label: 'feed' },
+              { id: 'saved', label: 'saved' },
+              { id: 'visited', label: 'visited' },
+              { id: 'collections', label: 'collections' },
+            ].map((tab) => (
               <button
-                key={tab}
-                onClick={() => setActiveTab(tab as 'moments' | 'saved' | 'vibe')}
-                className={`rounded-full px-4 py-2 text-sm font-black transition ${activeTab === tab ? 'bg-white text-black' : 'text-white/65'}`}
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id as 'feed' | 'saved' | 'visited' | 'collections')}
+                className={`rounded-full px-4 py-2 text-sm font-black transition ${activeTab === tab.id ? 'bg-white text-black' : 'text-white/65'}`}
               >
-                {tab}
+                {tab.label}
               </button>
             ))}
           </div>
 
           <div className="mb-6 flex items-center justify-between">
             <h2 className="text-xl font-black tracking-tighter">
-              {activeTab === 'moments' ? 'Diary moments worth stealing' : activeTab === 'saved' ? 'Saved spots from their taste graph' : 'Why your vibe overlaps'}
+              {activeTab === 'feed'
+                ? 'Taste activity'
+                : activeTab === 'saved'
+                  ? 'Places shaping their taste'
+                  : activeTab === 'visited'
+                    ? 'Places they actually checked into'
+                    : 'Collections they have made'}
             </h2>
           </div>
 
-          {activeTab === 'moments' ? (
+          {activeTab === 'feed' ? (
+            feedItems.length > 0 ? (
+              <div className="space-y-4">
+                {feedItems.map((item, index) => {
+                  const resolvedCollectionId = item.type === 'collection'
+                    ? (item.collectionId ?? collectionIdByName[item.collectionName] ?? undefined)
+                    : undefined;
+                  const controls = item.type === 'collection'
+                    ? {
+                        vibed: resolvedCollectionId ? vibedCollectionIds.includes(resolvedCollectionId) : false,
+                        vibinCount: resolvedCollectionId ? (collectionVibinCounts[resolvedCollectionId] ?? 0) : 0,
+                        commentsCount: resolvedCollectionId
+                          ? (
+                              commentsTarget?.targetType === 'COLLECTION' && commentsTarget.targetId === resolvedCollectionId
+                                ? comments.length || collectionCommentCounts[resolvedCollectionId] || 0
+                                : collectionCommentCounts[resolvedCollectionId] || 0
+                            )
+                          : 0,
+                        onToggleVibin: resolvedCollectionId
+                          ? async () => {
+                              const isActive = vibedCollectionIds.includes(resolvedCollectionId);
+                              try {
+                                const response = await api.toggleVibin({
+                                  targetType: 'COLLECTION',
+                                  targetId: resolvedCollectionId,
+                                  receiverUserId: item.traveler.id,
+                                });
+                                setVibedCollectionIds((prev) => (
+                                  isActive ? prev.filter((id) => id !== resolvedCollectionId) : [...prev, resolvedCollectionId]
+                                ));
+                                setCollectionVibinCounts((prev) => ({ ...prev, [resolvedCollectionId]: response.count }));
+                                showProfileToast(response.active ? 'Sent vibin' : 'Removed vibin');
+                              } catch {
+                                showProfileToast('Could not update vibin right now');
+                              }
+                            }
+                          : undefined,
+                        onOpenComments: resolvedCollectionId
+                          ? () => setCommentsTarget({
+                              targetType: 'COLLECTION',
+                              targetId: resolvedCollectionId,
+                              name: item.collectionName,
+                            })
+                          : undefined,
+                      }
+                    : {
+                        vibed: vibedPlaceIds.includes(getPlaceInteractionTargetId(item.place)),
+                        vibinCount:
+                          placeVibinCounts[getPlaceInteractionTargetId(item.place)]
+                          ?? (vibedPlaceIds.includes(getPlaceInteractionTargetId(item.place)) ? 1 : 0),
+                        commentsCount:
+                          commentsTarget?.targetType !== 'COLLECTION' && commentsTarget?.targetId === getPlaceInteractionTargetId(item.place)
+                            ? comments.length || profileCommentCounts[getPlaceInteractionTargetId(item.place)] || 0
+                            : profileCommentCounts[getPlaceInteractionTargetId(item.place)] || 0,
+                        onToggleVibin: async () => {
+                          const targetId = getPlaceInteractionTargetId(item.place);
+                          const isActive = vibedPlaceIds.includes(targetId);
+                          try {
+                            const response = await api.toggleVibin(getPlaceInteractionPayload(item.place));
+                            setVibedPlaceIds((prev) => (
+                              isActive ? prev.filter((id) => id !== targetId) : [...prev, targetId]
+                            ));
+                            setPlaceVibinCounts((prev) => ({ ...prev, [targetId]: response.count }));
+                            showProfileToast(response.active ? 'Sent vibin' : 'Removed vibin');
+                          } catch {
+                            showProfileToast('Could not update vibin right now');
+                          }
+                        },
+                        onOpenComments: () => setCommentsTarget({
+                          targetType: getPlaceInteractionTargetType(item.place),
+                          targetId: getPlaceInteractionTargetId(item.place),
+                          name: item.place.name,
+                          momentId: item.place.momentId,
+                        }),
+                      };
+                  return (
+                    <div key={`${item.type}-${index}-${item.activityDate}`}>
+                      {renderFeedEntryCard(item, index, controls)}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
+                No public activity yet.
+              </div>
+            )
+          ) : activeTab === 'visited' ? (
             <div className="space-y-8">
               <div className="inline-flex rounded-full border border-white/10 bg-white/6 p-1">
                 <button
@@ -446,30 +595,89 @@ export default function TravelerProfileScreen({
             </div>
           ) : activeTab === 'saved' ? (
             <div className="space-y-4">
-              {diaryPlaces.map((place, i) => (
-                <div key={place.id + i} className="overflow-hidden rounded-[28px] border border-white/10 bg-zinc-900 shadow-[0_18px_40px_rgba(0,0,0,0.28)]">
-                  {renderSavedPlaceCard(place, i)}
-                  <div className="space-y-3 px-4 pb-4 pt-3">{renderInteractionFooter(place)}</div>
+              {uniqueBookmarkedPlaces.length > 0 ? (
+                Object.entries(groupedSavedPlaces).map(([city, places]) => (
+                  <section key={city}>
+                    <button
+                      type="button"
+                      onClick={() => setExpandedSavedCities((prev) => prev.includes(city) ? prev.filter((item) => item !== city) : [...prev, city])}
+                      className="mb-4 flex w-full items-center justify-between rounded-[22px] border border-white/10 bg-white/6 px-4 py-4 text-left transition hover:bg-white/8"
+                    >
+                      <div>
+                        <h3 className="text-lg font-black text-white">{city}</h3>
+                        <div className="mt-1 text-[11px] font-bold uppercase tracking-[0.18em] text-white/35">
+                          {places.length} saved
+                        </div>
+                      </div>
+                      <ChevronDown
+                        size={18}
+                        className={`text-white/55 transition-transform ${expandedSavedCities.includes(city) ? 'rotate-180' : ''}`}
+                      />
+                    </button>
+
+                    {expandedSavedCities.includes(city) ? (
+                      <div className="space-y-4">
+                        {places.map((place, index) => (
+                          <div key={`${place.id}-${index}`}>{renderSavedPlaceCard(place, index)}</div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </section>
+                ))
+              ) : (
+                <div className="rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
+                  No saved places to show yet.
                 </div>
-              ))}
+              )}
             </div>
           ) : (
-            <div className="rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
-              Vibe overlap details are still empty here. This section is ready for AI-generated reasoning later.
+            <div className="space-y-4">
+              {momentCollections.length > 0 ? (
+                momentCollections.map((collection) => (
+                  <button
+                    key={collection.label}
+                    type="button"
+                    onClick={() => onOpenCollection(collection)}
+                    className="w-full rounded-[24px] border border-white/10 bg-white/6 p-4 text-left"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-base font-black text-white">{collection.label}</div>
+                        <div className="mt-1 text-xs font-bold uppercase tracking-[0.18em] text-white/35">{collection.places.length} places</div>
+                      </div>
+                      <div className="flex -space-x-2">
+                        {collection.places.slice(0, 3).map((place) => (
+                          <img
+                            key={`${collection.label}-${place.id}`}
+                            src={place.image}
+                            alt={place.name}
+                            className="h-10 w-10 rounded-full border border-zinc-950 object-cover"
+                            referrerPolicy="no-referrer"
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  </button>
+                ))
+              ) : (
+                <div className="rounded-[24px] border border-white/10 bg-white/6 p-4 text-sm font-medium text-white/55">
+                  No collections to show yet.
+                </div>
+              )}
             </div>
           )}
         </div>
       </div>
 
       <AnimatePresence>
-        {commentsPlace ? (
+        {commentsTarget ? (
           <>
             <motion.button
               type="button"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setCommentsPlace(null)}
+              onClick={() => setCommentsTarget(null)}
               className="fixed inset-0 z-[70] bg-black/60"
             />
             <motion.div
@@ -480,7 +688,7 @@ export default function TravelerProfileScreen({
               className="fixed inset-x-0 bottom-0 z-[80] mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pb-8 pt-4"
             >
               <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
-              <div className="mt-4 text-center text-lg font-black text-white">Comments on {commentsPlace.name}</div>
+              <div className="mt-4 text-center text-lg font-black text-white">Comments on {commentsTarget.name}</div>
               <div className="mt-5 space-y-4">
                 {comments.length > 0 ? (
                   comments.map((comment) => (
@@ -507,15 +715,26 @@ export default function TravelerProfileScreen({
                 <button
                   className="rounded-full bg-accent px-4 py-3 text-sm font-black text-dark"
                   onClick={async () => {
-                    if (!commentsPlace || !commentDraft.trim()) return;
+                    if (!commentsTarget || !commentDraft.trim()) return;
                     try {
                       const response = await api.createComment({
-                        targetType: getPlaceInteractionTargetType(commentsPlace),
-                        targetId: getPlaceInteractionTargetId(commentsPlace),
+                        targetType: commentsTarget.targetType,
+                        targetId: commentsTarget.targetId,
                         body: commentDraft.trim(),
-                        momentId: commentsPlace.momentId,
+                        momentId: commentsTarget.targetType === 'COLLECTION' ? undefined : commentsTarget.momentId,
                       });
                       setComments((prev) => [response.comment, ...prev]);
+                      if (commentsTarget.targetType === 'COLLECTION') {
+                        setCollectionCommentCounts((prev) => ({
+                          ...prev,
+                          [commentsTarget.targetId]: response.count,
+                        }));
+                      } else {
+                        setProfileCommentCounts((prev) => ({
+                          ...prev,
+                          [commentsTarget.targetId]: response.count,
+                        }));
+                      }
                       setCommentDraft('');
                       showProfileToast('Comment sent');
                     } catch {

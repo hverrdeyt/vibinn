@@ -69,6 +69,12 @@ export interface User {
     savedAtLabel: string;
     savedAtIso?: string;
   }>;
+  recentCollections?: Array<{
+    id: string;
+    label: string;
+    createdAt?: string;
+    places: Place[];
+  }>;
   latestVisitedAtIso?: string;
   savedPlacesCount?: number;
   collectionsCount?: number;

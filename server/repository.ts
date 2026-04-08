@@ -79,6 +79,8 @@ function mapPlaceForClient(
     recommendationReason?: string | null;
   },
 ) {
+  const hasSimilarityOverride = Boolean(overrides && Object.prototype.hasOwnProperty.call(overrides, 'similarityStat'));
+  const hasRecommendationOverride = Boolean(overrides && Object.prototype.hasOwnProperty.call(overrides, 'recommendationReason'));
   return {
     id: place.id,
     name: place.name,
@@ -90,7 +92,7 @@ function mapPlaceForClient(
     tags: place.aiEnrichment?.vibeTags.length ? place.aiEnrichment.vibeTags : [place.category].filter(Boolean),
     attitudeLabel: place.aiEnrichment?.attitudeLabel ?? undefined,
     bestTime: place.aiEnrichment?.bestTime ?? undefined,
-    similarityStat: overrides?.similarityStat ?? 82,
+    similarityStat: hasSimilarityOverride ? (overrides?.similarityStat ?? undefined) : undefined,
     whyYoullLikeIt: [
       ...(
         overrides?.recommendationReason
@@ -101,10 +103,41 @@ function mapPlaceForClient(
       ),
       ...(place.aiEnrichment?.bestTime ? [`best at ${place.aiEnrichment.bestTime}`] : []),
     ],
-    recommendationReason: overrides?.recommendationReason ?? place.aiEnrichment?.description ?? '',
+    recommendationReason: hasRecommendationOverride ? (overrides?.recommendationReason ?? '') : (place.aiEnrichment?.description ?? ''),
     priceRange: mapPriceLevel(place.priceLevel),
     category: place.category,
   };
+}
+
+async function getUserPlaceScoreOverrideMap(userId: string, placeIds: string[]) {
+  const uniquePlaceIds = Array.from(new Set(placeIds.filter(Boolean)));
+  if (uniquePlaceIds.length === 0) return new Map<string, { similarityStat?: number | null; recommendationReason?: string | null }>();
+
+  const persistedScores = await prisma.userPlaceScore.findMany({
+    where: {
+      userId,
+      placeId: {
+        in: uniquePlaceIds,
+      },
+    },
+  });
+
+  return new Map(
+    persistedScores.map((score) => [
+      score.placeId,
+      {
+        similarityStat: score.similarityPercentage ?? score.matchScore ?? null,
+        recommendationReason: score.recommendationReason,
+      },
+    ]),
+  );
+}
+
+function getPlaceScoreOverride(
+  overrideMap: Map<string, { similarityStat?: number | null; recommendationReason?: string | null }>,
+  placeId: string,
+) {
+  return overrideMap.get(placeId) ?? { similarityStat: null, recommendationReason: null };
 }
 
 type ClientPlace = ReturnType<typeof mapPlaceForClient> & {
@@ -253,6 +286,12 @@ function buildProfileUserWithMatch(
       savedAtLabel: string;
       savedAtIso?: string;
     }>;
+    recentCollections?: Array<{
+      id: string;
+      label: string;
+      createdAt?: string;
+      places: ReturnType<typeof mapPlaceForClient>[];
+    }>;
     latestVisitedAtIso?: string;
     savedPlacesCount?: number;
     collectionsCount?: number;
@@ -265,6 +304,7 @@ function buildProfileUserWithMatch(
     ...(extras?.descriptor ? { descriptor: extras.descriptor } : {}),
     ...(typeof extras?.vibinCount === 'number' ? { vibinCount: extras.vibinCount } : {}),
     ...(extras?.recentSavedPlaces?.length ? { recentSavedPlaces: extras.recentSavedPlaces } : {}),
+    ...(extras?.recentCollections?.length ? { recentCollections: extras.recentCollections } : {}),
     ...(extras?.latestVisitedAtIso ? { latestVisitedAtIso: extras.latestVisitedAtIso } : {}),
     ...(typeof extras?.savedPlacesCount === 'number' ? { savedPlacesCount: extras.savedPlacesCount } : {}),
     ...(typeof extras?.collectionsCount === 'number' ? { collectionsCount: extras.collectionsCount } : {}),
@@ -357,18 +397,31 @@ export async function getProfileMe(userId?: string) {
   });
 
   const moments = user.moments.map(mapMomentForClient);
+  const userPlaceScoreOverrideMap = await getUserPlaceScoreOverrideMap(
+    user.id,
+    [
+      ...user.bookmarks.map((bookmark) => bookmark.placeId),
+      ...user.collections.flatMap((collection) => collection.places.map((item) => item.placeId)),
+    ],
+  );
   const descriptor = await generateTravelerProfileDescriptor({
     userId: user.id,
     displayName: user.displayName,
     moments,
-    bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+    bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(
+      bookmark.place,
+      getPlaceScoreOverride(userPlaceScoreOverrideMap, bookmark.placeId),
+    )),
   });
 
   return {
     user: buildProfileUserWithMatch(user, moments, undefined, {
       descriptor,
       recentSavedPlaces: user.bookmarks.map((bookmark) => ({
-        place: mapPlaceForClient(bookmark.place),
+        place: mapPlaceForClient(
+          bookmark.place,
+          getPlaceScoreOverride(userPlaceScoreOverrideMap, bookmark.placeId),
+        ),
         savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
         savedAtIso: bookmark.createdAt.toISOString(),
       })),
@@ -376,12 +429,18 @@ export async function getProfileMe(userId?: string) {
       collectionsCount: user.collections.length,
       latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString(),
     }),
-    bookmarks: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+    bookmarks: user.bookmarks.map((bookmark) => mapPlaceForClient(
+      bookmark.place,
+      getPlaceScoreOverride(userPlaceScoreOverrideMap, bookmark.placeId),
+    )),
     collections: user.collections.map((collection) => ({
       id: collection.id,
       label: collection.title,
       createdAt: collection.createdAt.toISOString(),
-      places: collection.places.map((item) => mapPlaceForClient(item.place)),
+      places: collection.places.map((item) => mapPlaceForClient(
+        item.place,
+        getPlaceScoreOverride(userPlaceScoreOverrideMap, item.placeId),
+      )),
     })),
     moments,
   };
@@ -498,7 +557,24 @@ export async function getPublicProfileByUsername(username: string) {
   });
 
   return {
-    user: buildProfileUserWithMatch(user, moments, undefined, { descriptor }),
+    user: buildProfileUserWithMatch(user, moments, undefined, {
+      descriptor,
+      recentSavedPlaces: user.bookmarks.map((bookmark) => ({
+        place: mapPlaceForClient(bookmark.place),
+        savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+        savedAtIso: bookmark.createdAt.toISOString(),
+      })),
+      recentCollections: user.collections.map((collection) => ({
+        id: collection.id,
+        label: collection.title,
+        createdAt: collection.createdAt.toISOString(),
+        places: collection.places.map((item) => mapPlaceForClient(item.place)),
+      })),
+      latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString?.() ?? user.moments[0]?.createdAt?.toISOString?.(),
+      savedPlacesCount: user.bookmarks.length,
+      collectionsCount: user.collections.length,
+    }),
+    bookmarks: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
     collections: user.collections.map((collection) => ({
       id: collection.id,
       label: collection.title,
@@ -582,6 +658,23 @@ export async function getTravelerDiscovery(userId?: string) {
                 media: { orderBy: { sortOrder: 'asc' } },
               },
             },
+            collections: {
+              orderBy: { createdAt: 'desc' },
+              take: 3,
+              include: {
+                places: {
+                  orderBy: { sortOrder: 'asc' },
+                  include: {
+                    place: {
+                      include: {
+                        aiEnrichment: true,
+                        media: { orderBy: { sortOrder: 'asc' } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -621,6 +714,23 @@ export async function getTravelerDiscovery(userId?: string) {
                   },
                 },
                 media: { orderBy: { sortOrder: 'asc' } },
+              },
+            },
+            collections: {
+              orderBy: { createdAt: 'desc' },
+              take: 3,
+              include: {
+                places: {
+                  orderBy: { sortOrder: 'asc' },
+                  include: {
+                    place: {
+                      include: {
+                        aiEnrichment: true,
+                        media: { orderBy: { sortOrder: 'asc' } },
+                      },
+                    },
+                  },
+                },
               },
             },
           },
@@ -692,6 +802,23 @@ export async function getTravelerDiscovery(userId?: string) {
               media: { orderBy: { sortOrder: 'asc' } },
             },
           },
+          collections: {
+            orderBy: { createdAt: 'desc' },
+            take: 3,
+            include: {
+              places: {
+                orderBy: { sortOrder: 'asc' },
+                include: {
+                  place: {
+                    include: {
+                      aiEnrichment: true,
+                      media: { orderBy: { sortOrder: 'asc' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
         orderBy: { createdAt: 'desc' },
         take: 24,
@@ -733,7 +860,7 @@ export async function getTravelerDiscovery(userId?: string) {
         id: `saved-${item.targetUser.id}-${bookmark.id}`,
         travelerId: item.targetUser.id,
         place: mapPlaceForClient(bookmark.place),
-        caption: 'Saved this to come back to later.',
+        caption: '',
         savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
         savedAtIso: bookmark.createdAt.toISOString(),
         createdAtMs: bookmark.createdAt.getTime(),
@@ -756,6 +883,12 @@ export async function getTravelerDiscovery(userId?: string) {
             place: mapPlaceForClient(bookmark.place),
             savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
             savedAtIso: bookmark.createdAt.toISOString(),
+          })),
+          recentCollections: item.targetUser.collections.map((collection) => ({
+            id: collection.id,
+            label: collection.title,
+            createdAt: collection.createdAt.toISOString(),
+            places: collection.places.map((entry) => mapPlaceForClient(entry.place)),
           })),
           latestVisitedAtIso: item.targetUser.moments[0]?.visitedAt?.toISOString?.() ?? item.targetUser.moments[0]?.createdAt?.toISOString?.(),
           savedPlacesCount: item.targetUser._count.bookmarks,
@@ -794,6 +927,12 @@ export async function getTravelerDiscovery(userId?: string) {
             place: mapPlaceForClient(bookmark.place),
             savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
             savedAtIso: bookmark.createdAt.toISOString(),
+          })),
+          recentCollections: item.user.collections.map((collection) => ({
+            id: collection.id,
+            label: collection.title,
+            createdAt: collection.createdAt.toISOString(),
+            places: collection.places.map((entry) => mapPlaceForClient(entry.place)),
           })),
           latestVisitedAtIso: item.user.moments[0]?.visitedAt?.toISOString?.() ?? item.user.moments[0]?.createdAt?.toISOString?.(),
           savedPlacesCount: item.user._count.bookmarks,
@@ -922,6 +1061,98 @@ export async function searchPublicTravelers(query: string) {
   });
 }
 
+export async function getPublicTravelerSuggestions(limit = 12) {
+  const users = await prisma.user.findMany({
+    where: {
+      OR: [
+        {
+          moments: {
+            some: {},
+          },
+        },
+        {
+          bookmarks: {
+            some: {},
+          },
+        },
+        {
+          collections: {
+            some: {},
+          },
+        },
+      ],
+    },
+    include: {
+      badges: true,
+      flags: true,
+      _count: {
+        select: {
+          bookmarks: true,
+          collections: true,
+        },
+      },
+      bookmarks: {
+        orderBy: { createdAt: 'desc' },
+        take: 4,
+        include: {
+          place: {
+            include: {
+              aiEnrichment: true,
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+        },
+      },
+      moments: {
+        orderBy: { createdAt: 'desc' },
+        take: 6,
+        include: {
+          place: {
+            include: {
+              aiEnrichment: true,
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+          media: { orderBy: { sortOrder: 'asc' } },
+        },
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: limit,
+  });
+
+  const travelers = await Promise.all(
+    users.map(async (user) => {
+      const moments = user.moments.map(mapMomentForClient);
+      const descriptor = await generateTravelerProfileDescriptor({
+        userId: user.id,
+        displayName: user.displayName,
+        moments,
+        bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+      });
+
+      return buildProfileUserWithMatch(user, moments, undefined, {
+        descriptor,
+        relevanceReason: 'Worth exploring while your taste graph builds out.',
+        recentSavedPlaces: user.bookmarks.map((bookmark) => ({
+          place: mapPlaceForClient(bookmark.place),
+          savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+          savedAtIso: bookmark.createdAt.toISOString(),
+        })),
+        latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString?.() ?? user.moments[0]?.createdAt?.toISOString?.(),
+        savedPlacesCount: user._count.bookmarks,
+        collectionsCount: user._count.collections,
+      });
+    }),
+  );
+
+  return travelers.sort((a, b) => {
+    const aWeight = (a.stats.trips * 2) + (a.savedPlacesCount ?? 0) + (a.collectionsCount ?? 0);
+    const bWeight = (b.stats.trips * 2) + (b.savedPlacesCount ?? 0) + (b.collectionsCount ?? 0);
+    return bWeight - aWeight;
+  });
+}
+
 export async function getTravelerProfile(travelerId: string, viewerUserId?: string) {
   const traveler = await prisma.user.findUnique({
     where: { id: travelerId },
@@ -949,6 +1180,22 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
             },
           },
           media: { orderBy: { sortOrder: 'asc' } },
+        },
+      },
+      collections: {
+        orderBy: { createdAt: 'desc' },
+        include: {
+          places: {
+            orderBy: { sortOrder: 'asc' },
+            include: {
+              place: {
+                include: {
+                  aiEnrichment: true,
+                  media: { orderBy: { sortOrder: 'asc' } },
+                },
+              },
+            },
+          },
         },
       },
     },
@@ -980,16 +1227,33 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
     }),
   ]);
 
-  return buildProfileUserWithMatch(
-    traveler,
-    moments,
-    similarity?.matchScore,
-    {
-      relevanceReason: similarity?.relevanceReason,
-      vibinCount,
-      descriptor,
-    },
-  );
+  return {
+    traveler: buildProfileUserWithMatch(
+      traveler,
+      moments,
+      similarity?.matchScore,
+      {
+        relevanceReason: similarity?.relevanceReason,
+        vibinCount,
+        descriptor,
+        recentSavedPlaces: traveler.bookmarks.map((bookmark) => ({
+          place: mapPlaceForClient(bookmark.place),
+          savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+          savedAtIso: bookmark.createdAt.toISOString(),
+        })),
+        latestVisitedAtIso: traveler.moments[0]?.visitedAt?.toISOString?.() ?? traveler.moments[0]?.createdAt?.toISOString?.(),
+        savedPlacesCount: traveler.bookmarks.length,
+        collectionsCount: traveler.collections.length,
+      },
+    ),
+    bookmarks: traveler.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+    collections: traveler.collections.map((collection) => ({
+      id: collection.id,
+      label: collection.title,
+      createdAt: collection.createdAt.toISOString(),
+      places: collection.places.map((item) => mapPlaceForClient(item.place)),
+    })),
+  };
 }
 
 export async function getRelatedPlaces(placeId: string) {
@@ -1235,11 +1499,19 @@ export async function getCollections(userId?: string) {
     },
   });
 
+  const userPlaceScoreOverrideMap = await getUserPlaceScoreOverrideMap(
+    currentUser.id,
+    collections.flatMap((collection) => collection.places.map((item) => item.placeId)),
+  );
+
   return collections.map((collection) => ({
     id: collection.id,
     label: collection.title,
     createdAt: collection.createdAt.toISOString(),
-    places: collection.places.map((item) => mapPlaceForClient(item.place)),
+    places: collection.places.map((item) => mapPlaceForClient(
+      item.place,
+      getPlaceScoreOverride(userPlaceScoreOverrideMap, item.placeId),
+    )),
   }));
 }
 
@@ -1272,6 +1544,10 @@ export async function createCollection(userId: string | undefined, payload: { la
   });
 
   if (recentDuplicate) {
+    const userPlaceScoreOverrideMap = await getUserPlaceScoreOverrideMap(
+      currentUser.id,
+      recentDuplicate.places.map((item) => item.placeId),
+    );
     const existingPlaceIds = recentDuplicate.places.map((item) => item.placeId);
     const isSameComposition = (
       existingPlaceIds.length === normalizedPlaceIds.length
@@ -1283,7 +1559,10 @@ export async function createCollection(userId: string | undefined, payload: { la
         id: recentDuplicate.id,
         label: recentDuplicate.title,
         createdAt: recentDuplicate.createdAt.toISOString(),
-        places: recentDuplicate.places.map((item) => mapPlaceForClient(item.place)),
+        places: recentDuplicate.places.map((item) => mapPlaceForClient(
+          item.place,
+          getPlaceScoreOverride(userPlaceScoreOverrideMap, item.placeId),
+        )),
       };
     }
   }
@@ -1314,11 +1593,19 @@ export async function createCollection(userId: string | undefined, payload: { la
     },
   });
 
+  const userPlaceScoreOverrideMap = await getUserPlaceScoreOverrideMap(
+    currentUser.id,
+    collection.places.map((item) => item.placeId),
+  );
+
   return {
     id: collection.id,
     label: collection.title,
     createdAt: collection.createdAt.toISOString(),
-    places: collection.places.map((item) => mapPlaceForClient(item.place)),
+    places: collection.places.map((item) => mapPlaceForClient(
+      item.place,
+      getPlaceScoreOverride(userPlaceScoreOverrideMap, item.placeId),
+    )),
   };
 }
 
@@ -1337,27 +1624,14 @@ export async function getBookmarks(userId?: string) {
     },
   });
 
-  const persistedScores = await prisma.userPlaceScore.findMany({
-    where: {
-      userId: currentUser.id,
-      placeId: {
-        in: bookmarks.map((bookmark) => bookmark.placeId),
-      },
-    },
-  });
-  const persistedScoreMap = new Map(
-    persistedScores.map((score) => [
-      score.placeId,
-      {
-        similarityStat: score.similarityPercentage ?? score.matchScore ?? 82,
-        recommendationReason: score.recommendationReason,
-      },
-    ]),
+  const persistedScoreMap = await getUserPlaceScoreOverrideMap(
+    currentUser.id,
+    bookmarks.map((bookmark) => bookmark.placeId),
   );
 
   return bookmarks.map((bookmark) => mapPlaceForClient(
     bookmark.place,
-    persistedScoreMap.get(bookmark.placeId),
+    getPlaceScoreOverride(persistedScoreMap, bookmark.placeId),
   ));
 }
 

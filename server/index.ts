@@ -8,12 +8,14 @@ import type { Prisma } from '@prisma/client';
 import { MOCK_PLACES, SIMILAR_TRAVELERS } from '../src/mockData';
 import { prisma } from './prisma';
 import { generateAiCompatibilityAssessment, generatePlaceAiEnrichment } from './placeEnrichment';
+import { queueTravelerProfileDescriptorRefresh } from './travelerProfileEnrichment';
 import {
   createCollection,
   getBookmarks,
   createMoment,
   getTravelerDiscovery,
   getTravelerProfile,
+  getPublicTravelerSuggestions,
   searchPublicTravelers,
   getPlaceTravelerMoments,
   getRelatedPlaces,
@@ -1335,6 +1337,7 @@ async function getDiscoveryPlacesForUser(options: {
         bookmarkedPlaceIds: new Set<string>(),
         visitedPlaceIds: new Set<string>(),
         dismissedPlaceIds: new Set<string>(),
+        manuallyDismissedPlaceIds: new Set<string>(),
         tasteKeywords: new Set<string>(),
         bookmarkKeywords: new Set<string>(),
         momentKeywords: new Set<string>(),
@@ -2186,6 +2189,7 @@ type RecommendationContext = {
   bookmarkedPlaceIds: Set<string>;
   visitedPlaceIds: Set<string>;
   dismissedPlaceIds: Set<string>;
+  manuallyDismissedPlaceIds: Set<string>;
   tasteKeywords: Set<string>;
   bookmarkKeywords: Set<string>;
   momentKeywords: Set<string>;
@@ -2218,7 +2222,7 @@ async function getUserRecommendationContext(userId: string): Promise<Recommendat
     }),
     prisma.dismissedPlace.findMany({
       where: { userId },
-      select: { placeId: true },
+      select: { placeId: true, reason: true },
     }),
     prisma.bookmark.findMany({
       where: { userId },
@@ -2324,6 +2328,11 @@ async function getUserRecommendationContext(userId: string): Promise<Recommendat
     bookmarkedPlaceIds: new Set(bookmarks.map((item) => item.placeId)),
     visitedPlaceIds: new Set(moments.map((item) => item.placeId)),
     dismissedPlaceIds: new Set(dismissed.map((item) => item.placeId)),
+    manuallyDismissedPlaceIds: new Set(
+      dismissed
+        .filter((item) => (item.reason ?? 'manual_hide') !== 'saved_to_bookmarks')
+        .map((item) => item.placeId),
+    ),
     tasteKeywords: new Set([
       ...collectTasteKeywords(bookmarks.map((item) => item.place)),
       ...collectTasteKeywords(moments.map((item) => item.place)),
@@ -3396,7 +3405,7 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
       );
 
       const followedVisits = followedVisitMap.get(place.id) ?? 0;
-      const finalScore = context.dismissedPlaceIds.has(place.id)
+      const finalScore = context.manuallyDismissedPlaceIds.has(place.id)
         ? 24
         : Math.min(baseScore + Math.min(followedVisits * 4, 12), 98);
 
@@ -3426,7 +3435,7 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
             isVibed: context.vibedPlaceIds.has(place.id),
             isCommented: context.commentedPlaceIds.has(place.id),
             isRecent: context.recentPlaceIds.has(place.id),
-            isDismissed: context.dismissedPlaceIds.has(place.id),
+            isDismissed: context.manuallyDismissedPlaceIds.has(place.id),
           }),
           sourceVersion: 'writeback-v5',
         },
@@ -3451,7 +3460,7 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
             isVibed: context.vibedPlaceIds.has(place.id),
             isCommented: context.commentedPlaceIds.has(place.id),
             isRecent: context.recentPlaceIds.has(place.id),
-            isDismissed: context.dismissedPlaceIds.has(place.id),
+            isDismissed: context.manuallyDismissedPlaceIds.has(place.id),
           }),
           sourceVersion: 'writeback-v5',
         },
@@ -3593,6 +3602,103 @@ async function runRecommendationWriteback(input: {
   ]);
 }
 
+async function refreshSavedPlaceScoresForUser(userId: string) {
+  const [bookmarks, collectionPlaces] = await Promise.all([
+    prisma.bookmark.findMany({
+      where: { userId },
+      select: { placeId: true },
+      orderBy: { createdAt: 'desc' },
+      take: 32,
+    }),
+    prisma.collectionPlace.findMany({
+      where: { collection: { userId } },
+      select: { placeId: true },
+      orderBy: { collection: { createdAt: 'desc' } },
+      take: 32,
+    }),
+  ]);
+
+  const placeIds = Array.from(new Set([
+    ...bookmarks.map((item) => item.placeId),
+    ...collectionPlaces.map((item) => item.placeId),
+  ]));
+
+  if (placeIds.length === 0) return;
+  await refreshUserPlaceScores(userId, placeIds);
+}
+
+async function queueOwnTravelerDescriptorRefresh(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      displayName: true,
+      bookmarks: {
+        orderBy: { createdAt: 'desc' },
+        take: 12,
+        select: {
+          place: {
+            select: {
+              name: true,
+              city: true,
+              country: true,
+              category: true,
+              aiEnrichment: {
+                select: {
+                  vibeTags: true,
+                },
+              },
+            },
+          },
+        },
+      },
+      moments: {
+        orderBy: { createdAt: 'desc' },
+        take: 12,
+        select: {
+          caption: true,
+          place: {
+            select: {
+              name: true,
+              city: true,
+              country: true,
+              category: true,
+              aiEnrichment: {
+                select: {
+                  vibeTags: true,
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!user) return;
+
+  queueTravelerProfileDescriptorRefresh({
+    userId: user.id,
+    displayName: user.displayName,
+    moments: user.moments.map((moment) => ({
+      caption: moment.caption,
+      vibeTags: moment.place.aiEnrichment?.vibeTags ?? [],
+      place: {
+        name: moment.place.name,
+        location: [moment.place.city, moment.place.country].filter(Boolean).join(', '),
+        category: moment.place.category,
+        tags: moment.place.aiEnrichment?.vibeTags ?? [],
+      },
+    })),
+    bookmarkedPlaces: user.bookmarks.map((bookmark) => ({
+      name: bookmark.place.name,
+      location: [bookmark.place.city, bookmark.place.country].filter(Boolean).join(', '),
+      category: bookmark.place.category,
+      tags: bookmark.place.aiEnrichment?.vibeTags ?? [],
+    })),
+  });
+}
+
 async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
   let place = await prisma.place.findUnique({
     where: { id: placeId },
@@ -3616,7 +3722,39 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
         },
       })
     : null;
-  const similarityStat = persistedScore?.similarityPercentage ?? persistedScore?.matchScore ?? 82;
+  const recommendationContext = userId ? await getUserRecommendationContext(userId) : null;
+  const similarityStat = persistedScore?.similarityPercentage
+    ?? persistedScore?.matchScore
+    ?? (
+      recommendationContext
+        ? computeRecommendationScore(
+            {
+              id: place.id,
+              tags: place.aiEnrichment?.vibeTags ?? [place.category].filter(Boolean),
+              category: place.category,
+              similarityStat: undefined,
+              rating: typeof place.rating === 'number' ? place.rating : null,
+              hook: place.aiEnrichment?.hook ?? null,
+              description: place.aiEnrichment?.description ?? null,
+              whyYoullLikeIt: place.aiEnrichment?.description ? [place.aiEnrichment.description] : [],
+            },
+            {
+              selectedInterests: recommendationContext.selectedInterests,
+              selectedVibe: recommendationContext.selectedVibe,
+              bookmarkKeywords: recommendationContext.bookmarkKeywords,
+              momentKeywords: recommendationContext.momentKeywords,
+              socialKeywords: recommendationContext.socialKeywords,
+              isBookmarked: recommendationContext.bookmarkedPlaceIds.has(place.id),
+              isVisited: recommendationContext.visitedPlaceIds.has(place.id),
+              isVibed: recommendationContext.vibedPlaceIds.has(place.id),
+              isCommented: recommendationContext.commentedPlaceIds.has(place.id),
+              isRecent: recommendationContext.recentPlaceIds.has(place.id),
+              followedPlaceMatch: recommendationContext.followedPlaceIds.has(place.id),
+              momentRating: recommendationContext.momentRatingsByPlaceId.get(place.id) ?? null,
+            },
+          )
+        : undefined
+    );
   const recommendationReason = resolvePlaceDetailRecommendationReason({
     persistedReason: persistedScore?.recommendationReason,
     placeName: place.name,
@@ -4096,7 +4234,9 @@ async function optionalAuth(req: AuthenticatedRequest, _res: express.Response, n
 }
 
 app.get('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
-  void getProfileMe(req.authUserId)
+  void refreshSavedPlaceScoresForUser(req.authUserId!)
+    .catch(() => {})
+    .then(() => getProfileMe(req.authUserId))
     .then((payload) => res.json(payload))
     .catch((error) => handleError(res, error));
 });
@@ -4219,7 +4359,9 @@ app.get('/api/support', requireAuth, (_, res) => {
 });
 
 app.get('/api/collections', requireAuth, (req: AuthenticatedRequest, res) => {
-  void getCollections(req.authUserId)
+  void refreshSavedPlaceScoresForUser(req.authUserId!)
+    .catch(() => {})
+    .then(() => getCollections(req.authUserId))
     .then((collections) => res.json({ collections }))
     .catch((error) => handleError(res, error));
 });
@@ -4237,7 +4379,9 @@ app.get('/api/collections/:id/public', (req, res) => {
 });
 
 app.get('/api/bookmarks', requireAuth, (req: AuthenticatedRequest, res) => {
-  void getBookmarks(req.authUserId)
+  void refreshSavedPlaceScoresForUser(req.authUserId!)
+    .catch(() => {})
+    .then(() => getBookmarks(req.authUserId))
     .then((bookmarks) => res.json({ bookmarks }))
     .catch((error) => handleError(res, error));
 });
@@ -4531,7 +4675,12 @@ app.patch('/api/saved-locations/:locationId/default', requireAuth, async (req: A
 });
 
 app.get('/api/lookups/places/:id', optionalAuth, (req: AuthenticatedRequest, res) => {
-  void getPlaceDetailsByInternalId(req.params.id, req.authUserId)
+  void (
+    req.authUserId
+      ? refreshUserPlaceScores(req.authUserId, [req.params.id]).catch(() => {})
+      : Promise.resolve()
+  )
+    .then(() => getPlaceDetailsByInternalId(req.params.id, req.authUserId))
     .then((place) => {
       if (!place) {
         res.status(404).json({ error: 'Place not found' });
@@ -4860,14 +5009,22 @@ app.get('/api/discovery/travelers/public-search', (req, res) => {
     .catch((error) => handleError(res, error));
 });
 
+app.get('/api/discovery/travelers/public-suggestions', (req, res) => {
+  const rawLimit = Number(req.query.limit ?? 12);
+  const limit = Number.isFinite(rawLimit) ? Math.max(1, Math.min(rawLimit, 24)) : 12;
+  void getPublicTravelerSuggestions(limit)
+    .then((travelers) => res.json({ travelers }))
+    .catch((error) => handleError(res, error));
+});
+
 app.get('/api/travelers/:id', requireAuth, (req: AuthenticatedRequest, res) => {
   void getTravelerProfile(req.params.id, req.authUserId)
-    .then((traveler) => {
-      if (!traveler) {
+    .then((payload) => {
+      if (!payload) {
         res.status(404).json({ error: 'Traveler not found' });
         return;
       }
-      res.json({ traveler });
+      res.json(payload);
     })
     .catch((error) => handleError(res, error));
 });
@@ -4960,6 +5117,7 @@ app.post('/api/bookmarks', requireAuth, async (req: AuthenticatedRequest, res) =
       userId: req.authUserId!,
       placeIds: [placeId],
     });
+    void queueOwnTravelerDescriptorRefresh(req.authUserId!).catch(() => {});
 
     const bookmarks = await prisma.bookmark.findMany({
       where: { userId: req.authUserId! },
@@ -4990,6 +5148,7 @@ app.delete('/api/bookmarks/:placeId', requireAuth, async (req: AuthenticatedRequ
       userId: req.authUserId!,
       placeIds: [placeId],
     });
+    void queueOwnTravelerDescriptorRefresh(req.authUserId!).catch(() => {});
 
     const bookmarks = await prisma.bookmark.findMany({
       where: { userId: req.authUserId! },
