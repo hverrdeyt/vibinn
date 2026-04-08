@@ -411,7 +411,7 @@ export default function TravelerProfileScreen({
                 isFollowing ? 'border border-white/10 bg-white/8 text-white hover:bg-white/12' : 'bg-accent text-dark hover:brightness-105'
               }`}
             >
-              {isFollowing ? 'Following' : 'Follow'}
+              {isFollowing ? 'Unfollow' : 'Follow'}
             </button>
           </div>
 

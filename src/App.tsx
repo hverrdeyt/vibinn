@@ -1647,6 +1647,7 @@ export default function App() {
   const [selectedTravelerBookmarkedPlaces, setSelectedTravelerBookmarkedPlaces] = useState<Place[]>([]);
   const [selectedTravelerCollections, setSelectedTravelerCollections] = useState<PlaceCollection[]>([]);
   const [selectedTravelerHasHydratedDetail, setSelectedTravelerHasHydratedDetail] = useState(false);
+  const [selectedTravelerReturnScreen, setSelectedTravelerReturnScreen] = useState<Screen>('discover-travelers');
   const [placeDetailReturnScreen, setPlaceDetailReturnScreen] = useState<Screen>('discover-places');
   const [isTravelerProfileLoading, setIsTravelerProfileLoading] = useState(false);
   const [placeTravelerMoments, setPlaceTravelerMoments] = useState<Array<{
@@ -2006,6 +2007,12 @@ export default function App() {
     }
 
     if (route.screen === 'public-profile' && route.publicProfileUsername) {
+      if (currentScreen === 'traveler-profile' && selectedTraveler?.username === route.publicProfileUsername) {
+        return;
+      }
+      if (currentScreen === 'profile' && user.username === route.publicProfileUsername) {
+        return;
+      }
       if (currentScreen !== 'public-profile' || publicProfileUsername !== route.publicProfileUsername) {
         setPublicCollectionId(null);
         setPublicProfileUsername(route.publicProfileUsername);
@@ -3134,6 +3141,7 @@ export default function App() {
       username: traveler.username,
       source_screen: currentScreen,
     });
+    setSelectedTravelerReturnScreen(currentScreen);
     if (typeof window !== 'undefined' && traveler.username) {
       const nextPath = buildCanonicalProfilePath(traveler.username);
       if (`${window.location.pathname}${window.location.search}` !== nextPath) {
@@ -4403,6 +4411,19 @@ export default function App() {
                   vibinCount={controls?.vibinCount ?? 0}
                   commentsCount={controls?.commentsCount ?? 0}
                   onOpenPlace={item.type !== 'collection' ? () => openPlaceDetail(item.place, 'profile') : undefined}
+                  onOpenCollection={item.type === 'collection' && item.collectionId ? () => {
+                    const collection = customCollections.find((entry) => entry.id === item.collectionId);
+                    if (!collection) return;
+                    setSelectedCollection(collection);
+                    setSelectedCollectionReturnScreen('profile');
+                    setPublicCollectionId(null);
+                    setSelectedCollectionOwner({
+                      avatar: user.avatar,
+                      username: user.username,
+                      displayName: user.displayName,
+                    });
+                    setCurrentScreen('collection-detail');
+                  } : undefined}
                   onOpenTraveler={() => setCurrentScreen('profile')}
                   onToggleVibin={controls?.onToggleVibin}
                   onOpenComments={controls?.onOpenComments}
@@ -4654,6 +4675,17 @@ export default function App() {
             onSelectPlace={(p, returnScreen) => {
               openPlaceDetail(p, returnScreen ?? 'discover-places');
             }}
+            onSelectCollection={(collection, owner) => {
+              setSelectedCollection(collection);
+              setSelectedCollectionReturnScreen('discover-travelers');
+              setPublicCollectionId(null);
+              setSelectedCollectionOwner({
+                avatar: owner.avatar,
+                username: owner.username,
+                displayName: owner.displayName,
+              });
+              setCurrentScreen('collection-detail');
+            }}
             onSelectTraveler={(t) => {
               if (!isAuthenticated) {
                 openAuthGate('Log in to open traveler profiles and follow their vibe.', 'login', () => {
@@ -4681,7 +4713,17 @@ export default function App() {
               user={selectedTraveler}
               bookmarkedPlaces={selectedTravelerBookmarkedPlaces}
               displayFlags={(selectedTraveler.flags?.length ? selectedTraveler.flags : deriveFlagsFromTravelHistory(selectedTraveler.travelHistory)).slice(0, 5)}
-              onBack={() => setCurrentScreen('discover-travelers')}
+              onBack={() => {
+                const nextScreen = selectedTravelerReturnScreen;
+                setPublicProfileUsername(null);
+                if (typeof window !== 'undefined') {
+                  const nextPath = screenToAppPath(nextScreen);
+                  if (`${window.location.pathname}${window.location.search}` !== nextPath) {
+                    window.history.pushState({}, '', nextPath);
+                  }
+                }
+                setCurrentScreen(nextScreen);
+              }}
               onSavePlace={(placeToSave, nextActive) => syncBookmarkState(placeToSave, nextActive)}
               onSelectPlace={(p) => {
                 openPlaceDetail(p, 'traveler-profile');
@@ -4736,6 +4778,19 @@ export default function App() {
                   vibinCount={controls?.vibinCount ?? 0}
                   commentsCount={controls?.commentsCount ?? 0}
                   onOpenPlace={item.type === 'collection' ? undefined : () => openPlaceDetail(item.place, 'traveler-profile')}
+                  onOpenCollection={item.type === 'collection' && item.collectionId ? () => {
+                    const collection = selectedTravelerCollections.find((entry) => entry.id === item.collectionId);
+                    if (!collection) return;
+                    setSelectedCollection(collection);
+                    setSelectedCollectionReturnScreen('traveler-profile');
+                    setPublicCollectionId(null);
+                    setSelectedCollectionOwner({
+                      avatar: selectedTraveler.avatar,
+                      username: selectedTraveler.username,
+                      displayName: selectedTraveler.displayName,
+                    });
+                    setCurrentScreen('collection-detail');
+                  } : undefined}
                   onOpenTraveler={() => setCurrentScreen('traveler-profile')}
                   onToggleVibin={controls?.onToggleVibin}
                   onOpenComments={controls?.onOpenComments}
@@ -4825,7 +4880,7 @@ export default function App() {
               user={resolvedPublicProfileUser}
               bookmarkedPlaces={resolvedPublicProfileBookmarkedPlaces}
               customCollections={resolvedPublicProfileCollections}
-              onOpenApp={openApp}
+              onFollow={openApp}
               onOpenCollection={(collection) => {
                 setSelectedCollection(collection);
                 setSelectedCollectionReturnScreen('public-profile');
@@ -4846,8 +4901,21 @@ export default function App() {
                   vibed={false}
                   vibinCount={0}
                   commentsCount={0}
-                  onOpenPlace={item.type === 'collection' ? undefined : openApp}
-                  onOpenTraveler={openApp}
+                  onOpenPlace={undefined}
+                  onOpenCollection={item.type === 'collection' ? () => {
+                    const collection = resolvedPublicProfileCollections.find((entry) => entry.id === item.collectionId);
+                    if (!collection) return;
+                    setSelectedCollection(collection);
+                    setSelectedCollectionReturnScreen('public-profile');
+                    setPublicCollectionId(collection.id ?? null);
+                    setSelectedCollectionOwner({
+                      avatar: resolvedPublicProfileUser.avatar,
+                      username: resolvedPublicProfileUser.username,
+                      displayName: resolvedPublicProfileUser.displayName,
+                    });
+                    setCurrentScreen('collection-detail');
+                  } : undefined}
+                  onOpenTraveler={() => {}}
                 />
               )}
               renderSavedPlaceCard={(place, index) => (
@@ -5598,7 +5666,7 @@ function EditProfileScreen({
           <div className="flex items-center gap-4 rounded-[1.5rem] border border-white/10 bg-white/6 p-4">
             <div className="h-20 w-20 overflow-hidden rounded-[1.4rem] border border-white/10 bg-white/8">
               <img
-                src={avatarUrl}
+                src={resolveApiAssetUrl(avatarUrl)}
                 alt={user.username}
                 className="h-full w-full object-cover"
                 referrerPolicy="no-referrer"
@@ -6459,6 +6527,7 @@ function FollowingFeedCard({
   vibinCount = 0,
   commentsCount = 0,
   onOpenPlace,
+  onOpenCollection,
   onOpenTraveler,
   onToggleVibin,
   onOpenComments,
@@ -6487,6 +6556,7 @@ function FollowingFeedCard({
   vibinCount?: number;
   commentsCount?: number;
   onOpenPlace?: () => void;
+  onOpenCollection?: () => void;
   onOpenTraveler: () => void;
   onToggleVibin?: () => void;
   onOpenComments?: () => void;
@@ -6529,7 +6599,11 @@ function FollowingFeedCard({
           ) : null}
 
           {item.type === 'collection' ? (
-            <div className="mt-3 overflow-hidden rounded-[22px] border border-white/10 bg-zinc-900/70">
+            <button
+              type="button"
+              onClick={onOpenCollection}
+              className="mt-3 w-full overflow-hidden rounded-[22px] border border-white/10 bg-zinc-900/70 text-left transition hover:bg-white/8"
+            >
               <div className="grid grid-cols-2 gap-[1px] bg-white/10">
                 {item.collectionPlaces.slice(0, 4).map((place) => (
                   <div key={`${item.collectionName}-${place.id}`} className="overflow-hidden bg-black">
@@ -6543,7 +6617,7 @@ function FollowingFeedCard({
                   {item.collectionPlaces.length} places
                 </div>
               </div>
-            </div>
+            </button>
           ) : (
             <button
               type="button"
@@ -7401,6 +7475,7 @@ function TravelerDiscovery({
   mockReviewData,
   onRequireAuth,
   onSelectPlace,
+  onSelectCollection,
   onSelectTraveler,
 }: {
   isAuthenticated: boolean;
@@ -7418,6 +7493,7 @@ function TravelerDiscovery({
   };
   onRequireAuth: (message: string, action: () => void) => void;
   onSelectPlace: (p: Place, returnScreen?: Screen) => void,
+  onSelectCollection: (collection: PlaceCollection, owner: User) => void,
   onSelectTraveler: (t: User) => void,
 }) {
   type FollowingCommentsTarget =
@@ -8029,6 +8105,12 @@ function TravelerDiscovery({
                           : followingCollectionCommentCounts[item.collectionId] || 0)
                         : 0)}
                   onOpenPlace={item.type !== 'collection' ? () => onSelectPlace(item.place, 'discover-travelers') : undefined}
+                  onOpenCollection={item.type === 'collection' && item.collectionId ? () => {
+                    const travelerCollections = item.traveler.recentCollections ?? [];
+                    const collection = travelerCollections.find((entry) => entry.id === item.collectionId);
+                    if (!collection) return;
+                    onSelectCollection(collection, item.traveler);
+                  } : undefined}
                   onOpenTraveler={() => onSelectTraveler(item.traveler)}
                   onToggleVibin={item.type !== 'collection'
                     ? async () => {

@@ -17,7 +17,7 @@ export default function PublicProfileScreen({
   user,
   bookmarkedPlaces,
   customCollections,
-  onOpenApp,
+  onFollow,
   onOpenCollection,
   displayFlags,
   publicMomentsCount,
@@ -29,7 +29,7 @@ export default function PublicProfileScreen({
   user: User;
   bookmarkedPlaces: Place[];
   customCollections: PlaceCollection[];
-  onOpenApp: () => void;
+  onFollow: () => void;
   onOpenCollection: (collection: PlaceCollection) => void;
   displayFlags: string[];
   publicMomentsCount: number;
@@ -98,19 +98,6 @@ export default function PublicProfileScreen({
   return (
     <div className="min-h-screen bg-zinc-950 pb-24 text-white">
       <div className="px-4 pb-10 pt-3">
-        <div className="mb-5 flex items-center justify-between rounded-full border border-white/10 bg-black/70 px-2 py-2 backdrop-blur-xl">
-          <div className="px-3 text-[11px] font-black uppercase tracking-[0.2em] text-white/35">
-            Public profile
-          </div>
-          <button
-            type="button"
-            onClick={onOpenApp}
-            className="rounded-full bg-accent px-4 py-3 text-[11px] font-black uppercase tracking-[0.16em] text-black transition hover:brightness-105"
-          >
-            Open app
-          </button>
-        </div>
-
         <div className="rounded-[2.5rem] border border-white/10 bg-black p-6 text-white shadow-2xl">
           <div className="flex items-start gap-3">
             <div className="h-20 w-20 overflow-hidden rounded-[1.6rem] border border-white/10 bg-white">
@@ -163,17 +150,15 @@ export default function PublicProfileScreen({
               <p className="text-sm font-semibold leading-relaxed text-white/80">{user.matchScore}% match</p>
             </div>
           ) : null}
-
           <div className="mt-5">
             <button
               type="button"
-              onClick={onOpenApp}
+              onClick={onFollow}
               className="w-full rounded-[1.25rem] bg-accent px-5 py-4 text-sm font-black text-dark transition hover:brightness-105"
             >
-              Open app
+              Follow
             </button>
           </div>
-
           <div className="mt-6 grid grid-cols-3 gap-3">
             <div className="rounded-[1.4rem] border border-white/10 bg-white/6 p-3">
               <div className="text-lg font-black text-white">{uniqueBookmarkedPlaces.length}</div>

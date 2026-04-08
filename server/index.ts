@@ -41,7 +41,6 @@ const app = express();
 const port = Number(process.env.API_PORT || 3001);
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
-const API_ORIGIN = process.env.API_ORIGIN || `http://localhost:${port}`;
 const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads');
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
@@ -140,9 +139,13 @@ function parseDataUrl(dataUrl: string) {
   };
 }
 
-function buildMediaUrl(key: string) {
+function buildMediaUrl(key: string, requestOrigin?: string) {
   if (R2_PUBLIC_URL) {
     return `${R2_PUBLIC_URL.replace(/\/$/, '')}/${key}`;
+  }
+  const baseOrigin = requestOrigin?.replace(/\/$/, '');
+  if (baseOrigin) {
+    return `${baseOrigin}/api/media?key=${encodeURIComponent(key)}`;
   }
   return `/api/media?key=${encodeURIComponent(key)}`;
 }
@@ -4466,6 +4469,7 @@ app.get('/api/media', async (req, res) => {
 
 app.post('/api/uploads/media', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
     const files = (req.body as {
       files?: Array<{
         fileName?: string;
@@ -4505,7 +4509,7 @@ app.post('/api/uploads/media', requireAuth, async (req: AuthenticatedRequest, re
       }
 
       return {
-        url: buildMediaUrl(r2Client && R2_BUCKET_NAME ? objectKey : storageName),
+        url: buildMediaUrl(r2Client && R2_BUCKET_NAME ? objectKey : storageName, requestOrigin),
         fileName: file.fileName,
         mediaType: (file.mimeType ?? parsed.mimeType).startsWith('video/') ? 'video' : 'image',
       };
