@@ -3135,6 +3135,72 @@ export default function App() {
     setPlaceDetailInteraction((prev) => ({ ...prev, isBeenThere: true }));
   };
 
+  const applyPersistedCheckIn = (moment: {
+    id: string;
+    placeId: string;
+    visitedDate: string;
+    caption?: string;
+    rating?: number;
+    wouldRevisit?: 'yes' | 'not_sure' | 'not_interested';
+    visitType?: 'solo' | 'couple' | 'friends' | 'family';
+    timeOfDay?: 'morning' | 'afternoon' | 'sunset' | 'night';
+    vibeTags?: string[];
+    uploadedMediaItems?: Array<{ url: string; mediaType: 'image' | 'video' }>;
+    place?: Place;
+  }) => {
+    const basePlace = (moment.place as Place | undefined) ?? findKnownPlaceById(moment.placeId);
+    if (!basePlace) return;
+
+    const checkedInPlace: Place = {
+      ...basePlace,
+      momentId: moment.id,
+      visitedDate: moment.visitedDate,
+      momentCaption: moment.caption ?? '',
+      momentRating: moment.rating,
+      momentWouldRevisit: moment.wouldRevisit,
+      momentVisitType: moment.visitType,
+      momentTimeOfDay: moment.timeOfDay,
+      momentVibeTags: moment.vibeTags ?? [],
+      momentMedia: moment.uploadedMediaItems?.length
+        ? moment.uploadedMediaItems
+        : basePlace.image
+          ? [{ url: basePlace.image, mediaType: 'image' as const }]
+          : [],
+    };
+
+    setMyMoments((prev) => {
+      const next = [{ id: moment.id, placeId: moment.placeId }, ...prev.filter((entry) => entry.id !== moment.id && entry.placeId !== moment.placeId)];
+      return next;
+    });
+
+    setUser((prev) => {
+      const nextHistory = [...prev.travelHistory];
+      const cityLabel = checkedInPlace.location.split(',')[0]?.trim() ?? checkedInPlace.location;
+      const countryLabel = checkedInPlace.location.split(',')[1]?.trim() ?? 'USA';
+      const historyIndex = nextHistory.findIndex((history) => history.cities.includes(cityLabel));
+      if (historyIndex >= 0) {
+        const history = nextHistory[historyIndex];
+        nextHistory[historyIndex] = {
+          ...history,
+          places: [checkedInPlace, ...(history.places ?? []).filter((place) => place.momentId !== checkedInPlace.momentId)],
+        };
+      } else {
+        nextHistory.unshift({
+          country: countryLabel,
+          cities: [cityLabel],
+          places: [checkedInPlace],
+        });
+      }
+
+      return {
+        ...prev,
+        travelHistory: nextHistory,
+      };
+    });
+
+    setPlaceDetailInteraction((prev) => ({ ...prev, isBeenThere: true }));
+  };
+
   const openTravelerProfile = async (traveler: User) => {
     trackEvent('View Traveler Detail', {
       traveler_id: traveler.id,
@@ -4567,8 +4633,9 @@ export default function App() {
                 setCurrentScreen('profile');
                 return;
               }
-              await api.updateMoment(editableMomentId, payload);
-              await refreshOwnProfile();
+              const response = await api.updateMoment(editableMomentId, payload);
+              applyPersistedCheckIn(response.moment);
+              void refreshOwnProfile({ force: true });
               showActionToast('Moment updated');
               setCurrentScreen('profile');
             }}
@@ -4615,8 +4682,9 @@ export default function App() {
                 setCurrentScreen('profile');
                 return;
               }
-              await api.createMoment(payload);
-              await refreshOwnProfile();
+              const response = await api.createMoment(payload);
+              applyPersistedCheckIn(response.moment);
+              void refreshOwnProfile({ force: true });
               resetCreateMomentDraft();
               showActionToast('Check-in saved');
               setCurrentScreen('profile');
