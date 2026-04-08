@@ -4,6 +4,7 @@ import { ArrowRight, Search, Sparkles } from 'lucide-react';
 import { type Interest, type Vibe } from '../types';
 import { api } from '../lib/api';
 import { trackEvent } from '../lib/analytics';
+import { isNativeApp } from '../lib/native';
 
 type SavedLocationOption = {
   id: string;
@@ -46,6 +47,7 @@ export default function Onboarding({
   onComplete,
   analyticsContext,
 }: OnboardingProps) {
+  const nativeApp = isNativeApp();
   const hasPreferences = selectedInterests.length > 0 || !!selectedVibe;
   const choiceTitle = 'Can I get to know you first?';
   const areaTitle = 'Where are you planning to go?';
@@ -215,7 +217,7 @@ export default function Onboarding({
     const isChoiceIntroReady = typedChoiceTitle.length === choiceTitle.length;
 
     return (
-      <div className="flex h-[100svh] flex-col overflow-hidden bg-zinc-950 p-10 pt-24 text-white">
+      <div className="app-viewport-screen flex flex-col overflow-hidden bg-zinc-950 p-10 pt-24 text-white">
         <div className="mb-12 shrink-0">
           <div className="mb-8 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/8 shadow-lg">
             <Sparkles className="text-accent" size={28} />
@@ -230,7 +232,7 @@ export default function Onboarding({
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 12 }}
-                transition={{ duration: 0.28, ease: 'easeOut' }}
+                transition={{ duration: nativeApp ? 0.18 : 0.28, ease: 'easeOut' }}
                 className="text-xl font-medium leading-snug text-white/60"
               >
                 Just swipe a few picks and we&apos;ll recommend places and events that fit your vibe.
@@ -245,7 +247,7 @@ export default function Onboarding({
               initial={{ opacity: 0, y: 18 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 12 }}
-              transition={{ delay: 0.05, duration: 0.28, ease: 'easeOut' }}
+              transition={{ delay: nativeApp ? 0.02 : 0.05, duration: nativeApp ? 0.18 : 0.28, ease: 'easeOut' }}
               className="mt-auto space-y-4 pb-2"
             >
               <button
@@ -280,7 +282,7 @@ export default function Onboarding({
     const isAreaIntroReady = typedAreaTitle.length === areaTitle.length;
 
     return (
-      <div className="flex h-[100svh] flex-col overflow-hidden bg-zinc-950 p-10 pb-10 pt-24 text-white">
+      <div className="app-viewport-screen flex flex-col overflow-hidden bg-zinc-950 p-10 pb-10 pt-24 text-white">
         <div className="mb-10 shrink-0">
           <div className="mb-8 flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/8 shadow-lg">
             <Sparkles className="text-accent" size={28} />
@@ -295,7 +297,7 @@ export default function Onboarding({
                 initial={{ opacity: 0, y: 16 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: 12 }}
-                transition={{ duration: 0.28, ease: 'easeOut' }}
+                transition={{ duration: nativeApp ? 0.18 : 0.28, ease: 'easeOut' }}
                 className="text-xl font-medium leading-snug text-white/60"
               >
                 Pick the area first, then we&apos;ll shape the recommendations around where you&apos;re heading.
@@ -310,7 +312,7 @@ export default function Onboarding({
               initial={{ opacity: 0, y: 18 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 12 }}
-              transition={{ delay: 0.05, duration: 0.28, ease: 'easeOut' }}
+              transition={{ delay: nativeApp ? 0.02 : 0.05, duration: nativeApp ? 0.18 : 0.28, ease: 'easeOut' }}
               className="flex min-h-0 flex-1 flex-col space-y-5"
             >
               <div className="shrink-0">
@@ -366,7 +368,7 @@ export default function Onboarding({
                       initial={{ y: '100%' }}
                       animate={{ y: 0 }}
                       exit={{ y: '100%' }}
-                      transition={{ type: 'spring', stiffness: 280, damping: 30 }}
+                      transition={{ type: 'spring', stiffness: nativeApp ? 360 : 280, damping: nativeApp ? 36 : 30 }}
                       className="fixed inset-x-0 bottom-0 z-50 mx-auto w-full max-w-md rounded-t-[32px] border border-white/10 bg-zinc-900 px-4 pt-4 pb-8 shadow-[0_-20px_60px_rgba(0,0,0,0.45)]"
                     >
                       <div className="mx-auto h-1.5 w-12 rounded-full bg-white/15" />
@@ -385,7 +387,7 @@ export default function Onboarding({
                           value={areaQuery}
                           onChange={(event) => setAreaQuery(event.target.value)}
                           placeholder="Search Bandung, West Java, Japan..."
-                          className="w-full rounded-xl border border-white/10 bg-black/20 py-4 pl-11 pr-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+                          className="w-full rounded-xl border border-white/10 bg-black/20 py-4 pl-11 pr-4 text-base font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
                         />
                       </div>
                       <div className="mt-3 max-h-[50svh] space-y-2 overflow-y-auto pr-1">
@@ -497,7 +499,7 @@ export default function Onboarding({
   }
 
   return (
-    <div className="flex h-[100svh] flex-col overflow-hidden bg-dark">
+    <div className="app-viewport-screen flex flex-col overflow-hidden bg-dark">
       <div className="z-20 flex flex-col gap-4 p-6 pt-12">
         <div className="flex items-center justify-between">
           <div className="flex gap-1.5">
@@ -567,6 +569,7 @@ function SwipeCard({
   onSwipe: (dir: 'right' | 'left') => void;
   key?: string;
 }) {
+  const nativeApp = isNativeApp();
   const [exitDirection, setExitDirection] = useState<-1 | 0 | 1>(0);
   const x = useMotionValue(0);
   const rotate = useTransform(x, [-220, 0, 220], [-10, 0, 10]);
@@ -607,7 +610,7 @@ function SwipeCard({
         rotate: exitDirection === 1 ? 12 : exitDirection === -1 ? -12 : 0,
         opacity: 0,
         scale: 0.92,
-        transition: { duration: 0.26, ease: 'easeOut' },
+        transition: { duration: nativeApp ? 0.18 : 0.26, ease: 'easeOut' },
       }}
       className="absolute inset-0 px-4 pb-12"
     >
@@ -631,7 +634,7 @@ function SwipeCard({
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
+            transition={{ delay: nativeApp ? 0.08 : 0.2 }}
           >
             <h3 className="mb-2 text-4xl font-black leading-none tracking-tighter text-white">
               {card.title}

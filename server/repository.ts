@@ -158,6 +158,7 @@ function mapMomentForClient(moment: MomentWithRelations) {
     id: moment.id,
     placeId: moment.placeId,
     visitedDate: moment.visitedAt.toISOString().split('T')[0],
+    visitedAtIso: moment.visitedAt.toISOString(),
     caption: moment.caption,
     uploadedMedia: moment.media.map((item) => item.url),
     uploadedMediaItems: moment.media.map((item) => ({
@@ -185,6 +186,7 @@ function buildTravelHistory(
   moments: Array<{
     id: string;
     visitedDate: string;
+    visitedAtIso: string;
     uploadedMedia: string[];
     uploadedMediaItems: Array<{ url: string; mediaType: 'image' | 'video' }>;
     caption: string;
@@ -217,6 +219,7 @@ function buildTravelHistory(
         momentId: moment.id,
         ownerUserId,
         visitedDate: moment.visitedDate,
+        visitedAtIso: moment.visitedAtIso,
         momentCaption: moment.caption,
         momentVibeTags: moment.vibeTags,
         momentVisitType: moment.visitType,
@@ -974,6 +977,66 @@ export async function getTravelerDiscovery(userId?: string) {
       )),
     ),
     feedSavedDrops,
+  };
+}
+
+export async function getFollowingFeed(userId?: string) {
+  const discovery = await getTravelerDiscovery(userId);
+  const travelerMap = new Map(discovery.followedTravelers.map((traveler) => [traveler.id, traveler]));
+
+  const items = [
+    ...discovery.feedSavedDrops.map((drop) => {
+      const traveler = travelerMap.get(drop.travelerId);
+      if (!traveler) return null;
+      return {
+        id: drop.id,
+        type: 'saved' as const,
+        traveler,
+        timestampLabel: drop.savedAtLabel,
+        sortTimestamp: drop.savedAtIso ?? null,
+        place: drop.place,
+        collection: null,
+        caption: null,
+      };
+    }),
+    ...discovery.followedTravelers.flatMap((traveler) => [
+      ...traveler.travelHistory.flatMap((history) =>
+        history.places
+          .filter((place) => place.visitedDate)
+          .map((place) => ({
+            id: `visited-${traveler.id}-${place.momentId ?? place.id}`,
+            type: 'visited' as const,
+            traveler,
+            timestampLabel: formatRelativeActivityLabel(place.visitedAtIso ? new Date(place.visitedAtIso) : new Date(place.visitedDate!)),
+            sortTimestamp: place.visitedAtIso ?? place.visitedDate ?? null,
+            place,
+            collection: null,
+            caption: place.momentCaption ?? null,
+          })),
+      ),
+      ...(traveler.recentCollections ?? []).map((collection) => ({
+        id: `collection-${traveler.id}-${collection.id}`,
+        type: 'collection' as const,
+        traveler,
+        timestampLabel: formatRelativeActivityLabel(collection.createdAt ? new Date(collection.createdAt) : new Date()),
+        sortTimestamp: collection.createdAt ?? null,
+        place: null,
+        collection,
+        caption: null,
+      })),
+    ]),
+  ]
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .sort((a, b) => {
+      const aTime = a.sortTimestamp ? new Date(a.sortTimestamp).getTime() : 0;
+      const bTime = b.sortTimestamp ? new Date(b.sortTimestamp).getTime() : 0;
+      return bTime - aTime;
+    });
+
+  return {
+    followedTravelers: discovery.followedTravelers,
+    suggestedTravelers: discovery.similarTravelers,
+    items,
   };
 }
 

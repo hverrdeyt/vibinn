@@ -13,6 +13,7 @@ import {
   createCollection,
   getBookmarks,
   createMoment,
+  getFollowingFeed,
   getTravelerDiscovery,
   getTravelerProfile,
   getPublicTravelerSuggestions,
@@ -5002,6 +5003,12 @@ app.get('/api/me/interaction-state', requireAuth, async (req: AuthenticatedReque
 
 app.get('/api/discovery/travelers', requireAuth, (req: AuthenticatedRequest, res) => {
   void getTravelerDiscovery(req.authUserId)
+    .then((payload) => res.json(payload))
+    .catch((error) => handleError(res, error));
+});
+
+app.get('/api/feed', requireAuth, (req: AuthenticatedRequest, res) => {
+  void getFollowingFeed(req.authUserId)
     .then((payload) => res.json(payload))
     .catch((error) => handleError(res, error));
 });

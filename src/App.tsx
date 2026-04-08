@@ -463,6 +463,10 @@ function buildCanonicalProfilePath(username: string) {
   return `${LEGACY_PUBLIC_PROFILE_BASE_PATH}/${encodeURIComponent(username)}`;
 }
 
+function getNativeDefaultScreen(): Screen {
+  return hasStoredOnboardingCompletion() ? 'discover-places' : 'onboarding';
+}
+
 function getSafePlaceImage(place: Pick<Place, 'image' | 'images' | 'name'>) {
   const candidate = [place.image, ...(place.images ?? [])].find((value) => typeof value === 'string' && value.trim().length > 0);
   if (candidate) return candidate;
@@ -851,9 +855,37 @@ function GoogleIdentityButton({
   const buttonRef = useRef<HTMLDivElement | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isGoogleButtonReady, setIsGoogleButtonReady] = useState(false);
+  const nativePlatform = isNativeApp();
+
+  const initializeGoogleSignIn = () => {
+    if (!clientId || !window.google?.accounts?.id) {
+      throw new Error('Google sign-in is not ready yet.');
+    }
+
+    window.google.accounts.id.initialize({
+      client_id: clientId,
+      ux_mode: nativePlatform ? 'popup' : 'popup',
+      context: text === 'signup_with' ? 'signup' : 'signin',
+      callback: (response) => {
+        if (!response.credential) {
+          setErrorMessage('Google did not return a sign-in credential.');
+          return;
+        }
+        setErrorMessage(null);
+        void onCredential(response.credential).catch((error) => {
+          setErrorMessage(error instanceof Error ? error.message : 'Could not continue with Google right now.');
+        });
+      },
+    });
+  };
 
   useEffect(() => {
-    if (!clientId || !buttonRef.current || !window.google?.accounts?.id || disabled) {
+    if (!clientId || !window.google?.accounts?.id || disabled || nativePlatform) {
+      setIsGoogleButtonReady(false);
+      return;
+    }
+
+    if (!buttonRef.current) {
       setIsGoogleButtonReady(false);
       return;
     }
@@ -861,21 +893,7 @@ function GoogleIdentityButton({
     try {
       buttonRef.current.innerHTML = '';
       setErrorMessage(null);
-      window.google.accounts.id.initialize({
-        client_id: clientId,
-        ux_mode: 'popup',
-        context: text === 'signup_with' ? 'signup' : 'signin',
-        callback: (response) => {
-          if (!response.credential) {
-            setErrorMessage('Google did not return a sign-in credential.');
-            return;
-          }
-          setErrorMessage(null);
-          void onCredential(response.credential).catch((error) => {
-            setErrorMessage(error instanceof Error ? error.message : 'Could not continue with Google right now.');
-          });
-        },
-      });
+      initializeGoogleSignIn();
       window.google.accounts.id.renderButton(buttonRef.current, {
         type: 'standard',
         theme: 'outline',
@@ -890,7 +908,23 @@ function GoogleIdentityButton({
       setIsGoogleButtonReady(false);
       setErrorMessage(error instanceof Error ? error.message : 'Google sign-in is not ready yet.');
     }
-  }, [clientId, disabled, onCredential, text]);
+  }, [clientId, disabled, nativePlatform, onCredential, text]);
+
+  const handleNativeGooglePress = () => {
+    if (disabled) return;
+
+    try {
+      setErrorMessage(null);
+      initializeGoogleSignIn();
+      window.google?.accounts?.id?.prompt((notification) => {
+        if (notification.isNotDisplayed?.() || notification.isSkippedMoment?.()) {
+          setErrorMessage('Google sign-in is not available on this screen yet. Try again in a moment.');
+        }
+      });
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Google sign-in is not ready yet.');
+    }
+  };
 
   if (!clientId) {
     return (
@@ -902,18 +936,29 @@ function GoogleIdentityButton({
 
   return (
     <div className="space-y-3">
-      <div className={disabled ? 'pointer-events-none opacity-60' : ''}>
-        {!isGoogleButtonReady ? (
-          <button
-            type="button"
-            disabled
-            className="mx-auto flex w-full max-w-[320px] items-center justify-center rounded-full border border-white/12 bg-white px-5 py-3 text-sm font-bold text-zinc-950 opacity-85"
-          >
-            Continue with Google
-          </button>
-        ) : null}
-        <div ref={buttonRef} className={`flex justify-center ${isGoogleButtonReady ? '' : 'sr-only'}`} />
-      </div>
+      {nativePlatform ? (
+        <button
+          type="button"
+          onClick={handleNativeGooglePress}
+          disabled={disabled || !window.google?.accounts?.id}
+          className="mx-auto flex w-full max-w-[320px] items-center justify-center rounded-full border border-white/12 bg-white px-5 py-3 text-base font-bold text-zinc-950 transition active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          Continue with Google
+        </button>
+      ) : (
+        <div className={disabled ? 'pointer-events-none opacity-60' : ''}>
+          {!isGoogleButtonReady ? (
+            <button
+              type="button"
+              disabled
+              className="mx-auto flex w-full max-w-[320px] items-center justify-center rounded-full border border-white/12 bg-white px-5 py-3 text-base font-bold text-zinc-950 opacity-85"
+            >
+              Continue with Google
+            </button>
+          ) : null}
+          <div ref={buttonRef} className={`flex justify-center ${isGoogleButtonReady ? '' : 'sr-only'}`} />
+        </div>
+      )}
       {errorMessage ? (
         <div className="rounded-[1.25rem] border border-red-400/30 bg-red-400/10 px-4 py-3 text-sm font-semibold text-red-200">
           {errorMessage}
@@ -1607,7 +1652,7 @@ export default function App() {
         return 'discover-places';
       }
       return isNativeApp()
-        ? (hasAccess ? 'discover-places' : 'onboarding')
+        ? getNativeDefaultScreen()
         : 'landing';
     }
 
@@ -2012,7 +2057,7 @@ export default function App() {
       })
       .catch(() => {
         showActionToast('Could not load that shared place right now');
-        setCurrentScreen('landing');
+        setCurrentScreen(isNativeApp() ? getNativeDefaultScreen() : 'landing');
       });
   }, [currentScreen, selectedPlace]);
 
@@ -2049,7 +2094,7 @@ export default function App() {
       setPublicCollectionId(null);
       setCurrentScreen(
         isNativeApp()
-          ? (hasStoredOnboardingCompletion() ? 'discover-places' : 'onboarding')
+          ? getNativeDefaultScreen()
           : 'landing',
       );
       return;
@@ -2079,12 +2124,18 @@ export default function App() {
     if (!isNativeApp()) return;
     if (window.location.pathname !== '/') return;
 
-    const nextScreen = hasStoredOnboardingCompletion() ? 'discover-places' : 'onboarding';
+    const nextScreen = getNativeDefaultScreen();
     const nextPath = screenToAppPath(nextScreen);
     window.history.replaceState({}, '', nextPath);
     if (currentScreen === 'landing') {
       setCurrentScreen(nextScreen);
     }
+  }, [currentScreen]);
+
+  useEffect(() => {
+    if (!isNativeApp()) return;
+    if (currentScreen !== 'landing') return;
+    setCurrentScreen(getNativeDefaultScreen());
   }, [currentScreen]);
 
   useEffect(() => {
@@ -4952,7 +5003,7 @@ export default function App() {
                 if (typeof window !== 'undefined' && window.history.length > 1) {
                   window.history.back();
                 } else {
-                  setCurrentScreen('landing');
+                  setCurrentScreen(isNativeApp() ? getNativeDefaultScreen() : 'landing');
                 }
                 return;
               }
@@ -5096,8 +5147,8 @@ export default function App() {
 
   return (
     <div className={currentScreen === 'landing'
-      ? 'min-h-screen bg-zinc-950 relative overflow-hidden'
-      : 'max-w-md mx-auto min-h-screen bg-zinc-950 relative overflow-hidden shadow-2xl border-x border-white/8'}
+      ? 'app-shell app-screen-shell bg-zinc-950 relative overflow-hidden'
+      : `${isNativeApp() ? 'app-shell native-app-shell' : 'app-shell max-w-md mx-auto shadow-2xl border-x border-white/8'} bg-zinc-950 relative overflow-hidden`}
     >
       {mockReviewMode ? (
         <div className="pointer-events-none fixed inset-x-0 top-4 z-[95] flex justify-center px-4">
@@ -5120,8 +5171,8 @@ export default function App() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
-          className={currentScreen === 'landing' ? 'min-h-screen' : 'pb-24 min-h-screen'}
+          transition={{ duration: isNativeApp() ? 0.12 : 0.2 }}
+          className={currentScreen === 'landing' ? 'app-screen-shell' : 'app-screen-shell pb-24'}
         >
           {renderScreen()}
         </motion.div>
@@ -5431,6 +5482,7 @@ function LoginScreen({
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const authInputClassName = 'w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-base font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10';
 
   return (
     <div className="min-h-screen bg-zinc-950 px-4 pb-10 pt-6 text-white">
@@ -5494,7 +5546,7 @@ function LoginScreen({
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="you@email.com"
-              className="w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+              className={authInputClassName}
             />
           </div>
 
@@ -5508,7 +5560,7 @@ function LoginScreen({
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               placeholder="••••••••"
-              className="w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+              className={authInputClassName}
             />
           </div>
         </div>
@@ -5580,6 +5632,7 @@ function RegisterScreen({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const passwordsMatch = password && confirmPassword && password === confirmPassword;
+  const authInputClassName = 'w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-base font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10';
 
   return (
     <div className="min-h-screen bg-zinc-950 px-4 pb-10 pt-6 text-white">
@@ -5645,28 +5698,28 @@ function RegisterScreen({
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="Name"
-              className="w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+              className={authInputClassName}
             />
             <input
               type="email"
               value={email}
               onChange={(event) => setEmail(event.target.value)}
               placeholder="Email"
-              className="w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+              className={authInputClassName}
             />
             <input
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
               placeholder="Password"
-              className="w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+              className={authInputClassName}
             />
             <input
               type="password"
               value={confirmPassword}
               onChange={(event) => setConfirmPassword(event.target.value)}
               placeholder="Repeat password"
-              className="w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+              className={authInputClassName}
             />
 
             {confirmPassword && !passwordsMatch ? (
@@ -5735,6 +5788,7 @@ function EditProfileScreen({
   const [isUploadingAvatar, setIsUploadingAvatar] = useState(false);
   const [avatarError, setAvatarError] = useState<string | null>(null);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const profileInputClassName = 'w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-base font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10';
 
   const handleAvatarChange = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -5836,7 +5890,7 @@ function EditProfileScreen({
             value={displayName}
             onChange={(event) => setDisplayName(event.target.value)}
             placeholder="Your display name"
-            className="w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+            className={profileInputClassName}
           />
         </div>
         <div>
@@ -5847,7 +5901,7 @@ function EditProfileScreen({
           value={username}
           onChange={(event) => setUsername(event.target.value)}
           placeholder="Username"
-          className="w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+          className={profileInputClassName}
         />
         </div>
         <div>
@@ -5858,7 +5912,7 @@ function EditProfileScreen({
             onChange={(event) => setBio(event.target.value)}
             rows={5}
             placeholder="Bio"
-            className="w-full rounded-[1.25rem] border border-white/10 bg-white/6 px-4 py-4 text-sm font-medium text-white outline-none transition placeholder:text-white/30 focus:ring-2 focus:ring-white/10"
+            className={profileInputClassName}
           />
         </div>
         <button

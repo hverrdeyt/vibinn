@@ -22,6 +22,7 @@
     --safe-right: env(safe-area-inset-right, 0px);
     --safe-bottom: env(safe-area-inset-bottom, 0px);
     --safe-left: env(safe-area-inset-left, 0px);
+    --app-height: 100dvh;
   }
 
   html,
@@ -112,4 +113,25 @@
 
 .safe-bottom-offset {
   bottom: calc(var(--safe-bottom) + 1.25rem);
+}
+
+.app-shell {
+  min-height: var(--app-height);
+}
+
+.app-screen-shell {
+  min-height: var(--app-height);
+}
+
+.native-app-shell {
+  width: 100%;
+  max-width: none;
+  border-left: 0;
+  border-right: 0;
+  box-shadow: none;
+}
+
+.app-viewport-screen {
+  height: var(--app-height);
+  min-height: var(--app-height);
 }
