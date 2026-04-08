@@ -982,7 +982,95 @@ export async function getTravelerDiscovery(userId?: string) {
 
 export async function getFollowingFeed(userId?: string) {
   const discovery = await getTravelerDiscovery(userId);
+  const currentUser = await getCurrentUser(prisma, userId);
+  const followedUsers = await prisma.follow.findMany({
+    where: { sourceUserId: currentUser.id },
+    include: {
+      targetUser: {
+        include: {
+          badges: true,
+          flags: true,
+          _count: {
+            select: {
+              bookmarks: true,
+              collections: true,
+            },
+          },
+          bookmarks: {
+            orderBy: { createdAt: 'desc' },
+            take: 12,
+            include: {
+              place: {
+                include: {
+                  aiEnrichment: true,
+                  media: { orderBy: { sortOrder: 'asc' } },
+                },
+              },
+            },
+          },
+          moments: {
+            orderBy: { createdAt: 'desc' },
+            take: 24,
+            include: {
+              place: {
+                include: {
+                  aiEnrichment: true,
+                  media: { orderBy: { sortOrder: 'asc' } },
+                },
+              },
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+          collections: {
+            orderBy: { createdAt: 'desc' },
+            take: 8,
+            include: {
+              places: {
+                orderBy: { sortOrder: 'asc' },
+                take: 8,
+                include: {
+                  place: {
+                    include: {
+                      aiEnrichment: true,
+                      media: { orderBy: { sortOrder: 'asc' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  });
+
   const travelerMap = new Map(discovery.followedTravelers.map((traveler) => [traveler.id, traveler]));
+  const fullTravelerFeedMap = new Map(
+    followedUsers.map((item) => [
+      item.targetUser.id,
+      buildProfileUserWithMatch(
+        item.targetUser,
+        item.targetUser.moments.map(mapMomentForClient),
+        undefined,
+        {
+          recentSavedPlaces: item.targetUser.bookmarks.map((bookmark) => ({
+            place: mapPlaceForClient(bookmark.place),
+            savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+            savedAtIso: bookmark.createdAt.toISOString(),
+          })),
+          recentCollections: item.targetUser.collections.map((collection) => ({
+            id: collection.id,
+            label: collection.title,
+            createdAt: collection.createdAt.toISOString(),
+            places: collection.places.map((entry) => mapPlaceForClient(entry.place)),
+          })),
+          latestVisitedAtIso: item.targetUser.moments[0]?.visitedAt?.toISOString?.() ?? item.targetUser.moments[0]?.createdAt?.toISOString?.(),
+          savedPlacesCount: item.targetUser._count.bookmarks,
+          collectionsCount: item.targetUser._count.collections,
+        },
+      ),
+    ]),
+  );
 
   const items = [
     ...discovery.feedSavedDrops.map((drop) => {
@@ -999,7 +1087,7 @@ export async function getFollowingFeed(userId?: string) {
         caption: null,
       };
     }),
-    ...discovery.followedTravelers.flatMap((traveler) => [
+    ...Array.from(fullTravelerFeedMap.values()).flatMap((traveler) => [
       ...traveler.travelHistory.flatMap((history) =>
         history.places
           .filter((place) => place.visitedDate)
