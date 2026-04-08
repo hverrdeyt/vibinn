@@ -1729,6 +1729,29 @@ export default function App() {
   const [selectedCollectionOwner, setSelectedCollectionOwner] = useState<Pick<User, 'avatar' | 'username' | 'displayName'> | null>(null);
   const [customCollections, setCustomCollections] = useState<PlaceCollection[]>(mockReviewScenario?.customCollections ?? []);
   const [myMoments, setMyMoments] = useState<Array<{ id: string; placeId: string }>>(mockReviewScenario?.myMoments ?? []);
+  const [optimisticOwnFeedItems, setOptimisticOwnFeedItems] = useState<Array<
+    | {
+        id: string;
+        type: 'saved' | 'visited';
+        traveler: User;
+        place: Place;
+        activityDate: string;
+        caption?: string;
+        compatibility?: number;
+        sortTimestamp: number;
+      }
+    | {
+        id: string;
+        type: 'collection';
+        collectionId?: string;
+        traveler: User;
+        collectionName: string;
+        collectionPlaces: Place[];
+        activityDate: string;
+        caption?: string;
+        sortTimestamp: number;
+      }
+  >>([]);
   const [editableMomentPlace, setEditableMomentPlace] = useState<Place | null>(null);
   const [editableMomentId, setEditableMomentId] = useState<string | null>(null);
   const [createMomentInitialPlace, setCreateMomentInitialPlace] = useState<Place | null>(null);
@@ -3132,6 +3155,26 @@ export default function App() {
       };
     });
 
+    setOptimisticOwnFeedItems((prev) => {
+      const nextItem = {
+        id: `optimistic-visited-${nextMomentId}`,
+        type: 'visited' as const,
+        traveler: {
+          ...user,
+          travelHistory: user.travelHistory,
+        },
+        place: checkedInPlace,
+        activityDate: formatRelativeActivityTime(Date.parse(payload.visitedDate)),
+        caption: checkedInPlace.momentCaption ?? 'Dropped a check-in here.',
+        compatibility: undefined,
+        sortTimestamp: Date.parse(payload.visitedDate),
+      };
+      return [
+        nextItem,
+        ...prev.filter((item) => !(item.type === 'visited' && item.place.momentId === nextMomentId)),
+      ];
+    });
+
     setPlaceDetailInteraction((prev) => ({ ...prev, isBeenThere: true }));
   };
 
@@ -4220,7 +4263,7 @@ export default function App() {
         savedAtIso: new Date(Date.now() - index * 3600000).toISOString(),
       })));
 
-  const ownProfileFeedItems = [
+  const generatedOwnFeedItems = [
     ...ownProfileSavedEntries.map((entry, index) => ({
       id: `${user.id}-saved-${entry.place.id}-${index}`,
       type: 'saved' as const,
@@ -4255,6 +4298,25 @@ export default function App() {
       sortTimestamp: collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000,
     })),
   ].sort((a, b) => b.sortTimestamp - a.sortTimestamp);
+  const ownProfileFeedItems = [
+    ...optimisticOwnFeedItems,
+    ...generatedOwnFeedItems,
+  ].filter((item, index, list) => {
+    if (item.type === 'collection') {
+      const key = item.collectionId ?? item.collectionName;
+      return list.findIndex((entry) => entry.type === 'collection' && (entry.collectionId ?? entry.collectionName) === key) === index;
+    }
+    const key = item.type === 'visited'
+      ? (item.place.momentId ?? `${item.place.id}-${item.activityDate}`)
+      : item.place.id;
+    return list.findIndex((entry) => {
+      if (entry.type !== item.type || entry.type === 'collection') return false;
+      const entryKey = entry.type === 'visited'
+        ? (entry.place.momentId ?? `${entry.place.id}-${entry.activityDate}`)
+        : entry.place.id;
+      return entryKey === key;
+    }) === index;
+  }).sort((a, b) => b.sortTimestamp - a.sortTimestamp);
 
   const selectedTravelerFeedItems = selectedTraveler ? [
     ...((selectedTraveler.recentSavedPlaces ?? []).map((entry, index) => ({
@@ -4739,6 +4801,8 @@ export default function App() {
               similarTravelers: mockReviewScenario.similarTravelers,
               feedSavedDrops: mockReviewScenario.feedSavedDrops,
             } : undefined}
+            currentUser={user}
+            ownFeedItems={ownProfileFeedItems}
             onRequireAuth={(message, action) => openAuthGate(message, 'login', action)}
             onSelectPlace={(p, returnScreen) => {
               openPlaceDetail(p, returnScreen ?? 'discover-places');
@@ -7541,6 +7605,8 @@ function CreateMomentScreen({
 function TravelerDiscovery({
   isAuthenticated,
   mockReviewData,
+  currentUser,
+  ownFeedItems,
   onRequireAuth,
   onSelectPlace,
   onSelectCollection,
@@ -7559,6 +7625,28 @@ function TravelerDiscovery({
       savedAtIso?: string;
     }>;
   };
+  currentUser?: User | null;
+  ownFeedItems?: Array<
+    | {
+        type: 'saved' | 'visited';
+        traveler: User;
+        place: Place;
+        activityDate: string;
+        caption?: string;
+        compatibility?: number;
+        sortTimestamp: number;
+      }
+    | {
+        type: 'collection';
+        collectionId?: string;
+        traveler: User;
+        collectionName: string;
+        collectionPlaces: Place[];
+        activityDate: string;
+        caption?: string;
+        sortTimestamp: number;
+      }
+  >;
   onRequireAuth: (message: string, action: () => void) => void;
   onSelectPlace: (p: Place, returnScreen?: Screen) => void,
   onSelectCollection: (collection: PlaceCollection, owner: User) => void,
@@ -7740,12 +7828,24 @@ function TravelerDiscovery({
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item));
-  const displayedFollowingFeedItems = mockReviewData
-    ? [...guaranteedMockSavedFeedItems, ...followingFeedItems.filter((item) => item.type !== 'saved')].sort((a, b) => b.sortTimestamp - a.sortTimestamp)
-    : followingFeedItems;
+  const ownActivityFeedItems = (ownFeedItems ?? []).map((item, index) => ({
+    ...item,
+    id: item.type === 'collection'
+      ? `self-collection-${item.collectionId ?? item.collectionName}-${index}`
+      : `self-${item.type}-${item.place.id}-${index}`,
+    traveler: currentUser ?? item.traveler,
+  }));
+  const displayedFollowingFeedItems = (
+    mockReviewData
+      ? [...guaranteedMockSavedFeedItems, ...followingFeedItems.filter((item) => item.type !== 'saved')]
+      : followingFeedItems
+  );
+  const mergedFollowingFeedItems = isAuthenticated
+    ? [...ownActivityFeedItems, ...displayedFollowingFeedItems].sort((a, b) => b.sortTimestamp - a.sortTimestamp)
+    : displayedFollowingFeedItems;
   const hasFollowingFeed = mockReviewData
-    ? displayedFollowedTravelers.length > 0 || displayedFollowingFeedItems.length > 0
-    : followingFeedItems.length > 0;
+    ? displayedFollowedTravelers.length > 0 || mergedFollowingFeedItems.length > 0
+    : mergedFollowingFeedItems.length > 0;
   const normalizedSearchQuery = searchQuery.trim().toLowerCase();
   const discoverableTravelers = (similarTravelers.length > 0 ? similarTravelers : fallbackSimilarTravelers)
     .filter(({ card }) => !card.isFollowing);
@@ -8153,7 +8253,7 @@ function TravelerDiscovery({
             </div>
           </div>
           <div className="space-y-4">
-            {displayedFollowingFeedItems.map((item) => (
+            {mergedFollowingFeedItems.map((item) => (
               <div key={item.id}>
                 <FollowingFeedCard
                   item={item}
