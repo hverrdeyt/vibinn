@@ -311,6 +311,33 @@ function buildProfileUserWithMatch(
   };
 }
 
+function trimPlaceForFeed(place: ReturnType<typeof mapPlaceForClient>) {
+  return {
+    ...place,
+    images: (place.images ?? []).slice(0, 1),
+    tags: (place.tags ?? []).slice(0, 3),
+    whyYoullLikeIt: (place.whyYoullLikeIt ?? []).slice(0, 1),
+  };
+}
+
+function trimTravelerForFeed<T extends ReturnType<typeof buildProfileUserWithMatch>>(traveler: T): T {
+  return {
+    ...traveler,
+    travelHistory: (traveler.travelHistory ?? []).slice(0, 2).map((history) => ({
+      ...history,
+      places: (history.places ?? []).slice(0, 2).map((place) => trimPlaceForFeed(place)),
+    })),
+    recentSavedPlaces: (traveler.recentSavedPlaces ?? []).slice(0, 3).map((entry) => ({
+      ...entry,
+      place: trimPlaceForFeed(entry.place),
+    })),
+    recentCollections: (traveler.recentCollections ?? []).slice(0, 2).map((collection) => ({
+      ...collection,
+      places: (collection.places ?? []).slice(0, 4).map((place) => trimPlaceForFeed(place)),
+    })),
+  };
+}
+
 function formatRelativeActivityLabel(date: Date) {
   const diffMs = Date.now() - date.getTime();
   const diffHours = Math.max(0, Math.floor(diffMs / (1000 * 60 * 60)));
@@ -648,6 +675,7 @@ export async function getTravelerDiscovery(userId?: string) {
             },
             moments: {
               orderBy: { createdAt: 'desc' },
+              take: 6,
               include: {
                 place: {
                   include: {
@@ -664,6 +692,7 @@ export async function getTravelerDiscovery(userId?: string) {
               include: {
                 places: {
                   orderBy: { sortOrder: 'asc' },
+                  take: 4,
                   include: {
                     place: {
                       include: {
@@ -706,6 +735,7 @@ export async function getTravelerDiscovery(userId?: string) {
             },
             moments: {
               orderBy: { createdAt: 'desc' },
+              take: 6,
               include: {
                 place: {
                   include: {
@@ -722,6 +752,7 @@ export async function getTravelerDiscovery(userId?: string) {
               include: {
                 places: {
                   orderBy: { sortOrder: 'asc' },
+                  take: 4,
                   include: {
                     place: {
                       include: {
@@ -792,6 +823,7 @@ export async function getTravelerDiscovery(userId?: string) {
           },
           moments: {
             orderBy: { createdAt: 'desc' },
+            take: 6,
             include: {
               place: {
                 include: {
@@ -808,6 +840,7 @@ export async function getTravelerDiscovery(userId?: string) {
             include: {
               places: {
                 orderBy: { sortOrder: 'asc' },
+                take: 4,
                 include: {
                   place: {
                     include: {
@@ -872,7 +905,7 @@ export async function getTravelerDiscovery(userId?: string) {
 
   return {
     followedTravelers: followedUsers.map((item) =>
-      buildProfileUserWithMatch(
+      trimTravelerForFeed(buildProfileUserWithMatch(
         item.targetUser,
         item.targetUser.moments.map(mapMomentForClient),
         undefined,
@@ -894,7 +927,7 @@ export async function getTravelerDiscovery(userId?: string) {
           savedPlacesCount: item.targetUser._count.bookmarks,
           collectionsCount: item.targetUser._count.collections,
         },
-      ),
+      )),
     ),
     similarTravelers: [
       ...similarUsers.map((item) => ({
@@ -914,7 +947,7 @@ export async function getTravelerDiscovery(userId?: string) {
           relevanceReason: 'Community traveler worth exploring while your exact matches warm up.',
         })),
     ].map((item) =>
-      buildProfileUserWithMatch(
+      trimTravelerForFeed(buildProfileUserWithMatch(
         item.user,
         item.user.moments.map(mapMomentForClient),
         item.matchScore,
@@ -938,7 +971,7 @@ export async function getTravelerDiscovery(userId?: string) {
           savedPlacesCount: item.user._count.bookmarks,
           collectionsCount: item.user._count.collections,
         },
-      ),
+      )),
     ),
     feedSavedDrops,
   };
@@ -1039,7 +1072,7 @@ export async function searchPublicTravelers(query: string) {
         bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
       });
 
-      return buildProfileUserWithMatch(user, moments, undefined, {
+      return trimTravelerForFeed(buildProfileUserWithMatch(user, moments, undefined, {
         descriptor,
         recentSavedPlaces: user.bookmarks.map((bookmark) => ({
           place: mapPlaceForClient(bookmark.place),
@@ -1049,7 +1082,7 @@ export async function searchPublicTravelers(query: string) {
         latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString?.() ?? user.moments[0]?.createdAt?.toISOString?.(),
         savedPlacesCount: user._count.bookmarks,
         collectionsCount: user._count.collections,
-      });
+      }));
     }),
   );
 
@@ -1131,7 +1164,7 @@ export async function getPublicTravelerSuggestions(limit = 12) {
         bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
       });
 
-      return buildProfileUserWithMatch(user, moments, undefined, {
+      return trimTravelerForFeed(buildProfileUserWithMatch(user, moments, undefined, {
         descriptor,
         relevanceReason: 'Worth exploring while your taste graph builds out.',
         recentSavedPlaces: user.bookmarks.map((bookmark) => ({
@@ -1142,7 +1175,7 @@ export async function getPublicTravelerSuggestions(limit = 12) {
         latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString?.() ?? user.moments[0]?.createdAt?.toISOString?.(),
         savedPlacesCount: user._count.bookmarks,
         collectionsCount: user._count.collections,
-      });
+      }));
     }),
   );
 
