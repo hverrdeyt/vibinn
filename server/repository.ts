@@ -144,6 +144,7 @@ type ClientPlace = ReturnType<typeof mapPlaceForClient> & {
   momentId?: string;
   ownerUserId?: string;
   visitedDate?: string;
+  visitedAtIso?: string;
   momentMedia?: Array<{ url: string; mediaType: 'image' | 'video' }>;
   momentCaption?: string;
   momentVibeTags?: string[];
@@ -284,6 +285,7 @@ function buildProfileUserWithMatch(
     relevanceReason?: string;
     descriptor?: string;
     vibinCount?: number;
+    followersCount?: number;
     recentSavedPlaces?: Array<{
       place: ReturnType<typeof mapPlaceForClient>;
       savedAtLabel: string;
@@ -306,6 +308,7 @@ function buildProfileUserWithMatch(
     ...(extras?.relevanceReason ? { relevanceReason: extras.relevanceReason } : {}),
     ...(extras?.descriptor ? { descriptor: extras.descriptor } : {}),
     ...(typeof extras?.vibinCount === 'number' ? { vibinCount: extras.vibinCount } : {}),
+    ...(typeof extras?.followersCount === 'number' ? { followersCount: extras.followersCount } : {}),
     ...(extras?.recentSavedPlaces?.length ? { recentSavedPlaces: extras.recentSavedPlaces } : {}),
     ...(extras?.recentCollections?.length ? { recentCollections: extras.recentCollections } : {}),
     ...(extras?.latestVisitedAtIso ? { latestVisitedAtIso: extras.latestVisitedAtIso } : {}),
@@ -1389,7 +1392,7 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
 
   const moments = traveler.moments.map(mapMomentForClient);
 
-  const [similarity, vibinCount, descriptor] = await Promise.all([
+  const [similarity, vibinCount, followersCount, descriptor] = await Promise.all([
     prisma.travelerSimilarity.findFirst({
       where: {
         travelerId,
@@ -1401,6 +1404,11 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
       where: {
         targetType: 'PROFILE',
         targetId: travelerId,
+      },
+    }),
+    prisma.follow.count({
+      where: {
+        targetUserId: travelerId,
       },
     }),
     generateTravelerProfileDescriptor({
@@ -1419,11 +1427,18 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
       {
         relevanceReason: similarity?.relevanceReason,
         vibinCount,
+        followersCount,
         descriptor,
         recentSavedPlaces: traveler.bookmarks.map((bookmark) => ({
           place: mapPlaceForClient(bookmark.place),
           savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
           savedAtIso: bookmark.createdAt.toISOString(),
+        })),
+        recentCollections: traveler.collections.map((collection) => ({
+          id: collection.id,
+          label: collection.title,
+          createdAt: collection.createdAt.toISOString(),
+          places: collection.places.map((item) => mapPlaceForClient(item.place)),
         })),
         latestVisitedAtIso: traveler.moments[0]?.visitedAt?.toISOString?.() ?? traveler.moments[0]?.createdAt?.toISOString?.(),
         savedPlacesCount: traveler.bookmarks.length,

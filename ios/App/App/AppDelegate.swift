@@ -11,6 +11,7 @@ private let nativeAccent = Color(red: 211 / 255, green: 1, blue: 72 / 255)
 private let nativeBorder = Color.white.opacity(0.08)
 private let nativeSurface = Color.white.opacity(0.06)
 private let nativeSurfaceStrong = Color.white.opacity(0.09)
+private let nativeProfileHeaderFill = Color(red: 16 / 255, green: 16 / 255, blue: 19 / 255).opacity(0.98)
 private let nativeLogger = Logger(subsystem: "club.vibinn.app", category: "NativeShell")
 private let nativeLocationOptions = [
     NativeLocationOption(id: "boston", label: "Boston"),
@@ -102,6 +103,8 @@ private struct NativePlace: Decodable, Identifiable {
     let visitedDate: String?
     let visitedAtIso: String?
     let momentCaption: String?
+    let momentWouldRevisit: String?
+    let momentRating: Int?
 }
 
 private struct NativePlaceDetailResponse: Decodable {
@@ -144,8 +147,10 @@ private struct NativeTravelerSummary: Decodable, Identifiable {
     let username: String
     let displayName: String?
     let avatar: String?
+    let bio: String?
     let descriptor: String?
     let matchScore: Int?
+    let followersCount: Int?
     let recentSavedPlaces: [NativeTravelerSavedEntry]?
     let recentCollections: [NativeCollection]?
     let travelHistory: [NativeTravelHistoryGroup]
@@ -321,6 +326,7 @@ private final class NativeAppState: ObservableObject {
     @Published var followedTravelers: [NativeTravelerSummary] = []
     @Published var suggestedTravelers: [NativeTravelerSummary] = []
     @Published var feedItems: [NativeFeedItem] = []
+    @Published var showFloatingTabBar = true
     @Published var profileErrorMessage: String?
     @Published var discoveryErrorMessage: String?
     @Published var feedErrorMessage: String?
@@ -843,8 +849,10 @@ private final class NativeAppState: ObservableObject {
             username: user.username,
             displayName: user.displayName,
             avatar: nil,
+            bio: nil,
             descriptor: nil,
             matchScore: nil,
+            followersCount: nil,
             recentSavedPlaces: savedPlaces.prefix(4).map { place in
                 NativeTravelerSavedEntry(
                     place: place,
@@ -896,7 +904,9 @@ private final class NativeAppState: ObservableObject {
                     ownerUserId: moment.place.ownerUserId,
                     visitedDate: moment.visitedDate,
                     visitedAtIso: moment.visitedAtIso,
-                    momentCaption: moment.caption
+                    momentCaption: moment.caption,
+                    momentWouldRevisit: moment.wouldRevisit,
+                    momentRating: moment.rating
                 ),
                 collection: nil,
                 caption: moment.caption
@@ -1519,24 +1529,43 @@ private struct NativeSectionTitle: View {
 private struct NativeProfileTabs: View {
     @Binding var activeSection: NativeProfileSection
 
+    private let items: [(section: NativeProfileSection, icon: String)] = [
+        (.feed, "square.grid.2x2"),
+        (.saved, "bookmark"),
+        (.visited, "mappin.and.ellipse"),
+        (.collections, "square.stack.3d.up")
+    ]
+
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(NativeProfileSection.allCases) { section in
-                    Button {
-                        activeSection = section
-                    } label: {
-                        Text(section.rawValue)
-                            .font(.system(size: 14, weight: .black))
-                            .foregroundStyle(activeSection == section ? .black : .white.opacity(0.72))
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 11)
-                            .background(activeSection == section ? nativeAccent : nativeSurface)
-                            .clipShape(Capsule())
+        HStack(spacing: 0) {
+            ForEach(items, id: \.section) { item in
+                let isActive = activeSection == item.section
+                Button {
+                    activeSection = item.section
+                } label: {
+                    VStack(spacing: 10) {
+                        Image(systemName: item.icon)
+                            .font(.system(size: 18, weight: .black))
+                            .foregroundStyle(isActive ? .white : .white.opacity(0.45))
+
+                        Rectangle()
+                            .fill(isActive ? Color.white : Color.clear)
+                            .frame(height: 2)
                     }
-                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                    .padding(.top, 8)
                 }
+                .buttonStyle(.plain)
             }
+        }
+        .padding(.horizontal, 6)
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+        .background(nativeProfileHeaderFill)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .frame(height: 1)
         }
     }
 }
@@ -1669,8 +1698,12 @@ private struct NativeLocationPickerSheet: View {
 }
 
 private struct NativeDiscoverySearchSheet: View {
+    @EnvironmentObject private var appState: NativeAppState
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var results: [NativePlace] = []
+    @State private var isSearching = false
+    @State private var errorMessage: String?
 
     var body: some View {
         ScrollView(showsIndicators: false) {
@@ -1681,14 +1714,82 @@ private struct NativeDiscoverySearchSheet: View {
                 )
 
                 NativeSurfaceCard {
-                    TextField("Search places", text: $query)
-                        .textInputAutocapitalization(.words)
-                        .autocorrectionDisabled()
-                        .font(.system(size: 17, weight: .medium))
+                    VStack(spacing: 14) {
+                        HStack(spacing: 12) {
+                            TextField("Search places", text: $query)
+                                .textInputAutocapitalization(.words)
+                                .autocorrectionDisabled()
+                                .font(.system(size: 17, weight: .medium))
+                                .foregroundStyle(.white)
+
+                            Button {
+                                Task { await performSearch() }
+                            } label: {
+                                if isSearching {
+                                    ProgressView()
+                                        .tint(.black)
+                                        .frame(width: 18, height: 18)
+                                } else {
+                                    Image(systemName: "magnifyingglass")
+                                        .font(.system(size: 16, weight: .black))
+                                        .foregroundStyle(.black)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .frame(width: 40, height: 40)
+                            .background(nativeAccent)
+                            .clipShape(Circle())
+                            .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSearching)
+                        }
                         .padding(.horizontal, 16)
                         .padding(.vertical, 16)
                         .background(nativeSurfaceStrong)
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                        if let errorMessage {
+                            NativeInlineError(message: errorMessage)
+                        }
+
+                        if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !isSearching && results.isEmpty && errorMessage == nil {
+                            Text("No places found.")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.58))
+                        }
+
+                        if !results.isEmpty {
+                            VStack(spacing: 12) {
+                                ForEach(results) { place in
+                                    NavigationLink {
+                                        NativePlaceDetailScreen(initialPlace: place)
+                                    } label: {
+                                        HStack(spacing: 12) {
+                                            NativeRemoteImage(url: place.image)
+                                                .frame(width: 72, height: 72)
+                                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                                            VStack(alignment: .leading, spacing: 6) {
+                                                Text(place.name)
+                                                    .font(.system(size: 16, weight: .black))
+                                                    .foregroundStyle(.white)
+                                                    .multilineTextAlignment(.leading)
+                                                Text(place.location)
+                                                    .font(.system(size: 13, weight: .medium))
+                                                    .foregroundStyle(.white.opacity(0.58))
+                                                    .lineLimit(2)
+                                                if let category = place.category, !category.isEmpty {
+                                                    Text(category.uppercased())
+                                                        .font(.system(size: 10, weight: .black))
+                                                        .foregroundStyle(.white.opacity(0.45))
+                                                }
+                                            }
+                                            Spacer(minLength: 0)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
                 }
             }
             .padding(20)
@@ -1704,6 +1805,25 @@ private struct NativeDiscoverySearchSheet: View {
             }
         }
         .preferredColorScheme(.dark)
+    }
+
+    private func performSearch() async {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            results = []
+            errorMessage = nil
+            return
+        }
+
+        errorMessage = nil
+        isSearching = true
+        defer { isSearching = false }
+
+        do {
+            results = try await appState.lookupPlaces(query: trimmed)
+        } catch {
+            errorMessage = "Could not search places right now."
+        }
     }
 }
 
@@ -1744,11 +1864,21 @@ private struct NativeSurfaceCard<Content: View>: View {
             content
         }
         .padding(18)
-        .background(Color.black.opacity(0.78))
+        .background(
+            LinearGradient(
+                colors: [
+                    Color(red: 18 / 255, green: 18 / 255, blue: 20 / 255).opacity(0.98),
+                    Color(red: 27 / 255, green: 27 / 255, blue: 31 / 255).opacity(0.94)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
         .overlay(
             RoundedRectangle(cornerRadius: 24, style: .continuous)
                 .stroke(nativeBorder, lineWidth: 1)
         )
+        .shadow(color: Color.black.opacity(0.28), radius: 18, x: 0, y: 10)
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
     }
 }
@@ -2087,7 +2217,9 @@ private struct NativeMainTabView: View {
         }
         .tint(nativeAccent)
         .safeAreaInset(edge: .bottom) {
-            NativeFloatingTabBar(activeTab: $appState.activeTab)
+            if appState.showFloatingTabBar {
+                NativeFloatingTabBar(activeTab: $appState.activeTab)
+            }
         }
         .onAppear {
             UITabBar.appearance().isHidden = true
@@ -2264,14 +2396,14 @@ private struct NativeFloatingTabBar: View {
                 if activeTab == item.tab {
                     Circle()
                         .fill(Color.white.opacity(0.12))
-                        .frame(width: 40, height: 40)
+                        .frame(width: 50, height: 50)
                 }
 
                 Image(systemName: item.icon)
-                    .font(.system(size: 20, weight: item.tab == .feed ? .bold : .semibold))
+                    .font(.system(size: 21, weight: item.tab == .feed ? .bold : .semibold))
                     .foregroundStyle(activeTab == item.tab ? .white : .white.opacity(0.58))
             }
-            .frame(maxWidth: .infinity, minHeight: 40)
+            .frame(maxWidth: .infinity, minHeight: 50)
         }
         .buttonStyle(.plain)
     }
@@ -3194,6 +3326,9 @@ private struct NativeFeedCard: View {
     let item: NativeFeedItem
     @State private var vibed = false
     @State private var vibinCount = 0
+    @State private var vibinScale: CGFloat = 1
+    @State private var vibinRotation: Double = 0
+    @State private var vibinFlash = false
     @State private var comments: [NativeComment] = []
     @State private var showCommentSheet = false
     @State private var commentDraft = ""
@@ -3222,11 +3357,11 @@ private struct NativeFeedCard: View {
                         } label: {
                             (
                                 Text(item.traveler.displayName ?? item.traveler.username)
-                                    .font(.system(size: 15, weight: .black))
+                                    .font(.system(size: 14, weight: .black))
                                     .foregroundColor(.white)
                                 +
                                 Text(" \(activityLabel)")
-                                    .font(.system(size: 15, weight: .medium))
+                                    .font(.system(size: 14, weight: .medium))
                                     .foregroundColor(.white.opacity(0.78))
                             )
                             .multilineTextAlignment(.leading)
@@ -3235,9 +3370,18 @@ private struct NativeFeedCard: View {
                         .buttonStyle(.plain)
 
                         Text("@\(item.traveler.username) • \(displayTimestampLabel)")
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(size: 11, weight: .bold))
                             .foregroundStyle(.white.opacity(0.4))
                     }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: activityIcon)
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .frame(width: 28, height: 28)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Circle())
                 }
 
                 if let caption = item.caption, !caption.isEmpty {
@@ -3245,6 +3389,26 @@ private struct NativeFeedCard: View {
                         .font(.system(size: 14, weight: .medium))
                         .foregroundStyle(.white.opacity(0.82))
                         .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if item.type == .visited, item.place?.momentRating != nil || item.place?.momentWouldRevisit != nil {
+                    HStack(spacing: 8) {
+                        if let rating = item.place?.momentRating {
+                            NativeFeedMetaPill(
+                                label: "Rating \(rating)/5",
+                                foreground: .white.opacity(0.88),
+                                background: Color.white.opacity(0.08)
+                            )
+                        }
+                        if let wouldRevisit = item.place?.momentWouldRevisit {
+                            NativeFeedMetaPill(
+                                label: nativeRevisitLabel(wouldRevisit),
+                                foreground: wouldRevisit == "yes" ? nativeAccent : .white.opacity(0.82),
+                                background: wouldRevisit == "yes" ? nativeAccent.opacity(0.16) : Color.white.opacity(0.08)
+                            )
+                        }
+                        Spacer(minLength: 0)
+                    }
                 }
 
                 if let place = item.place {
@@ -3275,14 +3439,43 @@ private struct NativeFeedCard: View {
                             vibed = true
                             vibinCount += 1
                         }
+                        withAnimation(.spring(response: 0.22, dampingFraction: 0.52)) {
+                            vibinScale = 1.22
+                            vibinRotation = -10
+                            vibinFlash = true
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            withAnimation(.spring(response: 0.24, dampingFraction: 0.76)) {
+                                vibinScale = 1
+                                vibinRotation = 8
+                            }
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                vibinRotation = 0
+                                vibinFlash = false
+                            }
+                        }
                     } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: vibed ? "bolt.fill" : "bolt")
-                                .font(.system(size: 14, weight: .bold))
+                            ZStack {
+                                if vibinFlash {
+                                    Image(systemName: "bolt.fill")
+                                        .font(.system(size: 14, weight: .bold))
+                                        .foregroundStyle(nativeAccent.opacity(0.28))
+                                        .scaleEffect(1.9)
+                                        .blur(radius: 1.5)
+                                }
+
+                                Image(systemName: vibed ? "bolt.fill" : "bolt")
+                                    .font(.system(size: 14, weight: .bold))
+                            }
                             Text("\(vibinCount)")
                                 .font(.system(size: 13, weight: .black))
                         }
                         .foregroundStyle(vibed ? nativeAccent : .white.opacity(0.72))
+                        .scaleEffect(vibinScale)
+                        .rotationEffect(.degrees(vibinRotation))
                     }
                     .buttonStyle(.plain)
 
@@ -3332,8 +3525,32 @@ private struct NativeFeedCard: View {
         }
     }
 
+    private var activityIcon: String {
+        switch item.type {
+        case .saved:
+            return "bookmark"
+        case .visited:
+            return "mappin.and.ellipse"
+        case .collection:
+            return "square.stack.3d.up"
+        }
+    }
+
     private var displayTimestampLabel: String {
         item.timestampLabel.replacingOccurrences(of: ". ago", with: " ago")
+    }
+
+    private func nativeRevisitLabel(_ value: String) -> String {
+        switch value {
+        case "yes":
+            return "Would revisit"
+        case "not_sure":
+            return "Maybe revisit"
+        case "not_interested":
+            return "No revisit"
+        default:
+            return value.replacingOccurrences(of: "_", with: " ").capitalized
+        }
     }
 
     private var commentTargetType: String? {
@@ -3377,6 +3594,22 @@ private struct NativeFeedCard: View {
         } catch {
             commentsErrorMessage = "Could not post comment right now."
         }
+    }
+}
+
+private struct NativeFeedMetaPill: View {
+    let label: String
+    let foreground: Color
+    let background: Color
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 11, weight: .black))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(background)
+            .clipShape(Capsule())
     }
 }
 
@@ -3610,19 +3843,34 @@ private struct NativeFeedMediaScroller: View {
     @State private var activeIndex = 0
 
     var body: some View {
-        TabView(selection: $activeIndex) {
-            ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
-                NativeFeedMediaSlide(url: url, isActive: activeIndex == index)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    .tag(index)
+        VStack(spacing: 10) {
+            TabView(selection: $activeIndex) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
+                    NativeFeedMediaSlide(url: url, isActive: activeIndex == index)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        .tag(index)
+                }
+            }
+            .frame(height: 300)
+            .tabViewStyle(.page(indexDisplayMode: .never))
+            .overlay(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .stroke(nativeBorder, lineWidth: 1)
+            )
+
+            if urls.count > 1 {
+                HStack(spacing: 6) {
+                    ForEach(Array(urls.enumerated()), id: \.offset) { index, _ in
+                        Capsule()
+                            .fill(index == activeIndex ? Color.white : Color.white.opacity(0.18))
+                            .frame(width: index == activeIndex ? 26 : 8, height: 4)
+                            .animation(.easeInOut(duration: 0.2), value: activeIndex)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 2)
             }
         }
-        .frame(height: 300)
-        .tabViewStyle(.page(indexDisplayMode: .never))
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(nativeBorder, lineWidth: 1)
-        )
     }
 }
 
@@ -3797,6 +4045,16 @@ private struct NativeInlineVideoPlayer: UIViewRepresentable {
     final class Coordinator {
         var playerLayer: AVPlayerLayer?
     }
+}
+
+private struct NativeShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
 private struct NativeFeedCollectionAttachment: View {
@@ -4114,8 +4372,10 @@ private struct NativeTravelerProfileScreen: View {
     @State private var bookmarks: [NativePlace] = []
     @State private var collections: [NativeCollection] = []
     @State private var activeSection: NativeProfileSection = .feed
+    @State private var expandedSavedCities: Set<String> = []
     @State private var isLoading = false
     @State private var isTogglingFollow = false
+    @State private var showShareSheet = false
     @State private var errorMessage: String?
 
     init(initialTraveler: NativeTravelerSummary) {
@@ -4126,86 +4386,182 @@ private struct NativeTravelerProfileScreen: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 14) {
-                    NativeScreenHeader(
-                        title: traveler.displayName ?? traveler.username,
-                        subtitle: "@\(traveler.username)"
-                    )
+            LazyVStack(alignment: .leading, spacing: 18, pinnedViews: [.sectionHeaders]) {
+                VStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 14) {
+                        HStack(alignment: .top, spacing: 14) {
+                            NativeAvatarCircle(
+                                url: traveler.avatar,
+                                fallbackText: traveler.displayName ?? traveler.username,
+                                size: 76,
+                                fontSize: 28
+                            )
 
-                    if let matchScore = traveler.matchScore {
-                        Text("\(matchScore)% match")
-                            .font(.system(size: 13, weight: .black))
-                            .foregroundStyle(nativeAccent)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 9)
-                            .background(nativeAccent.opacity(0.14))
-                            .clipShape(Capsule())
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(traveler.displayName ?? traveler.username)
+                                    .font(.system(size: 30, weight: .black))
+                                    .foregroundStyle(.white)
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                if let bio = traveler.bio, !bio.isEmpty {
+                                    Text(bio)
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.68))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                        }
+
+                        if let matchScore = traveler.matchScore {
+                            Text("\(matchScore)% match")
+                                .font(.system(size: 13, weight: .black))
+                                .foregroundStyle(nativeAccent)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(nativeAccent.opacity(0.14))
+                                .clipShape(Capsule())
+                        }
                     }
-                }
 
-                HStack(spacing: 12) {
-                    NativeStatCard(label: "Saved", value: "\(traveler.savedPlacesCount ?? bookmarks.count)")
-                    NativeStatCard(label: "Lists", value: "\(traveler.collectionsCount ?? collections.count)")
-                    NativeStatCard(
-                        label: "Visited",
-                        value: "\(traveler.travelHistory.flatMap(\.places).filter { $0.visitedDate != nil }.count)"
-                    )
-                }
+                    HStack(spacing: 12) {
+                        NativeStatCard(label: "Followers", value: "\(traveler.followersCount ?? 0)")
+                        Button {
+                            activeSection = .saved
+                        } label: {
+                            NativeStatCard(label: "Saved", value: "\(traveler.savedPlacesCount ?? bookmarks.count)")
+                        }
+                        .buttonStyle(.plain)
+                        Button {
+                            activeSection = .visited
+                        } label: {
+                            NativeStatCard(
+                                label: "Visited",
+                                value: "\(traveler.travelHistory.flatMap(\.places).filter { $0.visitedDate != nil }.count)"
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        Button {
+                            activeSection = .collections
+                        } label: {
+                            NativeStatCard(label: "Lists", value: "\(traveler.collectionsCount ?? collections.count)")
+                        }
+                        .buttonStyle(.plain)
+                    }
 
-                if let descriptor = traveler.descriptor, !descriptor.isEmpty {
-                    NativeSurfaceCard {
+                    if let descriptor = traveler.descriptor, !descriptor.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             Text("Travel taste")
                                 .font(.system(size: 11, weight: .black))
-                                .foregroundStyle(nativeAccent.opacity(0.9))
+                                .foregroundStyle(nativeAccent)
                                 .textCase(.uppercase)
                             Text(descriptor)
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.76))
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.9))
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(20)
+                        .background(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            nativeAccent.opacity(0.14),
+                                            Color(red: 28 / 255, green: 30 / 255, blue: 36 / 255).opacity(0.98)
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .stroke(nativeAccent.opacity(0.32), lineWidth: 1)
+                        )
                     }
-                }
 
-                Button {
-                    Task {
-                        await toggleFollow()
-                    }
-                } label: {
-                    HStack {
-                        Spacer()
-                        if isTogglingFollow {
-                            ProgressView().tint(.black)
-                        } else {
-                            Text(appState.isFollowing(traveler.id) ? "Unfollow" : "Follow")
-                                .font(.system(size: 16, weight: .black))
+                    HStack(spacing: 10) {
+                        Button {
+                            Task {
+                                await toggleFollow()
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 10) {
+                                HStack {
+                                    Spacer()
+                                    if isTogglingFollow {
+                                        ProgressView().tint(appState.isFollowing(traveler.id) ? .white : .black)
+                                    } else {
+                                        Text(appState.isFollowing(traveler.id) ? "Unfollow" : "Follow")
+                                            .font(.system(size: 16, weight: .black))
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.vertical, 16)
+                                .background(appState.isFollowing(traveler.id) ? Color.white.opacity(0.08) : nativeAccent)
+                                .foregroundStyle(appState.isFollowing(traveler.id) ? .white : .black)
+                                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                            }
                         }
-                        Spacer()
+                        .buttonStyle(.plain)
+                        .disabled(isTogglingFollow)
+
+                        Button {
+                            showShareSheet = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 17, weight: .black))
+                                .foregroundStyle(.white)
+                                .frame(width: 54, height: 54)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .padding(.vertical, 16)
-                    .background(nativeAccent)
-                    .foregroundStyle(.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 }
-                .disabled(isTogglingFollow)
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 12)
+                .background(nativeProfileHeaderFill)
 
-                NativeProfileTabs(activeSection: $activeSection)
+                Section {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if let errorMessage {
+                            NativeInlineError(message: errorMessage)
+                        }
 
-                if let errorMessage {
-                    NativeInlineError(message: errorMessage)
+                        travelerSectionContent
+                    }
+                    .id(activeSection)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 12)
+                    .padding(.bottom, 28)
+                } header: {
+                    NativeProfileTabs(activeSection: $activeSection)
                 }
-
-                travelerSectionContent
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-            .padding(.bottom, 28)
         }
         .background(Color.black.ignoresSafeArea())
-        .navigationTitle("Profile")
+        .navigationTitle("@\(traveler.username)")
         .navigationBarTitleDisplayMode(.inline)
         .task {
             await loadTravelerProfile()
+        }
+        .onAppear {
+            appState.showFloatingTabBar = false
+            let appearance = UINavigationBarAppearance()
+            appearance.configureWithOpaqueBackground()
+            appearance.backgroundColor = UIColor(red: 16 / 255, green: 16 / 255, blue: 19 / 255, alpha: 0.98)
+            appearance.titleTextAttributes = [.foregroundColor: UIColor.white]
+            appearance.largeTitleTextAttributes = [.foregroundColor: UIColor.white]
+            UINavigationBar.appearance().standardAppearance = appearance
+            UINavigationBar.appearance().scrollEdgeAppearance = appearance
+            UINavigationBar.appearance().compactAppearance = appearance
+        }
+        .onDisappear {
+            appState.showFloatingTabBar = true
+        }
+        .sheet(isPresented: $showShareSheet) {
+            NativeShareSheet(items: ["https://vibinn.club/u/\(traveler.username)"])
         }
     }
 
@@ -4227,13 +4583,43 @@ private struct NativeTravelerProfileScreen: View {
                 emptyTravelerBlock("No saved places are visible right now.")
             } else {
                 LazyVStack(spacing: 14) {
-                    ForEach(bookmarks) { place in
-                        NavigationLink {
-                            NativePlaceDetailScreen(initialPlace: place)
-                        } label: {
-                            NativePlaceCard(place: place)
+                    ForEach(savedCityGroups, id: \.city) { group in
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Button {
+                                    toggleSavedCity(group.city)
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(group.city)
+                                                .font(.system(size: 18, weight: .black))
+                                                .foregroundStyle(.white)
+                                            Text("\(group.places.count) places")
+                                                .font(.system(size: 12, weight: .bold))
+                                                .foregroundStyle(.white.opacity(0.45))
+                                        }
+                                        Spacer()
+                                        Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
+                                            .font(.system(size: 14, weight: .black))
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                }
+                                .buttonStyle(.plain)
+
+                                if expandedSavedCities.contains(group.city) {
+                                    VStack(spacing: 12) {
+                                        ForEach(group.places) { place in
+                                            NavigationLink {
+                                                NativePlaceDetailScreen(initialPlace: place)
+                                            } label: {
+                                                NativePlaceCard(place: place)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                }
+                            }
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -4340,6 +4726,27 @@ private struct NativeTravelerProfileScreen: View {
         return items.sorted { $0.sortTimestamp > $1.sortTimestamp }
     }
 
+    private var savedCityGroups: [(city: String, places: [NativePlace])] {
+        let grouped = Dictionary(grouping: bookmarks) { place in
+            place.location
+                .split(separator: ",")
+                .first
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 } ?? "Unknown city"
+        }
+
+        return grouped
+            .map { key, value in
+                (
+                    city: key,
+                    places: value.sorted {
+                        ($0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending)
+                    }
+                )
+            }
+            .sorted { $0.city.localizedCaseInsensitiveCompare($1.city) == .orderedAscending }
+    }
+
     private func loadTravelerProfile() async {
         guard !isLoading else { return }
         isLoading = true
@@ -4352,6 +4759,14 @@ private struct NativeTravelerProfileScreen: View {
             collections = response.collections
         } catch {
             errorMessage = "Could not load this profile right now."
+        }
+    }
+
+    private func toggleSavedCity(_ city: String) {
+        if expandedSavedCities.contains(city) {
+            expandedSavedCities.remove(city)
+        } else {
+            expandedSavedCities.insert(city)
         }
     }
 
