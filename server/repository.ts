@@ -1563,11 +1563,7 @@ export async function getRelatedPlaces(placeId: string) {
     ],
   });
 
-  return related.map((item) => ({
-    id: item.id,
-    name: item.name,
-    imageUrl: item.primaryImageUrl ?? item.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
-  }));
+  return related.map((item) => mapPlaceForClient(item));
 }
 
 export async function getPlaceTravelerMoments(placeId: string, userId?: string) {
