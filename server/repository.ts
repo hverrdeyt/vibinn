@@ -298,6 +298,7 @@ function buildProfileUserWithMatch(
       places: ReturnType<typeof mapPlaceForClient>[];
     }>;
     latestVisitedAtIso?: string;
+    visitedPlacesCount?: number;
     savedPlacesCount?: number;
     collectionsCount?: number;
   },
@@ -312,6 +313,7 @@ function buildProfileUserWithMatch(
     ...(extras?.recentSavedPlaces?.length ? { recentSavedPlaces: extras.recentSavedPlaces } : {}),
     ...(extras?.recentCollections?.length ? { recentCollections: extras.recentCollections } : {}),
     ...(extras?.latestVisitedAtIso ? { latestVisitedAtIso: extras.latestVisitedAtIso } : {}),
+    ...(typeof extras?.visitedPlacesCount === 'number' ? { visitedPlacesCount: extras.visitedPlacesCount } : {}),
     ...(typeof extras?.savedPlacesCount === 'number' ? { savedPlacesCount: extras.savedPlacesCount } : {}),
     ...(typeof extras?.collectionsCount === 'number' ? { collectionsCount: extras.collectionsCount } : {}),
   };
@@ -458,6 +460,7 @@ export async function getProfileMe(userId?: string) {
         savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
         savedAtIso: bookmark.createdAt.toISOString(),
       })),
+      visitedPlacesCount: user.moments.length,
       savedPlacesCount: user.bookmarks.length,
       collectionsCount: user.collections.length,
       latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString(),
@@ -663,6 +666,7 @@ export async function getTravelerDiscovery(userId?: string) {
             flags: true,
             _count: {
               select: {
+                moments: true,
                 bookmarks: true,
                 collections: true,
               },
@@ -723,6 +727,7 @@ export async function getTravelerDiscovery(userId?: string) {
             flags: true,
             _count: {
               select: {
+                moments: true,
                 bookmarks: true,
                 collections: true,
               },
@@ -811,6 +816,7 @@ export async function getTravelerDiscovery(userId?: string) {
           flags: true,
           _count: {
             select: {
+              moments: true,
               bookmarks: true,
               collections: true,
             },
@@ -930,6 +936,7 @@ export async function getTravelerDiscovery(userId?: string) {
             places: collection.places.map((entry) => mapPlaceForClient(entry.place)),
           })),
           latestVisitedAtIso: item.targetUser.moments[0]?.visitedAt?.toISOString?.() ?? item.targetUser.moments[0]?.createdAt?.toISOString?.(),
+          visitedPlacesCount: item.targetUser._count.moments,
           savedPlacesCount: item.targetUser._count.bookmarks,
           collectionsCount: item.targetUser._count.collections,
         },
@@ -974,6 +981,7 @@ export async function getTravelerDiscovery(userId?: string) {
             places: collection.places.map((entry) => mapPlaceForClient(entry.place)),
           })),
           latestVisitedAtIso: item.user.moments[0]?.visitedAt?.toISOString?.() ?? item.user.moments[0]?.createdAt?.toISOString?.(),
+          visitedPlacesCount: item.user._count.moments,
           savedPlacesCount: item.user._count.bookmarks,
           collectionsCount: item.user._count.collections,
         },
@@ -1047,17 +1055,36 @@ export async function getFollowingFeed(userId?: string) {
     },
   });
 
+  const followedPlaceIds = Array.from(new Set([
+    ...followedUsers.flatMap((item) => item.targetUser.bookmarks.map((bookmark) => bookmark.placeId)),
+    ...followedUsers.flatMap((item) => item.targetUser.moments.map((moment) => moment.placeId)),
+    ...followedUsers.flatMap((item) => item.targetUser.collections.flatMap((collection) => collection.places.map((entry) => entry.placeId))),
+  ]));
+  const followedPlaceOverrideMap = await getUserPlaceScoreOverrideMap(currentUser.id, followedPlaceIds);
+
   const travelerMap = new Map(discovery.followedTravelers.map((traveler) => [traveler.id, traveler]));
   const fullTravelerFeedMap = new Map(
     followedUsers.map((item) => [
       item.targetUser.id,
       buildProfileUserWithMatch(
         item.targetUser,
-        item.targetUser.moments.map(mapMomentForClient),
+        item.targetUser.moments.map((moment) => {
+          const mappedMoment = mapMomentForClient(moment);
+          return {
+            ...mappedMoment,
+            place: mapPlaceForClient(
+              moment.place,
+              getPlaceScoreOverride(followedPlaceOverrideMap, moment.placeId),
+            ),
+          };
+        }),
         undefined,
         {
           recentSavedPlaces: item.targetUser.bookmarks.map((bookmark) => ({
-            place: mapPlaceForClient(bookmark.place),
+            place: mapPlaceForClient(
+              bookmark.place,
+              getPlaceScoreOverride(followedPlaceOverrideMap, bookmark.placeId),
+            ),
             savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
             savedAtIso: bookmark.createdAt.toISOString(),
           })),
@@ -1065,7 +1092,10 @@ export async function getFollowingFeed(userId?: string) {
             id: collection.id,
             label: collection.title,
             createdAt: collection.createdAt.toISOString(),
-            places: collection.places.map((entry) => mapPlaceForClient(entry.place)),
+            places: collection.places.map((entry) => mapPlaceForClient(
+              entry.place,
+              getPlaceScoreOverride(followedPlaceOverrideMap, entry.placeId),
+            )),
           })),
           latestVisitedAtIso: item.targetUser.moments[0]?.visitedAt?.toISOString?.() ?? item.targetUser.moments[0]?.createdAt?.toISOString?.(),
           savedPlacesCount: item.targetUser._count.bookmarks,
@@ -1183,6 +1213,7 @@ export async function searchPublicTravelers(query: string) {
       flags: true,
       _count: {
         select: {
+          moments: true,
           bookmarks: true,
           collections: true,
         },
@@ -1234,6 +1265,7 @@ export async function searchPublicTravelers(query: string) {
           savedAtIso: bookmark.createdAt.toISOString(),
         })),
         latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString?.() ?? user.moments[0]?.createdAt?.toISOString?.(),
+        visitedPlacesCount: user._count.moments,
         savedPlacesCount: user._count.bookmarks,
         collectionsCount: user._count.collections,
       }));
@@ -1274,6 +1306,7 @@ export async function getPublicTravelerSuggestions(limit = 12) {
       flags: true,
       _count: {
         select: {
+          moments: true,
           bookmarks: true,
           collections: true,
         },
@@ -1327,6 +1360,7 @@ export async function getPublicTravelerSuggestions(limit = 12) {
           savedAtIso: bookmark.createdAt.toISOString(),
         })),
         latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString?.() ?? user.moments[0]?.createdAt?.toISOString?.(),
+        visitedPlacesCount: user._count.moments,
         savedPlacesCount: user._count.bookmarks,
         collectionsCount: user._count.collections,
       }));
@@ -1441,6 +1475,7 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
           places: collection.places.map((item) => mapPlaceForClient(item.place)),
         })),
         latestVisitedAtIso: traveler.moments[0]?.visitedAt?.toISOString?.() ?? traveler.moments[0]?.createdAt?.toISOString?.(),
+        visitedPlacesCount: traveler.moments.length,
         savedPlacesCount: traveler.bookmarks.length,
         collectionsCount: traveler.collections.length,
       },
