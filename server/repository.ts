@@ -993,7 +993,7 @@ export async function getTravelerDiscovery(userId?: string) {
 
 export async function getFollowingFeed(userId?: string) {
   const currentUser = await getCurrentUser(prisma, userId);
-  const [followedUsers, profileVibins] = await Promise.all([
+  const [followedUsers, similarUsers, fallbackTravelers, profileVibins] = await Promise.all([
     prisma.follow.findMany({
       where: { sourceUserId: currentUser.id },
       include: {
@@ -1055,6 +1055,135 @@ export async function getFollowingFeed(userId?: string) {
         },
       },
     }),
+    prisma.travelerSimilarity.findMany({
+      where: { userId: currentUser.id },
+      include: {
+        traveler: {
+          include: {
+            badges: true,
+            flags: true,
+            _count: {
+              select: {
+                moments: true,
+                bookmarks: true,
+                collections: true,
+              },
+            },
+            bookmarks: {
+              orderBy: { createdAt: 'desc' },
+              take: 4,
+              include: {
+                place: {
+                  include: {
+                    aiEnrichment: true,
+                    media: { orderBy: { sortOrder: 'asc' } },
+                  },
+                },
+              },
+            },
+            moments: {
+              orderBy: { createdAt: 'desc' },
+              take: 6,
+              include: {
+                place: {
+                  include: {
+                    aiEnrichment: true,
+                    media: { orderBy: { sortOrder: 'asc' } },
+                  },
+                },
+                media: { orderBy: { sortOrder: 'asc' } },
+              },
+            },
+            collections: {
+              orderBy: { createdAt: 'desc' },
+              take: 3,
+              include: {
+                places: {
+                  orderBy: { sortOrder: 'asc' },
+                  take: 4,
+                  include: {
+                    place: {
+                      include: {
+                        aiEnrichment: true,
+                        media: { orderBy: { sortOrder: 'asc' } },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { matchScore: 'desc' },
+      take: 12,
+    }),
+    prisma.user.findMany({
+      where: {
+        id: { not: currentUser.id },
+        OR: [
+          { moments: { some: {} } },
+          { bookmarks: { some: {} } },
+          { collections: { some: {} } },
+        ],
+      },
+      include: {
+        badges: true,
+        flags: true,
+        _count: {
+          select: {
+            moments: true,
+            bookmarks: true,
+            collections: true,
+          },
+        },
+        bookmarks: {
+          orderBy: { createdAt: 'desc' },
+          take: 4,
+          include: {
+            place: {
+              include: {
+                aiEnrichment: true,
+                media: { orderBy: { sortOrder: 'asc' } },
+              },
+            },
+          },
+        },
+        moments: {
+          orderBy: { createdAt: 'desc' },
+          take: 6,
+          include: {
+            place: {
+              include: {
+                aiEnrichment: true,
+                media: { orderBy: { sortOrder: 'asc' } },
+              },
+            },
+            media: { orderBy: { sortOrder: 'asc' } },
+          },
+        },
+        collections: {
+          orderBy: { createdAt: 'desc' },
+          take: 3,
+          include: {
+            places: {
+              orderBy: { sortOrder: 'asc' },
+              take: 4,
+              include: {
+                place: {
+                  include: {
+                    aiEnrichment: true,
+                    media: { orderBy: { sortOrder: 'asc' } },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 24,
+    }),
     prisma.vibin.groupBy({
       by: ['targetId'],
       where: {
@@ -1064,6 +1193,7 @@ export async function getFollowingFeed(userId?: string) {
     }),
   ]);
   const vibinMap = new Map(profileVibins.map((item) => [item.targetId, item._count._all]));
+  const followedUserIds = new Set(followedUsers.map((item) => item.targetUser.id));
 
   const followedPlaceIds = Array.from(new Set([
     ...followedUsers.flatMap((item) => item.targetUser.bookmarks.map((bookmark) => bookmark.placeId)),
@@ -1084,6 +1214,24 @@ export async function getFollowingFeed(userId?: string) {
     }),
   );
   const followedDescriptorMap = new Map(followedTravelerDescriptors);
+  const suggestedTravelerDescriptors = await Promise.all(
+    [
+      ...similarUsers.map((item) => item.traveler),
+      ...fallbackTravelers.filter((traveler) =>
+        !followedUserIds.has(traveler.id)
+        && !similarUsers.some((item) => item.traveler.id === traveler.id),
+      ),
+    ].map(async (traveler) => {
+      const descriptor = await generateTravelerProfileDescriptor({
+        userId: traveler.id,
+        displayName: traveler.displayName,
+        moments: traveler.moments.map(mapMomentForClient),
+        bookmarkedPlaces: traveler.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+      });
+      return [traveler.id, descriptor] as const;
+    }),
+  );
+  const suggestedDescriptorMap = new Map(suggestedTravelerDescriptors);
 
   const followedTravelers = followedUsers.map((item) =>
     trimTravelerForFeed(buildProfileUserWithMatch(
@@ -1238,9 +1386,74 @@ export async function getFollowingFeed(userId?: string) {
       return bTime - aTime;
     });
 
+  const suggestedTravelers = [
+    ...similarUsers
+      .filter((item) => !followedUserIds.has(item.traveler.id))
+      .map((item) =>
+        trimTravelerForFeed(buildProfileUserWithMatch(
+          item.traveler,
+          item.traveler.moments.map(mapMomentForClient),
+          item.matchScore,
+          {
+            relevanceReason: item.relevanceReason,
+            vibinCount: vibinMap.get(item.traveler.id) ?? 0,
+            descriptor: suggestedDescriptorMap.get(item.traveler.id),
+            recentSavedPlaces: item.traveler.bookmarks.map((bookmark) => ({
+              place: mapPlaceForClient(bookmark.place),
+              savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+              savedAtIso: bookmark.createdAt.toISOString(),
+            })),
+            recentCollections: item.traveler.collections.map((collection) => ({
+              id: collection.id,
+              label: collection.title,
+              createdAt: collection.createdAt.toISOString(),
+              places: collection.places.map((entry) => mapPlaceForClient(entry.place)),
+            })),
+            latestVisitedAtIso: item.traveler.moments[0]?.visitedAt?.toISOString?.() ?? item.traveler.moments[0]?.createdAt?.toISOString?.(),
+            visitedPlacesCount: item.traveler._count.moments,
+            savedPlacesCount: item.traveler._count.bookmarks,
+            collectionsCount: item.traveler._count.collections,
+          },
+        )),
+      ),
+    ...fallbackTravelers
+      .filter((traveler) =>
+        !followedUserIds.has(traveler.id)
+        && !similarUsers.some((item) => item.traveler.id === traveler.id),
+      )
+      .slice(0, 12)
+      .map((traveler, index) =>
+        trimTravelerForFeed(buildProfileUserWithMatch(
+          traveler,
+          traveler.moments.map(mapMomentForClient),
+          Math.max(58, 76 - index),
+          {
+            relevanceReason: 'Community traveler worth exploring while your exact matches warm up.',
+            vibinCount: vibinMap.get(traveler.id) ?? 0,
+            descriptor: suggestedDescriptorMap.get(traveler.id),
+            recentSavedPlaces: traveler.bookmarks.map((bookmark) => ({
+              place: mapPlaceForClient(bookmark.place),
+              savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+              savedAtIso: bookmark.createdAt.toISOString(),
+            })),
+            recentCollections: traveler.collections.map((collection) => ({
+              id: collection.id,
+              label: collection.title,
+              createdAt: collection.createdAt.toISOString(),
+              places: collection.places.map((entry) => mapPlaceForClient(entry.place)),
+            })),
+            latestVisitedAtIso: traveler.moments[0]?.visitedAt?.toISOString?.() ?? traveler.moments[0]?.createdAt?.toISOString?.(),
+            visitedPlacesCount: traveler._count.moments,
+            savedPlacesCount: traveler._count.bookmarks,
+            collectionsCount: traveler._count.collections,
+          },
+        )),
+      ),
+  ].slice(0, 12);
+
   return {
     followedTravelers,
-    suggestedTravelers: [],
+    suggestedTravelers,
     items,
   };
 }

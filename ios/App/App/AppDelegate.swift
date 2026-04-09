@@ -5335,327 +5335,335 @@ private struct NativePlaceDetailScreen: View {
     }
 
     private var resolvedPlaceContent: some View {
-        VStack(alignment: .leading, spacing: 22) {
-                ZStack(alignment: .topLeading) {
-                    TabView(selection: $selectedMediaIndex) {
-                        ForEach(Array(mediaUrls.enumerated()), id: \.offset) { index, url in
-                                NativeRemoteImage(url: url)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    .tag(index)
-                            }
-                        }
-                        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-                        .overlay(alignment: .bottom) {
-                            LinearGradient(
-                                colors: [
-                                    Color.clear,
-                                    Color.black.opacity(0.12),
-                                    Color.black.opacity(0.55),
-                                    Color.black.opacity(0.96)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                            .frame(height: 118)
-                            .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
-                        }
-                        HStack(alignment: .top) {
-                            if let topTag = topTagLabel {
-                                Text(topTag)
-                                    .font(.system(size: 12, weight: .black))
-                                    .foregroundStyle(.black)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(nativeAccent)
-                                    .clipShape(Capsule())
-                            }
-                            Spacer(minLength: 0)
-                        }
-                        .padding(16)
-                    }
-
-                    if mediaUrls.count > 1 {
-                        HStack(spacing: 6) {
-                            ForEach(Array(mediaUrls.enumerated()), id: \.offset) { index, _ in
-                                Capsule()
-                                    .fill(index == selectedMediaIndex ? nativeAccent : Color.white.opacity(0.14))
-                                    .frame(width: index == selectedMediaIndex ? 30 : 12, height: 4)
-                            }
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text(place.name)
-                            .font(.system(size: 30, weight: .black))
-                            .foregroundStyle(.white)
-
-                        HStack(spacing: 8) {
-                            Image(systemName: "mappin.and.ellipse")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.7))
-                            Text(locationAndDistanceLine)
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.76))
-                                .lineLimit(2)
-                        }
-
-                        if let bestVisitedAtLine {
-                            Text(bestVisitedAtLine)
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(nativeAccent)
-                        }
-
-                        if !secondaryTags.isEmpty {
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 8) {
-                                    ForEach(secondaryTags, id: \.self) { tag in
-                                        Text(tag)
-                                            .font(.system(size: 11, weight: .black))
-                                            .foregroundStyle(.white.opacity(0.86))
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 7)
-                                            .background(Color.white.opacity(0.08))
-                                            .clipShape(Capsule())
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 14) {
-                        if highlightAboutExists {
-                            VStack(alignment: .leading, spacing: 10) {
-                                if let hook = place.hook, !hook.isEmpty {
-                                    HStack(alignment: .top, spacing: 10) {
-                                        Image(systemName: "sparkles")
-                                            .font(.system(size: 15, weight: .black))
-                                            .foregroundStyle(nativeAccent)
-                                            .padding(.top, 2)
-                                        Text(hook)
-                                            .font(.system(size: 20, weight: .semibold))
-                                            .foregroundStyle(.white.opacity(0.92))
-                                            .multilineTextAlignment(.leading)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                }
-                                if let description = place.description, !description.isEmpty {
-                                    Text(description)
-                                        .font(.system(size: 15, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.68))
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                        }
-
-                        if whyThisShowsUpText != nil {
-                            NativeSurfaceCard(fill: AnyShapeStyle(nativeAccent.opacity(0.12)), stroke: nativeAccent.opacity(0.36)) {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("Why this is showing up for you")
-                                        .font(.system(size: 11, weight: .black))
-                                        .foregroundStyle(nativeAccent)
-                                        .textCase(.uppercase)
-                                    Text(whyThisShowsUpText ?? "")
-                                        .font(.system(size: 15, weight: .semibold))
-                                        .foregroundStyle(.white.opacity(0.88))
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                        }
-
-                        if !similarPlaceTravelers.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                NativeSectionTitle("Similar people")
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 12) {
-                                        ForEach(similarPlaceTravelers) { traveler in
-                                            NavigationLink {
-                                                NativeTravelerProfileScreen(
-                                                    initialTraveler: NativeTravelerSummary(
-                                                        id: traveler.id,
-                                                        username: traveler.username,
-                                                        displayName: traveler.displayName,
-                                                        avatar: traveler.avatar,
-                                                        bio: nil,
-                                                        descriptor: nil,
-                                                        matchScore: traveler.matchScore,
-                                                        followersCount: nil,
-                                                        recentSavedPlaces: nil,
-                                                        recentCollections: nil,
-                                                        travelHistory: [],
-                                                        visitedPlacesCount: nil,
-                                                        savedPlacesCount: nil,
-                                                        collectionsCount: nil
-                                                    )
-                                                )
-                                            } label: {
-                                                VStack(alignment: .leading, spacing: 10) {
-                                                    HStack(alignment: .top, spacing: 10) {
-                                                        NativeAvatarCircle(
-                                                            url: traveler.avatar,
-                                                            fallbackText: traveler.displayName ?? traveler.username,
-                                                            size: 46,
-                                                            fontSize: 16
-                                                        )
-                                                        Spacer(minLength: 0)
-                                                        if let score = traveler.matchScore {
-                                                            Text("\(score)%")
-                                                                .font(.system(size: 11, weight: .black))
-                                                                .foregroundStyle(.white.opacity(0.82))
-                                                        }
-                                                    }
-
-                                                    VStack(alignment: .leading, spacing: 4) {
-                                                        Text(traveler.displayName ?? traveler.username)
-                                                            .font(.system(size: 13, weight: .black))
-                                                            .foregroundStyle(.white)
-                                                            .lineLimit(2)
-                                                        Text("@\(traveler.username)")
-                                                            .font(.system(size: 11, weight: .semibold))
-                                                            .foregroundStyle(.white.opacity(0.58))
-                                                            .lineLimit(1)
-                                                    }
-
-                                                    HStack(spacing: 6) {
-                                                        if traveler.isFollowing {
-                                                            nativeMiniTag("Following", foreground: nativeAccent, background: nativeAccent.opacity(0.14))
-                                                        }
-                                                        if traveler.hasVisited {
-                                                            nativeMiniTag("Visited this", foreground: .white.opacity(0.9), background: Color.white.opacity(0.08))
-                                                        }
-                                                        if traveler.hasSaved {
-                                                            nativeMiniTag("Saved this", foreground: .white.opacity(0.9), background: Color.white.opacity(0.08))
-                                                        }
-                                                    }
-                                                }
-                                                .frame(width: 154, alignment: .leading)
-                                                .padding(14)
-                                                .background(nativeSurface)
-                                                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        NativeSectionTitle("Place details")
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 14) {
-                                if let vibeCheck = place.attitudeLabel, !vibeCheck.isEmpty {
-                                    NativePlaceDetailRow(label: "Vibe check", value: vibeCheck)
-                                }
-                                if let category = place.category, !category.isEmpty {
-                                    NativePlaceDetailRow(label: "Place category", value: category)
-                                }
-                                if let budget = place.priceRange ?? (place.priceLevel.map { String(repeating: "$", count: $0) }), !budget.isEmpty {
-                                    NativePlaceDetailRow(label: "Budget", value: budget)
-                                }
-                                if let bestTime = place.bestTime, !bestTime.isEmpty {
-                                    NativePlaceDetailRow(label: "Best time", value: bestTime)
-                                }
-                                if let address = place.address, !address.isEmpty {
-                                    NativePlaceDetailRow(label: "Full address", value: address)
-                                }
-                            }
-                        }
-
-                        if let mapRegion {
-                            NativeSurfaceCard {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text("Maps overview")
-                                        .font(.system(size: 11, weight: .black))
-                                        .foregroundStyle(.white.opacity(0.45))
-                                        .textCase(.uppercase)
-                                    Map(coordinateRegion: $interactiveMapRegion, interactionModes: .all)
-                                        .frame(height: 190)
-                                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                                        .onAppear {
-                                            interactiveMapRegion = mapRegion
-                                        }
-                                }
-                            }
-
-                            if let openInMapsURL {
-                                Button {
-                                    openURL(openInMapsURL)
-                                } label: {
-                                    HStack(spacing: 10) {
-                                        Image(systemName: "map")
-                                            .font(.system(size: 15, weight: .bold))
-                                        Text("Open in Maps")
-                                            .font(.system(size: 15, weight: .black))
-                                        Spacer()
-                                        Image(systemName: "arrow.up.right")
-                                            .font(.system(size: 14, weight: .bold))
-                                    }
-                                    .foregroundStyle(.black)
-                                    .padding(.horizontal, 18)
-                                    .padding(.vertical, 16)
-                                    .background(nativeAccent)
-                                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        } else if let openInMapsURL {
-                            Button {
-                                openURL(openInMapsURL)
-                            } label: {
-                                HStack(spacing: 10) {
-                                    Image(systemName: "map")
-                                        .font(.system(size: 15, weight: .bold))
-                                    Text("Open in Maps")
-                                        .font(.system(size: 15, weight: .black))
-                                    Spacer()
-                                    Image(systemName: "arrow.up.right")
-                                        .font(.system(size: 14, weight: .bold))
-                                }
-                                .foregroundStyle(.black)
-                                .padding(.horizontal, 18)
-                                .padding(.vertical, 16)
-                                .background(nativeAccent)
-                                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                            }
-                            .buttonStyle(.plain)
-                        }
-
-                        if !relatedPlaces.isEmpty {
-                            VStack(alignment: .leading, spacing: 12) {
-                                NativeSectionTitle("Nearby picks")
-                                ScrollView(.horizontal, showsIndicators: false) {
-                                    HStack(spacing: 12) {
-                                        ForEach(relatedPlaces.prefix(6)) { relatedPlace in
-                                            NavigationLink {
-                                                NativePlaceDetailScreen(initialPlace: relatedPlace)
-                                            } label: {
-                                                VStack(alignment: .leading, spacing: 8) {
-                                                    NativeRemoteImage(url: relatedPlace.image)
-                                                        .frame(width: 178, height: 118)
-                                                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                                    Text(relatedPlace.name)
-                                                        .font(.system(size: 14, weight: .black))
-                                                        .foregroundStyle(.white)
-                                                        .lineLimit(2)
-                                                }
-                                                .frame(width: 178, alignment: .leading)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                    if let errorMessage {
-                        Text(errorMessage)
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(.red.opacity(0.9))
+        return VStack(alignment: .leading, spacing: 22) {
+            ZStack(alignment: .topLeading) {
+                TabView(selection: $selectedMediaIndex) {
+                    ForEach(Array(mediaUrls.enumerated()), id: \.offset) { index, url in
+                        NativeRemoteImage(url: url)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
+                            .tag(index)
                     }
                 }
+                .frame(maxWidth: .infinity)
+                .frame(height: 430)
+                .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                .overlay(alignment: .bottom) {
+                    LinearGradient(
+                        colors: [
+                            Color.clear,
+                            Color.black.opacity(0.12),
+                            Color.black.opacity(0.55),
+                            Color.black.opacity(0.96)
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 118)
+                    .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                }
+
+                HStack(alignment: .top) {
+                    if let topTag = topTagLabel {
+                        Text(topTag)
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(nativeAccent)
+                            .clipShape(Capsule())
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(16)
+
+                if mediaUrls.count > 1 {
+                    HStack(spacing: 6) {
+                        ForEach(Array(mediaUrls.enumerated()), id: \.offset) { index, _ in
+                            Capsule()
+                                .fill(index == selectedMediaIndex ? nativeAccent : Color.white.opacity(0.14))
+                                .frame(width: index == selectedMediaIndex ? 30 : 12, height: 4)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .padding(.bottom, 18)
+                }
+
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 430)
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text(place.name)
+                    .font(.system(size: 30, weight: .black))
+                    .foregroundStyle(.white)
+
+                HStack(spacing: 8) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.7))
+                    Text(locationAndDistanceLine)
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.76))
+                        .lineLimit(2)
+                }
+
+                if let bestVisitedAtLine {
+                    Text(bestVisitedAtLine)
+                        .font(.system(size: 13, weight: .bold))
+                        .foregroundStyle(nativeAccent)
+                }
+
+                if !secondaryTags.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(secondaryTags, id: \.self) { tag in
+                                Text(tag)
+                                    .font(.system(size: 11, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.86))
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 7)
+                                    .background(Color.white.opacity(0.08))
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 14) {
+                if highlightAboutExists {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let hook = place.hook, !hook.isEmpty {
+                            HStack(alignment: .top, spacing: 10) {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 15, weight: .black))
+                                    .foregroundStyle(nativeAccent)
+                                    .padding(.top, 2)
+                                Text(hook)
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.92))
+                                    .multilineTextAlignment(.leading)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        if let description = place.description, !description.isEmpty {
+                            Text(description)
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.68))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
+                if whyThisShowsUpText != nil {
+                    NativeSurfaceCard(fill: AnyShapeStyle(nativeAccent.opacity(0.12)), stroke: nativeAccent.opacity(0.36)) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Why this is showing up for you")
+                                .font(.system(size: 11, weight: .black))
+                                .foregroundStyle(nativeAccent)
+                                .textCase(.uppercase)
+                            Text(whyThisShowsUpText ?? "")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.88))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+
+                if !similarPlaceTravelers.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        NativeSectionTitle("Similar people")
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(similarPlaceTravelers) { traveler in
+                                    NavigationLink {
+                                        NativeTravelerProfileScreen(
+                                            initialTraveler: NativeTravelerSummary(
+                                                id: traveler.id,
+                                                username: traveler.username,
+                                                displayName: traveler.displayName,
+                                                avatar: traveler.avatar,
+                                                bio: nil,
+                                                descriptor: nil,
+                                                matchScore: traveler.matchScore,
+                                                followersCount: nil,
+                                                recentSavedPlaces: nil,
+                                                recentCollections: nil,
+                                                travelHistory: [],
+                                                visitedPlacesCount: nil,
+                                                savedPlacesCount: nil,
+                                                collectionsCount: nil
+                                            )
+                                        )
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 10) {
+                                            HStack(alignment: .top, spacing: 10) {
+                                                NativeAvatarCircle(
+                                                    url: traveler.avatar,
+                                                    fallbackText: traveler.displayName ?? traveler.username,
+                                                    size: 46,
+                                                    fontSize: 16
+                                                )
+                                                Spacer(minLength: 0)
+                                                if let score = traveler.matchScore {
+                                                    Text("\(score)%")
+                                                        .font(.system(size: 11, weight: .black))
+                                                        .foregroundStyle(.white.opacity(0.82))
+                                                }
+                                            }
+
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(traveler.displayName ?? traveler.username)
+                                                    .font(.system(size: 13, weight: .black))
+                                                    .foregroundStyle(.white)
+                                                    .lineLimit(2)
+                                                Text("@\(traveler.username)")
+                                                    .font(.system(size: 11, weight: .semibold))
+                                                    .foregroundStyle(.white.opacity(0.58))
+                                                    .lineLimit(1)
+                                            }
+
+                                            HStack(spacing: 6) {
+                                                if traveler.isFollowing {
+                                                    nativeMiniTag("Following", foreground: nativeAccent, background: nativeAccent.opacity(0.14))
+                                                }
+                                                if traveler.hasVisited {
+                                                    nativeMiniTag("Visited this", foreground: .white.opacity(0.9), background: Color.white.opacity(0.08))
+                                                }
+                                                if traveler.hasSaved {
+                                                    nativeMiniTag("Saved this", foreground: .white.opacity(0.9), background: Color.white.opacity(0.08))
+                                                }
+                                            }
+                                        }
+                                        .frame(width: 154, alignment: .leading)
+                                        .padding(14)
+                                        .background(nativeSurface)
+                                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                NativeSectionTitle("Place details")
+                NativeSurfaceCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if let vibeCheck = place.attitudeLabel, !vibeCheck.isEmpty {
+                            NativePlaceDetailRow(label: "Vibe check", value: vibeCheck)
+                        }
+                        if let category = place.category, !category.isEmpty {
+                            NativePlaceDetailRow(label: "Place category", value: category)
+                        }
+                        if let budget = place.priceRange ?? (place.priceLevel.map { String(repeating: "$", count: $0) }), !budget.isEmpty {
+                            NativePlaceDetailRow(label: "Budget", value: budget)
+                        }
+                        if let bestTime = place.bestTime, !bestTime.isEmpty {
+                            NativePlaceDetailRow(label: "Best time", value: bestTime)
+                        }
+                        if let address = place.address, !address.isEmpty {
+                            NativePlaceDetailRow(label: "Full address", value: address)
+                        }
+                    }
+                }
+
+                if let mapRegion {
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Maps overview")
+                                .font(.system(size: 11, weight: .black))
+                                .foregroundStyle(.white.opacity(0.45))
+                                .textCase(.uppercase)
+                            Map(coordinateRegion: $interactiveMapRegion, interactionModes: .all)
+                                .frame(height: 190)
+                                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                                .onAppear {
+                                    interactiveMapRegion = mapRegion
+                                }
+                        }
+                    }
+
+                    if let openInMapsURL {
+                        Button {
+                            openURL(openInMapsURL)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: "map")
+                                    .font(.system(size: 15, weight: .bold))
+                                Text("Open in Maps")
+                                    .font(.system(size: 15, weight: .black))
+                                Spacer()
+                                Image(systemName: "arrow.up.right")
+                                    .font(.system(size: 14, weight: .bold))
+                            }
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 16)
+                            .background(nativeAccent)
+                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                } else if let openInMapsURL {
+                    Button {
+                        openURL(openInMapsURL)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "map")
+                                .font(.system(size: 15, weight: .bold))
+                            Text("Open in Maps")
+                                .font(.system(size: 15, weight: .black))
+                            Spacer()
+                            Image(systemName: "arrow.up.right")
+                                .font(.system(size: 14, weight: .bold))
+                        }
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 16)
+                        .background(nativeAccent)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                if !relatedPlaces.isEmpty {
+                    VStack(alignment: .leading, spacing: 12) {
+                        NativeSectionTitle("Nearby picks")
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(relatedPlaces.prefix(6)) { relatedPlace in
+                                    NavigationLink {
+                                        NativePlaceDetailScreen(initialPlace: relatedPlace)
+                                    } label: {
+                                        VStack(alignment: .leading, spacing: 8) {
+                                            NativeRemoteImage(url: relatedPlace.image)
+                                                .frame(width: 178, height: 118)
+                                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                            Text(relatedPlace.name)
+                                                .font(.system(size: 14, weight: .black))
+                                                .foregroundStyle(.white)
+                                                .lineLimit(2)
+                                        }
+                                        .frame(width: 178, alignment: .leading)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.red.opacity(0.9))
+            }
         }
     }
 
