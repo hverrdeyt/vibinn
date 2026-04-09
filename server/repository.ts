@@ -992,58 +992,60 @@ export async function getTravelerDiscovery(userId?: string) {
 }
 
 export async function getFollowingFeed(userId?: string) {
-  const discovery = await getTravelerDiscovery(userId);
   const currentUser = await getCurrentUser(prisma, userId);
-  const followedUsers = await prisma.follow.findMany({
-    where: { sourceUserId: currentUser.id },
-    include: {
-      targetUser: {
-        include: {
-          badges: true,
-          flags: true,
-          _count: {
-            select: {
-              bookmarks: true,
-              collections: true,
+  const [followedUsers, profileVibins] = await Promise.all([
+    prisma.follow.findMany({
+      where: { sourceUserId: currentUser.id },
+      include: {
+        targetUser: {
+          include: {
+            badges: true,
+            flags: true,
+            _count: {
+              select: {
+                moments: true,
+                bookmarks: true,
+                collections: true,
+              },
             },
-          },
-          bookmarks: {
-            orderBy: { createdAt: 'desc' },
-            take: 12,
-            include: {
-              place: {
-                include: {
-                  aiEnrichment: true,
-                  media: { orderBy: { sortOrder: 'asc' } },
+            bookmarks: {
+              orderBy: { createdAt: 'desc' },
+              take: 12,
+              include: {
+                place: {
+                  include: {
+                    aiEnrichment: true,
+                    media: { orderBy: { sortOrder: 'asc' } },
+                  },
                 },
               },
             },
-          },
-          moments: {
-            orderBy: { createdAt: 'desc' },
-            take: 24,
-            include: {
-              place: {
-                include: {
-                  aiEnrichment: true,
-                  media: { orderBy: { sortOrder: 'asc' } },
+            moments: {
+              orderBy: { createdAt: 'desc' },
+              take: 24,
+              include: {
+                place: {
+                  include: {
+                    aiEnrichment: true,
+                    media: { orderBy: { sortOrder: 'asc' } },
+                  },
                 },
+                media: { orderBy: { sortOrder: 'asc' } },
               },
-              media: { orderBy: { sortOrder: 'asc' } },
             },
-          },
-          collections: {
-            orderBy: { createdAt: 'desc' },
-            take: 8,
-            include: {
-              places: {
-                orderBy: { sortOrder: 'asc' },
-                take: 8,
-                include: {
-                  place: {
-                    include: {
-                      aiEnrichment: true,
-                      media: { orderBy: { sortOrder: 'asc' } },
+            collections: {
+              orderBy: { createdAt: 'desc' },
+              take: 8,
+              include: {
+                places: {
+                  orderBy: { sortOrder: 'asc' },
+                  take: 8,
+                  include: {
+                    place: {
+                      include: {
+                        aiEnrichment: true,
+                        media: { orderBy: { sortOrder: 'asc' } },
+                      },
                     },
                   },
                 },
@@ -1052,8 +1054,16 @@ export async function getFollowingFeed(userId?: string) {
           },
         },
       },
-    },
-  });
+    }),
+    prisma.vibin.groupBy({
+      by: ['targetId'],
+      where: {
+        targetType: 'PROFILE',
+      },
+      _count: { _all: true },
+    }),
+  ]);
+  const vibinMap = new Map(profileVibins.map((item) => [item.targetId, item._count._all]));
 
   const followedPlaceIds = Array.from(new Set([
     ...followedUsers.flatMap((item) => item.targetUser.bookmarks.map((bookmark) => bookmark.placeId)),
@@ -1062,7 +1072,81 @@ export async function getFollowingFeed(userId?: string) {
   ]));
   const followedPlaceOverrideMap = await getUserPlaceScoreOverrideMap(currentUser.id, followedPlaceIds);
 
-  const travelerMap = new Map(discovery.followedTravelers.map((traveler) => [traveler.id, traveler]));
+  const followedTravelerDescriptors = await Promise.all(
+    followedUsers.map(async (item) => {
+      const descriptor = await generateTravelerProfileDescriptor({
+        userId: item.targetUser.id,
+        displayName: item.targetUser.displayName,
+        moments: item.targetUser.moments.map(mapMomentForClient),
+        bookmarkedPlaces: item.targetUser.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+      });
+      return [item.targetUser.id, descriptor] as const;
+    }),
+  );
+  const followedDescriptorMap = new Map(followedTravelerDescriptors);
+
+  const followedTravelers = followedUsers.map((item) =>
+    trimTravelerForFeed(buildProfileUserWithMatch(
+      item.targetUser,
+      item.targetUser.moments.map((moment) => {
+        const mappedMoment = mapMomentForClient(moment);
+        return {
+          ...mappedMoment,
+          place: mapPlaceForClient(
+            moment.place,
+            getPlaceScoreOverride(followedPlaceOverrideMap, moment.placeId),
+          ),
+        };
+      }),
+      undefined,
+      {
+        vibinCount: vibinMap.get(item.targetUser.id) ?? 0,
+        descriptor: followedDescriptorMap.get(item.targetUser.id),
+        recentSavedPlaces: item.targetUser.bookmarks.map((bookmark) => ({
+          place: mapPlaceForClient(
+            bookmark.place,
+            getPlaceScoreOverride(followedPlaceOverrideMap, bookmark.placeId),
+          ),
+          savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+          savedAtIso: bookmark.createdAt.toISOString(),
+        })),
+        recentCollections: item.targetUser.collections.map((collection) => ({
+          id: collection.id,
+          label: collection.title,
+          createdAt: collection.createdAt.toISOString(),
+          places: collection.places.map((entry) => mapPlaceForClient(
+            entry.place,
+            getPlaceScoreOverride(followedPlaceOverrideMap, entry.placeId),
+          )),
+        })),
+        latestVisitedAtIso: item.targetUser.moments[0]?.visitedAt?.toISOString?.() ?? item.targetUser.moments[0]?.createdAt?.toISOString?.(),
+        visitedPlacesCount: item.targetUser._count.moments,
+        savedPlacesCount: item.targetUser._count.bookmarks,
+        collectionsCount: item.targetUser._count.collections,
+      },
+    )),
+  );
+
+  const feedSavedDrops = followedUsers
+    .flatMap((item) =>
+      item.targetUser.bookmarks.map((bookmark) => ({
+        id: `saved-${item.targetUser.id}-${bookmark.id}`,
+        travelerId: item.targetUser.id,
+        place: mapPlaceForClient(
+          bookmark.place,
+          getPlaceScoreOverride(followedPlaceOverrideMap, bookmark.placeId),
+        ),
+        caption: '',
+        savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+        savedAtIso: bookmark.createdAt.toISOString(),
+        createdAtMs: bookmark.createdAt.getTime(),
+      })),
+    )
+    .sort((a, b) => b.createdAtMs - a.createdAtMs)
+    .slice(0, 8)
+    .map(({ createdAtMs: _createdAtMs, ...entry }) => entry);
+
+  const travelerMap = new Map(followedTravelers.map((traveler) => [traveler.id, traveler]));
   const fullTravelerFeedMap = new Map(
     followedUsers.map((item) => [
       item.targetUser.id,
@@ -1106,7 +1190,7 @@ export async function getFollowingFeed(userId?: string) {
   );
 
   const items = [
-    ...discovery.feedSavedDrops.map((drop) => {
+    ...feedSavedDrops.map((drop) => {
       const traveler = travelerMap.get(drop.travelerId);
       if (!traveler) return null;
       return {
@@ -1155,8 +1239,8 @@ export async function getFollowingFeed(userId?: string) {
     });
 
   return {
-    followedTravelers: discovery.followedTravelers,
-    suggestedTravelers: discovery.similarTravelers,
+    followedTravelers,
+    suggestedTravelers: [],
     items,
   };
 }

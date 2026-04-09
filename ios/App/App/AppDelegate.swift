@@ -634,22 +634,10 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             nativeLogger.log("refreshFeed success followed=\(self.followedTravelers.count, privacy: .public) suggested=\(self.suggestedTravelers.count, privacy: .public) items=\(self.feedItems.count, privacy: .public)")
         } catch {
             nativeLogger.error("refreshFeed primary failed: \(error.localizedDescription, privacy: .public)")
-            do {
-                let fallback = try await api.getTravelerDiscovery(token: token)
-                followedTravelers = fallback.followedTravelers
-                suggestedTravelers = fallback.similarTravelers
-                feedItems = buildFeedItems(
-                    followedTravelers: fallback.followedTravelers,
-                    savedDrops: fallback.feedSavedDrops ?? []
-                )
-                nativeLogger.log("refreshFeed fallback success followed=\(self.followedTravelers.count, privacy: .public) suggested=\(self.suggestedTravelers.count, privacy: .public) items=\(self.feedItems.count, privacy: .public)")
-            } catch {
-                nativeLogger.error("refreshFeed fallback failed: \(error.localizedDescription, privacy: .public)")
-                if feedItems.isEmpty {
-                    feedItems = ownFeedItemsCache
-                }
-                feedErrorMessage = "Could not refresh feed right now."
+            if feedItems.isEmpty {
+                feedItems = ownFeedItemsCache
             }
+            feedErrorMessage = "Could not refresh feed right now."
         }
     }
 
@@ -5229,10 +5217,128 @@ private struct NativePlaceDetailScreen: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 22) {
-                    ZStack(alignment: .topLeading) {
-                        TabView(selection: $selectedMediaIndex) {
-                            ForEach(Array(mediaUrls.enumerated()), id: \.offset) { index, url in
+            resolvedPlaceContent
+            .padding(20)
+            .padding(.bottom, 28)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarHidden(false)
+        .toolbar {
+            ToolbarItem(placement: .principal) {
+                VStack(spacing: 0) {
+                    if !compatibilityHeaderPrimary.isEmpty {
+                        Text(compatibilityHeaderPrimary)
+                            .font(.system(size: 14, weight: .black))
+                            .foregroundStyle(compatibilityHeaderColor)
+                    }
+                    if let secondary = compatibilityHeaderSecondary {
+                        Text(secondary)
+                            .font(.system(size: 10, weight: .regular))
+                            .foregroundStyle(.white.opacity(0.45))
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .id("\(place.id)-\(place.similarityStat ?? -1)-\(compatibilityHeaderPrimary)")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    shareURL = placeShareURL
+                } label: {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .safeAreaInset(edge: .bottom) {
+            HStack(spacing: 12) {
+                Button {
+                    appState.activeTab = .checkIn
+                } label: {
+                    HStack {
+                        Spacer()
+                        HStack(spacing: 8) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 15, weight: .bold))
+                            Text("Been Here")
+                                .font(.system(size: 15, weight: .black))
+                        }
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(Color.white.opacity(0.1))
+                    .foregroundStyle(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+
+                Button {
+                    Task {
+                        await toggleBookmark()
+                    }
+                } label: {
+                    HStack {
+                        Spacer()
+                        HStack(spacing: 8) {
+                            Image(systemName: appState.isBookmarked(place.id) ? "bookmark.fill" : "bookmark")
+                                .font(.system(size: 15, weight: .bold))
+                            if isTogglingBookmark {
+                                ProgressView().tint(.black)
+                            } else {
+                                Text(appState.isBookmarked(place.id) ? "Saved" : "Save")
+                                    .font(.system(size: 15, weight: .black))
+                            }
+                        }
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .fill(appState.isBookmarked(place.id) ? nativeAccent : Color.white.opacity(0.1))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(nativeAccent, lineWidth: 1.5)
+                    )
+                    .foregroundStyle(appState.isBookmarked(place.id) ? .black : nativeAccent)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .disabled(isTogglingBookmark)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+            .background(Color.black.opacity(0.94))
+        }
+        .onAppear {
+            appState.pushFloatingTabBarHidden()
+        }
+        .onDisappear {
+            appState.popFloatingTabBarHidden()
+        }
+        .task {
+            await loadLatestPlace()
+        }
+        .sheet(isPresented: Binding(
+            get: { shareURL != nil },
+            set: { if !$0 { shareURL = nil } }
+        )) {
+            NativeShareSheet(items: shareURL.map { [$0] } ?? [])
+        }
+    }
+
+    private var resolvedPlaceContent: some View {
+        VStack(alignment: .leading, spacing: 22) {
+                ZStack(alignment: .topLeading) {
+                    TabView(selection: $selectedMediaIndex) {
+                        ForEach(Array(mediaUrls.enumerated()), id: \.offset) { index, url in
                                 NativeRemoteImage(url: url)
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                                     .tag(index)
@@ -5544,126 +5650,12 @@ private struct NativePlaceDetailScreen: View {
                             }
                         }
 
-                        if let errorMessage {
-                            Text(errorMessage)
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(.red.opacity(0.9))
-                        }
-                    }
-            }
-            .padding(20)
-            .padding(.bottom, 28)
-        }
-        .background(Color.black.ignoresSafeArea())
-        .navigationBarTitleDisplayMode(.inline)
-        .navigationBarHidden(false)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                VStack(spacing: 0) {
-                    if !compatibilityHeaderPrimary.isEmpty {
-                        Text(compatibilityHeaderPrimary)
-                            .font(.system(size: 14, weight: .black))
-                            .foregroundStyle(compatibilityHeaderColor)
-                    }
-                    if let secondary = compatibilityHeaderSecondary {
-                        Text(secondary)
-                            .font(.system(size: 10, weight: .regular))
-                            .foregroundStyle(.white.opacity(0.45))
+                    if let errorMessage {
+                        Text(errorMessage)
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(.red.opacity(0.9))
                     }
                 }
-                .frame(maxWidth: .infinity)
-                .id("\(place.id)-\(place.similarityStat ?? -1)-\(compatibilityHeaderPrimary)")
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    shareURL = placeShareURL
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 12) {
-                Button {
-                    appState.activeTab = .checkIn
-                } label: {
-                    HStack {
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 15, weight: .bold))
-                            Text("Been Here")
-                                .font(.system(size: 15, weight: .black))
-                        }
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(Color.white.opacity(0.1))
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-
-                Button {
-                    Task {
-                        await toggleBookmark()
-                    }
-                } label: {
-                    HStack {
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Image(systemName: appState.isBookmarked(place.id) ? "bookmark.fill" : "bookmark")
-                                .font(.system(size: 15, weight: .bold))
-                            if isTogglingBookmark {
-                                ProgressView().tint(.black)
-                            } else {
-                                Text(appState.isBookmarked(place.id) ? "Saved" : "Save")
-                                    .font(.system(size: 15, weight: .black))
-                            }
-                        }
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .fill(appState.isBookmarked(place.id) ? nativeAccent : Color.white.opacity(0.1))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .stroke(nativeAccent, lineWidth: 1.5)
-                    )
-                    .foregroundStyle(appState.isBookmarked(place.id) ? .black : nativeAccent)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .disabled(isTogglingBookmark)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 10)
-            .padding(.bottom, 10)
-            .background(Color.black.opacity(0.94))
-        }
-        .onAppear {
-            appState.pushFloatingTabBarHidden()
-        }
-        .onDisappear {
-            appState.popFloatingTabBarHidden()
-        }
-        .task {
-            await loadLatestPlace()
-        }
-        .sheet(isPresented: Binding(
-            get: { shareURL != nil },
-            set: { if !$0 { shareURL = nil } }
-        )) {
-            NativeShareSheet(items: shareURL.map { [$0] } ?? [])
         }
     }
 
@@ -5878,6 +5870,7 @@ private struct NativePlaceDetailScreen: View {
             nativeLogger.error(
                 "place detail load failed id=\(self.place.id, privacy: .public) error=No detail payload available"
             )
+            errorMessage = "Could not refresh place details right now."
             return
         }
 
@@ -5889,6 +5882,7 @@ private struct NativePlaceDetailScreen: View {
         travelerMoments = resolvedPayload.travelerMoments ?? []
         relatedPlaces = resolvedPayload.relatedPlaces ?? []
         place = nextPlace
+        errorMessage = nil
         nativeLogger.log(
             "place detail final score id=\(self.place.id, privacy: .public) finalScore=\(String(describing: nextPlace.similarityStat), privacy: .public) headerPrimary=\(self.compatibilityHeaderPrimary, privacy: .public)"
         )
