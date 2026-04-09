@@ -16,6 +16,7 @@ import {
   getFollowingFeed,
   getTravelerDiscovery,
   getTravelerProfile,
+  getTravelerFollowers,
   getPublicTravelerSuggestions,
   searchPublicTravelers,
   getPlaceTravelerMoments,
@@ -5037,6 +5038,12 @@ app.get('/api/travelers/:id', requireAuth, (req: AuthenticatedRequest, res) => {
       }
       res.json(payload);
     })
+    .catch((error) => handleError(res, error));
+});
+
+app.get('/api/travelers/:id/followers', requireAuth, (req: AuthenticatedRequest, res) => {
+  void getTravelerFollowers(req.params.id, req.authUserId)
+    .then((followers) => res.json({ travelers: followers }))
     .catch((error) => handleError(res, error));
 });
 

@@ -20,6 +20,8 @@ private let nativeLocationOptions = [
     NativeLocationOption(id: "jakarta", label: "Jakarta"),
 ]
 
+private let nativeTravelerProfileHorizontalPadding: CGFloat = 22
+
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(
@@ -192,6 +194,18 @@ private struct NativeServerFeedItem: Decodable, Identifiable {
 
 private struct NativeTravelerSearchResponse: Decodable {
     let travelers: [NativeTravelerSummary]
+}
+
+private struct NativeFollowerListItem: Decodable, Identifiable {
+    let id: String
+    let username: String
+    let displayName: String?
+    let avatar: String?
+    let matchScore: Int?
+}
+
+private struct NativeTravelerFollowersResponse: Decodable {
+    let travelers: [NativeFollowerListItem]
 }
 
 private struct NativeTravelerProfileResponse: Decodable {
@@ -522,8 +536,20 @@ private final class NativeAppState: ObservableObject {
             }
             nativeLogger.log("refreshFeed success followed=\(self.followedTravelers.count, privacy: .public) suggested=\(self.suggestedTravelers.count, privacy: .public) items=\(self.feedItems.count, privacy: .public)")
         } catch {
-            nativeLogger.error("refreshFeed failed: \(error.localizedDescription, privacy: .public)")
-            feedErrorMessage = "Could not load feed right now."
+            nativeLogger.error("refreshFeed primary failed: \(error.localizedDescription, privacy: .public)")
+            do {
+                let fallback = try await api.getTravelerDiscovery(token: token)
+                followedTravelers = fallback.followedTravelers
+                suggestedTravelers = fallback.similarTravelers
+                feedItems = buildFeedItems(
+                    followedTravelers: fallback.followedTravelers,
+                    savedDrops: fallback.feedSavedDrops ?? []
+                )
+                nativeLogger.log("refreshFeed fallback success followed=\(self.followedTravelers.count, privacy: .public) suggested=\(self.suggestedTravelers.count, privacy: .public) items=\(self.feedItems.count, privacy: .public)")
+            } catch {
+                nativeLogger.error("refreshFeed fallback failed: \(error.localizedDescription, privacy: .public)")
+                feedErrorMessage = "Could not load feed right now."
+            }
         }
     }
 
@@ -603,6 +629,13 @@ private final class NativeAppState: ObservableObject {
         return try await api.getTravelerProfile(id: id, token: token)
     }
 
+    func fetchTravelerFollowers(id: String) async throws -> [NativeFollowerListItem] {
+        guard let token = authToken else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        return try await api.getTravelerFollowers(id: id, token: token)
+    }
+
     func isBookmarked(_ placeId: String) -> Bool {
         savedPlaces.contains(where: { $0.id == placeId })
     }
@@ -636,7 +669,7 @@ private final class NativeAppState: ObservableObject {
         followedTravelers.contains(where: { $0.id == travelerId })
     }
 
-    func toggleFollow(for traveler: NativeTravelerSummary) async throws -> Bool {
+    func toggleFollow(for traveler: NativeTravelerSummary, refreshFeedAfter: Bool = true) async throws -> NativeAPIClient.NativeToggleFollowResponse {
         guard let token = authToken else {
             throw URLError(.userAuthenticationRequired)
         }
@@ -659,8 +692,10 @@ private final class NativeAppState: ObservableObject {
             followedTravelers: followedTravelers,
             savedDrops: []
         )
-        await refreshFeed()
-        return result.active
+        if refreshFeedAfter {
+            await refreshFeed()
+        }
+        return result
     }
 
     func fetchComments(targetType: String, targetId: String) async throws -> [NativeComment] {
@@ -1019,6 +1054,15 @@ private struct NativeAPIClient {
 
     func getTravelerProfile(id: String, token: String) async throws -> NativeTravelerProfileResponse {
         try await request(path: "/api/travelers/\(id)", method: "GET", token: token)
+    }
+
+    func getTravelerFollowers(id: String, token: String) async throws -> [NativeFollowerListItem] {
+        let response: NativeTravelerFollowersResponse = try await request(
+            path: "/api/travelers/\(id)/followers",
+            method: "GET",
+            token: token
+        )
+        return response.travelers
     }
 
     private struct NativeCommentsResponse: Decodable {
@@ -4366,6 +4410,143 @@ private struct NativeTravelerSearchRow: View {
     }
 }
 
+private struct NativeFollowersScreen: View {
+    @EnvironmentObject private var appState: NativeAppState
+    let traveler: NativeTravelerSummary
+    @State private var followers: [NativeFollowerListItem] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                if let errorMessage {
+                    NativeInlineError(message: errorMessage)
+                }
+
+                if isLoading && followers.isEmpty {
+                    NativeSurfaceCard {
+                        HStack {
+                            ProgressView().tint(nativeAccent)
+                            Text("Loading followers")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.64))
+                        }
+                    }
+                } else if followers.isEmpty {
+                    NativeSurfaceCard {
+                        Text("No followers visible right now.")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.62))
+                    }
+                } else {
+                    LazyVStack(spacing: 12) {
+                        ForEach(followers) { follower in
+                            NativeFollowerRow(follower: follower)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 12)
+            .padding(.bottom, 28)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationTitle("Followers")
+        .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            appState.showFloatingTabBar = false
+        }
+        .onDisappear {
+            appState.showFloatingTabBar = true
+        }
+        .task {
+            guard !isLoading else { return }
+            isLoading = true
+            defer { isLoading = false }
+
+            do {
+                followers = try await appState.fetchTravelerFollowers(id: traveler.id)
+            } catch {
+                errorMessage = "Could not load followers right now."
+            }
+        }
+    }
+}
+
+private struct NativeFollowerRow: View {
+    @EnvironmentObject private var appState: NativeAppState
+    let follower: NativeFollowerListItem
+    @State private var isTogglingFollow = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            NativeAvatarCircle(
+                url: follower.avatar,
+                fallbackText: follower.displayName ?? follower.username,
+                size: 46,
+                fontSize: 16
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(follower.displayName ?? follower.username)
+                    .font(.system(size: 15, weight: .black))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text("@\(follower.username)")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.46))
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+
+            if let matchScore = follower.matchScore {
+                Text("\(matchScore)%")
+                    .font(.system(size: 12, weight: .black))
+                    .foregroundStyle(nativeAccent)
+            }
+
+            Button {
+                Task {
+                    isTogglingFollow = true
+                    _ = try? await appState.toggleFollow(
+                        for: NativeTravelerSummary(
+                            id: follower.id,
+                            username: follower.username,
+                            displayName: follower.displayName,
+                            avatar: follower.avatar,
+                            bio: nil,
+                            descriptor: nil,
+                            matchScore: follower.matchScore,
+                            followersCount: nil,
+                            recentSavedPlaces: nil,
+                            recentCollections: nil,
+                            travelHistory: [],
+                            savedPlacesCount: nil,
+                            collectionsCount: nil
+                        )
+                    )
+                    isTogglingFollow = false
+                }
+            } label: {
+                Text(appState.isFollowing(follower.id) ? "Unfollow" : "Follow")
+                    .font(.system(size: 12, weight: .black))
+                    .foregroundStyle(appState.isFollowing(follower.id) ? .white : .black)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(appState.isFollowing(follower.id) ? Color.white.opacity(0.08) : nativeAccent)
+                    .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(isTogglingFollow)
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+    }
+}
+
 private struct NativeTravelerProfileScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @State private var traveler: NativeTravelerSummary
@@ -4386,55 +4567,67 @@ private struct NativeTravelerProfileScreen: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 18, pinnedViews: [.sectionHeaders]) {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 14) {
+            LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
+                VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 10) {
                         HStack(alignment: .top, spacing: 14) {
                             NativeAvatarCircle(
                                 url: traveler.avatar,
                                 fallbackText: traveler.displayName ?? traveler.username,
-                                size: 76,
-                                fontSize: 28
+                                size: 60,
+                                fontSize: 21
                             )
 
-                            VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 6) {
                                 Text(traveler.displayName ?? traveler.username)
-                                    .font(.system(size: 30, weight: .black))
+                                    .font(.system(size: 22, weight: .black))
                                     .foregroundStyle(.white)
                                     .fixedSize(horizontal: false, vertical: true)
 
                                 if let bio = traveler.bio, !bio.isEmpty {
                                     Text(bio)
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.68))
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.56))
                                         .fixedSize(horizontal: false, vertical: true)
                                 }
                             }
                         }
 
-                        if let matchScore = traveler.matchScore {
-                            Text("\(matchScore)% match")
-                                .font(.system(size: 13, weight: .black))
-                                .foregroundStyle(nativeAccent)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .background(nativeAccent.opacity(0.14))
-                                .clipShape(Capsule())
+                        HStack(spacing: 6) {
+                            if let matchScore = traveler.matchScore {
+                                NativeProfileMetaPill(
+                                    label: "\(matchScore)% match",
+                                    foreground: nativeAccent,
+                                    background: nativeAccent.opacity(0.14)
+                                )
+                            }
+
+                            if let followersCount = traveler.followersCount {
+                                NavigationLink {
+                                    NativeFollowersScreen(traveler: traveler)
+                                } label: {
+                                    NativeProfileMetaPill(
+                                        label: "\(followersCount) followers",
+                                        foreground: .white.opacity(0.84),
+                                        background: Color.white.opacity(0.08)
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
 
                     HStack(spacing: 12) {
-                        NativeStatCard(label: "Followers", value: "\(traveler.followersCount ?? 0)")
                         Button {
                             activeSection = .saved
                         } label: {
-                            NativeStatCard(label: "Saved", value: "\(traveler.savedPlacesCount ?? bookmarks.count)")
+                            NativeProfileMiniStat(label: "Saved", value: "\(traveler.savedPlacesCount ?? bookmarks.count)")
                         }
                         .buttonStyle(.plain)
                         Button {
                             activeSection = .visited
                         } label: {
-                            NativeStatCard(
+                            NativeProfileMiniStat(
                                 label: "Visited",
                                 value: "\(traveler.travelHistory.flatMap(\.places).filter { $0.visitedDate != nil }.count)"
                             )
@@ -4443,30 +4636,31 @@ private struct NativeTravelerProfileScreen: View {
                         Button {
                             activeSection = .collections
                         } label: {
-                            NativeStatCard(label: "Lists", value: "\(traveler.collectionsCount ?? collections.count)")
+                            NativeProfileMiniStat(label: "Lists", value: "\(traveler.collectionsCount ?? collections.count)")
                         }
                         .buttonStyle(.plain)
                     }
+                    .frame(maxWidth: .infinity)
 
                     if let descriptor = traveler.descriptor, !descriptor.isEmpty {
-                        VStack(alignment: .leading, spacing: 10) {
+                        VStack(alignment: .leading, spacing: 8) {
                             Text("Travel taste")
-                                .font(.system(size: 11, weight: .black))
-                                .foregroundStyle(nativeAccent)
+                                .font(.system(size: 9, weight: .black))
+                                .foregroundStyle(nativeAccent.opacity(0.82))
                                 .textCase(.uppercase)
                             Text(descriptor)
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.9))
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.72))
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(20)
+                        .padding(14)
                         .background(
                             RoundedRectangle(cornerRadius: 24, style: .continuous)
                                 .fill(
                                     LinearGradient(
                                         colors: [
-                                            nativeAccent.opacity(0.14),
-                                            Color(red: 28 / 255, green: 30 / 255, blue: 36 / 255).opacity(0.98)
+                                            nativeAccent.opacity(0.05),
+                                            Color(red: 24 / 255, green: 26 / 255, blue: 31 / 255).opacity(0.86)
                                         ],
                                         startPoint: .topLeading,
                                         endPoint: .bottomTrailing
@@ -4475,52 +4669,50 @@ private struct NativeTravelerProfileScreen: View {
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                .stroke(nativeAccent.opacity(0.32), lineWidth: 1)
+                                .stroke(nativeAccent.opacity(0.1), lineWidth: 1)
                         )
                     }
 
                     HStack(spacing: 10) {
                         Button {
+                            showShareSheet = true
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 15, weight: .black))
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
                             Task {
                                 await toggleFollow()
                             }
                         } label: {
-                            VStack(alignment: .leading, spacing: 10) {
-                                HStack {
-                                    Spacer()
-                                    if isTogglingFollow {
-                                        ProgressView().tint(appState.isFollowing(traveler.id) ? .white : .black)
-                                    } else {
-                                        Text(appState.isFollowing(traveler.id) ? "Unfollow" : "Follow")
-                                            .font(.system(size: 16, weight: .black))
-                                    }
-                                    Spacer()
+                            HStack {
+                                Spacer()
+                                if isTogglingFollow {
+                                    ProgressView().tint(appState.isFollowing(traveler.id) ? .white : .black)
+                                } else {
+                                    Text(appState.isFollowing(traveler.id) ? "Unfollow" : "Follow")
+                                        .font(.system(size: 14, weight: .black))
                                 }
-                                .padding(.vertical, 16)
-                                .background(appState.isFollowing(traveler.id) ? Color.white.opacity(0.08) : nativeAccent)
-                                .foregroundStyle(appState.isFollowing(traveler.id) ? .white : .black)
-                                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                                Spacer()
                             }
+                            .padding(.vertical, 12)
+                            .background(appState.isFollowing(traveler.id) ? Color.white.opacity(0.08) : nativeAccent)
+                            .foregroundStyle(appState.isFollowing(traveler.id) ? .white : .black)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                         }
                         .buttonStyle(.plain)
                         .disabled(isTogglingFollow)
-
-                        Button {
-                            showShareSheet = true
-                        } label: {
-                            Image(systemName: "square.and.arrow.up")
-                                .font(.system(size: 17, weight: .black))
-                                .foregroundStyle(.white)
-                                .frame(width: 54, height: 54)
-                                .background(Color.white.opacity(0.08))
-                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-                .padding(.bottom, 12)
+                .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
+                .padding(.top, 12)
+                .padding(.bottom, 8)
                 .background(nativeProfileHeaderFill)
 
                 Section {
@@ -4532,7 +4724,7 @@ private struct NativeTravelerProfileScreen: View {
                         travelerSectionContent
                     }
                     .id(activeSection)
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
                     .padding(.top, 12)
                     .padding(.bottom, 28)
                 } header: {
@@ -4776,10 +4968,62 @@ private struct NativeTravelerProfileScreen: View {
         defer { isTogglingFollow = false }
 
         do {
-            _ = try await appState.toggleFollow(for: traveler)
+            let result = try await appState.toggleFollow(for: traveler, refreshFeedAfter: false)
+            traveler = NativeTravelerSummary(
+                id: traveler.id,
+                username: traveler.username,
+                displayName: traveler.displayName,
+                avatar: traveler.avatar,
+                bio: traveler.bio,
+                descriptor: traveler.descriptor,
+                matchScore: traveler.matchScore,
+                followersCount: result.followersCount,
+                recentSavedPlaces: traveler.recentSavedPlaces,
+                recentCollections: traveler.recentCollections,
+                travelHistory: traveler.travelHistory,
+                savedPlacesCount: traveler.savedPlacesCount,
+                collectionsCount: traveler.collectionsCount
+            )
         } catch {
             errorMessage = "Could not update follow right now."
         }
+    }
+}
+
+private struct NativeProfileMetaPill: View {
+    let label: String
+    let foreground: Color
+    let background: Color
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 12, weight: .black))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(background)
+            .clipShape(Capsule())
+    }
+}
+
+private struct NativeProfileMiniStat: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(value)
+                .font(.system(size: 18, weight: .black))
+                .foregroundStyle(.white)
+            Text(label)
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white.opacity(0.4))
+                .textCase(.uppercase)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 

@@ -1455,6 +1455,46 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
   };
 }
 
+export async function getTravelerFollowers(travelerId: string, viewerUserId?: string) {
+  const followers = await prisma.follow.findMany({
+    where: {
+      targetUserId: travelerId,
+    },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      sourceUser: {
+        include: {
+          badges: true,
+          flags: true,
+        },
+      },
+    },
+  });
+
+  return Promise.all(
+    followers.map(async (follow) => {
+      const user = follow.sourceUser;
+      const similarity = viewerUserId
+        ? await prisma.travelerSimilarity.findFirst({
+            where: {
+              travelerId: user.id,
+              userId: viewerUserId,
+            },
+            orderBy: { updatedAt: 'desc' },
+          })
+        : null;
+
+      return {
+        id: user.id,
+        username: user.username,
+        displayName: user.displayName ?? user.username,
+        avatar: user.avatarUrl,
+        matchScore: similarity?.matchScore,
+      };
+    }),
+  );
+}
+
 export async function getRelatedPlaces(placeId: string) {
   const place = await prisma.place.findUnique({
     where: { id: placeId },
