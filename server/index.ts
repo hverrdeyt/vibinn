@@ -3943,7 +3943,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
   };
 }
 
-async function getPlaceDetailBundle(placeId: string, userId?: string) {
+async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
   const place = await getPlaceDetailsByInternalId(placeId, userId);
   if (!place) return null;
 
@@ -3969,10 +3969,18 @@ async function getPlaceDetailBundle(placeId: string, userId?: string) {
             distinct: ['placeId'],
             select: { placeId: true },
           }),
-        ]).then(([bookmarked, beenThereMoments]) => ({
-          bookmarkedPlaceIds: bookmarked.map((item) => item.placeId),
-          beenTherePlaceIds: beenThereMoments.map((item) => item.placeId),
-        }))
+        ])
+          .then(([bookmarked, beenThereMoments]) => ({
+            bookmarkedPlaceIds: bookmarked.map((item) => item.placeId),
+            beenTherePlaceIds: beenThereMoments.map((item) => item.placeId),
+          }))
+          .catch((error) => {
+            console.error(error);
+            return {
+              bookmarkedPlaceIds: [] as string[],
+              beenTherePlaceIds: [] as string[],
+            };
+          })
       : Promise.resolve({
           bookmarkedPlaceIds: [] as string[],
           beenTherePlaceIds: [] as string[],
@@ -4686,19 +4694,24 @@ app.get('/api/lookups/places/:id', optionalAuth, (req: AuthenticatedRequest, res
       ? refreshUserPlaceScores(req.authUserId, [req.params.id]).catch(() => {})
       : Promise.resolve()
   )
-    .then(() => getPlaceDetailsByInternalId(req.params.id, req.authUserId))
-    .then((place) => {
-      if (!place) {
+    .then(() => getUnifiedPlaceDetailPayload(req.params.id, req.authUserId))
+    .then((payload) => {
+      if (!payload) {
         res.status(404).json({ error: 'Place not found' });
         return;
       }
-      res.json({ place });
+      res.json(payload);
     })
     .catch((error) => handleError(res, error));
 });
 
 app.get('/api/lookups/places/:id/bundle', optionalAuth, (req: AuthenticatedRequest, res) => {
-  void getPlaceDetailBundle(req.params.id, req.authUserId)
+  void (
+    req.authUserId
+      ? refreshUserPlaceScores(req.authUserId, [req.params.id]).catch(() => {})
+      : Promise.resolve()
+  )
+    .then(() => getUnifiedPlaceDetailPayload(req.params.id, req.authUserId))
     .then((payload) => {
       if (!payload) {
         res.status(404).json({ error: 'Place not found' });
