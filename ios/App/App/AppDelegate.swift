@@ -3833,6 +3833,7 @@ private struct NativeDiscoverScreen: View {
 
 private struct NativeTodayRecommendationCard: View {
     let recommendation: NativeTodayRecommendationResponse
+    @State private var showConfetti = false
 
     private var badge: NativeCompatibilityBadgeMeta? {
         nativeCompatibilityBadge(for: recommendation.compatibilityScore)
@@ -3912,8 +3913,69 @@ private struct NativeTodayRecommendationCard: View {
         )
         .overlay(
             RoundedRectangle(cornerRadius: 30, style: .continuous)
-                .stroke(nativeBorder, lineWidth: 1)
+                .stroke(nativeAccent.opacity(0.95), lineWidth: 2)
         )
+        .overlay {
+            if showConfetti {
+                NativeConfettiBurstView()
+                    .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                    .transition(.opacity)
+            }
+        }
+        .shadow(color: nativeAccent.opacity(0.22), radius: 20, y: 12)
+        .onAppear {
+            showConfetti = false
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.78)) {
+                showConfetti = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) {
+                withAnimation(.easeOut(duration: 0.35)) {
+                    showConfetti = false
+                }
+            }
+        }
+    }
+}
+
+private struct NativeConfettiBurstView: View {
+    private let pieces: [(x: CGFloat, y: CGFloat, color: Color, rotation: Double, size: CGFloat)] = [
+        (0.14, 0.06, nativeAccent, -18, 9),
+        (0.22, 0.12, Color.white, 28, 7),
+        (0.31, 0.08, Color(red: 120 / 255, green: 1, blue: 160 / 255), -34, 8),
+        (0.68, 0.07, nativeAccent.opacity(0.9), 22, 9),
+        (0.76, 0.13, Color.white.opacity(0.9), -20, 7),
+        (0.84, 0.09, Color(red: 120 / 255, green: 1, blue: 160 / 255), 30, 8),
+    ]
+
+    @State private var animate = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            ZStack {
+                ForEach(Array(pieces.enumerated()), id: \.offset) { index, piece in
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(piece.color)
+                        .frame(width: piece.size, height: piece.size * 1.5)
+                        .rotationEffect(.degrees(animate ? piece.rotation : 0))
+                        .position(
+                            x: proxy.size.width * piece.x,
+                            y: proxy.size.height * (animate ? piece.y + 0.13 : piece.y)
+                        )
+                        .opacity(animate ? 0 : 1)
+                        .animation(
+                            .easeOut(duration: 0.9).delay(Double(index) * 0.03),
+                            value: animate
+                        )
+                }
+            }
+            .onAppear {
+                animate = false
+                DispatchQueue.main.async {
+                    animate = true
+                }
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 

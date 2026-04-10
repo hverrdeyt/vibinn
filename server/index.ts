@@ -3041,23 +3041,56 @@ function rotateArray<T>(items: T[], offset: number) {
 function applyRankedVariety<T extends { similarityStat?: number | null }>(items: T[], seedKey: string) {
   if (items.length <= 2) return items;
 
-  const topBucket: T[] = [];
-  const upperBucket: T[] = [];
-  const baseBucket: T[] = [];
+  const mustVisitBucket: T[] = [];
+  const fitsYouBucket: T[] = [];
+  const worthALookBucket: T[] = [];
+  const maybeBucket: T[] = [];
 
   items.forEach((item) => {
     const score = item.similarityStat ?? 0;
-    if (score >= 88) topBucket.push(item);
-    else if (score >= 78) upperBucket.push(item);
-    else baseBucket.push(item);
+    if (score >= 90) mustVisitBucket.push(item);
+    else if (score >= 78) fitsYouBucket.push(item);
+    else if (score >= 62) worthALookBucket.push(item);
+    else maybeBucket.push(item);
   });
 
   const seed = hashStringSeed(seedKey);
-  return [
-    ...rotateArray(topBucket, seed),
-    ...rotateArray(upperBucket, seed * 2 + 1),
-    ...rotateArray(baseBucket, seed * 3 + 2),
+  const buckets = {
+    mustVisit: rotateArray(mustVisitBucket, seed),
+    fitsYou: rotateArray(fitsYouBucket, seed * 2 + 1),
+    worthALook: rotateArray(worthALookBucket, seed * 3 + 2),
+    maybe: rotateArray(maybeBucket, seed * 5 + 3),
+  };
+  const pattern: Array<keyof typeof buckets> = [
+    'mustVisit',
+    'fitsYou',
+    'worthALook',
+    'worthALook',
+    'maybe',
   ];
+  const usedItems = new Set<T>();
+  const result: T[] = [];
+
+  let madeProgress = true;
+  while (madeProgress) {
+    madeProgress = false;
+
+    for (const bucketKey of pattern) {
+      const bucket = buckets[bucketKey];
+      while (bucket.length > 0) {
+        const candidate = bucket.shift()!;
+        if (usedItems.has(candidate)) {
+          continue;
+        }
+        usedItems.add(candidate);
+        result.push(candidate);
+        madeProgress = true;
+        break;
+      }
+    }
+  }
+
+  return result;
 }
 
 function buildEventHook(event: {
