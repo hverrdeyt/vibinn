@@ -4247,9 +4247,8 @@ async function optionalAuth(req: AuthenticatedRequest, _res: express.Response, n
 }
 
 app.get('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
-  void refreshSavedPlaceScoresForUser(req.authUserId!)
-    .catch(() => {})
-    .then(() => getProfileMe(req.authUserId))
+  void refreshSavedPlaceScoresForUser(req.authUserId!).catch(() => {});
+  void getProfileMe(req.authUserId)
     .then((payload) => res.json(payload))
     .catch((error) => handleError(res, error));
 });

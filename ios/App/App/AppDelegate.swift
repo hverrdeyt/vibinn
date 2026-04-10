@@ -518,6 +518,15 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             discoveryHasMore = response.pagination?.hasMore ?? false
             nativeLogger.log("refreshDiscovery success count=\(self.discoveryPlaces.count, privacy: .public)")
         } catch {
+            if error is CancellationError {
+                nativeLogger.log("refreshDiscovery cancelled")
+                return
+            }
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                nativeLogger.log("refreshDiscovery cancelled")
+                return
+            }
             nativeLogger.error("refreshDiscovery failed: \(error.localizedDescription, privacy: .public)")
             if discoveryPlaces.isEmpty {
                 discoveryPlaces = nativeFallbackDiscoveryPlaces(for: selectedLocation.label)
@@ -549,6 +558,15 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             discoveryPage = response.pagination?.page ?? nextPage
             discoveryHasMore = response.pagination?.hasMore ?? false
         } catch {
+            if error is CancellationError {
+                nativeLogger.log("loadMoreDiscovery cancelled")
+                return
+            }
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                nativeLogger.log("loadMoreDiscovery cancelled")
+                return
+            }
             nativeLogger.error("loadMoreDiscovery failed: \(error.localizedDescription, privacy: .public)")
         }
     }
@@ -633,6 +651,15 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             }
             nativeLogger.log("refreshFeed success followed=\(self.followedTravelers.count, privacy: .public) suggested=\(self.suggestedTravelers.count, privacy: .public) items=\(self.feedItems.count, privacy: .public)")
         } catch {
+            if error is CancellationError {
+                nativeLogger.log("refreshFeed cancelled")
+                return
+            }
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                nativeLogger.log("refreshFeed cancelled")
+                return
+            }
             nativeLogger.error("refreshFeed primary failed: \(error.localizedDescription, privacy: .public)")
             if feedItems.isEmpty {
                 feedItems = ownFeedItemsCache
@@ -2403,7 +2430,7 @@ private struct NativeMainTabView: View {
             .tag(NativeTab.checkIn)
 
             NavigationView {
-                NativeSavedPlaceholderScreen()
+                NativeSavedScreen()
             }
             .navigationViewStyle(.stack)
             .tabItem { Label("Saved", systemImage: "bookmark.fill") }
@@ -2800,40 +2827,48 @@ private struct NativeDiscoverScreen: View {
 private struct NativeSavedScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @State private var activeSection: NativeSavedSection = .places
+    @State private var expandedSavedCities: Set<String> = []
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 18) {
-                NativeScreenHeader(
-                    title: "Saved places",
-                    subtitle: "Your shortlist and collections, without the noise."
-                )
+        ZStack {
+            Color.black.ignoresSafeArea()
 
-                NativeSavedTabs(activeSection: $activeSection)
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    NativeScreenHeader(
+                        title: "Saved places",
+                        subtitle: "Your shortlist and collections."
+                    )
 
-                NativeSurfaceCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Saved debug mode")
-                            .font(.system(size: 18, weight: .black))
-                            .foregroundStyle(.white)
-                        Text("Saved places and collections are temporarily simplified while we isolate the native crash in this screen.")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.68))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    NativeSavedTabs(activeSection: $activeSection)
+
+                    savedSectionContent
                 }
-
-                savedSectionContent
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 132)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-            .padding(.bottom, 28)
         }
-        .background(Color.black.ignoresSafeArea())
         .navigationTitle("Saved places")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear {
+            if expandedSavedCities.isEmpty {
+                expandedSavedCities = Set(savedCityGroups.map(\.city))
+            }
+            if appState.savedPlaces.isEmpty && appState.currentUser != nil {
+                Task {
+                    await appState.refreshProfile()
+                    if expandedSavedCities.isEmpty {
+                        expandedSavedCities = Set(savedCityGroups.map(\.city))
+                    }
+                }
+            }
+        }
         .refreshable {
             await appState.refreshProfile()
+            if expandedSavedCities.isEmpty {
+                expandedSavedCities = Set(savedCityGroups.map(\.city))
+            }
         }
     }
 
@@ -2849,20 +2884,43 @@ private struct NativeSavedScreen: View {
                 }
             } else {
                 LazyVStack(spacing: 14) {
-                    ForEach(Array(appState.savedPlaces.prefix(30))) { place in
+                    ForEach(savedCityGroups, id: \.city) { group in
                         NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text(place.category?.uppercased() ?? "PLACE")
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundStyle(nativeAccent.opacity(0.92))
-                                    .textCase(.uppercase)
-                                Text(place.name)
-                                    .font(.system(size: 18, weight: .black))
-                                    .foregroundStyle(.white)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Text(place.location)
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.56))
+                            VStack(alignment: .leading, spacing: 14) {
+                                Button {
+                                    toggleSavedCity(group.city)
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(group.city)
+                                                .font(.system(size: 18, weight: .black))
+                                                .foregroundStyle(.white)
+                                            Text("\(group.places.count) places")
+                                                .font(.system(size: 12, weight: .bold))
+                                                .foregroundStyle(.white.opacity(0.45))
+                                        }
+                                        Spacer()
+                                        Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
+                                            .font(.system(size: 14, weight: .black))
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                }
+                                .buttonStyle(.plain)
+
+                                if expandedSavedCities.contains(group.city) {
+                                    VStack(spacing: 12) {
+                                        ForEach(group.places) { place in
+                                            NavigationLink {
+                                                NativePlaceDetailScreen(initialPlace: place)
+                                            } label: {
+                                                NativeSurfaceCard {
+                                                    NativePlaceRow(place: place)
+                                                }
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2878,24 +2936,58 @@ private struct NativeSavedScreen: View {
             } else {
                 LazyVStack(spacing: 14) {
                     ForEach(Array(appState.collections.prefix(30))) { collection in
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("LIST")
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundStyle(nativeAccent.opacity(0.92))
-                                    .textCase(.uppercase)
-                                Text(collection.label)
-                                    .font(.system(size: 18, weight: .black))
-                                    .foregroundStyle(.white)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                Text("\(collection.places.count) places")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.56))
+                        NavigationLink {
+                            NativeCollectionDetailScreen(collection: collection)
+                        } label: {
+                            NativeSurfaceCard {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    Text("LIST")
+                                        .font(.system(size: 11, weight: .black))
+                                        .foregroundStyle(nativeAccent.opacity(0.92))
+                                        .textCase(.uppercase)
+                                    Text(collection.label)
+                                        .font(.system(size: 18, weight: .black))
+                                        .foregroundStyle(.white)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text("\(collection.places.count) places")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.56))
+                                }
                             }
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
+        }
+    }
+
+    private var savedCityGroups: [(city: String, places: [NativePlace])] {
+        let grouped = Dictionary(grouping: Array(appState.savedPlaces.prefix(60))) { place in
+            place.location
+                .split(separator: ",")
+                .first
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 } ?? "Unknown city"
+        }
+
+        return grouped
+            .map { key, value in
+                (
+                    city: key,
+                    places: value.sorted {
+                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+                    }
+                )
+            }
+            .sorted { $0.city.localizedCaseInsensitiveCompare($1.city) == .orderedAscending }
+    }
+
+    private func toggleSavedCity(_ city: String) {
+        if expandedSavedCities.contains(city) {
+            expandedSavedCities.remove(city)
+        } else {
+            expandedSavedCities.insert(city)
         }
     }
 }
