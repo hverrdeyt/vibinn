@@ -593,7 +593,45 @@ const INITIAL_LOCATION_FALLBACKS = [
   { id: 'indonesia', label: 'Indonesia', type: 'country' as const },
   { id: 'new-york', label: 'New York', type: 'city' as const },
   { id: 'bali', label: 'Bali', type: 'province' as const },
+  { id: 'bandung', label: 'Bandung', type: 'city' as const },
+  { id: 'jakarta', label: 'Jakarta', type: 'city' as const },
+  { id: 'tokyo', label: 'Tokyo', type: 'city' as const },
+  { id: 'boston', label: 'Boston', type: 'city' as const },
+  { id: 'seoul', label: 'Seoul', type: 'city' as const },
+  { id: 'singapore', label: 'Singapore', type: 'country' as const },
+  { id: 'bangkok', label: 'Bangkok', type: 'city' as const },
+  { id: 'barcelona', label: 'Barcelona', type: 'city' as const },
+  { id: 'berlin', label: 'Berlin', type: 'city' as const },
+  { id: 'buenos-aires', label: 'Buenos Aires', type: 'city' as const },
 ];
+
+function scoreLocationKeywordMatch(label: string, query: string) {
+  const normalizedLabel = label.toLowerCase().trim();
+  const normalizedQuery = query.toLowerCase().trim();
+
+  if (normalizedLabel === normalizedQuery) return 400;
+  if (normalizedLabel.startsWith(normalizedQuery)) return 300;
+
+  const words = normalizedLabel.split(/[\s,-]+/).filter(Boolean);
+  if (words.some((word) => word.startsWith(normalizedQuery))) return 220;
+  if (normalizedLabel.includes(normalizedQuery)) return 140;
+
+  return -1;
+}
+
+function getFallbackLocationSuggestions(query: string) {
+  return INITIAL_LOCATION_FALLBACKS
+    .map((location) => ({
+      location,
+      score: scoreLocationKeywordMatch(location.label, query),
+    }))
+    .filter((entry) => entry.score >= 0)
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      return left.location.label.localeCompare(right.location.label);
+    })
+    .map((entry) => entry.location);
+}
 
 async function getLocationSuggestions(input: string) {
   const normalizedInput = input.trim();
@@ -618,7 +656,19 @@ async function getLocationSuggestions(input: string) {
       }));
 
     if (locations.length > 0) {
-      return locations;
+      const fallbackLocations = getFallbackLocationSuggestions(normalizedInput);
+      const merged = [...locations];
+      const seen = new Set(locations.map((location) => location.label.toLowerCase()));
+
+      for (const location of fallbackLocations) {
+        const key = location.label.toLowerCase();
+        if (!seen.has(key)) {
+          merged.push(location);
+          seen.add(key);
+        }
+      }
+
+      return merged.slice(0, 8);
     }
   }
 
@@ -642,13 +692,23 @@ async function getLocationSuggestions(input: string) {
       }));
 
     if (locations.length > 0) {
-      return locations;
+      const fallbackLocations = getFallbackLocationSuggestions(normalizedInput);
+      const merged = [...locations];
+      const seen = new Set(locations.map((location) => location.label.toLowerCase()));
+
+      for (const location of fallbackLocations) {
+        const key = location.label.toLowerCase();
+        if (!seen.has(key)) {
+          merged.push(location);
+          seen.add(key);
+        }
+      }
+
+      return merged.slice(0, 8);
     }
   }
 
-  return INITIAL_LOCATION_FALLBACKS.filter((location) =>
-    location.label.toLowerCase().includes(normalizedInput.toLowerCase()),
-  );
+  return getFallbackLocationSuggestions(normalizedInput);
 }
 
 async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {

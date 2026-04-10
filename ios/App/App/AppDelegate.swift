@@ -374,9 +374,13 @@ private struct NativeCreateCollectionResponse: Decodable {
     let collection: NativeCollection
 }
 
-private struct NativeLocationOption: Identifiable, Hashable {
+private struct NativeLocationOption: Decodable, Identifiable, Hashable {
     let id: String
     let label: String
+}
+
+private struct NativeLocationLookupResponse: Decodable {
+    let locations: [NativeLocationOption]
 }
 
 private enum NativeProfileSection: String, CaseIterable, Identifiable {
@@ -444,6 +448,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var discoveryErrorMessage: String?
     @Published var feedErrorMessage: String?
     @Published var savedErrorMessage: String?
+    @Published var showAuthSheet = false
+    @Published var authSheetReason: String?
 
     private let api = NativeAPIClient()
     private let authTokenKey = "vibinn_native_auth_token"
@@ -547,8 +553,21 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         followedTravelers = []
         suggestedTravelers = []
         feedItems = []
-        hasCompletedOnboarding = false
-        UserDefaults.standard.set(false, forKey: onboardingKey)
+        profileErrorMessage = nil
+        discoveryErrorMessage = nil
+        feedErrorMessage = nil
+        savedErrorMessage = nil
+        authSheetReason = nil
+    }
+
+    func presentAuthGate(reason: String) {
+        authSheetReason = reason
+        showAuthSheet = true
+    }
+
+    func dismissAuthGate() {
+        showAuthSheet = false
+        authSheetReason = nil
     }
 
     func completeOnboarding(with location: NativeLocationOption) async {
@@ -810,6 +829,10 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         try await api.lookupPlaces(query: query, token: authToken)
     }
 
+    func lookupLocations(query: String) async throws -> [NativeLocationOption] {
+        try await api.lookupLocations(query: query)
+    }
+
     func searchTravelers(query: String) async throws -> [NativeTravelerSummary] {
         try await api.searchPublicTravelers(query: query)
     }
@@ -820,7 +843,10 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         wouldRevisit: String,
         note: String
     ) async throws {
-        guard let token = authToken else { return }
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to save your check-ins.")
+            throw URLError(.userAuthenticationRequired)
+        }
 
         let createdMoment = try await api.createMoment(
             token: token,
@@ -888,6 +914,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     func toggleBookmark(for place: NativePlace) async throws {
         guard let token = authToken else {
+            presentAuthGate(reason: "Log in to save places.")
             throw URLError(.userAuthenticationRequired)
         }
 
@@ -910,6 +937,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     func toggleFollowQuietly(for traveler: NativeTravelerSummary) async throws -> NativeAPIClient.NativeToggleFollowResponse {
         guard let token = authToken else {
+            presentAuthGate(reason: "Log in to follow travelers.")
             throw URLError(.userAuthenticationRequired)
         }
 
@@ -920,6 +948,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     func toggleFollow(for traveler: NativeTravelerSummary, refreshFeedAfter: Bool = true) async throws -> NativeAPIClient.NativeToggleFollowResponse {
         guard let token = authToken else {
+            presentAuthGate(reason: "Log in to follow travelers.")
             throw URLError(.userAuthenticationRequired)
         }
 
@@ -954,6 +983,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     func createComment(targetType: String, targetId: String, body: String, momentId: String?) async throws -> NativeComment {
         guard let token = authToken else {
+            presentAuthGate(reason: "Log in to comment on posts.")
             throw URLError(.userAuthenticationRequired)
         }
         let response = try await api.postComment(
@@ -1422,6 +1452,16 @@ private struct NativeAPIClient {
         return response.places
     }
 
+    func lookupLocations(query: String) async throws -> [NativeLocationOption] {
+        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        let response: NativeLocationLookupResponse = try await request(
+            path: "/api/lookups/locations?q=\(encodedQuery)",
+            method: "GET",
+            token: nil
+        )
+        return response.locations
+    }
+
     private struct BookmarkBody: Encodable {
         let placeId: String
         let place: BookmarkSnapshot?
@@ -1613,9 +1653,6 @@ private struct NativeVibinnRootView: View {
         Group {
             if appState.isBootstrapping {
                 NativeLoadingScreen()
-            } else if appState.currentUser == nil {
-                NativeAuthScreen()
-                    .environmentObject(appState)
             } else if !appState.hasCompletedOnboarding {
                 NativeOnboardingScreen()
                     .environmentObject(appState)
@@ -1625,6 +1662,10 @@ private struct NativeVibinnRootView: View {
             }
         }
         .preferredColorScheme(.dark)
+        .sheet(isPresented: $appState.showAuthSheet) {
+            NativeAuthScreen(allowsDismissal: true, promptReason: appState.authSheetReason)
+                .environmentObject(appState)
+        }
         .task {
             nativeLogger.log("RootView task bootstrap")
             await appState.bootstrap()
@@ -1634,6 +1675,9 @@ private struct NativeVibinnRootView: View {
         }
         .onChange(of: appState.currentUser?.id) { value in
             nativeLogger.log("RootView currentUser changed hasUser=\(value != nil, privacy: .public)")
+            if value != nil, appState.showAuthSheet {
+                appState.dismissAuthGate()
+            }
         }
         .onChange(of: appState.hasCompletedOnboarding) { value in
             nativeLogger.log("RootView onboarding changed=\(value, privacy: .public)")
@@ -1668,6 +1712,45 @@ private struct NativeScreenHeader: View {
             Text(subtitle)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(.white.opacity(0.58))
+        }
+    }
+}
+
+private struct NativeGuestPromptCard: View {
+    @EnvironmentObject private var appState: NativeAppState
+    let eyebrow: String
+    let title: String
+    let message: String
+    let cta: String
+
+    var body: some View {
+        NativeSurfaceCard {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(eyebrow)
+                    .font(.system(size: 11, weight: .black))
+                    .foregroundStyle(.white.opacity(0.35))
+                    .textCase(.uppercase)
+                Text(title)
+                    .font(.system(size: 22, weight: .black))
+                    .foregroundStyle(.white)
+                Text(message)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Button {
+                    appState.presentAuthGate(reason: message)
+                } label: {
+                    Text(cta)
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(nativeAccent)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 }
@@ -1979,17 +2062,26 @@ private struct NativeSavedTabs: View {
 }
 
 private struct NativeLocationPickerSheet: View {
+    @EnvironmentObject private var appState: NativeAppState
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
+    @State private var results: [NativeLocationOption] = []
+    @State private var isSearching = false
+    @State private var errorMessage: String?
+    @State private var searchTask: Task<Void, Never>?
+    @FocusState private var isSearchFieldFocused: Bool
     let selectedLocation: NativeLocationOption
+    let availableLocations: [NativeLocationOption]
+    let suggestedLocations: [NativeLocationOption]
     let onSelect: (NativeLocationOption) -> Void
 
     private var filteredLocations: [NativeLocationOption] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nativeLocationOptions }
-        return nativeLocationOptions.filter { option in
-            option.label.localizedCaseInsensitiveContains(trimmed)
+        guard !trimmed.isEmpty else { return suggestedLocations }
+        if trimmed.count < 3 {
+            return []
         }
+        return results
     }
 
     var body: some View {
@@ -2024,6 +2116,7 @@ private struct NativeLocationPickerSheet: View {
                     TextField("Type a city", text: $query)
                         .textInputAutocapitalization(.words)
                         .autocorrectionDisabled()
+                        .focused($isSearchFieldFocused)
                         .font(.system(size: 17, weight: .medium))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 16)
@@ -2034,6 +2127,35 @@ private struct NativeLocationPickerSheet: View {
                                 .stroke(nativeBorder, lineWidth: 1)
                         )
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                    if let errorMessage {
+                        NativeInlineError(message: errorMessage)
+                    }
+
+                    if query.trimmingCharacters(in: .whitespacesAndNewlines).count > 0 && query.trimmingCharacters(in: .whitespacesAndNewlines).count < 3 {
+                        Text("Type at least 3 letters to search locations.")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.58))
+                    }
+
+                    if isSearching {
+                        HStack {
+                            ProgressView()
+                                .tint(nativeAccent)
+                            Text("Searching areas...")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                    } else if query.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3 && filteredLocations.isEmpty && errorMessage == nil {
+                        Text("No locations found.")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.58))
+                    } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text("Suggested")
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundStyle(.white.opacity(0.35))
+                            .textCase(.uppercase)
+                    }
 
                     VStack(spacing: 12) {
                         ForEach(filteredLocations) { location in
@@ -2077,6 +2199,61 @@ private struct NativeLocationPickerSheet: View {
         }
         .navigationViewStyle(.stack)
         .preferredColorScheme(.dark)
+        .onAppear {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                isSearchFieldFocused = true
+            }
+        }
+        .onChange(of: query) { _ in
+            searchTask?.cancel()
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count >= 3 else {
+                results = []
+                errorMessage = nil
+                return
+            }
+            searchTask = Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { return }
+                await performSearch()
+            }
+        }
+    }
+
+    private func performSearch() async {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            results = []
+            errorMessage = nil
+            return
+        }
+        guard trimmed.count >= 3 else {
+            results = []
+            errorMessage = nil
+            return
+        }
+
+        isSearching = true
+        errorMessage = nil
+        defer { isSearching = false }
+
+        do {
+            let lookedUp = try await appState.lookupLocations(query: trimmed)
+            let normalizedPairs: [(String, NativeLocationOption)] = lookedUp.map { option in
+                let matchedLocation = availableLocations.first { candidate in
+                    candidate.label.caseInsensitiveCompare(option.label) == .orderedSame
+                }
+                let normalized = matchedLocation ?? option
+                return (normalized.label.lowercased(), normalized)
+            }
+            let deduped = Dictionary(normalizedPairs, uniquingKeysWith: { first, _ in first })
+            let merged = Array(deduped.values)
+                .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
+            results = merged
+        } catch {
+            results = []
+            errorMessage = "Could not search locations right now."
+        }
     }
 }
 
@@ -2294,6 +2471,8 @@ private struct NativeSuccessMessage: View {
 
 private struct NativeAuthScreen: View {
     @EnvironmentObject private var appState: NativeAppState
+    let allowsDismissal: Bool
+    let promptReason: String?
     @State private var mode: AuthMode = .login
     @State private var name = ""
     @State private var email = ""
@@ -2306,6 +2485,11 @@ private struct NativeAuthScreen: View {
         case login = "Log in"
         case register = "Register"
         var id: String { rawValue }
+    }
+
+    init(allowsDismissal: Bool = false, promptReason: String? = nil) {
+        self.allowsDismissal = allowsDismissal
+        self.promptReason = promptReason
     }
 
     var body: some View {
@@ -2344,6 +2528,11 @@ private struct NativeAuthScreen: View {
                                  : "Start with Google or create your account natively.")
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(.white.opacity(0.58))
+                            if let promptReason, !promptReason.isEmpty {
+                                Text(promptReason)
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundStyle(nativeAccent)
+                            }
                         }
 
                         VStack(spacing: 14) {
@@ -2441,6 +2630,17 @@ private struct NativeAuthScreen: View {
             }
         }
         .navigationViewStyle(.stack)
+        .overlay(alignment: .topTrailing) {
+            if allowsDismissal {
+                Button("Close") {
+                    appState.dismissAuthGate()
+                }
+                .font(.system(size: 15, weight: .black))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+            }
+        }
     }
 
     private var canSubmit: Bool {
@@ -2498,6 +2698,11 @@ private struct NativeAuthScreen: View {
 private struct NativeOnboardingScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @State private var selectedLocation = NativeLocationOption(id: "boston", label: "Boston")
+    @State private var showLocationPicker = false
+
+    private var onboardingSuggestedLocations: [NativeLocationOption] {
+        nativeLocationOptions.filter { $0.id != "boston" }
+    }
 
     var body: some View {
         ZStack {
@@ -2512,44 +2717,42 @@ private struct NativeOnboardingScreen: View {
                 Spacer(minLength: 32)
 
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Where are you heading?")
+                    Text("Where do you want to explore?")
                         .font(.system(size: 40, weight: .black))
                         .foregroundStyle(.white)
-                    Text("This native shell starts with discovery first. Pick the city and jump straight into the feed.")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.6))
                 }
 
-                VStack(spacing: 12) {
-                    ForEach(nativeLocationOptions) { location in
-                        Button {
-                            selectedLocation = location
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(location.label)
-                                        .font(.system(size: 20, weight: .black))
-                                    Text("City")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundStyle(.white.opacity(0.45))
-                                }
-                                Spacer()
-                                if selectedLocation == location {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .font(.system(size: 22))
-                                        .foregroundStyle(Color(red: 211 / 255, green: 1, blue: 72 / 255))
-                                }
+                NativeSurfaceCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Area")
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundStyle(.white.opacity(0.35))
+                            .textCase(.uppercase)
+
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(selectedLocation.label)
+                                    .font(.system(size: 24, weight: .black))
+                                    .foregroundStyle(.white)
+                                Text("City")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.45))
                             }
-                            .padding(18)
-                            .background(
-                                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                    .fill(selectedLocation == location ? nativeAccent.opacity(0.18) : nativeSurface)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                            .stroke(selectedLocation == location ? nativeAccent.opacity(0.55) : nativeBorder, lineWidth: 1)
-                                    )
-                            )
-                            .foregroundStyle(.white)
+
+                            Spacer()
+
+                            Button {
+                                showLocationPicker = true
+                            } label: {
+                                Text("Change")
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundStyle(.black)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 10)
+                                    .background(nativeAccent)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -2563,7 +2766,7 @@ private struct NativeOnboardingScreen: View {
                 } label: {
                     HStack {
                         Spacer()
-                        Text("Show picks")
+                        Text("Start Explore")
                             .font(.system(size: 17, weight: .black))
                         Spacer()
                     }
@@ -2575,6 +2778,19 @@ private struct NativeOnboardingScreen: View {
             }
             .padding(.horizontal, 24)
             .padding(.bottom, 24)
+        }
+        .onAppear {
+            selectedLocation = appState.selectedLocation
+        }
+        .sheet(isPresented: $showLocationPicker) {
+            NativeLocationPickerSheet(
+                selectedLocation: selectedLocation,
+                availableLocations: nativeLocationOptions,
+                suggestedLocations: onboardingSuggestedLocations
+            ) { location in
+                selectedLocation = location
+                showLocationPicker = false
+            }
         }
     }
 }
@@ -2976,6 +3192,8 @@ private struct NativeDiscoverScreen: View {
         .sheet(isPresented: $showLocationSheet) {
             NativeLocationPickerSheet(
                 selectedLocation: appState.selectedLocation,
+                availableLocations: nativeLocationOptions,
+                suggestedLocations: nativeLocationOptions,
                 onSelect: { location in
                     showLocationSheet = false
                     Task { await appState.updateLocation(to: location) }
@@ -3021,7 +3239,14 @@ private struct NativeSavedScreen: View {
 
                     NativeSavedTabs(activeSection: $activeSection)
 
-                    if let savedErrorMessage = appState.savedErrorMessage {
+                    if appState.currentUser == nil {
+                        NativeGuestPromptCard(
+                            eyebrow: "Saved",
+                            title: "Save places once you're signed in.",
+                            message: "Log in to build your shortlist and create collections.",
+                            cta: "Log in"
+                        )
+                    } else if let savedErrorMessage = appState.savedErrorMessage {
                         NativeInlineError(message: savedErrorMessage)
                     }
 
@@ -3118,7 +3343,9 @@ private struct NativeSavedScreen: View {
     private var savedSectionContent: some View {
         switch activeSection {
         case .places:
-            if appState.savedPlaces.isEmpty {
+            if appState.currentUser == nil {
+                EmptyView()
+            } else if appState.savedPlaces.isEmpty {
                 NativeSurfaceCard {
                     Text("No saved places yet.")
                         .font(.system(size: 15, weight: .medium))
@@ -3172,24 +3399,28 @@ private struct NativeSavedScreen: View {
             }
         case .collections:
             VStack(alignment: .leading, spacing: 14) {
-                Button {
-                    showCreateCollectionSheet = true
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 13, weight: .black))
-                        Text("Add collection")
-                            .font(.system(size: 14, weight: .black))
+                if appState.currentUser != nil {
+                    Button {
+                        showCreateCollectionSheet = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 13, weight: .black))
+                            Text("Add collection")
+                                .font(.system(size: 14, weight: .black))
+                        }
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(nativeAccent)
+                        .clipShape(Capsule())
                     }
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(nativeAccent)
-                    .clipShape(Capsule())
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
 
-                if appState.collections.isEmpty {
+                if appState.currentUser == nil {
+                    EmptyView()
+                } else if appState.collections.isEmpty {
                     NativeSurfaceCard {
                         Text("No collections yet.")
                             .font(.system(size: 15, weight: .medium))
@@ -3423,6 +3654,22 @@ private struct NativeProfileScreen: View {
                         Rectangle()
                             .fill(nativeProfileHeaderFill)
                     )
+                } else {
+                    VStack(alignment: .leading, spacing: 16) {
+                        NativeGuestPromptCard(
+                            eyebrow: "My Profile",
+                            title: "Make this profile yours.",
+                            message: "Log in to save places, follow travelers, and keep your own travel graph.",
+                            cta: "Log in"
+                        )
+                    }
+                    .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+                    .background(
+                        Rectangle()
+                            .fill(nativeProfileHeaderFill)
+                    )
                 }
 
                 Section {
@@ -3523,6 +3770,7 @@ private struct NativeProfileScreen: View {
                                         Button {
                                             appState.logout()
                                             showSettingsSheet = false
+                                            appState.presentAuthGate(reason: "Log in to keep building your travel graph.")
                                         } label: {
                                             HStack {
                                                 Image(systemName: "person.crop.circle.badge.plus")
@@ -3550,6 +3798,7 @@ private struct NativeProfileScreen: View {
 
                                     Button {
                                         showSettingsSheet = false
+                                        appState.presentAuthGate(reason: "Log in to personalize your profile.")
                                     } label: {
                                         HStack {
                                             Image(systemName: "person.crop.circle.badge.plus")
@@ -3593,7 +3842,9 @@ private struct NativeProfileScreen: View {
             if appState.currentUser != nil && appState.savedPlaces.isEmpty && appState.collections.isEmpty {
                 await appState.refreshSavedContent()
             } else if appState.ownFeedItemsCache.isEmpty {
-                await appState.refreshSavedContent()
+                if appState.currentUser != nil {
+                    await appState.refreshSavedContent()
+                }
             }
             if let user = appState.currentUser,
                ownFollowersCount == nil,
@@ -3624,54 +3875,58 @@ private struct NativeProfileScreen: View {
 
     @ViewBuilder
     private var ownProfileSectionContent: some View {
-        switch activeSection {
-        case .feed:
-            if appState.ownFeedItemsCache.isEmpty {
-                emptyOwnProfileBlock("Your latest activity will show up here.")
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(appState.ownFeedItemsCache) { item in
-                        NativeFeedCard(item: item)
+        if appState.currentUser == nil {
+            EmptyView()
+        } else {
+            switch activeSection {
+            case .feed:
+                if appState.ownFeedItemsCache.isEmpty {
+                    emptyOwnProfileBlock("Your latest activity will show up here.")
+                } else {
+                    LazyVStack(spacing: 14) {
+                        ForEach(appState.ownFeedItemsCache) { item in
+                            NativeFeedCard(item: item)
+                        }
                     }
                 }
-            }
-        case .saved:
-            if appState.savedPlaces.isEmpty {
-                emptyOwnProfileBlock("No saved places yet.")
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(savedCityGroups, id: \.city) { group in
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Button {
-                                    toggleSavedCity(group.city)
-                                } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(group.city)
-                                                .font(.system(size: 18, weight: .black))
-                                                .foregroundStyle(.white)
-                                            Text("\(group.places.count) places")
-                                                .font(.system(size: 12, weight: .bold))
-                                                .foregroundStyle(.white.opacity(0.45))
-                                        }
-                                        Spacer()
-                                        Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
-                                            .font(.system(size: 14, weight: .black))
-                                            .foregroundStyle(.white.opacity(0.7))
-                                    }
-                                }
-                                .buttonStyle(.plain)
-
-                                if expandedSavedCities.contains(group.city) {
-                                    VStack(spacing: 12) {
-                                        ForEach(group.places) { place in
-                                            NavigationLink {
-                                                NativePlaceDetailScreen(initialPlace: place)
-                                            } label: {
-                                                NativePlaceCard(place: place)
+            case .saved:
+                if appState.savedPlaces.isEmpty {
+                    emptyOwnProfileBlock("No saved places yet.")
+                } else {
+                    LazyVStack(spacing: 14) {
+                        ForEach(savedCityGroups, id: \.city) { group in
+                            NativeSurfaceCard {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    Button {
+                                        toggleSavedCity(group.city)
+                                    } label: {
+                                        HStack {
+                                            VStack(alignment: .leading, spacing: 4) {
+                                                Text(group.city)
+                                                    .font(.system(size: 18, weight: .black))
+                                                    .foregroundStyle(.white)
+                                                Text("\(group.places.count) places")
+                                                    .font(.system(size: 12, weight: .bold))
+                                                    .foregroundStyle(.white.opacity(0.45))
                                             }
-                                            .buttonStyle(.plain)
+                                            Spacer()
+                                            Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
+                                                .font(.system(size: 14, weight: .black))
+                                                .foregroundStyle(.white.opacity(0.7))
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+
+                                    if expandedSavedCities.contains(group.city) {
+                                        VStack(spacing: 12) {
+                                            ForEach(group.places) { place in
+                                                NavigationLink {
+                                                    NativePlaceDetailScreen(initialPlace: place)
+                                                } label: {
+                                                    NativePlaceCard(place: place)
+                                                }
+                                                .buttonStyle(.plain)
+                                            }
                                         }
                                     }
                                 }
@@ -3679,29 +3934,29 @@ private struct NativeProfileScreen: View {
                         }
                     }
                 }
-            }
-        case .visited:
-            if ownVisitedFeedItems.isEmpty {
-                emptyOwnProfileBlock("No visited places yet.")
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(ownVisitedFeedItems) { item in
-                        NativeFeedCard(item: item)
+            case .visited:
+                if ownVisitedFeedItems.isEmpty {
+                    emptyOwnProfileBlock("No visited places yet.")
+                } else {
+                    LazyVStack(spacing: 14) {
+                        ForEach(ownVisitedFeedItems) { item in
+                            NativeFeedCard(item: item)
+                        }
                     }
                 }
-            }
-        case .collections:
-            if appState.collections.isEmpty {
-                emptyOwnProfileBlock("No collections yet.")
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(appState.collections) { collection in
-                        NavigationLink {
-                            NativeCollectionDetailScreen(collection: collection)
-                        } label: {
-                            NativeCollectionCard(collection: collection)
+            case .collections:
+                if appState.collections.isEmpty {
+                    emptyOwnProfileBlock("No collections yet.")
+                } else {
+                    LazyVStack(spacing: 14) {
+                        ForEach(appState.collections) { collection in
+                            NavigationLink {
+                                NativeCollectionDetailScreen(collection: collection)
+                            } label: {
+                                NativeCollectionCard(collection: collection)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -4333,6 +4588,10 @@ private struct NativeFeedCard: View {
 
                 HStack(spacing: 22) {
                     Button {
+                        guard appState.currentUser != nil else {
+                            appState.presentAuthGate(reason: "Log in to vibin with posts.")
+                            return
+                        }
                         if vibed {
                             vibed = false
                             vibinCount = max(0, vibinCount - 1)
@@ -6623,7 +6882,12 @@ private struct NativePlaceDetailScreen: View {
         do {
             try await appState.toggleBookmark(for: place)
         } catch {
-            errorMessage = error.localizedDescription
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorUserAuthenticationRequired {
+                errorMessage = nil
+            } else {
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }
@@ -7035,7 +7299,12 @@ private struct NativeCheckInScreen: View {
             note = ""
             selectedPlace = nil
         } catch {
-            errorMessage = "Could not save this check-in."
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorUserAuthenticationRequired {
+                errorMessage = nil
+            } else {
+                errorMessage = "Could not save this check-in."
+            }
         }
     }
 }
