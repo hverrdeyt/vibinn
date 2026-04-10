@@ -7637,7 +7637,7 @@ private func mergedPlaceRetainingPresentation(_ current: NativePlace, with next:
         tags: next.tags,
         attitudeLabel: next.attitudeLabel,
         bestTime: next.bestTime,
-        similarityStat: next.similarityStat ?? current.similarityStat,
+        similarityStat: current.similarityStat ?? next.similarityStat,
         whyYoullLikeIt: (next.whyYoullLikeIt?.isEmpty == false ? next.whyYoullLikeIt : current.whyYoullLikeIt),
         recommendationReason: {
             let candidate = next.recommendationReason?.trimmingCharacters(in: .whitespacesAndNewlines)

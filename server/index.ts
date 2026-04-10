@@ -2336,6 +2336,44 @@ function computeRecommendationScore(place: {
   return Math.max(28, Math.min(score, 98));
 }
 
+function computeDiscoveryAlignedPlaceScore(place: {
+  id?: string;
+  tags: string[];
+  category?: string;
+  similarityStat?: number;
+  rating?: number | null;
+  hook?: string | null;
+  description?: string | null;
+  whyYoullLikeIt?: string[] | null;
+}, context: RecommendationContext) {
+  return computeRecommendationScore(
+    {
+      id: place.id,
+      tags: place.tags,
+      category: place.category,
+      similarityStat: place.similarityStat,
+      rating: place.rating,
+      hook: place.hook,
+      description: place.description,
+      whyYoullLikeIt: place.whyYoullLikeIt,
+    },
+    {
+      selectedInterests: context.selectedInterests,
+      selectedVibe: context.selectedVibe,
+      bookmarkKeywords: context.bookmarkKeywords,
+      momentKeywords: context.momentKeywords,
+      socialKeywords: context.socialKeywords,
+      isBookmarked: context.bookmarkedPlaceIds.has(place.id ?? ''),
+      isVisited: context.visitedPlaceIds.has(place.id ?? ''),
+      isVibed: context.vibedPlaceIds.has(place.id ?? ''),
+      isCommented: context.commentedPlaceIds.has(place.id ?? ''),
+      isRecent: context.recentPlaceIds.has(place.id ?? ''),
+      followedPlaceMatch: context.followedPlaceIds.has(place.id ?? ''),
+      momentRating: place.id ? (context.momentRatingsByPlaceId.get(place.id) ?? null) : null,
+    },
+  );
+}
+
 type RecommendationContext = {
   selectedInterests: string[];
   selectedVibe: string | null;
@@ -3944,7 +3982,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
     ?? persistedScore?.matchScore
     ?? (
       recommendationContext
-        ? computeRecommendationScore(
+        ? computeDiscoveryAlignedPlaceScore(
             {
               id: place.id,
               tags: place.aiEnrichment?.vibeTags ?? [place.category].filter(Boolean),
@@ -3955,20 +3993,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
               description: place.aiEnrichment?.description ?? null,
               whyYoullLikeIt: place.aiEnrichment?.description ? [place.aiEnrichment.description] : [],
             },
-            {
-              selectedInterests: recommendationContext.selectedInterests,
-              selectedVibe: recommendationContext.selectedVibe,
-              bookmarkKeywords: recommendationContext.bookmarkKeywords,
-              momentKeywords: recommendationContext.momentKeywords,
-              socialKeywords: recommendationContext.socialKeywords,
-              isBookmarked: recommendationContext.bookmarkedPlaceIds.has(place.id),
-              isVisited: recommendationContext.visitedPlaceIds.has(place.id),
-              isVibed: recommendationContext.vibedPlaceIds.has(place.id),
-              isCommented: recommendationContext.commentedPlaceIds.has(place.id),
-              isRecent: recommendationContext.recentPlaceIds.has(place.id),
-              followedPlaceMatch: recommendationContext.followedPlaceIds.has(place.id),
-              momentRating: recommendationContext.momentRatingsByPlaceId.get(place.id) ?? null,
-            },
+            recommendationContext,
           )
         : undefined
     );
