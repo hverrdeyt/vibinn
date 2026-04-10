@@ -125,6 +125,7 @@ private struct NativeAuthUser: Codable {
     let displayName: String?
     let username: String
     let email: String?
+    let hasCompletedTastePreferences: Bool?
 }
 
 private struct NativeAuthSessionResponse: Decodable {
@@ -458,6 +459,10 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private let locationManager = CLLocationManager()
     private var floatingTabBarHideDepth = 0
     private var followStateOverrides: [String: Bool] = [:]
+
+    var shouldShowUnlockVibeCTA: Bool {
+        currentUser == nil || !(currentUser?.hasCompletedTastePreferences ?? false)
+    }
 
     override init() {
         super.init()
@@ -2958,6 +2963,7 @@ private struct NativeSavedPlaceholderScreen: View {
 }
 
 private struct NativeFloatingTabBar: View {
+    @EnvironmentObject private var appState: NativeAppState
     @Binding var activeTab: NativeTab
 
     private let sideTabs: [(tab: NativeTab, icon: String)] = [
@@ -2974,7 +2980,7 @@ private struct NativeFloatingTabBar: View {
             }
 
             Button {
-                activeTab = .checkIn
+                select(tab: .checkIn)
             } label: {
                 ZStack {
                     Circle()
@@ -3010,7 +3016,7 @@ private struct NativeFloatingTabBar: View {
     @ViewBuilder
     private func navItem(for item: (tab: NativeTab, icon: String)) -> some View {
         Button {
-            activeTab = item.tab
+            select(tab: item.tab)
         } label: {
             ZStack {
                 if activeTab == item.tab {
@@ -3026,6 +3032,28 @@ private struct NativeFloatingTabBar: View {
             .frame(maxWidth: .infinity, minHeight: 50)
         }
         .buttonStyle(.plain)
+    }
+
+    private func select(tab: NativeTab) {
+        let requiresAuthTabs: Set<NativeTab> = [.feed, .saved, .profile, .checkIn]
+        if appState.currentUser == nil && requiresAuthTabs.contains(tab) {
+            let reason: String
+            switch tab {
+            case .feed:
+                reason = "Log in to see your people feed."
+            case .saved:
+                reason = "Log in to view your saved places and collections."
+            case .profile:
+                reason = "Log in to open your profile."
+            case .checkIn:
+                reason = "Log in to save your check-ins."
+            case .discover:
+                reason = "Log in to continue."
+            }
+            appState.presentAuthGate(reason: reason)
+            return
+        }
+        activeTab = tab
     }
 }
 
@@ -3073,10 +3101,6 @@ private struct NativeDiscoverScreen: View {
                             }
                             .buttonStyle(.plain)
 
-                            Text("Ranked around your taste, not just what is popular nearby.")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.45))
-                                .fixedSize(horizontal: false, vertical: true)
                         }
                         Spacer(minLength: 0)
                         HStack(spacing: 8) {
@@ -3109,28 +3133,6 @@ private struct NativeDiscoverScreen: View {
                                     .clipShape(Circle())
                             }
                             .buttonStyle(.plain)
-                        }
-                    }
-
-                    NativeSurfaceCard {
-                        HStack(alignment: .center, spacing: 14) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Unlock your vibe")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundStyle(.white)
-                                Text("Give AI your taste so these picks feel more you.")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.62))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            Spacer(minLength: 0)
-                            Text("Start")
-                                .font(.system(size: 14, weight: .black))
-                                .foregroundStyle(.black)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(nativeAccent)
-                                .clipShape(Capsule())
                         }
                     }
 
@@ -3188,6 +3190,53 @@ private struct NativeDiscoverScreen: View {
             }
         }
         .background(Color.black.ignoresSafeArea())
+        .safeAreaInset(edge: .bottom) {
+            if appState.shouldShowUnlockVibeCTA {
+                HStack {
+                    Spacer()
+                    Button {
+                        if appState.currentUser == nil {
+                            appState.presentAuthGate(reason: "Log in to unlock your vibe and personalize discovery.")
+                        } else {
+                            appState.activeTab = .profile
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Unlock your vibe")
+                                    .font(.system(size: 15, weight: .black))
+                                    .foregroundStyle(.white)
+                                Text("Let AI understand your vibes & taste")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.58))
+                            }
+                            Spacer(minLength: 0)
+                            Text("Start")
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundStyle(.black)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(nativeAccent)
+                                .clipShape(Capsule())
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .background(
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                .fill(Color(red: 19 / 255, green: 19 / 255, blue: 22 / 255).opacity(0.96))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                        .stroke(nativeBorder, lineWidth: 1)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    Spacer()
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, appState.showFloatingTabBar ? 96 : 18)
+            }
+        }
         .navigationBarHidden(true)
         .sheet(isPresented: $showLocationSheet) {
             NativeLocationPickerSheet(
@@ -4253,6 +4302,7 @@ private struct NativePlaceCard: View {
 }
 
 private struct NativeDiscoveryPlaceCard: View {
+    @EnvironmentObject private var appState: NativeAppState
     let place: NativePlace
     let width: CGFloat
     let height: CGFloat
@@ -4268,7 +4318,8 @@ private struct NativeDiscoveryPlaceCard: View {
     }
 
     private var compatibilityBadge: NativeCompatibilityBadgeMeta? {
-        nativeCompatibilityBadge(for: place.similarityStat)
+        guard appState.currentUser != nil else { return nil }
+        return nativeCompatibilityBadge(for: place.similarityStat)
     }
 
     private var bottomLabel: String {
@@ -4337,7 +4388,7 @@ private struct NativeDiscoveryPlaceCard: View {
         }
         .overlay(alignment: .topTrailing) {
             VStack(alignment: .trailing, spacing: 6) {
-                if let score = place.similarityStat {
+                if appState.currentUser != nil, let score = place.similarityStat {
                     Text("\(score)%")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.68))

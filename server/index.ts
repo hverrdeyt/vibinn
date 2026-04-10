@@ -265,6 +265,18 @@ function mapUserForClient(user: { id: string; username: string; displayName: str
   };
 }
 
+async function mapUserForClientWithTasteState(user: { id: string; username: string; displayName: string | null; email: string }) {
+  const preferences = await prisma.userPreference.findUnique({
+    where: { userId: user.id },
+    select: { onboardingCompleted: true },
+  });
+
+  return {
+    ...mapUserForClient(user),
+    hasCompletedTastePreferences: Boolean(preferences?.onboardingCompleted),
+  };
+}
+
 function normalizeLocationPart(part: string) {
   const trimmed = part.trim();
   if (!trimmed) return null;
@@ -4149,7 +4161,7 @@ app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
       return;
     }
 
-    res.json({ user: mapUserForClient(user) });
+    res.json({ user: await mapUserForClientWithTasteState(user) });
   } catch (error) {
     handleError(res, error);
   }
@@ -4174,7 +4186,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const token = await createSession(user.id);
-    res.json({ token, user: mapUserForClient(user) });
+    res.json({ token, user: await mapUserForClientWithTasteState(user) });
   } catch (error) {
     handleError(res, error);
   }
@@ -4217,7 +4229,7 @@ app.post('/api/auth/register', async (req, res) => {
     });
 
     const token = await createSession(user.id);
-    res.status(201).json({ token, user: mapUserForClient(user) });
+    res.status(201).json({ token, user: await mapUserForClientWithTasteState(user) });
   } catch (error) {
     handleError(res, error);
   }
@@ -4273,7 +4285,7 @@ app.post('/api/auth/google', async (req, res) => {
         });
 
     const token = await createSession(user.id);
-    res.json({ token, user: mapUserForClient(user) });
+    res.json({ token, user: await mapUserForClientWithTasteState(user) });
   } catch (error) {
     if (error instanceof Error) {
       res.status(400).json({ error: error.message });

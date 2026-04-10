@@ -389,6 +389,11 @@ export async function getProfileMe(userId?: string) {
     include: {
       badges: true,
       flags: true,
+      preferences: {
+        select: {
+          onboardingCompleted: true,
+        },
+      },
       bookmarks: {
         orderBy: { createdAt: 'desc' },
         include: {
@@ -450,21 +455,24 @@ export async function getProfileMe(userId?: string) {
   });
 
   return {
-    user: buildProfileUserWithMatch(user, moments, undefined, {
-      descriptor,
-      recentSavedPlaces: user.bookmarks.map((bookmark) => ({
-        place: mapPlaceForClient(
-          bookmark.place,
-          getPlaceScoreOverride(userPlaceScoreOverrideMap, bookmark.placeId),
-        ),
-        savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
-        savedAtIso: bookmark.createdAt.toISOString(),
-      })),
-      visitedPlacesCount: user.moments.length,
-      savedPlacesCount: user.bookmarks.length,
-      collectionsCount: user.collections.length,
-      latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString(),
-    }),
+    user: {
+      ...buildProfileUserWithMatch(user, moments, undefined, {
+        descriptor,
+        recentSavedPlaces: user.bookmarks.map((bookmark) => ({
+          place: mapPlaceForClient(
+            bookmark.place,
+            getPlaceScoreOverride(userPlaceScoreOverrideMap, bookmark.placeId),
+          ),
+          savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+          savedAtIso: bookmark.createdAt.toISOString(),
+        })),
+        visitedPlacesCount: user.moments.length,
+        savedPlacesCount: user.bookmarks.length,
+        collectionsCount: user.collections.length,
+        latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString(),
+      }),
+      hasCompletedTastePreferences: Boolean(user.preferences?.onboardingCompleted),
+    },
     bookmarks: user.bookmarks.map((bookmark) => mapPlaceForClient(
       bookmark.place,
       getPlaceScoreOverride(userPlaceScoreOverrideMap, bookmark.placeId),
