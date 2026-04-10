@@ -4,6 +4,7 @@ import AVKit
 import MapKit
 import CoreLocation
 import Capacitor
+import GoogleSignIn
 import os
 import SafariServices
 
@@ -23,6 +24,7 @@ private let nativeLocationOptions = [
 ]
 
 private let nativeTravelerProfileHorizontalPadding: CGFloat = 22
+private let nativeGoogleClientID = "937557434052-dj8h3e2pr7s85dmv4o4b2nttfjh40ma4.apps.googleusercontent.com"
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
@@ -34,6 +36,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
+        if GIDSignIn.sharedInstance.handle(url) {
+            return true
+        }
         return ApplicationDelegateProxy.shared.application(app, open: url, options: options)
     }
 
@@ -47,6 +52,47 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             continue: userActivity,
             restorationHandler: restorationHandler
         )
+    }
+}
+
+@MainActor
+private enum NativeGoogleSignInCoordinator {
+    static func signIn(clientID: String) async throws -> String {
+        guard let presentingViewController = topViewController() else {
+            throw NSError(domain: "NativeGoogleSignIn", code: 1, userInfo: [NSLocalizedDescriptionKey: "No presenting view controller available."])
+        }
+
+        GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientID)
+        let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: presentingViewController)
+
+        guard let idToken = result.user.idToken?.tokenString, !idToken.isEmpty else {
+            throw NSError(domain: "NativeGoogleSignIn", code: 2, userInfo: [NSLocalizedDescriptionKey: "Google did not return an ID token."])
+        }
+
+        return idToken
+    }
+
+    static func signOut() {
+        GIDSignIn.sharedInstance.signOut()
+    }
+
+    private static func topViewController(
+        base: UIViewController? = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .rootViewController
+    ) -> UIViewController? {
+        if let navigationController = base as? UINavigationController {
+            return topViewController(base: navigationController.visibleViewController)
+        }
+        if let tabBarController = base as? UITabBarController {
+            return topViewController(base: tabBarController.selectedViewController)
+        }
+        if let presentedViewController = base?.presentedViewController {
+            return topViewController(base: presentedViewController)
+        }
+        return base
     }
 }
 
@@ -324,6 +370,10 @@ private struct NativeCollectionsResponse: Decodable {
     let collections: [NativeCollection]
 }
 
+private struct NativeCreateCollectionResponse: Decodable {
+    let collection: NativeCollection
+}
+
 private struct NativeLocationOption: Identifiable, Hashable {
     let id: String
     let label: String
@@ -475,7 +525,17 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         nativeLogger.log("register success user=\(response.user.username, privacy: .public)")
     }
 
+    func loginWithGoogle() async throws {
+        nativeLogger.log("google login start")
+        let idToken = try await NativeGoogleSignInCoordinator.signIn(clientID: nativeGoogleClientID)
+        let response = try await api.googleAuth(idToken: idToken)
+        authToken = response.token
+        currentUser = response.user
+        nativeLogger.log("google login success user=\(response.user.username, privacy: .public)")
+    }
+
     func logout() {
+        NativeGoogleSignInCoordinator.signOut()
         clearSession()
         discoveryPlaces = []
         discoveryPage = 1
@@ -629,25 +689,47 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         savedErrorMessage = nil
         guard let token = authToken else { return }
 
-        do {
-            async let bookmarksTask = api.getBookmarks(token: token)
-            async let collectionsTask = api.getCollections(token: token)
-            let (bookmarks, collectionsResponse) = try await (bookmarksTask, collectionsTask)
+        var didLoadAnyData = false
 
+        do {
+            let bookmarks = try await api.getBookmarks(token: token)
             let uniqueBookmarks = Array(
                 Dictionary(bookmarks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values
             )
+            savedPlaces = uniqueBookmarks
+            didLoadAnyData = true
+        } catch {
+            nativeLogger.error("refreshSavedContent bookmarks failed: \(error.localizedDescription, privacy: .public)")
+        }
+
+        do {
+            let collectionsResponse = try await api.getCollections(token: token)
             let uniqueCollections = Array(
                 Dictionary(collectionsResponse.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values
             )
-
-            savedPlaces = uniqueBookmarks
             collections = uniqueCollections
-            nativeLogger.log("refreshSavedContent success bookmarks=\(self.savedPlaces.count, privacy: .public) collections=\(self.collections.count, privacy: .public)")
+            didLoadAnyData = true
         } catch {
-            nativeLogger.error("refreshSavedContent failed: \(error.localizedDescription, privacy: .public)")
+            nativeLogger.error("refreshSavedContent collections failed: \(error.localizedDescription, privacy: .public)")
+        }
+
+        if didLoadAnyData {
+            savedErrorMessage = nil
+            rebuildOwnFeedItems()
+            nativeLogger.log("refreshSavedContent success bookmarks=\(self.savedPlaces.count, privacy: .public) collections=\(self.collections.count, privacy: .public)")
+        } else {
             savedErrorMessage = "Could not load your saved places right now."
         }
+    }
+
+    func createCollection(label: String) async throws {
+        guard let token = authToken else {
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        let collection = try await api.createCollection(token: token, label: label, placeIds: [])
+        collections.insert(collection, at: 0)
+        rebuildOwnFeedItems()
     }
 
     func refreshFeed() async {
@@ -1161,6 +1243,10 @@ private struct NativeAPIClient {
         let password: String
     }
 
+    private struct GoogleAuthBody: Encodable {
+        let idToken: String
+    }
+
     func login(email: String, password: String) async throws -> NativeLoginResponse {
         try await request(
             path: "/api/auth/login",
@@ -1181,6 +1267,15 @@ private struct NativeAPIClient {
 
     func getAuthSession(token: String) async throws -> NativeAuthSessionResponse {
         try await request(path: "/api/auth/session", method: "GET", token: token)
+    }
+
+    func googleAuth(idToken: String) async throws -> NativeLoginResponse {
+        try await request(
+            path: "/api/auth/google",
+            method: "POST",
+            token: nil,
+            body: GoogleAuthBody(idToken: idToken)
+        )
     }
 
     func getDiscoveryPlaces(
@@ -1209,6 +1304,21 @@ private struct NativeAPIClient {
     func getCollections(token: String) async throws -> [NativeCollection] {
         let response: NativeCollectionsResponse = try await request(path: "/api/collections", method: "GET", token: token)
         return response.collections
+    }
+
+    private struct CreateCollectionBody: Encodable {
+        let label: String
+        let placeIds: [String]
+    }
+
+    func createCollection(token: String, label: String, placeIds: [String]) async throws -> NativeCollection {
+        let response: NativeCreateCollectionResponse = try await request(
+            path: "/api/collections",
+            method: "POST",
+            token: token,
+            body: CreateCollectionBody(label: label, placeIds: placeIds)
+        )
+        return response.collection
     }
 
     func getMoments(token: String) async throws -> [NativeMoment] {
@@ -2230,27 +2340,34 @@ private struct NativeAuthScreen: View {
                                 .font(.system(size: 34, weight: .black))
                                 .foregroundStyle(.white)
                             Text(mode == .login
-                                 ? "Log in natively first. Google Sign-In is the next iOS auth slice."
-                                 : "Create your account natively first. Google Sign-In comes right after this slice.")
+                                 ? "Use Google or your email to continue natively."
+                                 : "Start with Google or create your account natively.")
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(.white.opacity(0.58))
                         }
 
                         VStack(spacing: 14) {
                             Button {
+                                Task {
+                                    await submitGoogle()
+                                }
                             } label: {
                                 HStack {
                                     Spacer()
+                                    if isSubmitting {
+                                        ProgressView().tint(.white)
+                                    } else {
                                     Text(mode == .login ? "Continue with Google" : "Sign up with Google")
                                         .font(.system(size: 16, weight: .bold))
+                                    }
                                     Spacer()
                                 }
                                 .padding(.vertical, 16)
                                 .background(Color.white.opacity(0.08))
-                                .foregroundStyle(.white.opacity(0.45))
+                                .foregroundStyle(.white)
                                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                             }
-                            .disabled(true)
+                            .disabled(isSubmitting)
 
                             HStack(spacing: 12) {
                                 Rectangle().fill(nativeBorder).frame(height: 1)
@@ -2362,6 +2479,18 @@ private struct NativeAuthScreen: View {
             errorMessage = mode == .login
                 ? "Could not log in right now."
                 : "Could not create your account right now."
+        }
+    }
+
+    private func submitGoogle() async {
+        errorMessage = nil
+        isSubmitting = true
+        defer { isSubmitting = false }
+
+        do {
+            try await appState.loginWithGoogle()
+        } catch {
+            errorMessage = "Could not continue with Google right now."
         }
     }
 }
@@ -2484,7 +2613,7 @@ private struct NativeMainTabView: View {
             .tag(NativeTab.saved)
 
             NavigationView {
-                NativeProfilePlaceholderScreen()
+                NativeProfileScreen()
             }
             .navigationViewStyle(.stack)
             .tabItem { Label("Profile", systemImage: "person.fill") }
@@ -2875,6 +3004,9 @@ private struct NativeSavedScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @State private var activeSection: NativeSavedSection = .places
     @State private var expandedSavedCities: Set<String> = []
+    @State private var showCreateCollectionSheet = false
+    @State private var newCollectionName = ""
+    @State private var isCreatingCollection = false
 
     var body: some View {
         ZStack {
@@ -2902,6 +3034,65 @@ private struct NativeSavedScreen: View {
         }
         .navigationTitle("Saved places")
         .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showCreateCollectionSheet) {
+            NavigationView {
+                ZStack {
+                    Color.black.ignoresSafeArea()
+
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("New collection")
+                            .font(.system(size: 24, weight: .black))
+                            .foregroundStyle(.white)
+
+                        TextField("Collection name", text: $newCollectionName)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .background(Color.white.opacity(0.06))
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                        Button {
+                            Task {
+                                await createCollection()
+                            }
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if isCreatingCollection {
+                                    ProgressView().tint(.black)
+                                } else {
+                                    Text("Create collection")
+                                        .font(.system(size: 15, weight: .black))
+                                }
+                                Spacer()
+                            }
+                            .padding(.vertical, 14)
+                            .background(nativeAccent)
+                            .foregroundStyle(.black)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isCreatingCollection || newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                        Spacer()
+                    }
+                    .padding(20)
+                }
+                .navigationTitle("Add collection")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") {
+                            showCreateCollectionSheet = false
+                        }
+                    }
+                }
+            }
+            .navigationViewStyle(.stack)
+        }
         .onAppear {
             if expandedSavedCities.isEmpty {
                 expandedSavedCities = Set(savedCityGroups.map(\.city))
@@ -2936,102 +3127,86 @@ private struct NativeSavedScreen: View {
             } else {
                 LazyVStack(spacing: 14) {
                     ForEach(savedCityGroups, id: \.city) { group in
-                        VStack(alignment: .leading, spacing: 14) {
-                            Button {
-                                toggleSavedCity(group.city)
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(group.city)
-                                            .font(.system(size: 18, weight: .black))
-                                            .foregroundStyle(.white)
-                                        Text("\(group.places.count) places")
-                                            .font(.system(size: 12, weight: .bold))
-                                            .foregroundStyle(.white.opacity(0.45))
-                                    }
-                                    Spacer()
-                                    Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
-                                        .font(.system(size: 14, weight: .black))
-                                        .foregroundStyle(.white.opacity(0.7))
-                                }
-                                .padding(.horizontal, 18)
-                                .padding(.vertical, 16)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                        .fill(Color.white.opacity(0.04))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                        .stroke(nativeBorder, lineWidth: 1)
-                                )
-                            }
-                            .buttonStyle(.plain)
-
-                            if expandedSavedCities.contains(group.city) {
-                                VStack(spacing: 0) {
-                                    ForEach(Array(group.places.enumerated()), id: \.element.id) { index, place in
-                                        NavigationLink {
-                                            NativePlaceDetailScreen(initialPlace: place)
-                                        } label: {
-                                            NativePlaceRow(place: place)
-                                                .padding(.horizontal, 18)
-                                                .padding(.vertical, 10)
-                                                .contentShape(Rectangle())
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Button {
+                                    toggleSavedCity(group.city)
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(group.city)
+                                                .font(.system(size: 18, weight: .black))
+                                                .foregroundStyle(.white)
+                                            Text("\(group.places.count) places")
+                                                .font(.system(size: 12, weight: .bold))
+                                                .foregroundStyle(.white.opacity(0.45))
                                         }
-                                        .buttonStyle(.plain)
+                                        Spacer()
+                                        Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
+                                            .font(.system(size: 14, weight: .black))
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .zIndex(2)
 
-                                        if index < group.places.count - 1 {
-                                            Divider()
-                                                .overlay(Color.white.opacity(0.08))
-                                                .padding(.leading, 18)
+                                if expandedSavedCities.contains(group.city) {
+                                    VStack(spacing: 12) {
+                                        ForEach(group.places) { place in
+                                            NavigationLink {
+                                                NativePlaceDetailScreen(initialPlace: place)
+                                            } label: {
+                                                NativePlaceCard(place: place)
+                                            }
+                                            .buttonStyle(.plain)
                                         }
                                     }
+                                    .zIndex(1)
                                 }
-                                .background(
-                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                        .fill(Color.white.opacity(0.03))
-                                )
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                                        .stroke(nativeBorder, lineWidth: 1)
-                                )
                             }
                         }
                     }
                 }
             }
         case .collections:
-            if appState.collections.isEmpty {
-                NativeSurfaceCard {
-                    Text("No collections yet.")
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.6))
+            VStack(alignment: .leading, spacing: 14) {
+                Button {
+                    showCreateCollectionSheet = true
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 13, weight: .black))
+                        Text("Add collection")
+                            .font(.system(size: 14, weight: .black))
+                    }
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(nativeAccent)
+                    .clipShape(Capsule())
                 }
-            } else {
+                .buttonStyle(.plain)
+
+                if appState.collections.isEmpty {
+                    NativeSurfaceCard {
+                        Text("No collections yet.")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.6))
+                    }
+                } else {
                 LazyVStack(spacing: 14) {
                     ForEach(Array(appState.collections.prefix(30))) { collection in
                         NavigationLink {
                             NativeCollectionDetailScreen(collection: collection)
                         } label: {
-                            NativeSurfaceCard {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    Text("LIST")
-                                        .font(.system(size: 11, weight: .black))
-                                        .foregroundStyle(nativeAccent.opacity(0.92))
-                                        .textCase(.uppercase)
-                                    Text(collection.label)
-                                        .font(.system(size: 18, weight: .black))
-                                        .foregroundStyle(.white)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                    Text("\(collection.places.count) places")
-                                        .font(.system(size: 14, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.56))
-                                }
-                            }
+                            NativeCollectionCard(collection: collection)
                         }
                         .buttonStyle(.plain)
                     }
                 }
+            }
             }
         }
     }
@@ -3064,138 +3239,514 @@ private struct NativeSavedScreen: View {
             expandedSavedCities.insert(city)
         }
     }
+
+    private func createCollection() async {
+        let trimmedName = newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
+        isCreatingCollection = true
+        defer { isCreatingCollection = false }
+
+        do {
+            try await appState.createCollection(label: trimmedName)
+            newCollectionName = ""
+            showCreateCollectionSheet = false
+            activeSection = .collections
+        } catch {
+            appState.savedErrorMessage = "Could not create collection right now."
+        }
+    }
 }
 
 private struct NativeProfileScreen: View {
     @EnvironmentObject private var appState: NativeAppState
+    @State private var activeSection: NativeProfileSection = .feed
+    @State private var expandedSavedCities: Set<String> = []
+    @State private var showEditProfileSheet = false
+    @State private var showSettingsSheet = false
+    @State private var ownFollowersCount: Int?
+
+    private var currentTravelerSummary: NativeTravelerSummary? {
+        guard let user = appState.currentUser else { return nil }
+        return NativeTravelerSummary(
+            id: user.id,
+            username: user.username,
+            displayName: user.displayName,
+            avatar: nil,
+            bio: user.email,
+            descriptor: nil,
+            matchScore: nil,
+            followersCount: ownFollowersCount,
+            recentSavedPlaces: appState.savedPlaces.prefix(4).map {
+                NativeTravelerSavedEntry(place: $0, savedAtLabel: "Saved", savedAtIso: nil)
+            },
+            recentCollections: appState.collections,
+            travelHistory: [],
+            visitedPlacesCount: appState.myMoments.count,
+            savedPlacesCount: appState.savedPlaces.count,
+            collectionsCount: appState.collections.count
+        )
+    }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
                 if let user = appState.currentUser {
-                    NativeScreenHeader(
-                        title: user.displayName ?? user.username,
-                        subtitle: "@\(user.username)"
-                    )
-
-                    HStack(spacing: 12) {
-                        NativeStatCard(label: "Saved", value: "\(appState.savedPlaces.count)")
-                        NativeStatCard(label: "Lists", value: "\(appState.collections.count)")
-                        NativeStatCard(label: "Visited", value: "\(appState.myMoments.count)")
-                    }
-
-                    NativeSurfaceCard {
+                    VStack(alignment: .leading, spacing: 14) {
                         VStack(alignment: .leading, spacing: 10) {
-                            Text("Travel taste")
-                                .font(.system(size: 11, weight: .black))
-                                .foregroundStyle(nativeAccent.opacity(0.9))
-                                .textCase(.uppercase)
-                            Text("Your profile is now reading more like the web app: saved places shape the edges, while check-ins keep the strongest signal.")
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.76))
+                            HStack(alignment: .top, spacing: 14) {
+                                NativeAvatarCircle(
+                                    url: nil,
+                                    fallbackText: user.displayName ?? user.username,
+                                    size: 60,
+                                    fontSize: 21
+                                )
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(user.displayName ?? user.username)
+                                        .font(.system(size: 22, weight: .black))
+                                        .foregroundStyle(.white)
+                                        .fixedSize(horizontal: false, vertical: true)
+
+                                    if let email = user.email, !email.isEmpty {
+                                        Text(email)
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.56))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+                                }
+                            }
+
+                            HStack(spacing: 6) {
+                                if let traveler = currentTravelerSummary {
+                                    NavigationLink {
+                                        NativeFollowersScreen(traveler: traveler)
+                                    } label: {
+                                        NativeProfileMetaPill(
+                                            label: ownFollowersCount.map { "\($0) followers" } ?? "Followers",
+                                            foreground: .white.opacity(0.84),
+                                            background: Color.white.opacity(0.08)
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+
+                            HStack(spacing: 12) {
+                                Button {
+                                    activeSection = .saved
+                                } label: {
+                                    NativeProfileMiniStat(label: "Saved", value: "\(appState.savedPlaces.count)")
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    activeSection = .visited
+                                } label: {
+                                    NativeProfileMiniStat(label: "Visited", value: "\(appState.myMoments.count)")
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    activeSection = .collections
+                                } label: {
+                                    NativeProfileMiniStat(label: "Lists", value: "\(appState.collections.count)")
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .frame(maxWidth: .infinity)
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Travel taste")
+                                    .font(.system(size: 9, weight: .black))
+                                    .foregroundStyle(nativeAccent.opacity(0.82))
+                                    .textCase(.uppercase)
+                                Text("Saved places shape the edges of your profile, while your check-ins keep the strongest signal.")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.72))
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                nativeAccent.opacity(0.05),
+                                                Color(red: 24 / 255, green: 26 / 255, blue: 31 / 255).opacity(0.86)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                    .stroke(nativeAccent.opacity(0.1), lineWidth: 1)
+                            )
+
+                            HStack(spacing: 10) {
+                                Button {
+                                    showEditProfileSheet = true
+                                } label: {
+                                    HStack {
+                                        Spacer()
+                                        Text("Edit profile")
+                                            .font(.system(size: 14, weight: .black))
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, 12)
+                                    .background(nativeAccent)
+                                    .foregroundStyle(.black)
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+
+                                Button {
+                                    UIPasteboard.general.string = "https://vibinn.club/u/\(user.username)"
+                                } label: {
+                                    Image(systemName: "square.and.arrow.up")
+                                        .font(.system(size: 15, weight: .black))
+                                        .foregroundStyle(.white)
+                                        .frame(width: 44, height: 44)
+                                        .background(Color.white.opacity(0.08))
+                                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
+                    .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
+                    .padding(.top, 12)
+                    .padding(.bottom, 8)
+                    .background(
+                        Rectangle()
+                            .fill(nativeProfileHeaderFill)
+                    )
+                }
 
-                    if let email = user.email {
+                Section {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if let profileErrorMessage = appState.profileErrorMessage {
+                            NativeInlineError(message: profileErrorMessage)
+                        }
+
+                        ownProfileSectionContent
+                    }
+                    .id(activeSection)
+                    .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
+                    .padding(.top, 12)
+                    .padding(.bottom, 140)
+                } header: {
+                    NativeProfileTabs(activeSection: $activeSection)
+                }
+            }
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationTitle("My Profile")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    showSettingsSheet = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundStyle(.white)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .sheet(isPresented: $showEditProfileSheet) {
+            NativePlaceholderSheet(
+                title: "Edit profile",
+                message: "Native edit profile flow will plug in here next."
+            )
+        }
+        .sheet(isPresented: $showSettingsSheet) {
+            NavigationView {
+                ZStack {
+                    Color.black.ignoresSafeArea()
+
+                    VStack(alignment: .leading, spacing: 16) {
                         NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Account")
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundStyle(.white.opacity(0.4))
-                                    .textCase(.uppercase)
-                                Text(email)
-                                    .font(.system(size: 15, weight: .semibold))
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Settings")
+                                    .font(.system(size: 18, weight: .black))
                                     .foregroundStyle(.white)
+                                Text("Manage your account session and test native auth flows.")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.64))
+                            }
+                        }
+
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text("Authentication")
+                                    .font(.system(size: 15, weight: .black))
+                                    .foregroundStyle(.white)
+
+                                if let user = appState.currentUser {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(user.displayName ?? user.username)
+                                            .font(.system(size: 15, weight: .heavy))
+                                            .foregroundStyle(.white)
+                                        Text("@\(user.username)")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.6))
+                                    }
+
+                                    Text("Use these actions to simulate logout and return to the native login screen.")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.62))
+
+                                    VStack(spacing: 10) {
+                                        Button {
+                                            appState.logout()
+                                            showSettingsSheet = false
+                                        } label: {
+                                            HStack {
+                                                Image(systemName: "rectangle.portrait.and.arrow.right")
+                                                    .font(.system(size: 15, weight: .bold))
+                                                Text("Log out")
+                                                    .font(.system(size: 15, weight: .black))
+                                                Spacer()
+                                            }
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 14)
+                                            .frame(maxWidth: .infinity)
+                                            .background(Color.white.opacity(0.08))
+                                            .foregroundStyle(.white)
+                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                        }
+
+                                        Button {
+                                            appState.logout()
+                                            showSettingsSheet = false
+                                        } label: {
+                                            HStack {
+                                                Image(systemName: "person.crop.circle.badge.plus")
+                                                    .font(.system(size: 15, weight: .bold))
+                                                Text("Go to login")
+                                                    .font(.system(size: 15, weight: .black))
+                                                Spacer()
+                                            }
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 14)
+                                            .frame(maxWidth: .infinity)
+                                            .background(nativeAccent.opacity(0.14))
+                                            .foregroundStyle(nativeAccent)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                                    .stroke(nativeAccent.opacity(0.35), lineWidth: 1)
+                                            )
+                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                        }
+                                    }
+                                } else {
+                                    Text("You are currently signed out. Return to the auth screen to sign in again.")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.62))
+
+                                    Button {
+                                        showSettingsSheet = false
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: "person.crop.circle.badge.plus")
+                                                .font(.system(size: 15, weight: .bold))
+                                            Text("Go to login")
+                                                .font(.system(size: 15, weight: .black))
+                                            Spacer()
+                                        }
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 14)
+                                        .frame(maxWidth: .infinity)
+                                        .background(nativeAccent.opacity(0.14))
+                                        .foregroundStyle(nativeAccent)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                                .stroke(nativeAccent.opacity(0.35), lineWidth: 1)
+                                        )
+                                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer()
+                    }
+                    .padding(20)
+                }
+                .navigationTitle("Settings")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") {
+                            showSettingsSheet = false
+                        }
+                    }
+                }
+            }
+            .navigationViewStyle(.stack)
+        }
+        .task {
+            if appState.currentUser != nil && appState.savedPlaces.isEmpty && appState.collections.isEmpty {
+                await appState.refreshSavedContent()
+            } else if appState.ownFeedItemsCache.isEmpty {
+                await appState.refreshSavedContent()
+            }
+            if let user = appState.currentUser,
+               ownFollowersCount == nil,
+               let response = try? await appState.fetchTravelerProfile(id: user.id) {
+                ownFollowersCount = response.traveler.followersCount
+            }
+        }
+        .onAppear {
+            if expandedSavedCities.isEmpty {
+                expandedSavedCities = Set(savedCityGroups.map(\.city))
+            }
+            nativeLogger.log("NativeProfileScreen appear saved=\(appState.savedPlaces.count, privacy: .public) collections=\(appState.collections.count, privacy: .public) moments=\(appState.myMoments.count, privacy: .public)")
+        }
+        .onAppear {
+            let appearance = UINavigationBarAppearance()
+            appearance.configureWithOpaqueBackground()
+            appearance.backgroundColor = UIColor(red: 16 / 255, green: 16 / 255, blue: 19 / 255, alpha: 0.98)
+            appearance.titleTextAttributes = [.foregroundColor: UIColor.white]
+            appearance.largeTitleTextAttributes = [.foregroundColor: UIColor.white]
+            UINavigationBar.appearance().standardAppearance = appearance
+            UINavigationBar.appearance().scrollEdgeAppearance = appearance
+            UINavigationBar.appearance().compactAppearance = appearance
+        }
+        .refreshable {
+            await appState.refreshProfile()
+        }
+    }
+
+    @ViewBuilder
+    private var ownProfileSectionContent: some View {
+        switch activeSection {
+        case .feed:
+            if appState.ownFeedItemsCache.isEmpty {
+                emptyOwnProfileBlock("Your latest activity will show up here.")
+            } else {
+                LazyVStack(spacing: 14) {
+                    ForEach(appState.ownFeedItemsCache) { item in
+                        NativeFeedCard(item: item)
+                    }
+                }
+            }
+        case .saved:
+            if appState.savedPlaces.isEmpty {
+                emptyOwnProfileBlock("No saved places yet.")
+            } else {
+                LazyVStack(spacing: 14) {
+                    ForEach(savedCityGroups, id: \.city) { group in
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Button {
+                                    toggleSavedCity(group.city)
+                                } label: {
+                                    HStack {
+                                        VStack(alignment: .leading, spacing: 4) {
+                                            Text(group.city)
+                                                .font(.system(size: 18, weight: .black))
+                                                .foregroundStyle(.white)
+                                            Text("\(group.places.count) places")
+                                                .font(.system(size: 12, weight: .bold))
+                                                .foregroundStyle(.white.opacity(0.45))
+                                        }
+                                        Spacer()
+                                        Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
+                                            .font(.system(size: 14, weight: .black))
+                                            .foregroundStyle(.white.opacity(0.7))
+                                    }
+                                }
+                                .buttonStyle(.plain)
+
+                                if expandedSavedCities.contains(group.city) {
+                                    VStack(spacing: 12) {
+                                        ForEach(group.places) { place in
+                                            NavigationLink {
+                                                NativePlaceDetailScreen(initialPlace: place)
+                                            } label: {
+                                                NativePlaceCard(place: place)
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
-
-                if let profileErrorMessage = appState.profileErrorMessage {
-                    NativeInlineError(message: profileErrorMessage)
-                }
-
-                NativeSurfaceCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("Profile sections are being stabilized.")
-                            .font(.system(size: 18, weight: .black))
-                            .foregroundStyle(.white)
-                        Text("Saved, visited, lists, and feed are temporarily simplified while we isolate the crash in the native profile screen.")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.68))
-                            .fixedSize(horizontal: false, vertical: true)
+            }
+        case .visited:
+            if ownVisitedFeedItems.isEmpty {
+                emptyOwnProfileBlock("No visited places yet.")
+            } else {
+                LazyVStack(spacing: 14) {
+                    ForEach(ownVisitedFeedItems) { item in
+                        NativeFeedCard(item: item)
                     }
-                }
-
-                if !appState.savedPlaces.isEmpty {
-                    NativeSurfaceCard {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Saved")
-                                .font(.system(size: 11, weight: .black))
-                                .foregroundStyle(nativeAccent.opacity(0.92))
-                                .textCase(.uppercase)
-                            Text("\(appState.savedPlaces.count) places saved")
-                                .font(.system(size: 18, weight: .black))
-                                .foregroundStyle(.white)
-                        }
-                    }
-                }
-
-                if !appState.collections.isEmpty {
-                    NativeSurfaceCard {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Collections")
-                                .font(.system(size: 11, weight: .black))
-                                .foregroundStyle(nativeAccent.opacity(0.92))
-                                .textCase(.uppercase)
-                            Text("\(appState.collections.count) lists created")
-                                .font(.system(size: 18, weight: .black))
-                                .foregroundStyle(.white)
-                        }
-                    }
-                }
-
-                if !appState.myMoments.isEmpty {
-                    NativeSurfaceCard {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Visited")
-                                .font(.system(size: 11, weight: .black))
-                                .foregroundStyle(nativeAccent.opacity(0.92))
-                                .textCase(.uppercase)
-                            Text("\(appState.myMoments.count) check-ins added")
-                                .font(.system(size: 18, weight: .black))
-                                .foregroundStyle(.white)
-                        }
-                    }
-                }
-
-                Button(role: .destructive) {
-                    appState.logout()
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text("Log out")
-                            .font(.system(size: 16, weight: .black))
-                        Spacer()
-                    }
-                    .padding(.vertical, 16)
-                    .background(Color.white.opacity(0.08))
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-            .padding(.bottom, 28)
+        case .collections:
+            if appState.collections.isEmpty {
+                emptyOwnProfileBlock("No collections yet.")
+            } else {
+                LazyVStack(spacing: 14) {
+                    ForEach(appState.collections) { collection in
+                        NavigationLink {
+                            NativeCollectionDetailScreen(collection: collection)
+                        } label: {
+                            NativeCollectionCard(collection: collection)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
         }
-        .background(Color.black.ignoresSafeArea())
-        .navigationTitle("Profile")
-        .navigationBarTitleDisplayMode(.inline)
-        .onAppear {
-            nativeLogger.log("NativeProfileScreen appear saved=\(appState.savedPlaces.count, privacy: .public) collections=\(appState.collections.count, privacy: .public) moments=\(appState.myMoments.count, privacy: .public)")
+    }
+
+    @ViewBuilder
+    private func emptyOwnProfileBlock(_ text: String) -> some View {
+        NativeSurfaceCard {
+            Text(text)
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(.white.opacity(0.6))
         }
-        .refreshable {
-            await appState.refreshProfile()
+    }
+
+    private var savedCityGroups: [(city: String, places: [NativePlace])] {
+        let grouped = Dictionary(grouping: appState.savedPlaces) { place in
+            place.location
+                .split(separator: ",")
+                .first
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .flatMap { $0.isEmpty ? nil : $0 } ?? "Unknown city"
+        }
+
+        return grouped
+            .map { key, value in
+                (
+                    city: key,
+                    places: value.sorted {
+                        ($0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending)
+                    }
+                )
+            }
+            .sorted { $0.city.localizedCaseInsensitiveCompare($1.city) == .orderedAscending }
+    }
+
+    private var ownVisitedFeedItems: [NativeFeedItem] {
+        appState.ownFeedItemsCache.filter { $0.type == .visited }
+    }
+
+    private func toggleSavedCity(_ city: String) {
+        if expandedSavedCities.contains(city) {
+            expandedSavedCities.remove(city)
+        } else {
+            expandedSavedCities.insert(city)
         }
     }
 }

@@ -52,6 +52,9 @@ const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
 const TICKETMASTER_API_KEY = process.env.TICKETMASTER_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const GOOGLE_IOS_CLIENT_ID = process.env.GOOGLE_IOS_CLIENT_ID;
+const GOOGLE_CLIENT_IDS = process.env.GOOGLE_CLIENT_IDS;
+const NATIVE_IOS_GOOGLE_CLIENT_ID = '937557434052-dj8h3e2pr7s85dmv4o4b2nttfjh40ma4.apps.googleusercontent.com';
 
 const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_ENDPOINT
   ? new S3Client({
@@ -152,6 +155,21 @@ function buildMediaUrl(key: string, requestOrigin?: string) {
   return `/api/media?key=${encodeURIComponent(key)}`;
 }
 
+function getAllowedGoogleClientIds() {
+  return Array.from(
+    new Set(
+      [
+        GOOGLE_CLIENT_ID,
+        GOOGLE_IOS_CLIENT_ID,
+        NATIVE_IOS_GOOGLE_CLIENT_ID,
+        ...(GOOGLE_CLIENT_IDS?.split(',') ?? []),
+      ]
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+}
+
 async function verifyGoogleIdToken(idToken: string) {
   const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`);
 
@@ -167,7 +185,9 @@ async function verifyGoogleIdToken(idToken: string) {
     picture?: string;
   };
 
-  if (GOOGLE_CLIENT_ID && payload.aud !== GOOGLE_CLIENT_ID) {
+  const allowedClientIds = getAllowedGoogleClientIds();
+
+  if (allowedClientIds.length > 0 && (!payload.aud || !allowedClientIds.includes(payload.aud))) {
     throw new Error('Google client mismatch');
   }
 
@@ -4382,9 +4402,8 @@ app.get('/api/support', requireAuth, (_, res) => {
 });
 
 app.get('/api/collections', requireAuth, (req: AuthenticatedRequest, res) => {
-  void refreshSavedPlaceScoresForUser(req.authUserId!)
-    .catch(() => {})
-    .then(() => getCollections(req.authUserId))
+  void refreshSavedPlaceScoresForUser(req.authUserId!).catch(() => {});
+  void getCollections(req.authUserId)
     .then((collections) => res.json({ collections }))
     .catch((error) => handleError(res, error));
 });
@@ -4402,9 +4421,8 @@ app.get('/api/collections/:id/public', (req, res) => {
 });
 
 app.get('/api/bookmarks', requireAuth, (req: AuthenticatedRequest, res) => {
-  void refreshSavedPlaceScoresForUser(req.authUserId!)
-    .catch(() => {})
-    .then(() => getBookmarks(req.authUserId))
+  void refreshSavedPlaceScoresForUser(req.authUserId!).catch(() => {});
+  void getBookmarks(req.authUserId)
     .then((bookmarks) => res.json({ bookmarks }))
     .catch((error) => handleError(res, error));
 });
