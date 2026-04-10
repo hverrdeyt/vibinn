@@ -51,6 +51,7 @@ private let nativeVibeSwipeCards: [NativePreferenceSwipeCard] = [
 
 private enum NativePostAuthAction {
     case openPreferenceSetup
+    case openTodayRecommendation
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
@@ -231,6 +232,13 @@ private struct NativePlaceDetailBundleResponse: Decodable {
 private struct NativeDiscoveryPlacesResponse: Decodable {
     let places: [NativePlace]
     let pagination: NativeDiscoveryPagination?
+}
+
+private struct NativeTodayRecommendationResponse: Decodable {
+    let place: NativePlace
+    let compatibilityScore: Int
+    let distanceMiles: Double
+    let todayReason: String
 }
 
 private struct NativeDiscoveryPagination: Decodable {
@@ -467,6 +475,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var discoveryPlaces: [NativePlace] = []
     @Published var discoveryPage = 1
     @Published var discoveryHasMore = false
+    @Published var todayRecommendation: NativeTodayRecommendationResponse?
+    @Published var isTodayRecommendationLoading = false
+    @Published var todayRecommendationErrorMessage: String?
     @Published var savedPlaces: [NativePlace] = []
     @Published var collections: [NativeCollection] = []
     @Published var myMoments: [NativeMoment] = []
@@ -595,6 +606,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         discoveryPlaces = []
         discoveryPage = 1
         discoveryHasMore = false
+        todayRecommendation = nil
+        isTodayRecommendationLoading = false
+        todayRecommendationErrorMessage = nil
         savedPlaces = []
         collections = []
         myMoments = []
@@ -636,6 +650,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         switch action {
         case .openPreferenceSetup:
             showPreferenceSetupSheet = true
+        case .openTodayRecommendation:
+            Task { await loadTodayRecommendation() }
         }
     }
 
@@ -686,7 +702,49 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         discoveryPlaces = []
         discoveryPage = 1
         discoveryHasMore = false
+        todayRecommendation = nil
+        todayRecommendationErrorMessage = nil
         await refreshDiscovery()
+    }
+
+    func loadTodayRecommendation() async {
+        guard let token = authToken else {
+            presentAuthGate(
+                reason: "Log in to get today's recommendation.",
+                postAuthAction: .openTodayRecommendation
+            )
+            return
+        }
+
+        guard let currentCoordinate else {
+            todayRecommendationErrorMessage = "Enable location to get today's recommendation."
+            return
+        }
+
+        isTodayRecommendationLoading = true
+        todayRecommendationErrorMessage = nil
+        defer { isTodayRecommendationLoading = false }
+
+        do {
+            let recommendation = try await api.getTodayRecommendation(
+                token: token,
+                location: selectedLocation.label,
+                latitude: currentCoordinate.latitude,
+                longitude: currentCoordinate.longitude
+            )
+            todayRecommendation = recommendation
+        } catch {
+            if error is CancellationError {
+                return
+            }
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled {
+                return
+            }
+            nativeLogger.error("loadTodayRecommendation failed: \(error.localizedDescription, privacy: .public)")
+            todayRecommendation = nil
+            todayRecommendationErrorMessage = "Could not get today's recommendation right now."
+        }
     }
 
     func refreshDiscovery() async {
@@ -1461,6 +1519,20 @@ private struct NativeAPIClient {
         }
         return try await request(
             path: path,
+            method: "GET",
+            token: token
+        )
+    }
+
+    func getTodayRecommendation(
+        token: String,
+        location: String,
+        latitude: Double,
+        longitude: Double
+    ) async throws -> NativeTodayRecommendationResponse {
+        let encodedLocation = location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? location
+        return try await request(
+            path: "/api/recommendations/today?location=\(encodedLocation)&type=city&latitude=\(latitude)&longitude=\(longitude)",
             method: "GET",
             token: token
         )
@@ -3571,6 +3643,64 @@ private struct NativeDiscoverScreen: View {
                         NativeInlineError(message: discoveryErrorMessage)
                     }
 
+                    Button {
+                        Task { await appState.loadTodayRecommendation() }
+                    } label: {
+                        HStack(spacing: 14) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Today recommendation")
+                                    .font(.system(size: 19, weight: .black))
+                                    .foregroundStyle(.black)
+                                Text("Get one strong pick for today near you.")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Color.black.opacity(0.72))
+                            }
+                            Spacer(minLength: 0)
+                            Group {
+                                if appState.isTodayRecommendationLoading {
+                                    ProgressView()
+                                        .tint(.black)
+                                } else {
+                                    Image(systemName: "sparkles")
+                                        .font(.system(size: 18, weight: .black))
+                                        .foregroundStyle(.black)
+                                }
+                            }
+                            .frame(width: 36, height: 36)
+                            .background(Color.black.opacity(0.08))
+                            .clipShape(Circle())
+                        }
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            nativeAccent,
+                                            Color(red: 176 / 255, green: 1, blue: 72 / 255),
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+
+                    if let todayRecommendationErrorMessage = appState.todayRecommendationErrorMessage {
+                        NativeInlineError(message: todayRecommendationErrorMessage)
+                    }
+
+                    if let todayRecommendation = appState.todayRecommendation {
+                        NavigationLink {
+                            NativePlaceDetailScreen(initialPlace: todayRecommendation.place)
+                        } label: {
+                            NativeTodayRecommendationCard(recommendation: todayRecommendation)
+                        }
+                        .buttonStyle(.plain)
+                    }
+
                     if appState.isDiscoveryLoading && appState.discoveryPlaces.isEmpty {
                         NativeSurfaceCard {
                             VStack(alignment: .leading, spacing: 8) {
@@ -3698,6 +3828,92 @@ private struct NativeDiscoverScreen: View {
         .refreshable {
             await appState.refreshDiscovery()
         }
+    }
+}
+
+private struct NativeTodayRecommendationCard: View {
+    let recommendation: NativeTodayRecommendationResponse
+
+    private var badge: NativeCompatibilityBadgeMeta? {
+        nativeCompatibilityBadge(for: recommendation.compatibilityScore)
+    }
+
+    private var distanceLabel: String {
+        if recommendation.distanceMiles < 0.2 {
+            return "Walkable now"
+        }
+        return String(format: "%.1f mi away", recommendation.distanceMiles)
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            NativeRemoteImage(url: recommendation.place.image ?? recommendation.place.images?.first)
+                .frame(height: 300)
+                .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                .overlay(
+                    LinearGradient(
+                        colors: [.clear, Color.black.opacity(0.16), Color.black.opacity(0.84)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+                )
+
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top) {
+                    Text("Today recommendation")
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(Color.white.opacity(0.96))
+                        .clipShape(Capsule())
+                    Spacer()
+                    if let badge {
+                        Text(badge.label)
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundStyle(badge.foreground)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 7)
+                            .background(badge.background)
+                            .clipShape(Capsule())
+                    }
+                }
+
+                Spacer()
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(recommendation.place.name)
+                        .font(.system(size: 30, weight: .black))
+                        .foregroundStyle(.white)
+                        .multilineTextAlignment(.leading)
+
+                    HStack(spacing: 8) {
+                        Text("\(recommendation.compatibilityScore)% match")
+                        Text("•")
+                        Text(distanceLabel)
+                    }
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(nativeAccent)
+
+                    Text(recommendation.todayReason)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(22)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 300)
+        .background(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .fill(Color.white.opacity(0.04))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .stroke(nativeBorder, lineWidth: 1)
+        )
     }
 }
 

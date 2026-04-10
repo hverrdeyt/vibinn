@@ -2362,6 +2362,70 @@ type EventRecommendationContext = {
   socialKeywords: Set<string>;
 };
 
+type TodayRecommendationCandidate = {
+  id: string;
+  name: string;
+  category: string | null;
+  rating: number | null;
+  latitude: number | null;
+  longitude: number | null;
+  aiEnrichment: {
+    vibeTags: string[];
+    hook: string | null;
+    description: string | null;
+    bestTime: string | null;
+    attitudeLabel: string | null;
+  } | null;
+};
+
+function toRadians(value: number) {
+  return (value * Math.PI) / 180;
+}
+
+function distanceBetweenMiles(
+  origin: { latitude: number; longitude: number },
+  destination: { latitude: number; longitude: number },
+) {
+  const earthRadiusMiles = 3958.7613;
+  const latDelta = toRadians(destination.latitude - origin.latitude);
+  const lngDelta = toRadians(destination.longitude - origin.longitude);
+  const lat1 = toRadians(origin.latitude);
+  const lat2 = toRadians(destination.latitude);
+
+  const a = Math.sin(latDelta / 2) ** 2
+    + Math.cos(lat1) * Math.cos(lat2) * Math.sin(lngDelta / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadiusMiles * c;
+}
+
+function buildTodayRecommendationReason(input: {
+  baseReason?: string | null;
+  bestTime?: string | null;
+  distanceMiles: number;
+  score: number;
+}) {
+  const distanceLabel = input.distanceMiles < 0.2
+    ? 'just a short walk away'
+    : `${input.distanceMiles.toFixed(1)} mi away`;
+  const bestTime = input.bestTime?.trim();
+
+  if (bestTime) {
+    return `Strong fit for today: ${distanceLabel} and best if you go ${bestTime}.`;
+  }
+
+  if (input.baseReason?.trim()) {
+    const cleaned = input.baseReason.trim().replace(/\s+/g, ' ');
+    const normalized = cleaned.endsWith('.') ? cleaned.slice(0, -1) : cleaned;
+    return `${normalized}, and it is ${distanceLabel} today.`;
+  }
+
+  if (input.score >= 92) {
+    return `One of your strongest nearby matches today, and only ${distanceLabel}.`;
+  }
+
+  return `High-compatibility pick for today that is only ${distanceLabel}.`;
+}
+
 async function getUserRecommendationContext(userId: string): Promise<RecommendationContext> {
   const cached = recommendationContextCache.get(userId);
   if (cached && cached.expiresAt > Date.now()) {
@@ -4143,6 +4207,167 @@ async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
   };
 }
 
+async function getTodayRecommendationForUser(input: {
+  userId: string;
+  locationLabel: string;
+  locationType?: string;
+  latitude: number;
+  longitude: number;
+}) {
+  const recommendationContext = await getUserRecommendationContext(input.userId);
+  const discovery = await getDiscoveryPlacesForUser({
+    userId: input.userId,
+    locationLabel: input.locationLabel,
+    locationType: input.locationType,
+    selectedInterests: recommendationContext.selectedInterests,
+    selectedVibe: recommendationContext.selectedVibe,
+    page: 1,
+    limit: 20,
+  });
+
+  const discoveryPlaces = discovery.places;
+  const candidateIds = discoveryPlaces.map((place) => place.id);
+  if (candidateIds.length === 0) {
+    return null;
+  }
+
+  await refreshUserPlaceScores(input.userId, candidateIds);
+
+  const [persistedScores, candidates] = await Promise.all([
+    prisma.userPlaceScore.findMany({
+      where: {
+        userId: input.userId,
+        placeId: { in: candidateIds },
+      },
+      select: {
+        placeId: true,
+        similarityPercentage: true,
+        matchScore: true,
+        recommendationReason: true,
+      },
+    }),
+    prisma.place.findMany({
+      where: { id: { in: candidateIds } },
+      include: {
+        aiEnrichment: true,
+      },
+    }),
+  ]);
+
+  const scoreMap = new Map(
+    persistedScores.map((item) => [
+      item.placeId,
+      {
+        score: item.similarityPercentage ?? item.matchScore ?? null,
+        reason: item.recommendationReason ?? null,
+      },
+    ]),
+  );
+
+  const origin = {
+    latitude: input.latitude,
+    longitude: input.longitude,
+  };
+
+  const rankedCandidates = candidates
+    .map((place) => {
+      if (place.latitude == null || place.longitude == null) return null;
+
+      const distanceMiles = distanceBetweenMiles(origin, {
+        latitude: place.latitude,
+        longitude: place.longitude,
+      });
+      const persisted = scoreMap.get(place.id);
+      const score = persisted?.score ?? computeRecommendationScore(
+        {
+          id: place.id,
+          tags: place.aiEnrichment?.vibeTags ?? [place.category].filter(Boolean),
+          category: place.category,
+          rating: place.rating,
+          hook: place.aiEnrichment?.hook ?? null,
+          description: place.aiEnrichment?.description ?? null,
+          whyYoullLikeIt: [
+            ...(place.aiEnrichment?.description ? [place.aiEnrichment.description] : []),
+            ...(place.aiEnrichment?.bestTime ? [`best at ${place.aiEnrichment.bestTime}`] : []),
+          ],
+        },
+        {
+          selectedInterests: recommendationContext.selectedInterests,
+          selectedVibe: recommendationContext.selectedVibe,
+          bookmarkKeywords: recommendationContext.bookmarkKeywords,
+          momentKeywords: recommendationContext.momentKeywords,
+          socialKeywords: recommendationContext.socialKeywords,
+          isBookmarked: recommendationContext.bookmarkedPlaceIds.has(place.id),
+          isVisited: recommendationContext.visitedPlaceIds.has(place.id),
+          isVibed: recommendationContext.vibedPlaceIds.has(place.id),
+          isCommented: recommendationContext.commentedPlaceIds.has(place.id),
+          isRecent: recommendationContext.recentPlaceIds.has(place.id),
+          followedPlaceMatch: recommendationContext.followedPlaceIds.has(place.id),
+          momentRating: recommendationContext.momentRatingsByPlaceId.get(place.id) ?? null,
+        },
+      );
+
+      return {
+        place,
+        distanceMiles,
+        score,
+        reason: persisted?.reason ?? buildRecommendationReason({
+          place: {
+            category: place.category,
+            tags: place.aiEnrichment?.vibeTags ?? [place.category].filter(Boolean),
+          },
+          selectedInterests: recommendationContext.selectedInterests,
+          selectedVibe: recommendationContext.selectedVibe,
+          tasteKeywords: recommendationContext.tasteKeywords,
+          followedTravelerVisits: 0,
+          followedPlaceMatch: recommendationContext.followedPlaceIds.has(place.id),
+          socialOverlap: recommendationContext.socialKeywords.size > 0,
+          isBookmarked: recommendationContext.bookmarkedPlaceIds.has(place.id),
+          isVisited: recommendationContext.visitedPlaceIds.has(place.id),
+          isVibed: recommendationContext.vibedPlaceIds.has(place.id),
+          isCommented: recommendationContext.commentedPlaceIds.has(place.id),
+          isRecent: recommendationContext.recentPlaceIds.has(place.id),
+          isDismissed: recommendationContext.manuallyDismissedPlaceIds.has(place.id),
+        }),
+      };
+    })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
+    .filter((candidate) => !recommendationContext.visitedPlaceIds.has(candidate.place.id))
+    .filter((candidate) => candidate.distanceMiles <= 2)
+    .filter((candidate) => (candidate.score ?? 0) > 80)
+    .sort((left, right) => {
+      if ((right.score ?? 0) !== (left.score ?? 0)) {
+        return (right.score ?? 0) - (left.score ?? 0);
+      }
+      if (left.distanceMiles !== right.distanceMiles) {
+        return left.distanceMiles - right.distanceMiles;
+      }
+      return (right.place.rating ?? 0) - (left.place.rating ?? 0);
+    });
+
+  const bestCandidate = rankedCandidates[0];
+  if (!bestCandidate) {
+    return null;
+  }
+
+  const place = await getPlaceDetailsByInternalId(bestCandidate.place.id, input.userId);
+  if (!place) {
+    return null;
+  }
+
+  return {
+    place,
+    distanceMiles: Number(bestCandidate.distanceMiles.toFixed(1)),
+    compatibilityScore: bestCandidate.score ?? place.similarityStat ?? 0,
+    todayReason: buildTodayRecommendationReason({
+      baseReason: bestCandidate.reason ?? place.recommendationReason,
+      bestTime: place.bestTime ?? bestCandidate.place.aiEnrichment?.bestTime ?? null,
+      distanceMiles: bestCandidate.distanceMiles,
+      score: bestCandidate.score ?? place.similarityStat ?? 0,
+    }),
+  };
+}
+
 app.use(async (req: AuthenticatedRequest, _res, next) => {
   const header = req.header('Authorization');
   const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
@@ -4692,6 +4917,41 @@ app.get('/api/lookups/locations', (req, res) => {
   void getLocationSuggestions(q)
     .then((locations) => res.json({ locations }))
     .catch((error) => handleError(res, error));
+});
+
+app.get('/api/recommendations/today', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const locationLabel = typeof req.query.location === 'string' && req.query.location.trim()
+      ? req.query.location.trim()
+      : 'Boston';
+    const locationType = typeof req.query.type === 'string' && req.query.type.trim()
+      ? req.query.type.trim()
+      : 'city';
+    const latitude = typeof req.query.latitude === 'string' ? Number(req.query.latitude) : NaN;
+    const longitude = typeof req.query.longitude === 'string' ? Number(req.query.longitude) : NaN;
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      res.status(400).json({ error: 'Latitude and longitude are required' });
+      return;
+    }
+
+    const recommendation = await getTodayRecommendationForUser({
+      userId: req.authUserId!,
+      locationLabel,
+      locationType,
+      latitude,
+      longitude,
+    });
+
+    if (!recommendation) {
+      res.status(404).json({ error: 'No strong recommendation available today' });
+      return;
+    }
+
+    res.json(recommendation);
+  } catch (error) {
+    handleError(res, error);
+  }
 });
 
 app.get('/api/saved-locations', requireAuth, async (req: AuthenticatedRequest, res) => {
