@@ -2885,42 +2885,65 @@ private struct NativeSavedScreen: View {
             } else {
                 LazyVStack(spacing: 14) {
                     ForEach(savedCityGroups, id: \.city) { group in
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Button {
-                                    toggleSavedCity(group.city)
-                                } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(group.city)
-                                                .font(.system(size: 18, weight: .black))
-                                                .foregroundStyle(.white)
-                                            Text("\(group.places.count) places")
-                                                .font(.system(size: 12, weight: .bold))
-                                                .foregroundStyle(.white.opacity(0.45))
-                                        }
-                                        Spacer()
-                                        Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
-                                            .font(.system(size: 14, weight: .black))
-                                            .foregroundStyle(.white.opacity(0.7))
+                        VStack(alignment: .leading, spacing: 14) {
+                            Button {
+                                toggleSavedCity(group.city)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(group.city)
+                                            .font(.system(size: 18, weight: .black))
+                                            .foregroundStyle(.white)
+                                        Text("\(group.places.count) places")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(.white.opacity(0.45))
                                     }
+                                    Spacer()
+                                    Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
+                                        .font(.system(size: 14, weight: .black))
+                                        .foregroundStyle(.white.opacity(0.7))
                                 }
-                                .buttonStyle(.plain)
+                                .padding(.horizontal, 18)
+                                .padding(.vertical, 16)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .fill(Color.white.opacity(0.04))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .stroke(nativeBorder, lineWidth: 1)
+                                )
+                            }
+                            .buttonStyle(.plain)
 
-                                if expandedSavedCities.contains(group.city) {
-                                    VStack(spacing: 12) {
-                                        ForEach(group.places) { place in
-                                            NavigationLink {
-                                                NativePlaceDetailScreen(initialPlace: place)
-                                            } label: {
-                                                NativeSurfaceCard {
-                                                    NativePlaceRow(place: place)
-                                                }
-                                            }
-                                            .buttonStyle(.plain)
+                            if expandedSavedCities.contains(group.city) {
+                                VStack(spacing: 0) {
+                                    ForEach(Array(group.places.enumerated()), id: \.element.id) { index, place in
+                                        NavigationLink {
+                                            NativePlaceDetailScreen(initialPlace: place)
+                                        } label: {
+                                            NativePlaceRow(place: place)
+                                                .padding(.horizontal, 18)
+                                                .padding(.vertical, 10)
+                                                .contentShape(Rectangle())
+                                        }
+                                        .buttonStyle(.plain)
+
+                                        if index < group.places.count - 1 {
+                                            Divider()
+                                                .overlay(Color.white.opacity(0.08))
+                                                .padding(.leading, 18)
                                         }
                                     }
                                 }
+                                .background(
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .fill(Color.white.opacity(0.03))
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .stroke(nativeBorder, lineWidth: 1)
+                                )
                             }
                         }
                     }

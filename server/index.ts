@@ -1277,6 +1277,9 @@ async function getDiscoveryPlacesForUser(options: {
   const currentPreferences = options.userId
     ? await prisma.userPreference.findUnique({
         where: { userId: options.userId },
+      }).catch((error) => {
+        console.error('Discovery preferences load failed', error);
+        return null;
       })
     : null;
 
@@ -1334,26 +1337,31 @@ async function getDiscoveryPlacesForUser(options: {
     places = getFallbackDiscoveryPlaces(options.locationLabel, normalizedSearchQuery);
   }
 
+  const emptyContext = {
+    selectedInterests,
+    selectedVibe,
+    bookmarkedPlaceIds: new Set<string>(),
+    visitedPlaceIds: new Set<string>(),
+    dismissedPlaceIds: new Set<string>(),
+    manuallyDismissedPlaceIds: new Set<string>(),
+    tasteKeywords: new Set<string>(),
+    bookmarkKeywords: new Set<string>(),
+    momentKeywords: new Set<string>(),
+    followedUserIds: new Set<string>(),
+    followedPlaceIds: new Set<string>(),
+    socialKeywords: new Set<string>(),
+    vibedPlaceIds: new Set<string>(),
+    commentedPlaceIds: new Set<string>(),
+    recentPlaceIds: new Set<string>(),
+    momentRatingsByPlaceId: new Map<string, number>(),
+  };
+
   const context = options.userId
-    ? await getUserRecommendationContext(options.userId)
-    : {
-        selectedInterests,
-        selectedVibe,
-        bookmarkedPlaceIds: new Set<string>(),
-        visitedPlaceIds: new Set<string>(),
-        dismissedPlaceIds: new Set<string>(),
-        manuallyDismissedPlaceIds: new Set<string>(),
-        tasteKeywords: new Set<string>(),
-        bookmarkKeywords: new Set<string>(),
-        momentKeywords: new Set<string>(),
-        followedUserIds: new Set<string>(),
-        followedPlaceIds: new Set<string>(),
-        socialKeywords: new Set<string>(),
-        vibedPlaceIds: new Set<string>(),
-        commentedPlaceIds: new Set<string>(),
-        recentPlaceIds: new Set<string>(),
-        momentRatingsByPlaceId: new Map<string, number>(),
-      };
+    ? await getUserRecommendationContext(options.userId).catch((error) => {
+        console.error('Discovery recommendation context failed', error);
+        return emptyContext;
+      })
+    : emptyContext;
 
   const persistedScores = options.userId
     ? await prisma.userPlaceScore.findMany({
@@ -1361,6 +1369,9 @@ async function getDiscoveryPlacesForUser(options: {
           userId: options.userId,
           placeId: { in: places.map((place) => place.id) },
         },
+      }).catch((error) => {
+        console.error('Discovery persisted score load failed', error);
+        return [];
       })
     : [];
   const persistedScoreMap = new Map(persistedScores.map((item) => [item.placeId, item.similarityPercentage ?? item.matchScore ?? null]));
