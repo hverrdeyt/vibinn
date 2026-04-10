@@ -316,6 +316,14 @@ private struct NativeProfileResponse: Decodable {
     let collections: [NativeCollection]
 }
 
+private struct NativeBookmarksResponse: Decodable {
+    let bookmarks: [NativePlace]
+}
+
+private struct NativeCollectionsResponse: Decodable {
+    let collections: [NativeCollection]
+}
+
 private struct NativeLocationOption: Identifiable, Hashable {
     let id: String
     let label: String
@@ -385,6 +393,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var profileErrorMessage: String?
     @Published var discoveryErrorMessage: String?
     @Published var feedErrorMessage: String?
+    @Published var savedErrorMessage: String?
 
     private let api = NativeAPIClient()
     private let authTokenKey = "vibinn_native_auth_token"
@@ -615,6 +624,32 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
     }
 
+    func refreshSavedContent() async {
+        nativeLogger.log("refreshSavedContent start")
+        savedErrorMessage = nil
+        guard let token = authToken else { return }
+
+        do {
+            async let bookmarksTask = api.getBookmarks(token: token)
+            async let collectionsTask = api.getCollections(token: token)
+            let (bookmarks, collectionsResponse) = try await (bookmarksTask, collectionsTask)
+
+            let uniqueBookmarks = Array(
+                Dictionary(bookmarks.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values
+            )
+            let uniqueCollections = Array(
+                Dictionary(collectionsResponse.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values
+            )
+
+            savedPlaces = uniqueBookmarks
+            collections = uniqueCollections
+            nativeLogger.log("refreshSavedContent success bookmarks=\(self.savedPlaces.count, privacy: .public) collections=\(self.collections.count, privacy: .public)")
+        } catch {
+            nativeLogger.error("refreshSavedContent failed: \(error.localizedDescription, privacy: .public)")
+            savedErrorMessage = "Could not load your saved places right now."
+        }
+    }
+
     func refreshFeed() async {
         nativeLogger.log("refreshFeed start")
         feedErrorMessage = nil
@@ -681,7 +716,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         case .checkIn:
             break
         case .saved:
-            break
+            if savedPlaces.isEmpty && collections.isEmpty {
+                await refreshSavedContent()
+            }
         case .profile:
             break
         }
@@ -1162,6 +1199,16 @@ private struct NativeAPIClient {
 
     func getProfile(token: String) async throws -> NativeProfileResponse {
         try await request(path: "/api/profile/me", method: "GET", token: token)
+    }
+
+    func getBookmarks(token: String) async throws -> [NativePlace] {
+        let response: NativeBookmarksResponse = try await request(path: "/api/bookmarks", method: "GET", token: token)
+        return response.bookmarks
+    }
+
+    func getCollections(token: String) async throws -> [NativeCollection] {
+        let response: NativeCollectionsResponse = try await request(path: "/api/collections", method: "GET", token: token)
+        return response.collections
     }
 
     func getMoments(token: String) async throws -> [NativeMoment] {
@@ -2842,6 +2889,10 @@ private struct NativeSavedScreen: View {
 
                     NativeSavedTabs(activeSection: $activeSection)
 
+                    if let savedErrorMessage = appState.savedErrorMessage {
+                        NativeInlineError(message: savedErrorMessage)
+                    }
+
                     savedSectionContent
                 }
                 .padding(.horizontal, 20)
@@ -2855,9 +2906,9 @@ private struct NativeSavedScreen: View {
             if expandedSavedCities.isEmpty {
                 expandedSavedCities = Set(savedCityGroups.map(\.city))
             }
-            if appState.savedPlaces.isEmpty && appState.currentUser != nil {
+            if appState.savedPlaces.isEmpty && appState.collections.isEmpty && appState.currentUser != nil {
                 Task {
-                    await appState.refreshProfile()
+                    await appState.refreshSavedContent()
                     if expandedSavedCities.isEmpty {
                         expandedSavedCities = Set(savedCityGroups.map(\.city))
                     }
@@ -2865,7 +2916,7 @@ private struct NativeSavedScreen: View {
             }
         }
         .refreshable {
-            await appState.refreshProfile()
+            await appState.refreshSavedContent()
             if expandedSavedCities.isEmpty {
                 expandedSavedCities = Set(savedCityGroups.map(\.city))
             }
