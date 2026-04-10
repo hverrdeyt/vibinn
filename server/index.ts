@@ -277,6 +277,51 @@ async function mapUserForClientWithTasteState(user: { id: string; username: stri
   };
 }
 
+async function ensureDefaultUserRelations(userId: string) {
+  const tasks = await Promise.allSettled([
+    prisma.userPreference.upsert({
+      where: { userId },
+      update: {},
+      create: {
+        userId,
+        selectedInterests: [],
+        onboardingCompleted: false,
+        skippedPreferences: true,
+      },
+    }),
+    prisma.userAccountSettings.upsert({
+      where: { userId },
+      update: {},
+      create: { userId },
+    }),
+    prisma.userNotificationSettings.upsert({
+      where: { userId },
+      update: {},
+      create: {
+        userId,
+        pushEnabled: true,
+        emailEnabled: true,
+        recommendationEnabled: true,
+      },
+    }),
+    prisma.userPrivacySettings.upsert({
+      where: { userId },
+      update: {},
+      create: {
+        userId,
+        profileVisibility: 'PUBLIC',
+        momentVisibility: 'PUBLIC',
+      },
+    }),
+  ]);
+
+  for (const task of tasks) {
+    if (task.status == 'rejected') {
+      console.error('ensureDefaultUserRelations failed', task.reason);
+    }
+  }
+}
+
 function normalizeLocationPart(part: string) {
   const trimmed = part.trim();
   if (!trimmed) return null;
@@ -4221,12 +4266,9 @@ app.post('/api/auth/register', async (req, res) => {
         bio: 'Still building my travel graph.',
         avatarUrl: `https://placehold.co/400x400/111111/D3FF48?text=${encodeURIComponent(name.trim().slice(0, 1).toUpperCase())}`,
         authProvider: 'MANUAL',
-        accountSettings: { create: {} },
-        notificationPrefs: { create: { pushEnabled: true, emailEnabled: true, recommendationEnabled: true } },
-        privacySettings: { create: { profileVisibility: 'PUBLIC', momentVisibility: 'PUBLIC' } },
-        preferences: { create: { selectedInterests: [], onboardingCompleted: false, skippedPreferences: true } },
       },
     });
+    await ensureDefaultUserRelations(user.id);
 
     const token = await createSession(user.id);
     res.status(201).json({ token, user: await mapUserForClientWithTasteState(user) });
@@ -4277,12 +4319,9 @@ app.post('/api/auth/google', async (req, res) => {
             avatarUrl: googleProfile.picture || fallbackAvatar,
             authProvider: 'GOOGLE',
             emailVerifiedAt: new Date(),
-            accountSettings: { create: {} },
-            notificationPrefs: { create: { pushEnabled: true, emailEnabled: true, recommendationEnabled: true } },
-            privacySettings: { create: { profileVisibility: 'PUBLIC', momentVisibility: 'PUBLIC' } },
-            preferences: { create: { selectedInterests: [], onboardingCompleted: false, skippedPreferences: true } },
           },
         });
+    await ensureDefaultUserRelations(user.id);
 
     const token = await createSession(user.id);
     res.json({ token, user: await mapUserForClientWithTasteState(user) });

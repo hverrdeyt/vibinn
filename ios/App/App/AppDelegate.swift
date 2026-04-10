@@ -26,6 +26,33 @@ private let nativeLocationOptions = [
 private let nativeTravelerProfileHorizontalPadding: CGFloat = 22
 private let nativeGoogleClientID = "937557434052-dj8h3e2pr7s85dmv4o4b2nttfjh40ma4.apps.googleusercontent.com"
 
+private struct NativePreferenceSwipeCard: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let description: String
+    let imageURL: String
+}
+
+private let nativeInterestSwipeCards: [NativePreferenceSwipeCard] = [
+    NativePreferenceSwipeCard(id: "cafe", title: "Cafe hopping", description: "good coffee, good light, and better neighborhood energy.", imageURL: "https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "culture", title: "Culture", description: "museums, old streets, and places with a story to tell.", imageURL: "https://images.unsplash.com/photo-1518998053901-5348d3961a04?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "nature", title: "Nature days", description: "touch grass, reset the brain, keep the camera ready.", imageURL: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "party", title: "Nightlife & music", description: "city lights, live sets, and plans that start after dark.", imageURL: "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "shopping", title: "Shopping & markets", description: "concept stores, local markets, and receipts worth keeping.", imageURL: "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=800&q=80"),
+]
+
+private let nativeVibeSwipeCards: [NativePreferenceSwipeCard] = [
+    NativePreferenceSwipeCard(id: "aesthetic", title: "Aesthetic", description: "camera-roll worthy and low effort to love.", imageURL: "https://images.unsplash.com/photo-1523275335684-37898b6baf30?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "solo", title: "Solo", description: "quiet, low-pressure wandering with no group chat chaos.", imageURL: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "spontaneous", title: "Spontaneous", description: "last-minute pivots, easy detours, and stories you did not plan.", imageURL: "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "luxury", title: "Luxury", description: "good taste, soft sheets, and not pretending otherwise.", imageURL: "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "budget", title: "Budget", description: "great finds without burning the whole wallet.", imageURL: "https://images.unsplash.com/photo-1527631746610-bca00a040d60?auto=format&fit=crop&w=800&q=80"),
+]
+
+private enum NativePostAuthAction {
+    case openPreferenceSetup
+}
+
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
     func application(
@@ -131,6 +158,8 @@ private struct NativeAuthUser: Codable {
 private struct NativeAuthSessionResponse: Decodable {
     let user: NativeAuthUser
 }
+
+private struct NativeEmptyResponse: Decodable {}
 
 private struct NativeLoginResponse: Decodable {
     let token: String
@@ -430,6 +459,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var currentUser: NativeAuthUser?
     @Published var activeTab: NativeTab = .discover
     @Published var selectedLocation = NativeLocationOption(id: "boston", label: "Boston")
+    @Published var selectedInterests: [String] = []
+    @Published var selectedVibe: String?
     @Published var hasCompletedOnboarding = false
     @Published var isDiscoveryLoading = false
     @Published var isDiscoveryLoadingMore = false
@@ -451,17 +482,24 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var savedErrorMessage: String?
     @Published var showAuthSheet = false
     @Published var authSheetReason: String?
+    @Published var showPreferenceSetupSheet = false
 
     private let api = NativeAPIClient()
     private let authTokenKey = "vibinn_native_auth_token"
     private let onboardingKey = "vibinn_native_onboarding_completed"
     private let locationKey = "vibinn_native_location_label"
+    private let selectedInterestsKey = "vibinn_native_selected_interests"
+    private let selectedVibeKey = "vibinn_native_selected_vibe"
     private let locationManager = CLLocationManager()
     private var floatingTabBarHideDepth = 0
     private var followStateOverrides: [String: Bool] = [:]
+    private var pendingPostAuthAction: NativePostAuthAction?
 
     var shouldShowUnlockVibeCTA: Bool {
-        currentUser == nil || !(currentUser?.hasCompletedTastePreferences ?? false)
+        if let currentUser {
+            return currentUser.hasCompletedTastePreferences != true
+        }
+        return true
     }
 
     override init() {
@@ -469,6 +507,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let storedLocation = UserDefaults.standard.string(forKey: locationKey) ?? "Boston"
         self.selectedLocation = NativeLocationOption(id: storedLocation.lowercased(), label: storedLocation)
         self.hasCompletedOnboarding = UserDefaults.standard.bool(forKey: onboardingKey)
+        self.selectedInterests = UserDefaults.standard.stringArray(forKey: selectedInterestsKey) ?? []
+        self.selectedVibe = UserDefaults.standard.string(forKey: selectedVibeKey)
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         if locationManager.authorizationStatus == .authorizedAlways || locationManager.authorizationStatus == .authorizedWhenInUse {
@@ -513,6 +553,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         do {
             let session = try await api.getAuthSession(token: token)
             currentUser = session.user
+            await syncLocalTastePreferencesIfNeeded()
             nativeLogger.log("bootstrap session ok user=\(session.user.username, privacy: .public)")
         } catch {
             nativeLogger.error("bootstrap failed: \(error.localizedDescription, privacy: .public)")
@@ -525,6 +566,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let response = try await api.login(email: email, password: password)
         authToken = response.token
         currentUser = response.user
+        await syncLocalTastePreferencesIfNeeded()
         nativeLogger.log("login success user=\(response.user.username, privacy: .public)")
     }
 
@@ -533,6 +575,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let response = try await api.register(name: name, email: email, password: password)
         authToken = response.token
         currentUser = response.user
+        await syncLocalTastePreferencesIfNeeded()
         nativeLogger.log("register success user=\(response.user.username, privacy: .public)")
     }
 
@@ -542,6 +585,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let response = try await api.googleAuth(idToken: idToken)
         authToken = response.token
         currentUser = response.user
+        await syncLocalTastePreferencesIfNeeded()
         nativeLogger.log("google login success user=\(response.user.username, privacy: .public)")
     }
 
@@ -563,10 +607,13 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         feedErrorMessage = nil
         savedErrorMessage = nil
         authSheetReason = nil
+        showPreferenceSetupSheet = false
+        pendingPostAuthAction = nil
     }
 
-    func presentAuthGate(reason: String) {
+    func presentAuthGate(reason: String, postAuthAction: NativePostAuthAction? = nil) {
         authSheetReason = reason
+        pendingPostAuthAction = postAuthAction
         showAuthSheet = true
     }
 
@@ -575,11 +622,59 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authSheetReason = nil
     }
 
-    func completeOnboarding(with location: NativeLocationOption) async {
+    func presentPreferenceSetup() {
+        showPreferenceSetupSheet = true
+    }
+
+    func dismissPreferenceSetup() {
+        showPreferenceSetupSheet = false
+    }
+
+    func performPendingPostAuthActionIfNeeded() {
+        guard let action = pendingPostAuthAction else { return }
+        pendingPostAuthAction = nil
+        switch action {
+        case .openPreferenceSetup:
+            showPreferenceSetupSheet = true
+        }
+    }
+
+    func updateTastePreferences(selectedInterests: [String], selectedVibe: String?) async {
+        self.selectedInterests = selectedInterests
+        self.selectedVibe = selectedVibe
+        UserDefaults.standard.set(selectedInterests, forKey: selectedInterestsKey)
+        UserDefaults.standard.set(selectedVibe, forKey: selectedVibeKey)
+
+        guard let token = authToken else { return }
+
+        do {
+            try await api.savePreferences(
+                token: token,
+                selectedInterests: selectedInterests,
+                selectedVibe: selectedVibe,
+                skippedPreferences: selectedInterests.isEmpty && selectedVibe == nil,
+                onboardingCompleted: true
+            )
+            if let currentUser {
+                self.currentUser = NativeAuthUser(
+                    id: currentUser.id,
+                    displayName: currentUser.displayName,
+                    username: currentUser.username,
+                    email: currentUser.email,
+                    hasCompletedTastePreferences: true
+                )
+            }
+        } catch {
+            nativeLogger.error("savePreferences failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func completeOnboarding(with location: NativeLocationOption, selectedInterests: [String] = [], selectedVibe: String? = nil) async {
         selectedLocation = location
         UserDefaults.standard.set(true, forKey: onboardingKey)
         UserDefaults.standard.set(location.label, forKey: locationKey)
         hasCompletedOnboarding = true
+        await updateTastePreferences(selectedInterests: selectedInterests, selectedVibe: selectedVibe)
         Task { await self.refreshDiscovery() }
         Task { await self.refreshFeed() }
     }
@@ -604,6 +699,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 location: selectedLocation.label,
                 page: 1,
                 limit: 18,
+                selectedInterests: selectedInterests,
+                selectedVibe: selectedVibe,
                 token: authToken
             )
             discoveryPlaces = response.places
@@ -643,6 +740,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 location: selectedLocation.label,
                 page: nextPage,
                 limit: 18,
+                selectedInterests: selectedInterests,
+                selectedVibe: selectedVibe,
                 token: authToken
             )
             let existingIds = Set(discoveryPlaces.map(\.id))
@@ -743,6 +842,33 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             nativeLogger.log("refreshSavedContent success bookmarks=\(self.savedPlaces.count, privacy: .public) collections=\(self.collections.count, privacy: .public)")
         } else {
             savedErrorMessage = "Could not load your saved places right now."
+        }
+    }
+
+    private func syncLocalTastePreferencesIfNeeded() async {
+        guard let token = authToken else { return }
+        guard (!selectedInterests.isEmpty || selectedVibe != nil) else { return }
+        guard currentUser?.hasCompletedTastePreferences != true else { return }
+
+        do {
+            try await api.savePreferences(
+                token: token,
+                selectedInterests: selectedInterests,
+                selectedVibe: selectedVibe,
+                skippedPreferences: false,
+                onboardingCompleted: true
+            )
+            if let currentUser {
+                self.currentUser = NativeAuthUser(
+                    id: currentUser.id,
+                    displayName: currentUser.displayName,
+                    username: currentUser.username,
+                    email: currentUser.email,
+                    hasCompletedTastePreferences: true
+                )
+            }
+        } catch {
+            nativeLogger.error("syncLocalTastePreferences failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -1317,13 +1443,53 @@ private struct NativeAPIClient {
         location: String,
         page: Int,
         limit: Int,
+        selectedInterests: [String],
+        selectedVibe: String?,
         token: String?
     ) async throws -> NativeDiscoveryPlacesResponse {
         let encodedLocation = location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? location
+        let encodedInterests = selectedInterests
+            .map { $0.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? $0 }
+            .joined(separator: ",")
+        let encodedVibe = selectedVibe?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        var path = "/api/discovery/places?location=\(encodedLocation)&type=city&page=\(page)&limit=\(limit)"
+        if !encodedInterests.isEmpty {
+            path += "&interests=\(encodedInterests)"
+        }
+        if !encodedVibe.isEmpty {
+            path += "&vibe=\(encodedVibe)"
+        }
         return try await request(
-            path: "/api/discovery/places?location=\(encodedLocation)&type=city&page=\(page)&limit=\(limit)",
+            path: path,
             method: "GET",
             token: token
+        )
+    }
+
+    private struct SavePreferencesBody: Encodable {
+        let selectedInterests: [String]
+        let selectedVibe: String?
+        let skippedPreferences: Bool
+        let onboardingCompleted: Bool
+    }
+
+    func savePreferences(
+        token: String,
+        selectedInterests: [String],
+        selectedVibe: String?,
+        skippedPreferences: Bool,
+        onboardingCompleted: Bool
+    ) async throws {
+        let _: NativeEmptyResponse = try await request(
+            path: "/api/preferences",
+            method: "PATCH",
+            token: token,
+            body: SavePreferencesBody(
+                selectedInterests: selectedInterests,
+                selectedVibe: selectedVibe,
+                skippedPreferences: skippedPreferences,
+                onboardingCompleted: onboardingCompleted
+            )
         )
     }
 
@@ -1671,6 +1837,10 @@ private struct NativeVibinnRootView: View {
             NativeAuthScreen(allowsDismissal: true, promptReason: appState.authSheetReason)
                 .environmentObject(appState)
         }
+        .sheet(isPresented: $appState.showPreferenceSetupSheet) {
+            NativePreferenceSetupScreen()
+                .environmentObject(appState)
+        }
         .task {
             nativeLogger.log("RootView task bootstrap")
             await appState.bootstrap()
@@ -1682,6 +1852,7 @@ private struct NativeVibinnRootView: View {
             nativeLogger.log("RootView currentUser changed hasUser=\(value != nil, privacy: .public)")
             if value != nil, appState.showAuthSheet {
                 appState.dismissAuthGate()
+                appState.performPendingPostAuthActionIfNeeded()
             }
         }
         .onChange(of: appState.hasCompletedOnboarding) { value in
@@ -2718,71 +2889,7 @@ private struct NativeOnboardingScreen: View {
             )
             .ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 28) {
-                Spacer(minLength: 32)
-
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Where do you want to explore?")
-                        .font(.system(size: 40, weight: .black))
-                        .foregroundStyle(.white)
-                }
-
-                NativeSurfaceCard {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("Area")
-                            .font(.system(size: 11, weight: .black))
-                            .foregroundStyle(.white.opacity(0.35))
-                            .textCase(.uppercase)
-
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(selectedLocation.label)
-                                    .font(.system(size: 24, weight: .black))
-                                    .foregroundStyle(.white)
-                                Text("City")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(.white.opacity(0.45))
-                            }
-
-                            Spacer()
-
-                            Button {
-                                showLocationPicker = true
-                            } label: {
-                                Text("Change")
-                                    .font(.system(size: 14, weight: .black))
-                                    .foregroundStyle(.black)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 10)
-                                    .background(nativeAccent)
-                                    .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-
-                Spacer()
-
-                Button {
-                    Task {
-                        await appState.completeOnboarding(with: selectedLocation)
-                    }
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text("Start Explore")
-                            .font(.system(size: 17, weight: .black))
-                        Spacer()
-                    }
-                    .padding(.vertical, 18)
-                    .background(nativeAccent)
-                    .foregroundStyle(.black)
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                }
-            }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 24)
+            areaStage
         }
         .onAppear {
             selectedLocation = appState.selectedLocation
@@ -2797,6 +2904,330 @@ private struct NativeOnboardingScreen: View {
                 showLocationPicker = false
             }
         }
+    }
+
+    private var areaStage: some View {
+        VStack(alignment: .leading, spacing: 28) {
+            Spacer(minLength: 32)
+
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Where do you want to explore?")
+                    .font(.system(size: 40, weight: .black))
+                    .foregroundStyle(.white)
+            }
+
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Area")
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundStyle(.white.opacity(0.35))
+                        .textCase(.uppercase)
+
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(selectedLocation.label)
+                                .font(.system(size: 24, weight: .black))
+                                .foregroundStyle(.white)
+                            Text("City")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.45))
+                        }
+
+                        Spacer()
+
+                        Button {
+                            showLocationPicker = true
+                        } label: {
+                            Text("Change")
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundStyle(.black)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .background(nativeAccent)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            Spacer()
+
+            Button {
+                Task {
+                    await appState.completeOnboarding(with: selectedLocation, selectedInterests: [], selectedVibe: nil)
+                }
+            } label: {
+                HStack {
+                    Spacer()
+                    Text("Start Explore")
+                        .font(.system(size: 17, weight: .black))
+                    Spacer()
+                }
+                .padding(.vertical, 18)
+                .background(nativeAccent)
+                .foregroundStyle(.black)
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 24)
+    }
+}
+
+private struct NativePreferenceSetupScreen: View {
+    @EnvironmentObject private var appState: NativeAppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var swipeStep: SwipeStep = .interests
+    @State private var currentCardIndex = 0
+    @State private var selectedInterests: [String] = []
+    @State private var selectedVibe: String?
+
+    private enum SwipeStep {
+        case interests
+        case vibes
+    }
+
+    private var currentCards: [NativePreferenceSwipeCard] {
+        swipeStep == .interests ? nativeInterestSwipeCards : nativeVibeSwipeCards
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                VStack(alignment: .leading, spacing: 18) {
+                    HStack {
+                        HStack(spacing: 6) {
+                            Capsule()
+                                .fill(nativeAccent)
+                                .frame(width: 44, height: 6)
+                            Capsule()
+                                .fill(swipeStep == .vibes ? nativeAccent : Color.white.opacity(0.18))
+                                .frame(width: 44, height: 6)
+                        }
+                        Spacer()
+                        Text(swipeStep == .interests ? "Step 1 of 2" : "Step 2 of 2")
+                            .font(.system(size: 10, weight: .black, design: .monospaced))
+                            .foregroundStyle(.white.opacity(0.46))
+                            .textCase(.uppercase)
+                    }
+
+                    HStack(alignment: .bottom) {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(swipeStep == .interests ? "Swipe your vibe." : "Pick the vibe that feels most like you.")
+                                .font(.system(size: 28, weight: .black))
+                                .foregroundStyle(.white)
+                            Text("Swipe right to keep it. Left to skip.")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.4))
+                                .textCase(.uppercase)
+                        }
+
+                        Spacer()
+
+                        Button {
+                            dismiss()
+                            appState.dismissPreferenceSetup()
+                        } label: {
+                            Text("Close")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.36))
+                                .textCase(.uppercase)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 24)
+                .padding(.top, 18)
+
+                ZStack {
+                    ForEach(Array(currentCards.enumerated().dropFirst(currentCardIndex).prefix(2).reversed()), id: \.element.id) { offset, card in
+                        let isTop = offset == currentCardIndex
+                        NativeSwipePreferenceCardView(
+                            card: card,
+                            isTop: isTop,
+                            onSwipe: { direction in
+                                handlePreferenceSwipe(direction: direction, cardId: card.id)
+                            }
+                        )
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 40)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(.top, 20)
+            }
+        }
+        .onAppear {
+            selectedInterests = appState.selectedInterests
+            selectedVibe = appState.selectedVibe
+        }
+    }
+
+    private func handlePreferenceSwipe(direction: NativeSwipeDirection, cardId: String) {
+        let keep = direction == .right
+
+        if keep && swipeStep == .interests && !selectedInterests.contains(cardId) {
+            selectedInterests = Array((selectedInterests + [cardId]).suffix(3))
+        }
+
+        if keep && swipeStep == .vibes {
+            selectedVibe = cardId
+        }
+
+        if currentCardIndex < currentCards.count - 1 {
+            currentCardIndex += 1
+            return
+        }
+
+        if swipeStep == .interests {
+            swipeStep = .vibes
+            currentCardIndex = 0
+            return
+        }
+
+        Task {
+            await appState.updateTastePreferences(selectedInterests: selectedInterests, selectedVibe: selectedVibe)
+            dismiss()
+            appState.dismissPreferenceSetup()
+            await appState.refreshDiscovery()
+        }
+    }
+}
+
+private enum NativeSwipeDirection {
+    case left
+    case right
+}
+
+private struct NativeSwipePreferenceCardView: View {
+    let card: NativePreferenceSwipeCard
+    let isTop: Bool
+    let onSwipe: (NativeSwipeDirection) -> Void
+
+    @State private var dragOffset: CGSize = .zero
+    @State private var hasExited = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let x = dragOffset.width
+            let rotation = Angle(degrees: Double(x / 18))
+
+            ZStack(alignment: .bottomLeading) {
+                AsyncImage(url: URL(string: card.imageURL)) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    case .empty:
+                        Rectangle()
+                            .fill(Color.white.opacity(0.06))
+                    case .failure:
+                        Rectangle()
+                            .fill(Color.white.opacity(0.06))
+                            .overlay(
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 28, weight: .bold))
+                                    .foregroundStyle(nativeAccent.opacity(0.85))
+                            )
+                    @unknown default:
+                        Rectangle()
+                            .fill(Color.white.opacity(0.06))
+                    }
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .clipped()
+
+                LinearGradient(
+                    colors: [.clear, Color.black.opacity(0.18), Color.black.opacity(0.86)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack {
+                        if x < -30 {
+                            NativeSwipeHintBadge(label: "Skip", foreground: .white, background: Color.black.opacity(0.42))
+                        }
+                        Spacer()
+                        if x > 30 {
+                            NativeSwipeHintBadge(label: "Keep", foreground: .black, background: nativeAccent)
+                        }
+                    }
+
+                    Spacer()
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(card.title)
+                            .font(.system(size: 34, weight: .black))
+                            .foregroundStyle(.white)
+                        Text(card.description)
+                            .font(.system(size: 17, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.82))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(26)
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 34, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 34, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+            .shadow(color: Color.black.opacity(0.34), radius: 28, y: 20)
+            .scaleEffect(isTop ? 1 : 0.95)
+            .offset(x: hasExited ? (dragOffset.width >= 0 ? width + 220 : -width - 220) : dragOffset.width, y: isTop ? 0 : 12)
+            .rotationEffect(isTop ? rotation : .zero)
+            .allowsHitTesting(isTop)
+            .gesture(
+                DragGesture()
+                    .onChanged { value in
+                        guard isTop else { return }
+                        dragOffset = value.translation
+                    }
+                    .onEnded { value in
+                        guard isTop else { return }
+                        let shouldSwipeRight = value.translation.width > 110 || value.predictedEndTranslation.width > 240
+                        let shouldSwipeLeft = value.translation.width < -110 || value.predictedEndTranslation.width < -240
+
+                        if shouldSwipeRight || shouldSwipeLeft {
+                            let direction: NativeSwipeDirection = shouldSwipeRight ? .right : .left
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                                hasExited = true
+                                dragOffset.width = shouldSwipeRight ? width + 220 : -width - 220
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                                onSwipe(direction)
+                            }
+                        } else {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
+                                dragOffset = .zero
+                            }
+                        }
+                    }
+            )
+            .animation(.spring(response: 0.28, dampingFraction: 0.88), value: dragOffset)
+        }
+    }
+}
+
+private struct NativeSwipeHintBadge: View {
+    let label: String
+    let foreground: Color
+    let background: Color
+
+    var body: some View {
+        Text(label)
+            .font(.system(size: 12, weight: .black))
+            .foregroundStyle(foreground)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(background)
+            .clipShape(Capsule())
     }
 }
 
@@ -3196,9 +3627,12 @@ private struct NativeDiscoverScreen: View {
                     Spacer()
                     Button {
                         if appState.currentUser == nil {
-                            appState.presentAuthGate(reason: "Log in to unlock your vibe and personalize discovery.")
+                            appState.presentAuthGate(
+                                reason: "Log in to unlock your vibe and personalize discovery.",
+                                postAuthAction: .openPreferenceSetup
+                            )
                         } else {
-                            appState.activeTab = .profile
+                            appState.presentPreferenceSetup()
                         }
                     } label: {
                         HStack(spacing: 12) {
