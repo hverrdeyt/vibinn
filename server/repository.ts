@@ -44,6 +44,15 @@ type MomentWithRelations = Prisma.MomentGetPayload<{
   };
 }>;
 
+const repositoryPlaceDetailInclude = {
+  aiEnrichment: true,
+  media: {
+    orderBy: {
+      sortOrder: 'asc' as const,
+    },
+  },
+} satisfies Prisma.PlaceInclude;
+
 function mapVisibility(value: 'public' | 'private' | 'followers') {
   return value.toUpperCase() as 'PUBLIC' | 'PRIVATE' | 'FOLLOWERS';
 }
@@ -1965,15 +1974,61 @@ export async function getNotifications(userId?: string) {
       include: { actorUser: true },
     });
 
+    const placeTargetIds = notifications
+      .filter((item) => item.targetType === 'PLACE' && item.targetId)
+      .map((item) => item.targetId!) as string[];
+    const momentTargetIds = notifications
+      .filter((item) => (item.targetType === 'MOMENT' || item.targetType === 'PLACE_VISIT') && item.targetId)
+      .map((item) => item.targetId!) as string[];
+
+    const [places, moments] = await Promise.all([
+      placeTargetIds.length > 0
+        ? client.place.findMany({
+            where: { id: { in: Array.from(new Set(placeTargetIds)) } },
+            include: repositoryPlaceDetailInclude,
+          })
+        : Promise.resolve([]),
+      momentTargetIds.length > 0
+        ? client.moment.findMany({
+            where: { id: { in: Array.from(new Set(momentTargetIds)) } },
+            include: {
+              place: {
+                include: repositoryPlaceDetailInclude,
+              },
+            },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const placeById = new Map(places.map((place) => [place.id, mapPlaceForClient(place)]));
+    const momentPlaceById = new Map(moments.map((moment) => [moment.id, mapPlaceForClient(moment.place)]));
+
     return notifications.map((item) => ({
       id: item.id,
+      notificationType: item.type,
+      targetType: item.targetType,
+      targetId: item.targetId,
       type: item.targetType === 'PLACE' ? 'place' : 'traveler',
       avatar: item.actorUser?.avatarUrl ?? store.me.avatar,
       title: item.title,
       body: item.body,
       time: item.createdAt.toISOString(),
+      createdAt: item.createdAt.toISOString(),
       readAt: item.readAt?.toISOString() ?? null,
-      place: item.targetType === 'PLACE' && item.targetId ? findPlaceById(item.targetId) : undefined,
+      actor: item.actorUser
+        ? {
+            id: item.actorUser.id,
+            username: item.actorUser.username,
+            displayName: item.actorUser.displayName ?? item.actorUser.username,
+            avatar: item.actorUser.avatarUrl,
+          }
+        : null,
+      place:
+        item.targetType === 'PLACE' && item.targetId
+          ? placeById.get(item.targetId) ?? undefined
+          : item.targetType === 'MOMENT' || item.targetType === 'PLACE_VISIT'
+            ? (item.targetId ? momentPlaceById.get(item.targetId) ?? undefined : undefined)
+            : undefined,
       traveler: item.targetType === 'PROFILE' && item.actorUser
         ? {
             id: item.actorUser.id,
@@ -1988,11 +2043,39 @@ export async function getNotifications(userId?: string) {
 
   if (dbResult) return dbResult;
 
-  return store.notifications.map((item) =>
-    item.type === 'place'
-      ? { ...item, place: findPlaceById(item.placeId) }
-      : { ...item, traveler: findTravelerById(item.travelerId) },
-  );
+  return store.notifications.map((item) => {
+    if (item.type === 'place') {
+      return {
+        ...item,
+        notificationType: 'SYSTEM',
+        targetType: 'PLACE',
+        targetId: item.placeId,
+        createdAt: item.time,
+        readAt: null,
+        actor: null,
+        place: findPlaceById(item.placeId),
+      };
+    }
+
+    const traveler = findTravelerById(item.travelerId);
+    return {
+      ...item,
+      notificationType: 'FOLLOW',
+      targetType: 'PROFILE',
+      targetId: item.travelerId,
+      createdAt: item.time,
+      readAt: null,
+      actor: traveler
+        ? {
+            id: traveler.id,
+            username: traveler.username,
+            displayName: traveler.displayName ?? traveler.username,
+            avatar: traveler.avatar,
+          }
+        : null,
+      traveler,
+    };
+  });
 }
 
 export async function getAccountSettings(userId?: string) {

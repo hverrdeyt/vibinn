@@ -657,6 +657,32 @@ private struct NativeBlockedUsersResponse: Decodable {
     let users: [NativeBlockedUser]
 }
 
+private struct NativeNotificationActor: Decodable, Identifiable {
+    let id: String
+    let username: String
+    let displayName: String?
+    let avatar: String?
+}
+
+private struct NativeNotificationItem: Decodable, Identifiable {
+    let id: String
+    let notificationType: String?
+    let targetType: String?
+    let targetId: String?
+    let title: String
+    let body: String
+    let time: String?
+    let createdAt: String?
+    let readAt: String?
+    let actor: NativeNotificationActor?
+    let place: NativePlace?
+    let traveler: NativeTravelerSummary?
+}
+
+private struct NativeNotificationsResponse: Decodable {
+    let notifications: [NativeNotificationItem]
+}
+
 private struct NativeModerationActionResponse: Decodable {
     let ok: Bool
     let reportId: String?
@@ -1078,7 +1104,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func requestPushNotifications() async {
-        let settings = await withCheckedContinuation { continuation in
+        let settings: UNNotificationSettings = await withCheckedContinuation { continuation in
             UNUserNotificationCenter.current().getNotificationSettings { settings in
                 continuation.resume(returning: settings)
             }
@@ -1088,7 +1114,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         case .authorized, .provisional, .ephemeral:
             UIApplication.shared.registerForRemoteNotifications()
         case .notDetermined:
-            let granted = await withCheckedContinuation { continuation in
+            let granted: Bool = await withCheckedContinuation { continuation in
                 UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
                     continuation.resume(returning: granted)
                 }
@@ -1097,7 +1123,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             UIApplication.shared.registerForRemoteNotifications()
         case .denied:
             guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
-            UIApplication.shared.open(url)
+            await UIApplication.shared.open(url)
         @unknown default:
             return
         }
@@ -1749,6 +1775,14 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         blockedTravelerIds.remove(userId)
     }
 
+    func fetchNotifications() async throws -> [NativeNotificationItem] {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to see your notifications.")
+            throw URLError(.userAuthenticationRequired)
+        }
+        return try await api.getNotifications(token: token)
+    }
+
     func fetchComments(targetType: String, targetId: String) async throws -> [NativeComment] {
         guard let token = authToken else { return [] }
         return try await api.getComments(token: token, targetType: targetType, targetId: targetId)
@@ -2318,6 +2352,11 @@ private struct NativeAPIClient {
     func getBlockedUsers(token: String) async throws -> [NativeBlockedUser] {
         let response: NativeBlockedUsersResponse = try await request(path: "/api/users/blocks", method: "GET", token: token)
         return response.users
+    }
+
+    func getNotifications(token: String) async throws -> [NativeNotificationItem] {
+        let response: NativeNotificationsResponse = try await request(path: "/api/notifications", method: "GET", token: token)
+        return response.notifications
     }
 
     private struct CreateCollectionBody: Encodable {
@@ -3520,6 +3559,242 @@ private struct NativePlaceholderSheet: View {
     }
 }
 
+private struct NativeNotificationsSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: NativeAppState
+    @State private var notifications: [NativeNotificationItem] = []
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 14) {
+                    if let errorMessage {
+                        NativeInlineError(message: errorMessage)
+                    }
+
+                    if appState.currentUser == nil {
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Log in to see your notifications.")
+                                    .font(.system(size: 18, weight: .black))
+                                    .foregroundStyle(.white)
+                                Button {
+                                    dismiss()
+                                    appState.presentAuthGate(reason: "Log in to see your notifications.")
+                                } label: {
+                                    Text("Go to login")
+                                        .font(.system(size: 15, weight: .black))
+                                        .foregroundStyle(.black)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 14)
+                                        .background(nativeAccent)
+                                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    } else if isLoading && notifications.isEmpty {
+                        NativeSurfaceCard {
+                            HStack(spacing: 12) {
+                                ProgressView()
+                                    .tint(nativeAccent)
+                                Text("Loading notifications...")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.8))
+                            }
+                        }
+                    } else if notifications.isEmpty {
+                        NativeSurfaceCard {
+                            Text("No notifications yet.")
+                                .font(.system(size: 15, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
+                    } else {
+                        ForEach(notifications) { notification in
+                            NativeNotificationRow(notification: notification)
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 18)
+                .padding(.bottom, 26)
+            }
+            .refreshable {
+                await loadNotifications()
+            }
+        }
+        .navigationTitle("Notifications")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") { dismiss() }
+                    .foregroundStyle(nativeAccent)
+            }
+        }
+        .task {
+            await loadNotifications()
+        }
+    }
+
+    private func loadNotifications() async {
+        guard appState.currentUser != nil else { return }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            notifications = try await appState.fetchNotifications()
+            errorMessage = nil
+        } catch is CancellationError {
+        } catch {
+            errorMessage = "Could not load notifications right now."
+        }
+    }
+}
+
+private struct NativeNotificationRow: View {
+    let notification: NativeNotificationItem
+
+    private var destinationPlace: NativePlace? {
+        notification.place
+    }
+
+    private var destinationTraveler: NativeTravelerSummary? {
+        if let traveler = notification.traveler {
+            return traveler
+        }
+        if let actor = notification.actor {
+            return NativeTravelerSummary(
+                id: actor.id,
+                username: actor.username,
+                displayName: actor.displayName,
+                avatar: actor.avatar,
+                bio: nil,
+                descriptor: nil,
+                matchScore: nil,
+                followersCount: nil,
+                recentSavedPlaces: [],
+                recentCollections: [],
+                travelHistory: [],
+                visitedPlacesCount: nil,
+                savedPlacesCount: nil,
+                collectionsCount: nil
+            )
+        }
+        return nil
+    }
+
+    private var relativeTime: String {
+        NativeAppState.relativeLabel(from: notification.createdAt ?? notification.time)
+    }
+
+    private var shouldShowPlaceName: Bool {
+        guard notification.place != nil else { return false }
+        return notification.targetType == "PLACE" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT"
+    }
+
+    private var subtitle: String {
+        let username = notification.actor?.username ?? "Vibinn"
+        switch notification.notificationType {
+        case "FOLLOW":
+            return "\(username) followed you"
+        case "VIBIN":
+            if notification.targetType == "PLACE" {
+                return "\(username) sent a vibin to your saved place"
+            }
+            if notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
+                return "\(username) sent a vibin to your visited place"
+            }
+            return "\(username) sent a vibin"
+        case "COMMENT":
+            if notification.targetType == "PLACE" {
+                return "\(username) commented to your saved place"
+            }
+            if notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
+                return "\(username) commented to your visited place"
+            }
+            return "\(username) commented on your activity"
+        case "SYSTEM":
+            return notification.body
+        default:
+            return notification.body
+        }
+    }
+
+    @ViewBuilder
+    private var rowContent: some View {
+        NativeSurfaceCard(
+            fill: AnyShapeStyle(Color.white.opacity(0.045)),
+            stroke: notification.readAt == nil ? nativeAccent.opacity(0.34) : nativeBorder
+        ) {
+            HStack(alignment: .top, spacing: 12) {
+                if let actor = notification.actor {
+                    NativeAvatarCircle(
+                        url: actor.avatar,
+                        fallbackText: actor.displayName ?? actor.username,
+                        size: 40,
+                        fontSize: 14
+                    )
+                } else {
+                    ZStack {
+                        Circle()
+                            .fill(nativeAccent.opacity(0.16))
+                        Text("V")
+                            .font(.system(size: 16, weight: .black))
+                            .foregroundStyle(nativeAccent)
+                    }
+                    .frame(width: 40, height: 40)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    if shouldShowPlaceName, let place = notification.place {
+                        Text(place.name)
+                            .font(.system(size: 14, weight: .black))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+
+                    Text(subtitle)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.86))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Text(relativeTime)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .multilineTextAlignment(.trailing)
+                    .lineLimit(2)
+                    .frame(width: 56, alignment: .trailing)
+            }
+        }
+    }
+
+    var body: some View {
+        if let place = destinationPlace {
+            NavigationLink {
+                NativePlaceDetailScreen(initialPlace: place)
+            } label: {
+                rowContent
+            }
+            .buttonStyle(.plain)
+        } else if let traveler = destinationTraveler {
+            NavigationLink {
+                NativeTravelerProfileScreen(initialTraveler: traveler)
+            } label: {
+                rowContent
+            }
+            .buttonStyle(.plain)
+        } else {
+            rowContent
+        }
+    }
+}
+
 private struct NativeSurfaceCard<Content: View>: View {
     var fill: AnyShapeStyle = AnyShapeStyle(
         LinearGradient(
@@ -4679,10 +4954,10 @@ private struct NativeDiscoverScreen: View {
             .navigationViewStyle(.stack)
         }
         .sheet(isPresented: $showNotificationsSheet) {
-            NativePlaceholderSheet(
-                title: "Notifications",
-                message: "Notifications will plug into the native app once the rest of the discovery shell is locked in."
-            )
+            NavigationView {
+                NativeNotificationsSheet()
+            }
+            .navigationViewStyle(.stack)
         }
         .sheet(item: $selectedDebugPlace) { place in
             NavigationView {
