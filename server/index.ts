@@ -6860,6 +6860,40 @@ app.delete('/api/users/:id/block', requireAuth, async (req: AuthenticatedRequest
   }
 });
 
+app.get('/api/users/blocks', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const blocks = await prisma.userBlock.findMany({
+      where: {
+        sourceUserId: req.authUserId!,
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        targetUser: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    });
+
+    res.json({
+      users: blocks.map((block) => ({
+        id: block.targetUser.id,
+        username: block.targetUser.username,
+        displayName: block.targetUser.displayName,
+        avatar: block.targetUser.avatarUrl,
+        blockedAt: block.createdAt.toISOString(),
+        reason: block.reason ?? null,
+      })),
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.post('/api/vibins/toggle', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const {
@@ -6960,10 +6994,27 @@ app.get('/api/comments', requireAuth, async (req: AuthenticatedRequest, res) => 
       return;
     }
 
+    const blockedUsers = await prisma.userBlock.findMany({
+      where: {
+        sourceUserId: req.authUserId!,
+      },
+      select: {
+        targetUserId: true,
+      },
+    });
+    const blockedUserIds = blockedUsers.map((item) => item.targetUserId);
+
     const comments = await prisma.comment.findMany({
       where: {
         targetType: targetType as 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION',
         targetId,
+        ...(blockedUserIds.length > 0
+          ? {
+              userId: {
+                notIn: blockedUserIds,
+              },
+            }
+          : {}),
       },
       orderBy: { createdAt: 'desc' },
       include: {

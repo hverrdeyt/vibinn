@@ -578,6 +578,19 @@ private struct NativeTravelerFollowersResponse: Decodable {
     let travelers: [NativeFollowerListItem]
 }
 
+private struct NativeBlockedUser: Decodable, Identifiable {
+    let id: String
+    let username: String
+    let displayName: String?
+    let avatar: String?
+    let blockedAt: String
+    let reason: String?
+}
+
+private struct NativeBlockedUsersResponse: Decodable {
+    let users: [NativeBlockedUser]
+}
+
 private struct NativeModerationActionResponse: Decodable {
     let ok: Bool
     let reportId: String?
@@ -1511,6 +1524,25 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         feedItems.removeAll { $0.traveler.id == traveler.id }
     }
 
+    func fetchBlockedUsers() async throws -> [NativeBlockedUser] {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to manage blocked accounts.")
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        return try await api.getBlockedUsers(token: token)
+    }
+
+    func unblockUser(_ userId: String) async throws {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to manage blocked accounts.")
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        _ = try await api.unblockUser(token: token, targetUserId: userId)
+        blockedTravelerIds.remove(userId)
+    }
+
     func fetchComments(targetType: String, targetId: String) async throws -> [NativeComment] {
         guard let token = authToken else { return [] }
         return try await api.getComments(token: token, targetType: targetType, targetId: targetId)
@@ -1997,6 +2029,11 @@ private struct NativeAPIClient {
         return response.collections
     }
 
+    func getBlockedUsers(token: String) async throws -> [NativeBlockedUser] {
+        let response: NativeBlockedUsersResponse = try await request(path: "/api/users/blocks", method: "GET", token: token)
+        return response.users
+    }
+
     private struct CreateCollectionBody: Encodable {
         let label: String
         let placeIds: [String]
@@ -2242,6 +2279,14 @@ private struct NativeAPIClient {
             method: "POST",
             token: token,
             body: NativeBlockBody(reason: "Blocked from native iOS app")
+        )
+    }
+
+    func unblockUser(token: String, targetUserId: String) async throws -> NativeModerationActionResponse {
+        try await request(
+            path: "/api/users/\(targetUserId)/block",
+            method: "DELETE",
+            token: token
         )
     }
 
@@ -5504,6 +5549,8 @@ private struct NativeProfileScreen: View {
     @State private var showEditProfileSheet = false
     @State private var showSettingsSheet = false
     @State private var ownFollowersCount: Int?
+    @State private var blockedUsers: [NativeBlockedUser] = []
+    @State private var isBlockedUsersLoading = false
 
     private var currentTravelerSummary: NativeTravelerSummary? {
         guard let user = appState.currentUser else { return nil }
@@ -5830,6 +5877,72 @@ private struct NativeProfileScreen: View {
                             }
                         }
 
+                        if appState.currentUser != nil {
+                            NativeSurfaceCard {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    Text("Blocked accounts")
+                                        .font(.system(size: 15, weight: .black))
+                                        .foregroundStyle(.white)
+
+                                    if isBlockedUsersLoading {
+                                        HStack(spacing: 10) {
+                                            ProgressView().tint(nativeAccent)
+                                            Text("Loading blocked accounts...")
+                                                .font(.system(size: 13, weight: .medium))
+                                                .foregroundStyle(.white.opacity(0.62))
+                                        }
+                                    } else if blockedUsers.isEmpty {
+                                        Text("No blocked accounts yet.")
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.62))
+                                    } else {
+                                        VStack(spacing: 10) {
+                                            ForEach(blockedUsers) { blockedUser in
+                                                HStack(spacing: 12) {
+                                                    NativeAvatarCircle(
+                                                        url: blockedUser.avatar,
+                                                        fallbackText: blockedUser.displayName ?? blockedUser.username,
+                                                        size: 42,
+                                                        fontSize: 15
+                                                    )
+
+                                                    VStack(alignment: .leading, spacing: 4) {
+                                                        Text(blockedUser.displayName ?? blockedUser.username)
+                                                            .font(.system(size: 14, weight: .black))
+                                                            .foregroundStyle(.white)
+                                                        Text("@\(blockedUser.username)")
+                                                            .font(.system(size: 12, weight: .bold))
+                                                            .foregroundStyle(.white.opacity(0.46))
+                                                    }
+
+                                                    Spacer(minLength: 0)
+
+                                                    Button {
+                                                        Task {
+                                                            try? await appState.unblockUser(blockedUser.id)
+                                                            blockedUsers.removeAll { $0.id == blockedUser.id }
+                                                        }
+                                                    } label: {
+                                                        Text("Unblock")
+                                                            .font(.system(size: 12, weight: .black))
+                                                            .foregroundStyle(nativeAccent)
+                                                            .padding(.horizontal, 12)
+                                                            .padding(.vertical, 9)
+                                                            .background(nativeAccent.opacity(0.12))
+                                                            .clipShape(Capsule())
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                }
+                                                if blockedUser.id != blockedUsers.last?.id {
+                                                    Divider().background(Color.white.opacity(0.08))
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         Spacer()
                     }
                     .padding(20)
@@ -5842,6 +5955,12 @@ private struct NativeProfileScreen: View {
                             showSettingsSheet = false
                         }
                     }
+                }
+                .task {
+                    guard appState.currentUser != nil else { return }
+                    isBlockedUsersLoading = true
+                    defer { isBlockedUsersLoading = false }
+                    blockedUsers = (try? await appState.fetchBlockedUsers()) ?? []
                 }
             }
             .navigationViewStyle(.stack)
