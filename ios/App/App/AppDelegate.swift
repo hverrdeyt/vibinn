@@ -3,6 +3,7 @@ import SwiftUI
 import AVKit
 import MapKit
 import CoreLocation
+import PhotosUI
 import AuthenticationServices
 import Capacitor
 import GoogleSignIn
@@ -57,6 +58,7 @@ private let nativeVibeSwipeCards: [NativePreferenceSwipeCard] = [
 private enum NativePostAuthAction {
     case openPreferenceSetup
     case openTodayRecommendation
+    case openCheckIn(place: NativePlace?)
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate {
@@ -321,6 +323,16 @@ private struct NativeTodayRecommendationResponse: Decodable {
     let compatibilityScore: Int
     let distanceMiles: Double
     let todayReason: String
+}
+
+private struct NativeUploadedMediaFile: Decodable {
+    let url: String
+    let fileName: String
+    let mediaType: String
+}
+
+private struct NativeUploadedMediaResponse: Decodable {
+    let files: [NativeUploadedMediaFile]
 }
 
 private struct NativeTodayRecommendationDebugResponse: Decodable {
@@ -771,6 +783,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var showAuthSheet = false
     @Published var authSheetReason: String?
     @Published var showPreferenceSetupSheet = false
+    @Published var showCheckInSheet = false
+    @Published var checkInPrefilledPlace: NativePlace?
 
     private let api = NativeAPIClient()
     private let authTokenKey = "vibinn_native_auth_token"
@@ -943,6 +957,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         savedErrorMessage = nil
         authSheetReason = nil
         showPreferenceSetupSheet = false
+        showCheckInSheet = false
+        checkInPrefilledPlace = nil
         pendingPostAuthAction = nil
     }
 
@@ -965,6 +981,23 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         showPreferenceSetupSheet = false
     }
 
+    func presentCheckInFlow(prefilledPlace: NativePlace? = nil) {
+        guard currentUser != nil else {
+            presentAuthGate(
+                reason: "Log in to save your check-ins.",
+                postAuthAction: .openCheckIn(place: prefilledPlace)
+            )
+            return
+        }
+        checkInPrefilledPlace = prefilledPlace
+        showCheckInSheet = true
+    }
+
+    func dismissCheckInFlow() {
+        showCheckInSheet = false
+        checkInPrefilledPlace = nil
+    }
+
     func performPendingPostAuthActionIfNeeded() {
         guard let action = pendingPostAuthAction else { return }
         pendingPostAuthAction = nil
@@ -973,6 +1006,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             showPreferenceSetupSheet = true
         case .openTodayRecommendation:
             Task { await loadTodayRecommendation() }
+        case .openCheckIn(let place):
+            checkInPrefilledPlace = place
+            showCheckInSheet = true
         }
     }
 
@@ -1349,9 +1385,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     func submitCheckIn(
         place: NativePlace,
+        visitedDate: String,
         rating: Int,
         wouldRevisit: String,
-        note: String
+        note: String,
+        uploadedMedia: [String]
     ) async throws {
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to save your check-ins.")
@@ -1361,10 +1399,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let createdMoment = try await api.createMoment(
             token: token,
             placeId: place.id,
-            visitedDate: Self.todayString,
+            visitedDate: visitedDate,
             caption: note,
             rating: rating,
-            wouldRevisit: wouldRevisit
+            wouldRevisit: wouldRevisit,
+            uploadedMedia: uploadedMedia
         )
 
         let resolvedPlace = createdMoment.place ?? place
@@ -1386,6 +1425,14 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         async let feedTask = refreshFeed()
         async let discoveryTask = refreshDiscovery()
         _ = await (profileTask, feedTask, discoveryTask)
+    }
+
+    func uploadCheckInImages(_ images: [UIImage]) async throws -> [String] {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to upload check-in photos.")
+            throw URLError(.userAuthenticationRequired)
+        }
+        return try await api.uploadCheckInImages(token: token, images: images)
     }
 
     func fetchPlaceDetail(id: String) async throws -> NativePlaceDetailResponse {
@@ -2314,7 +2361,8 @@ private struct NativeAPIClient {
         visitedDate: String,
         caption: String,
         rating: Int,
-        wouldRevisit: String
+        wouldRevisit: String,
+        uploadedMedia: [String]
     ) async throws -> NativeCreatedMoment {
         let response: NativeMomentResponse = try await request(
             path: "/api/moments",
@@ -2324,7 +2372,7 @@ private struct NativeAPIClient {
                 placeId: placeId,
                 visitedDate: visitedDate,
                 caption: caption,
-                uploadedMedia: [],
+                uploadedMedia: uploadedMedia,
                 rating: rating,
                 budgetLevel: "$$",
                 visitType: "solo",
@@ -2335,6 +2383,40 @@ private struct NativeAPIClient {
             )
         )
         return response.moment
+    }
+
+    private struct UploadMediaBody: Encodable {
+        struct File: Encodable {
+            let fileName: String
+            let mimeType: String
+            let dataUrl: String
+        }
+
+        let files: [File]
+    }
+
+    func uploadCheckInImages(token: String, images: [UIImage]) async throws -> [String] {
+        let files = try images.enumerated().map { index, image -> UploadMediaBody.File in
+            guard let data = image.jpegData(compressionQuality: 0.82) else {
+                throw NSError(domain: "NativeUploadMedia", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not prepare image upload."])
+            }
+            let dataUrl = "data:image/jpeg;base64,\(data.base64EncodedString())"
+            return UploadMediaBody.File(
+                fileName: "checkin-\(index + 1).jpg",
+                mimeType: "image/jpeg",
+                dataUrl: dataUrl
+            )
+        }
+
+        let response: NativeUploadedMediaResponse = try await request(
+            path: "/api/uploads/media",
+            method: "POST",
+            token: token,
+            body: UploadMediaBody(files: files)
+        )
+        return response.files
+            .filter { $0.mediaType == "image" }
+            .map(\.url)
     }
 
     private func request<T: Decodable, B: Encodable>(
@@ -2416,6 +2498,12 @@ private struct NativeVibinnRootView: View {
         }
         .sheet(isPresented: $appState.showPreferenceSetupSheet) {
             NativePreferenceSetupScreen()
+                .environmentObject(appState)
+        }
+        .sheet(isPresented: $appState.showCheckInSheet, onDismiss: {
+            appState.dismissCheckInFlow()
+        }) {
+            NativeCheckInScreen(prefilledPlace: appState.checkInPrefilledPlace)
                 .environmentObject(appState)
         }
         .task {
@@ -4030,7 +4118,7 @@ private struct NativeFloatingTabBar: View {
             }
 
             Button {
-                select(tab: .checkIn)
+                appState.presentCheckInFlow()
             } label: {
                 ZStack {
                     Circle()
@@ -8639,7 +8727,7 @@ private struct NativePlaceDetailScreen: View {
         .safeAreaInset(edge: .bottom) {
             HStack(spacing: 12) {
                 Button {
-                    appState.activeTab = .checkIn
+                    appState.presentCheckInFlow(prefilledPlace: place)
                 } label: {
                     HStack {
                         Spacer()
@@ -9511,221 +9599,588 @@ private func nativeDebugListLabel(_ values: [String]) -> String {
 }
 
 private struct NativeCheckInScreen: View {
+    private enum Step: Int {
+        case place = 1
+        case details = 2
+    }
+
+    private enum DatePreset: String, CaseIterable {
+        case today
+        case yesterday
+        case custom
+
+        var label: String {
+            switch self {
+            case .today: return "Today"
+            case .yesterday: return "Yesterday"
+            case .custom: return "Custom"
+            }
+        }
+    }
+
     @EnvironmentObject private var appState: NativeAppState
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var isSearchFieldFocused: Bool
+    let prefilledPlace: NativePlace?
+
+    @State private var step: Step = .place
     @State private var query = ""
     @State private var results: [NativePlace] = []
     @State private var selectedPlace: NativePlace?
-    @State private var note = ""
+    @State private var caption = ""
     @State private var rating = 4
     @State private var wouldRevisit = "yes"
+    @State private var datePreset: DatePreset = .today
+    @State private var customVisitedDate = Date()
+    @State private var selectedImages: [UIImage] = []
+    @State private var showImagePicker = false
     @State private var isSearching = false
     @State private var isSubmitting = false
     @State private var errorMessage: String?
-    @State private var successMessage: String?
+    @State private var searchTask: Task<Void, Never>?
+
+    init(prefilledPlace: NativePlace? = nil) {
+        self.prefilledPlace = prefilledPlace
+    }
+
+    private var resolvedVisitedDate: String {
+        switch datePreset {
+        case .today:
+            return Self.isoDayString(from: Date())
+        case .yesterday:
+            return Self.isoDayString(from: Calendar.current.date(byAdding: .day, value: -1, to: Date()) ?? Date())
+        case .custom:
+            return Self.isoDayString(from: customVisitedDate)
+        }
+    }
+
+    private var nextButtonDisabled: Bool {
+        selectedPlace == nil
+    }
+
+    private var submitButtonDisabled: Bool {
+        selectedPlace == nil || isSubmitting
+    }
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 18) {
-                NativeScreenHeader(
-                    title: "Check in",
-                    subtitle: "Rate the place, say if you would go back, then move on."
-                )
+        NavigationView {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    header
 
-                NativeSurfaceCard {
-                    VStack(alignment: .leading, spacing: 10) {
-                        TextField("Search a place", text: $query)
-                            .textInputAutocapitalization(.words)
-                            .autocorrectionDisabled()
-                            .font(.system(size: 17, weight: .medium))
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 16)
-                            .background(nativeSurfaceStrong)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    if step == .place {
+                        placeStep
+                    } else {
+                        detailsStep
+                    }
 
-                        Button("Search") {
-                            Task {
-                                await performSearch()
-                            }
+                    if let errorMessage {
+                        NativeInlineError(message: errorMessage)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 28)
+            }
+            .background(Color.black.ignoresSafeArea())
+            .navigationBarHidden(true)
+        }
+        .navigationViewStyle(.stack)
+        .preferredColorScheme(.dark)
+        .safeAreaInset(edge: .bottom) {
+            VStack(spacing: 0) {
+                if step == .place {
+                    Button {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                            step = .details
                         }
-                        .font(.system(size: 15, weight: .black))
+                    } label: {
+                        Text("Next")
+                            .font(.system(size: 16, weight: .black))
+                            .foregroundStyle(.black)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 16)
+                            .background(nativeAccent)
+                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(nextButtonDisabled)
+                } else {
+                    Button {
+                        Task {
+                            await submitCheckIn()
+                        }
+                    } label: {
+                        HStack(spacing: 10) {
+                            if isSubmitting {
+                                ProgressView().tint(.black)
+                            }
+                            Text("Submit")
+                                .font(.system(size: 16, weight: .black))
+                        }
                         .foregroundStyle(.black)
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
+                        .padding(.vertical, 16)
                         .background(nativeAccent)
+                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(submitButtonDisabled)
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 10)
+            .padding(.bottom, 12)
+            .background(Color.black.opacity(0.92))
+        }
+        .onAppear {
+            if let prefilledPlace {
+                selectedPlace = prefilledPlace
+                step = .details
+            } else {
+                step = .place
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                    isSearchFieldFocused = true
+                }
+            }
+        }
+        .onChange(of: query) { _ in
+            searchTask?.cancel()
+            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard step == .place else { return }
+            guard trimmed.count >= 3 else {
+                results = []
+                errorMessage = nil
+                return
+            }
+            searchTask = Task {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard !Task.isCancelled else { return }
+                await performSearch()
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(step == .place ? "Check in" : "Share your visit")
+                    .font(.system(size: 30, weight: .black))
+                    .foregroundStyle(.white)
+                Text(step == .place ? "Step 1 of 2" : "Step 2 of 2")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.46))
+            }
+            Spacer()
+            Button {
+                closeSheet()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.8))
+                    .frame(width: 38, height: 38)
+                    .background(nativeSurface)
+                    .overlay(Circle().stroke(nativeBorder, lineWidth: 1))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var placeStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField("Search places", text: $query)
+                        .textInputAutocapitalization(.words)
+                        .autocorrectionDisabled()
+                        .focused($isSearchFieldFocused)
+                        .font(.system(size: 17, weight: .medium))
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 15)
+                        .background(nativeSurfaceStrong)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(nativeBorder, lineWidth: 1)
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).count < 2 || isSearching)
+
+                    if query.trimmingCharacters(in: .whitespacesAndNewlines).count > 0 && query.trimmingCharacters(in: .whitespacesAndNewlines).count < 3 {
+                        Text("Type at least 3 letters to search places.")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.58))
                     }
                 }
+            }
 
-                if isSearching {
-                    NativeSurfaceCard {
-                        HStack(spacing: 12) {
-                            ProgressView().tint(nativeAccent)
-                            Text("Searching places...")
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.72))
+            if isSearching {
+                NativeSurfaceCard {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(nativeAccent)
+                        Text("Searching places...")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
+                }
+            } else if query.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3 && results.isEmpty {
+                Text("No places found.")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.58))
+            }
+
+            if let selectedPlace {
+                NativeSectionTitle("Selected place")
+                NativePlaceCard(place: selectedPlace, isSelected: true)
+            }
+
+            if !results.isEmpty {
+                NativeSectionTitle("Results")
+                LazyVStack(spacing: 12) {
+                    ForEach(results) { place in
+                        Button {
+                            selectedPlace = place
+                            errorMessage = nil
+                        } label: {
+                            NativePlaceCard(place: place, isSelected: selectedPlace?.id == place.id)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private var detailsStep: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let selectedPlace {
+                NativeSurfaceCard {
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text(selectedPlace.name)
+                            .font(.system(size: 22, weight: .black))
+                            .foregroundStyle(.white)
+                        Text(selectedPlace.address ?? selectedPlace.location)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.62))
+                        Button {
+                            withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+                                step = .place
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+                                isSearchFieldFocused = true
+                            }
+                        } label: {
+                            Text("Change place")
+                                .font(.system(size: 13, weight: .black))
+                                .foregroundStyle(.black)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(nativeAccent)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Visited date")
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .textCase(.uppercase)
+
+                    HStack(spacing: 10) {
+                        ForEach(DatePreset.allCases, id: \.rawValue) { preset in
+                            Button {
+                                datePreset = preset
+                            } label: {
+                                Text(preset.label)
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundStyle(datePreset == preset ? .black : .white)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                    .background(datePreset == preset ? nativeAccent : nativeSurfaceStrong)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
-                }
 
-                if !results.isEmpty {
-                    NativeSectionTitle("Results")
-                    LazyVStack(spacing: 12) {
-                        ForEach(results) { place in
+                    if datePreset == .custom {
+                        DatePicker(
+                            "Visited on",
+                            selection: $customVisitedDate,
+                            displayedComponents: [.date]
+                        )
+                        .datePickerStyle(.compact)
+                        .tint(nativeAccent)
+                    }
+                }
+            }
+
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Rating")
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .textCase(.uppercase)
+                    HStack(spacing: 10) {
+                        ForEach(1...5, id: \.self) { value in
                             Button {
-                                selectedPlace = place
-                                successMessage = nil
+                                rating = value
                             } label: {
-                                NativePlaceCard(place: place, isSelected: selectedPlace?.id == place.id)
+                                Text("\(value)")
+                                    .font(.system(size: 16, weight: .black))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 12)
+                                    .background(rating == value ? nativeAccent : nativeSurfaceStrong)
+                                    .foregroundStyle(rating == value ? .black : .white)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
                             .buttonStyle(.plain)
                         }
                     }
                 }
+            }
 
-                if let selectedPlace {
-                    NativeSectionTitle("Check in")
-                    NativeSurfaceCard {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text(selectedPlace.name)
-                                .font(.system(size: 20, weight: .black))
-                                .foregroundStyle(.white)
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Would revisit")
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .textCase(.uppercase)
+                    Picker("Would revisit", selection: $wouldRevisit) {
+                        Text("Yes").tag("yes")
+                        Text("Maybe").tag("not_sure")
+                        Text("No").tag("not_interested")
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
 
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Rating")
-                                    .font(.system(size: 12, weight: .black))
-                                    .foregroundStyle(.white.opacity(0.45))
-                                    .textCase(.uppercase)
-                                HStack(spacing: 10) {
-                                    ForEach(1...5, id: \.self) { value in
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Caption")
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .textCase(.uppercase)
+
+                    ZStack(alignment: .topLeading) {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(nativeSurfaceStrong)
+                        if caption.isEmpty {
+                            Text("How was it?")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.35))
+                                .padding(.horizontal, 20)
+                                .padding(.vertical, 20)
+                        }
+                        TextEditor(text: $caption)
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 12)
+                            .frame(minHeight: 120)
+                            .background(Color.clear)
+                    }
+                    .frame(minHeight: 120)
+                }
+            }
+
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    HStack {
+                        Text("Media")
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundStyle(.white.opacity(0.45))
+                            .textCase(.uppercase)
+                        Spacer()
+                        Text("Images only")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+
+                    Button {
+                        showImagePicker = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "photo.on.rectangle.angled")
+                                .font(.system(size: 15, weight: .bold))
+                            Text(selectedImages.isEmpty ? "Add photos" : "Edit photos")
+                                .font(.system(size: 14, weight: .black))
+                        }
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(nativeAccent)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+
+                    if !selectedImages.isEmpty {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 12) {
+                                ForEach(Array(selectedImages.enumerated()), id: \.offset) { index, image in
+                                    ZStack(alignment: .topTrailing) {
+                                        Image(uiImage: image)
+                                            .resizable()
+                                            .scaledToFill()
+                                            .frame(width: 92, height: 92)
+                                            .clipped()
+                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
                                         Button {
-                                            rating = value
+                                            selectedImages.remove(at: index)
                                         } label: {
-                                            Text("\(value)")
-                                                .font(.system(size: 16, weight: .black))
-                                                .frame(maxWidth: .infinity)
-                                                .padding(.vertical, 12)
-                                                .background(rating == value ? nativeAccent : nativeSurfaceStrong)
-                                                .foregroundStyle(rating == value ? .black : .white)
-                                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                            Image(systemName: "xmark")
+                                                .font(.system(size: 10, weight: .black))
+                                                .foregroundStyle(.black)
+                                                .frame(width: 24, height: 24)
+                                                .background(Color.white)
+                                                .clipShape(Circle())
                                         }
                                         .buttonStyle(.plain)
+                                        .offset(x: 6, y: -6)
                                     }
                                 }
                             }
-
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text("Would revisit")
-                                    .font(.system(size: 12, weight: .black))
-                                    .foregroundStyle(.white.opacity(0.45))
-                                    .textCase(.uppercase)
-                            Picker("Would revisit", selection: $wouldRevisit) {
-                                Text("Yes").tag("yes")
-                                Text("Not sure").tag("not_sure")
-                                Text("No").tag("not_interested")
-                            }
-                            .pickerStyle(.segmented)
-                            }
-
-                            ZStack(alignment: .topLeading) {
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .fill(nativeSurfaceStrong)
-                                if note.isEmpty {
-                                    Text("Overall experience")
-                                        .font(.system(size: 16, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.35))
-                                        .padding(.horizontal, 20)
-                                        .padding(.vertical, 20)
-                                }
-                                TextEditor(text: $note)
-                                    .font(.system(size: 16, weight: .medium))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 12)
-                                    .frame(minHeight: 120)
-                                    .background(Color.clear)
-                            }
-                            .frame(minHeight: 120)
-
-                            Button {
-                                Task {
-                                    await submitCheckIn()
-                                }
-                            } label: {
-                                HStack {
-                                    Spacer()
-                                    if isSubmitting {
-                                        ProgressView().tint(.black)
-                                    } else {
-                                        Text("Save check-in")
-                                            .font(.system(size: 16, weight: .black))
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.vertical, 16)
-                                .background(nativeAccent)
-                                .foregroundStyle(.black)
-                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                            }
-                            .disabled(isSubmitting)
+                            .padding(.vertical, 4)
                         }
                     }
                 }
-
-                if let successMessage {
-                    NativeSuccessMessage(message: successMessage)
-                }
-
-                if let errorMessage {
-                    NativeInlineError(message: errorMessage)
-                }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 16)
-            .padding(.bottom, 28)
         }
-        .background(Color.black.ignoresSafeArea())
-        .navigationTitle("Check in")
-        .navigationBarTitleDisplayMode(.inline)
+        .sheet(isPresented: $showImagePicker) {
+            NativeMultiImagePicker(images: $selectedImages, selectionLimit: 6)
+        }
+    }
+
+    private func closeSheet() {
+        appState.dismissCheckInFlow()
+        dismiss()
     }
 
     private func performSearch() async {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count >= 3 else { return }
+
         errorMessage = nil
         isSearching = true
         defer { isSearching = false }
 
         do {
-            results = try await appState.lookupPlaces(query: query)
+            let places = try await appState.lookupPlaces(query: trimmed)
+            let priorityLabel = appState.selectedLocation.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            results = places.sorted { left, right in
+                let leftPriority = placeMatchesActiveArea(left, activeAreaLabel: priorityLabel)
+                let rightPriority = placeMatchesActiveArea(right, activeAreaLabel: priorityLabel)
+                if leftPriority != rightPriority { return leftPriority && !rightPriority }
+                return left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
+            }
         } catch {
+            results = []
             errorMessage = "Could not search places right now."
         }
+    }
+
+    private func placeMatchesActiveArea(_ place: NativePlace, activeAreaLabel: String) -> Bool {
+        guard !activeAreaLabel.isEmpty else { return false }
+        let haystack = [place.location, place.address ?? ""]
+            .joined(separator: " ")
+            .lowercased()
+        return haystack.contains(activeAreaLabel)
     }
 
     private func submitCheckIn() async {
         guard let currentPlace = selectedPlace else { return }
         errorMessage = nil
-        successMessage = nil
         isSubmitting = true
         defer { isSubmitting = false }
 
         do {
+            let uploadedMedia = try await appState.uploadCheckInImages(selectedImages)
             try await appState.submitCheckIn(
                 place: currentPlace,
+                visitedDate: resolvedVisitedDate,
                 rating: rating,
                 wouldRevisit: wouldRevisit,
-                note: note
+                note: caption,
+                uploadedMedia: uploadedMedia
             )
-            successMessage = "Check-in saved."
-            query = ""
-            results = []
-            note = ""
-            selectedPlace = nil
+            closeSheet()
         } catch {
             let nsError = error as NSError
             if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorUserAuthenticationRequired {
                 errorMessage = nil
             } else {
                 errorMessage = "Could not save this check-in."
+            }
+        }
+    }
+
+    private static func isoDayString(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+}
+
+private struct NativeMultiImagePicker: UIViewControllerRepresentable {
+    @Environment(\.dismiss) private var dismiss
+    @Binding var images: [UIImage]
+    let selectionLimit: Int
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(images: $images)
+    }
+
+    func makeUIViewController(context: Context) -> PHPickerViewController {
+        var configuration = PHPickerConfiguration(photoLibrary: .shared())
+        configuration.filter = .images
+        configuration.selectionLimit = selectionLimit
+        let controller = PHPickerViewController(configuration: configuration)
+        controller.delegate = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: PHPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        @Binding private var images: [UIImage]
+
+        init(images: Binding<[UIImage]>) {
+            self._images = images
+        }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            picker.dismiss(animated: true)
+            guard !results.isEmpty else { return }
+
+            Task {
+                var loaded: [UIImage] = []
+                for result in results {
+                    guard result.itemProvider.canLoadObject(ofClass: UIImage.self) else { continue }
+                    let image = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<UIImage, Error>) in
+                        result.itemProvider.loadObject(ofClass: UIImage.self) { object, error in
+                            if let error {
+                                continuation.resume(throwing: error)
+                            } else if let image = object as? UIImage {
+                                continuation.resume(returning: image)
+                            } else {
+                                continuation.resume(throwing: NSError(domain: "NativeImagePicker", code: 1, userInfo: nil))
+                            }
+                        }
+                    }
+                    if let image {
+                        loaded.append(image)
+                    }
+                }
+                await MainActor.run {
+                    self.images = loaded
+                }
             }
         }
     }
