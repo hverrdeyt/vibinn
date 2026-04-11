@@ -3849,7 +3849,9 @@ private struct NativeTodayRecommendationCard: View {
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             NativeRemoteImage(url: recommendation.place.image ?? recommendation.place.images?.first)
+                .frame(maxWidth: .infinity)
                 .frame(height: 300)
+                .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
                 .overlay(
                     LinearGradient(
@@ -3887,7 +3889,9 @@ private struct NativeTodayRecommendationCard: View {
                     Text(recommendation.place.name)
                         .font(.system(size: 30, weight: .black))
                         .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .multilineTextAlignment(.leading)
+                        .lineLimit(3)
 
                     HStack(spacing: 8) {
                         Text("\(recommendation.compatibilityScore)% match")
@@ -3907,6 +3911,7 @@ private struct NativeTodayRecommendationCard: View {
         }
         .frame(maxWidth: .infinity)
         .frame(height: 300)
+        .contentShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
         .background(
             RoundedRectangle(cornerRadius: 30, style: .continuous)
                 .fill(Color.white.opacity(0.04))

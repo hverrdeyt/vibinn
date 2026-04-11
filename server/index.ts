@@ -2464,8 +2464,6 @@ function buildTodayRecommendationReason(input: {
   return `High-compatibility pick for today that is only ${distanceLabel}.`;
 }
 
-const TODAY_RECOMMENDATION_DEBUG_PLACE_NAME = 'Trident Booksellers';
-
 async function getUserRecommendationContext(userId: string): Promise<RecommendationContext> {
   const cached = recommendationContextCache.get(userId);
   if (cached && cached.expiresAt > Date.now()) {
@@ -4274,59 +4272,6 @@ async function getTodayRecommendationForUser(input: {
   latitude: number;
   longitude: number;
 }) {
-  const debugPlace = await prisma.place.findFirst({
-    where: {
-      name: {
-        equals: TODAY_RECOMMENDATION_DEBUG_PLACE_NAME,
-        mode: 'insensitive',
-      },
-    },
-    include: {
-      aiEnrichment: true,
-      media: {
-        orderBy: { sortOrder: 'asc' },
-      },
-    },
-  });
-
-  if (debugPlace) {
-    await refreshUserPlaceScores(input.userId, [debugPlace.id]);
-
-    const persistedScore = await prisma.userPlaceScore.findUnique({
-      where: {
-        userId_placeId: {
-          userId: input.userId,
-          placeId: debugPlace.id,
-        },
-      },
-      select: {
-        similarityPercentage: true,
-        matchScore: true,
-      },
-    });
-
-    const distanceMiles = (debugPlace.latitude != null && debugPlace.longitude != null)
-      ? distanceBetweenMiles(
-          { latitude: input.latitude, longitude: input.longitude },
-          { latitude: debugPlace.latitude, longitude: debugPlace.longitude },
-        )
-      : 0;
-    const place = await getPlaceDetailsByInternalId(debugPlace.id, input.userId);
-    if (place) {
-      const compatibilityScore = persistedScore?.similarityPercentage
-        ?? persistedScore?.matchScore
-        ?? place.similarityStat
-        ?? 96;
-      const timingLabel = place.bestTime?.trim() || 'late morning into the afternoon';
-      return {
-        place,
-        distanceMiles: Number(distanceMiles.toFixed(1)),
-        compatibilityScore,
-        todayReason: `Debug mode: Trident Booksellers is a strong fit today, and the timing matters because it works best ${timingLabel}.`,
-      };
-    }
-  }
-
   const recommendationContext = await getUserRecommendationContext(input.userId);
   const discovery = await getDiscoveryPlacesForUser({
     userId: input.userId,
@@ -4446,8 +4391,7 @@ async function getTodayRecommendationForUser(input: {
     })
     .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
     .filter((candidate) => !recommendationContext.visitedPlaceIds.has(candidate.place.id))
-    .filter((candidate) => candidate.distanceMiles <= 2)
-    .filter((candidate) => (candidate.score ?? 0) > 80)
+    .filter((candidate) => (candidate.score ?? 0) >= 78)
     .sort((left, right) => {
       if ((right.score ?? 0) !== (left.score ?? 0)) {
         return (right.score ?? 0) - (left.score ?? 0);
@@ -4458,7 +4402,9 @@ async function getTodayRecommendationForUser(input: {
       return (right.place.rating ?? 0) - (left.place.rating ?? 0);
     });
 
-  const bestCandidate = rankedCandidates[0];
+  const nearbyCandidates = rankedCandidates.filter((candidate) => candidate.distanceMiles <= 1);
+  const fallbackCandidates = rankedCandidates.filter((candidate) => candidate.distanceMiles <= 2);
+  const bestCandidate = nearbyCandidates[0] ?? fallbackCandidates[0];
   if (!bestCandidate) {
     return null;
   }
