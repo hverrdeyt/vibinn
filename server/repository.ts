@@ -2003,48 +2003,61 @@ export async function getNotifications(userId?: string) {
     const placeById = new Map(places.map((place) => [place.id, mapPlaceForClient(place)]));
     const momentPlaceById = new Map(moments.map((moment) => [moment.id, mapPlaceForClient(moment.place)]));
 
-    return notifications.map((item) => ({
-      id: item.id,
-      notificationType: item.type,
-      targetType: item.targetType,
-      targetId: item.targetId,
-      type: item.targetType === 'PLACE' ? 'place' : 'traveler',
-      avatar: item.actorUser?.avatarUrl ?? store.me.avatar,
-      title: item.title,
-      body: item.body,
-      time: item.createdAt.toISOString(),
-      createdAt: item.createdAt.toISOString(),
-      readAt: item.readAt?.toISOString() ?? null,
-      actor: item.actorUser
-        ? {
-            id: item.actorUser.id,
-            username: item.actorUser.username,
-            displayName: item.actorUser.displayName ?? item.actorUser.username,
-            avatar: item.actorUser.avatarUrl,
-          }
-        : null,
-      place:
+    return notifications.map((item) => {
+      const resolvedPlace =
         item.targetType === 'PLACE' && item.targetId
           ? placeById.get(item.targetId) ?? undefined
           : item.targetType === 'MOMENT' || item.targetType === 'PLACE_VISIT'
             ? (item.targetId ? momentPlaceById.get(item.targetId) ?? undefined : undefined)
-            : undefined,
-      traveler: item.targetType === 'PROFILE' && item.actorUser
-        ? {
-            id: item.actorUser.id,
-            username: item.actorUser.username,
-            displayName: item.actorUser.displayName ?? item.actorUser.username,
-            bio: item.actorUser.bio,
-            avatar: item.actorUser.avatarUrl,
-          }
-        : undefined,
-    }));
+            : undefined;
+      const placeContext =
+        item.targetType === 'PLACE'
+          ? 'saved'
+          : item.targetType === 'MOMENT' || item.targetType === 'PLACE_VISIT'
+            ? 'visited'
+            : null;
+
+      return {
+        id: item.id,
+        notificationType: item.type,
+        targetType: item.targetType,
+        targetId: item.targetId,
+        type: item.targetType === 'PLACE' ? 'place' : 'traveler',
+        avatar: item.actorUser?.avatarUrl ?? store.me.avatar,
+        title: item.title,
+        body: item.body,
+        time: item.createdAt.toISOString(),
+        createdAt: item.createdAt.toISOString(),
+        readAt: item.readAt?.toISOString() ?? null,
+        actor: item.actorUser
+          ? {
+              id: item.actorUser.id,
+              username: item.actorUser.username,
+              displayName: item.actorUser.displayName ?? item.actorUser.username,
+              avatar: item.actorUser.avatarUrl,
+            }
+          : null,
+        placeTitle: resolvedPlace?.name ?? null,
+        placeContext,
+        place: resolvedPlace,
+        traveler: item.targetType === 'PROFILE' && item.actorUser
+          ? {
+              id: item.actorUser.id,
+              username: item.actorUser.username,
+              displayName: item.actorUser.displayName ?? item.actorUser.username,
+              bio: item.actorUser.bio,
+              avatar: item.actorUser.avatarUrl,
+            }
+          : undefined,
+      };
+    });
   });
 
   if (dbResult) return dbResult;
 
   return store.notifications.map((item) => {
     if (item.type === 'place') {
+      const resolvedPlace = findPlaceById(item.placeId);
       return {
         ...item,
         notificationType: 'SYSTEM',
@@ -2053,7 +2066,9 @@ export async function getNotifications(userId?: string) {
         createdAt: item.time,
         readAt: null,
         actor: null,
-        place: findPlaceById(item.placeId),
+        placeTitle: resolvedPlace?.name ?? null,
+        placeContext: 'saved',
+        place: resolvedPlace,
       };
     }
 

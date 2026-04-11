@@ -669,6 +669,8 @@ private struct NativeNotificationItem: Decodable, Identifiable {
     let notificationType: String?
     let targetType: String?
     let targetId: String?
+    let placeTitle: String?
+    let placeContext: String?
     let title: String
     let body: String
     let time: String?
@@ -3758,13 +3760,9 @@ private struct NativeNotificationRow: View {
     }
 
     private var shouldShowPlaceName: Bool {
+        if notification.placeTitle != nil { return true }
         guard notification.place != nil else { return false }
-        switch notification.notificationType {
-        case "VIBIN", "COMMENT":
-            return true
-        default:
-            return notification.targetType == "PLACE" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT"
-        }
+        return notification.targetType == "PLACE" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT"
     }
 
     private var usernameLabel: String {
@@ -3776,18 +3774,18 @@ private struct NativeNotificationRow: View {
         case "FOLLOW":
             return "followed you"
         case "VIBIN":
-            if notification.targetType == "PLACE" {
+            if notification.placeContext == "saved" || notification.targetType == "PLACE" {
                 return "sent you a vibin on a place you saved"
             }
-            if notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
+            if notification.placeContext == "visited" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
                 return "sent you a vibin on a place you visited"
             }
             return "sent you a vibin"
         case "COMMENT":
-            if notification.targetType == "PLACE" {
+            if notification.placeContext == "saved" || notification.targetType == "PLACE" {
                 return "commented on a place you saved"
             }
-            if notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
+            if notification.placeContext == "visited" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
                 return "commented on a place you visited"
             }
             return "commented on your activity"
@@ -3846,7 +3844,12 @@ private struct NativeNotificationRow: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     if shouldShowPlaceName, let place = notification.place {
-                        Text(place.name)
+                        Text(notification.placeTitle ?? place.name)
+                            .font(.system(size: 14, weight: .black))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    } else if let placeTitle = notification.placeTitle {
+                        Text(placeTitle)
                             .font(.system(size: 14, weight: .black))
                             .foregroundStyle(.white)
                             .lineLimit(1)
