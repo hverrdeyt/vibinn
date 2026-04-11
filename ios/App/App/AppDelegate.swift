@@ -9822,6 +9822,7 @@ private struct NativeCheckInScreen: View {
                             .foregroundStyle(.white.opacity(0.72))
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             } else if query.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3 && results.isEmpty {
                 Text("No places found.")
                     .font(.system(size: 14, weight: .medium))
@@ -9830,7 +9831,7 @@ private struct NativeCheckInScreen: View {
 
             if let selectedPlace {
                 NativeSectionTitle("Selected place")
-                NativePlaceCard(place: selectedPlace, isSelected: true)
+                NativeCheckInPlaceRow(place: selectedPlace, isSelected: true)
             }
 
             if !results.isEmpty {
@@ -9841,7 +9842,7 @@ private struct NativeCheckInScreen: View {
                             selectedPlace = place
                             errorMessage = nil
                         } label: {
-                            NativePlaceCard(place: place, isSelected: selectedPlace?.id == place.id)
+                            NativeCheckInPlaceRow(place: place, isSelected: selectedPlace?.id == place.id)
                         }
                         .buttonStyle(.plain)
                     }
@@ -9879,6 +9880,7 @@ private struct NativeCheckInScreen: View {
                         }
                         .buttonStyle(.plain)
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
 
@@ -9916,6 +9918,7 @@ private struct NativeCheckInScreen: View {
                         .tint(nativeAccent)
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             NativeSurfaceCard {
@@ -9941,6 +9944,7 @@ private struct NativeCheckInScreen: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             NativeSurfaceCard {
@@ -9956,6 +9960,7 @@ private struct NativeCheckInScreen: View {
                     }
                     .pickerStyle(.segmented)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             NativeSurfaceCard {
@@ -9985,6 +9990,7 @@ private struct NativeCheckInScreen: View {
                     }
                     .frame(minHeight: 120)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             NativeSurfaceCard {
@@ -10048,8 +10054,10 @@ private struct NativeCheckInScreen: View {
                         }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .padding(.bottom, 96)
         .sheet(isPresented: $showImagePicker) {
             NativeMultiImagePicker(images: $selectedImages, selectionLimit: 6)
         }
@@ -10125,6 +10133,42 @@ private struct NativeCheckInScreen: View {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: date)
+    }
+}
+
+private struct NativeCheckInPlaceRow: View {
+    let place: NativePlace
+    var isSelected: Bool = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text(place.name)
+                    .font(.system(size: 17, weight: .black))
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(place.address ?? place.location)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.58))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(2)
+            }
+            if isSelected {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundStyle(nativeAccent)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(isSelected ? nativeAccent.opacity(0.16) : nativeSurface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(isSelected ? nativeAccent.opacity(0.55) : nativeBorder, lineWidth: 1)
+                )
+        )
     }
 }
 
