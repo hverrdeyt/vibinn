@@ -676,7 +676,7 @@ private struct NativeNotificationItem: Decodable, Identifiable {
     let readAt: String?
     let actor: NativeNotificationActor?
     let place: NativePlace?
-    let traveler: NativeTravelerSummary?
+    let traveler: NativeNotificationActor?
 }
 
 private struct NativeNotificationsResponse: Decodable {
@@ -1876,10 +1876,16 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     static func date(from raw: String?) -> Date? {
         guard let raw, !raw.isEmpty else { return nil }
         let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let value = isoFormatter.date(from: raw) {
+            return value
+        }
+        isoFormatter.formatOptions = [.withInternetDateTime]
         if let value = isoFormatter.date(from: raw) {
             return value
         }
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyy-MM-dd"
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         return formatter.date(from: raw)
@@ -3566,6 +3572,34 @@ private struct NativeNotificationsSheet: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
 
+    private var groupedNotifications: [(title: String, items: [NativeNotificationItem])] {
+        let calendar = Calendar.current
+        let today = Date()
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: today) ?? today
+
+        let buckets = Dictionary(grouping: notifications) { item -> String in
+            guard let date = NativeAppState.date(from: item.createdAt ?? item.time) else {
+                return "Earlier"
+            }
+            if calendar.isDate(date, inSameDayAs: today) {
+                return "Today"
+            }
+            if calendar.isDate(date, inSameDayAs: yesterday) {
+                return "Yesterday"
+            }
+            if calendar.isDate(date, equalTo: today, toGranularity: .weekOfYear) {
+                return "This week"
+            }
+            return "Earlier"
+        }
+
+        let order = ["Today", "Yesterday", "This week", "Earlier"]
+        return order.compactMap { key in
+            guard let items = buckets[key], !items.isEmpty else { return nil }
+            return (key, items)
+        }
+    }
+
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -3614,8 +3648,17 @@ private struct NativeNotificationsSheet: View {
                                 .foregroundStyle(.white.opacity(0.72))
                         }
                     } else {
-                        ForEach(notifications) { notification in
-                            NativeNotificationRow(notification: notification)
+                        ForEach(groupedNotifications, id: \.title) { section in
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text(section.title)
+                                    .font(.system(size: 13, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.5))
+                                    .textCase(.uppercase)
+
+                                ForEach(section.items) { notification in
+                                    NativeNotificationRow(notification: notification)
+                                }
+                            }
                         }
                     }
                 }
@@ -3631,7 +3674,16 @@ private struct NativeNotificationsSheet: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("Done") { dismiss() }
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundStyle(.white)
+                        .frame(width: 32, height: 32)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(Circle())
+                }
                     .foregroundStyle(nativeAccent)
             }
         }
@@ -3663,7 +3715,22 @@ private struct NativeNotificationRow: View {
 
     private var destinationTraveler: NativeTravelerSummary? {
         if let traveler = notification.traveler {
-            return traveler
+            return NativeTravelerSummary(
+                id: traveler.id,
+                username: traveler.username,
+                displayName: traveler.displayName,
+                avatar: traveler.avatar,
+                bio: nil,
+                descriptor: nil,
+                matchScore: nil,
+                followersCount: nil,
+                recentSavedPlaces: [],
+                recentCollections: [],
+                travelHistory: [],
+                visitedPlacesCount: nil,
+                savedPlacesCount: nil,
+                collectionsCount: nil
+            )
         }
         if let actor = notification.actor {
             return NativeTravelerSummary(
@@ -3692,34 +3759,63 @@ private struct NativeNotificationRow: View {
 
     private var shouldShowPlaceName: Bool {
         guard notification.place != nil else { return false }
-        return notification.targetType == "PLACE" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT"
+        switch notification.notificationType {
+        case "VIBIN", "COMMENT":
+            return true
+        default:
+            return notification.targetType == "PLACE" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT"
+        }
     }
 
-    private var subtitle: String {
-        let username = notification.actor?.username ?? "Vibinn"
+    private var usernameLabel: String {
+        notification.actor?.username ?? "Vibinn"
+    }
+
+    private var subtitleSuffix: String {
         switch notification.notificationType {
         case "FOLLOW":
-            return "\(username) followed you"
+            return "followed you"
         case "VIBIN":
             if notification.targetType == "PLACE" {
-                return "\(username) sent a vibin to your saved place"
+                return "sent you a vibin on a place you saved"
             }
             if notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
-                return "\(username) sent a vibin to your visited place"
+                return "sent you a vibin on a place you visited"
             }
-            return "\(username) sent a vibin"
+            return "sent you a vibin"
         case "COMMENT":
             if notification.targetType == "PLACE" {
-                return "\(username) commented to your saved place"
+                return "commented on a place you saved"
             }
             if notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
-                return "\(username) commented to your visited place"
+                return "commented on a place you visited"
             }
-            return "\(username) commented on your activity"
+            return "commented on your activity"
         case "SYSTEM":
             return notification.body
         default:
             return notification.body
+        }
+    }
+
+    @ViewBuilder
+    private var subtitleView: some View {
+        if notification.notificationType == "SYSTEM" {
+            Text(subtitleSuffix)
+                .font(.system(size: 14, weight: .regular))
+                .foregroundStyle(.white.opacity(0.82))
+                .fixedSize(horizontal: false, vertical: true)
+        } else {
+            (
+                Text(usernameLabel)
+                    .font(.system(size: 14, weight: .black))
+                    .foregroundColor(.white)
+                +
+                Text(" \(subtitleSuffix)")
+                    .font(.system(size: 14, weight: .regular))
+                    .foregroundColor(.white.opacity(0.82))
+            )
+            .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -3756,10 +3852,7 @@ private struct NativeNotificationRow: View {
                             .lineLimit(1)
                     }
 
-                    Text(subtitle)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.86))
-                        .fixedSize(horizontal: false, vertical: true)
+                    subtitleView
                 }
 
                 Spacer(minLength: 8)
