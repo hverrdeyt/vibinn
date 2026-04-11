@@ -2296,6 +2296,14 @@ function hashScoreSeed(input: string) {
   return hash;
 }
 
+function describeRecommendationClassification(score?: number | null) {
+  if (typeof score !== 'number') return 'Unscored';
+  if (score >= 85) return 'Must visit';
+  if (score >= 70) return 'Fits you';
+  if (score >= 55) return 'Worth a look';
+  return 'Maybe';
+}
+
 function collectTasteKeywords(places: Array<{ category?: string | null; aiEnrichment?: { vibeTags: string[] } | null }>) {
   const keywords = new Set<string>();
 
@@ -2312,6 +2320,32 @@ function collectTasteKeywords(places: Array<{ category?: string | null; aiEnrich
 }
 
 function computeRecommendationScore(place: {
+  id?: string;
+  tags: string[];
+  category?: string;
+  similarityStat?: number;
+  rating?: number | null;
+  hook?: string | null;
+  description?: string | null;
+  whyYoullLikeIt?: string[] | null;
+}, input: {
+  selectedInterests: string[];
+  selectedVibe?: string | null;
+  bookmarkKeywords?: Set<string>;
+  momentKeywords?: Set<string>;
+  socialKeywords?: Set<string>;
+  isBookmarked?: boolean;
+  isVisited?: boolean;
+  isVibed?: boolean;
+  isCommented?: boolean;
+  isRecent?: boolean;
+  followedPlaceMatch?: boolean;
+  momentRating?: number | null;
+}) {
+  return computeRecommendationScoreAudit(place, input).finalScore;
+}
+
+function computeRecommendationScoreAudit(place: {
   id?: string;
   tags: string[];
   category?: string;
@@ -2351,28 +2385,71 @@ function computeRecommendationScore(place: {
   const bookmarkKeywords = input.bookmarkKeywords ?? new Set<string>();
   const momentKeywords = input.momentKeywords ?? new Set<string>();
   const socialKeywords = input.socialKeywords ?? new Set<string>();
+  const contributions: Array<{ key: string; label: string; delta: number; note?: string }> = [];
   let score = 34 + diversitySeed;
+  contributions.push({ key: 'base', label: 'Base score', delta: 34 });
+  contributions.push({ key: 'diversity', label: 'Diversity seed', delta: diversitySeed });
   if (place.similarityStat && place.similarityStat !== 82) {
+    const beforeBlend = score;
     score = Math.round((score * 0.76) + (place.similarityStat * 0.24));
+    contributions.push({
+      key: 'existing_similarity',
+      label: 'Existing similarity blend',
+      delta: score - beforeBlend,
+      note: `Blended with existing similarityStat ${place.similarityStat}`,
+    });
   }
 
   const affinity = getPlacePreferenceAffinity(place, input);
   const matchedInterestCount = affinity.matchedInterestCount;
   score += matchedInterestCount * 15;
+  if (matchedInterestCount > 0) {
+    contributions.push({
+      key: 'interest_match',
+      label: 'Matched interests',
+      delta: matchedInterestCount * 15,
+      note: `${matchedInterestCount} interest match(es)`,
+    });
+  }
 
   if (input.selectedInterests.length > 0 && matchedInterestCount === 0) {
     score -= 12;
+    contributions.push({
+      key: 'interest_miss',
+      label: 'No interest match penalty',
+      delta: -12,
+    });
   }
 
   const matchedVibe = affinity.matchedVibe;
   if (input.selectedVibe && matchedVibe) {
     score += 18;
+    contributions.push({
+      key: 'vibe_match',
+      label: 'Matched vibe',
+      delta: 18,
+      note: input.selectedVibe,
+    });
   }
 
-  score -= getPlacePreferenceNoisePenalty(place, input);
+  const noisePenalty = getPlacePreferenceNoisePenalty(place, input);
+  score -= noisePenalty;
+  if (noisePenalty > 0) {
+    contributions.push({
+      key: 'noise_penalty',
+      label: 'Preference noise penalty',
+      delta: -noisePenalty,
+    });
+  }
 
   if (input.selectedVibe && !matchedVibe) {
     score -= 8;
+    contributions.push({
+      key: 'vibe_miss',
+      label: 'No vibe match penalty',
+      delta: -8,
+      note: input.selectedVibe,
+    });
   }
 
   const momentOverlapCount = Array.from(momentKeywords).filter((keyword) =>
@@ -2382,6 +2459,14 @@ function computeRecommendationScore(place: {
   ).length;
 
   score += Math.min(momentOverlapCount * 10, 36);
+  if (momentOverlapCount > 0) {
+    contributions.push({
+      key: 'moment_overlap',
+      label: 'Moment keyword overlap',
+      delta: Math.min(momentOverlapCount * 10, 36),
+      note: `${momentOverlapCount} overlap(s)`,
+    });
+  }
 
   const bookmarkOverlapCount = Array.from(bookmarkKeywords).filter((keyword) =>
     normalizedTags.some((tag) => tag.includes(keyword) || keyword.includes(tag)) ||
@@ -2390,6 +2475,14 @@ function computeRecommendationScore(place: {
   ).length;
 
   score += Math.min(bookmarkOverlapCount * 4, 12);
+  if (bookmarkOverlapCount > 0) {
+    contributions.push({
+      key: 'bookmark_overlap',
+      label: 'Bookmark keyword overlap',
+      delta: Math.min(bookmarkOverlapCount * 4, 12),
+      note: `${bookmarkOverlapCount} overlap(s)`,
+    });
+  }
 
   const socialOverlapCount = Array.from(socialKeywords).filter((keyword) =>
     normalizedTags.some((tag) => tag.includes(keyword) || keyword.includes(tag)) ||
@@ -2398,54 +2491,100 @@ function computeRecommendationScore(place: {
   ).length;
 
   score += Math.min(socialOverlapCount * 4, 16);
+  if (socialOverlapCount > 0) {
+    contributions.push({
+      key: 'social_overlap',
+      label: 'Social keyword overlap',
+      delta: Math.min(socialOverlapCount * 4, 16),
+      note: `${socialOverlapCount} overlap(s)`,
+    });
+  }
 
   if ((place.rating ?? 0) >= 4.7) {
     score += 8;
+    contributions.push({ key: 'rating', label: 'High place rating', delta: 8, note: `rating ${(place.rating ?? 0).toFixed(1)}` });
   } else if ((place.rating ?? 0) >= 4.4) {
     score += 5;
+    contributions.push({ key: 'rating', label: 'Strong place rating', delta: 5, note: `rating ${(place.rating ?? 0).toFixed(1)}` });
   } else if ((place.rating ?? 0) >= 4.0) {
     score += 2;
+    contributions.push({ key: 'rating', label: 'Good place rating', delta: 2, note: `rating ${(place.rating ?? 0).toFixed(1)}` });
   } else if ((place.rating ?? 0) > 0 && (place.rating ?? 0) < 3.8) {
     score -= 6;
+    contributions.push({ key: 'rating', label: 'Low place rating penalty', delta: -6, note: `rating ${(place.rating ?? 0).toFixed(1)}` });
   }
 
   if (input.followedPlaceMatch) {
     score += 12;
+    contributions.push({ key: 'followed_match', label: 'Followed-user overlap', delta: 12 });
   }
 
   if (input.isBookmarked) {
     score += 7;
+    contributions.push({ key: 'bookmarked', label: 'Already bookmarked', delta: 7 });
   }
 
   if (input.isVisited) {
     score += 16;
+    contributions.push({ key: 'visited', label: 'Already visited', delta: 16 });
   }
 
   if (typeof input.momentRating === 'number') {
     if (input.momentRating >= 5) {
       score += 24;
+      contributions.push({ key: 'moment_rating', label: 'Moment rating boost', delta: 24, note: `rating ${input.momentRating}/5` });
     } else if (input.momentRating >= 4) {
       score += 18;
+      contributions.push({ key: 'moment_rating', label: 'Moment rating boost', delta: 18, note: `rating ${input.momentRating}/5` });
     } else if (input.momentRating >= 3) {
       score += 10;
+      contributions.push({ key: 'moment_rating', label: 'Moment rating boost', delta: 10, note: `rating ${input.momentRating}/5` });
     } else if (input.momentRating > 0 && input.momentRating <= 2) {
       score -= 10;
+      contributions.push({ key: 'moment_rating', label: 'Low moment rating penalty', delta: -10, note: `rating ${input.momentRating}/5` });
     }
   }
 
   if (input.isVibed) {
     score += 7;
+    contributions.push({ key: 'vibed', label: 'Previously vibed', delta: 7 });
   }
 
   if (input.isCommented) {
     score += 6;
+    contributions.push({ key: 'commented', label: 'Previously commented', delta: 6 });
   }
 
   if (input.isRecent) {
     score += 7;
+    contributions.push({ key: 'recent', label: 'Recent interaction', delta: 7 });
   }
 
-  return Math.max(28, Math.min(score, 98));
+  const unclampedScore = score;
+  const finalScore = Math.max(28, Math.min(score, 98));
+  if (finalScore != unclampedScore) {
+    contributions.push({
+      key: 'clamp',
+      label: 'Score clamp',
+      delta: finalScore - unclampedScore,
+      note: `Clamped into 28...98`,
+    });
+  }
+
+  return {
+    finalScore,
+    unclampedScore,
+    classification: describeRecommendationClassification(finalScore),
+    baseScore: 34,
+    diversitySeed,
+    matchedInterestCount,
+    matchedVibe,
+    noisePenalty,
+    momentOverlapCount,
+    bookmarkOverlapCount,
+    socialOverlapCount,
+    contributions,
+  };
 }
 
 function computeDiscoveryAlignedPlaceScore(place: {
@@ -5502,6 +5641,176 @@ app.get('/api/discovery/events', (req: AuthenticatedRequest, res) => {
   })
     .then((payload) => res.json(payload))
     .catch((error) => handleError(res, error));
+});
+
+app.post('/api/debug/place-score', optionalAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const {
+      placeId,
+      selectedInterests: requestedInterests,
+      selectedVibe: requestedVibe,
+    } = req.body as {
+      placeId?: string;
+      selectedInterests?: string[];
+      selectedVibe?: string | null;
+    };
+
+    if (!placeId) {
+      res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    const dbPlace = await prisma.place.findUnique({
+      where: { id: placeId },
+      include: {
+        aiEnrichment: true,
+        media: {
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+
+    if (!dbPlace) {
+      res.status(404).json({ error: 'Place not found' });
+      return;
+    }
+
+    const mappedPlace = mapCachedPlaceForDiscovery(dbPlace);
+    const selectedInterests = Array.isArray(requestedInterests) ? requestedInterests : [];
+    const selectedVibe = requestedVibe ?? null;
+
+    const emptyContext: RecommendationContext = {
+      selectedInterests,
+      selectedVibe,
+      bookmarkedPlaceIds: new Set<string>(),
+      visitedPlaceIds: new Set<string>(),
+      dismissedPlaceIds: new Set<string>(),
+      manuallyDismissedPlaceIds: new Set<string>(),
+      tasteKeywords: new Set<string>(),
+      bookmarkKeywords: new Set<string>(),
+      momentKeywords: new Set<string>(),
+      followedUserIds: new Set<string>(),
+      followedPlaceIds: new Set<string>(),
+      socialKeywords: new Set<string>(),
+      vibedPlaceIds: new Set<string>(),
+      commentedPlaceIds: new Set<string>(),
+      recentPlaceIds: new Set<string>(),
+      momentRatingsByPlaceId: new Map<string, number>(),
+    };
+
+    const baseContext = req.authUserId
+      ? await getUserRecommendationContext(req.authUserId).catch((error) => {
+          console.error('Debug place score context failed', error);
+          return emptyContext;
+        })
+      : emptyContext;
+
+    const scoringContext: RecommendationContext = {
+      ...baseContext,
+      selectedInterests,
+      selectedVibe,
+    };
+
+    const persistedScore = req.authUserId
+      ? await prisma.userPlaceScore.findUnique({
+          where: {
+            userId_placeId: {
+              userId: req.authUserId,
+              placeId,
+            },
+          },
+        }).catch((error) => {
+          console.error('Debug place score persisted load failed', error);
+          return null;
+        })
+      : null;
+
+    const audit = computeRecommendationScoreAudit(
+      {
+        id: mappedPlace.id,
+        tags: mappedPlace.tags ?? [],
+        category: mappedPlace.category,
+        similarityStat: mappedPlace.similarityStat ?? undefined,
+        rating: typeof mappedPlace.rating === 'number' ? mappedPlace.rating : null,
+        hook: mappedPlace.hook,
+        description: mappedPlace.description,
+        whyYoullLikeIt: mappedPlace.whyYoullLikeIt,
+      },
+      {
+        selectedInterests,
+        selectedVibe,
+        bookmarkKeywords: scoringContext.bookmarkKeywords,
+        momentKeywords: scoringContext.momentKeywords,
+        socialKeywords: scoringContext.socialKeywords,
+        isBookmarked: scoringContext.bookmarkedPlaceIds.has(placeId),
+        isVisited: scoringContext.visitedPlaceIds.has(placeId),
+        isVibed: scoringContext.vibedPlaceIds.has(placeId),
+        isCommented: scoringContext.commentedPlaceIds.has(placeId),
+        isRecent: scoringContext.recentPlaceIds.has(placeId),
+        followedPlaceMatch: scoringContext.followedPlaceIds.has(placeId),
+        momentRating: scoringContext.momentRatingsByPlaceId.get(placeId) ?? null,
+      },
+    );
+
+    const persistedSimilarity = persistedScore?.similarityPercentage ?? persistedScore?.matchScore ?? null;
+    const effectiveScore = persistedSimilarity ?? audit.finalScore;
+
+    res.json({
+      placeId,
+      placeName: mappedPlace.name,
+      effectiveScore,
+      effectiveClassification: describeRecommendationClassification(effectiveScore),
+      persistedScore: persistedScore
+        ? {
+            matchScore: persistedScore.matchScore,
+            similarityPercentage: persistedScore.similarityPercentage,
+            recommendationReason: persistedScore.recommendationReason,
+            distanceKm: persistedScore.distanceKm,
+            sourceVersion: persistedScore.sourceVersion,
+            updatedAt: persistedScore.updatedAt,
+          }
+        : null,
+      calculation: {
+        finalScore: audit.finalScore,
+        classification: audit.classification,
+        unclampedScore: audit.unclampedScore,
+        baseScore: audit.baseScore,
+        diversitySeed: audit.diversitySeed,
+        baseSimilarityInput: mappedPlace.similarityStat ?? null,
+        selectedInterests,
+        selectedVibe,
+        matchedInterestCount: audit.matchedInterestCount,
+        matchedVibe: audit.matchedVibe,
+        noisePenalty: audit.noisePenalty,
+        momentOverlapCount: audit.momentOverlapCount,
+        bookmarkOverlapCount: audit.bookmarkOverlapCount,
+        socialOverlapCount: audit.socialOverlapCount,
+        contributions: audit.contributions,
+      },
+      interactions: {
+        isBookmarked: scoringContext.bookmarkedPlaceIds.has(placeId),
+        isVisited: scoringContext.visitedPlaceIds.has(placeId),
+        isVibed: scoringContext.vibedPlaceIds.has(placeId),
+        isCommented: scoringContext.commentedPlaceIds.has(placeId),
+        isRecent: scoringContext.recentPlaceIds.has(placeId),
+        followedPlaceMatch: scoringContext.followedPlaceIds.has(placeId),
+        momentRating: scoringContext.momentRatingsByPlaceId.get(placeId) ?? null,
+      },
+      availableSignals: {
+        bookmarkKeywords: Array.from(scoringContext.bookmarkKeywords).sort(),
+        momentKeywords: Array.from(scoringContext.momentKeywords).sort(),
+        socialKeywords: Array.from(scoringContext.socialKeywords).sort(),
+        tasteKeywords: Array.from(scoringContext.tasteKeywords).sort(),
+      },
+      history: {
+        persistedUpdatedAt: persistedScore?.updatedAt ?? null,
+        sourceVersion: persistedScore?.sourceVersion ?? null,
+        persistedReason: persistedScore?.recommendationReason ?? null,
+      },
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
 });
 
 app.get('/api/me/signals', requireAuth, async (req: AuthenticatedRequest, res) => {

@@ -12,6 +12,7 @@ import SafariServices
 private let useNativeIOSShell = true
 private let nativeDiscoveryLayoutDebugMode = false
 private let nativeTodayRecommendationDebugMode = false
+private let nativeDiscoveryScoreDebugMode = true
 private let nativeAccent = Color(red: 211 / 255, green: 1, blue: 72 / 255)
 private let nativeBorder = Color.white.opacity(0.08)
 private let nativeSurface = Color.white.opacity(0.06)
@@ -318,6 +319,77 @@ private struct NativeTodayRecommendationResponse: Decodable {
     let compatibilityScore: Int
     let distanceMiles: Double
     let todayReason: String
+}
+
+private struct NativePlaceScoreDebugResponse: Decodable {
+    let placeId: String
+    let placeName: String
+    let effectiveScore: Int?
+    let effectiveClassification: String
+    let persistedScore: NativePlaceScorePersistedSnapshot?
+    let calculation: NativePlaceScoreCalculation
+    let interactions: NativePlaceScoreInteractions
+    let availableSignals: NativePlaceScoreSignals
+    let history: NativePlaceScoreHistory
+}
+
+private struct NativePlaceScorePersistedSnapshot: Decodable {
+    let matchScore: Int?
+    let similarityPercentage: Int?
+    let recommendationReason: String?
+    let distanceKm: Double?
+    let sourceVersion: String?
+    let updatedAt: String?
+}
+
+private struct NativePlaceScoreCalculation: Decodable {
+    let finalScore: Int
+    let classification: String
+    let unclampedScore: Int
+    let baseScore: Int
+    let diversitySeed: Int
+    let baseSimilarityInput: Int?
+    let selectedInterests: [String]
+    let selectedVibe: String?
+    let matchedInterestCount: Int
+    let matchedVibe: Bool
+    let noisePenalty: Int
+    let momentOverlapCount: Int
+    let bookmarkOverlapCount: Int
+    let socialOverlapCount: Int
+    let contributions: [NativePlaceScoreContribution]
+}
+
+private struct NativePlaceScoreContribution: Decodable, Identifiable {
+    let key: String
+    let label: String
+    let delta: Int
+    let note: String?
+
+    var id: String { "\(key)-\(label)-\(delta)" }
+}
+
+private struct NativePlaceScoreInteractions: Decodable {
+    let isBookmarked: Bool
+    let isVisited: Bool
+    let isVibed: Bool
+    let isCommented: Bool
+    let isRecent: Bool
+    let followedPlaceMatch: Bool
+    let momentRating: Int?
+}
+
+private struct NativePlaceScoreSignals: Decodable {
+    let bookmarkKeywords: [String]
+    let momentKeywords: [String]
+    let socialKeywords: [String]
+    let tasteKeywords: [String]
+}
+
+private struct NativePlaceScoreHistory: Decodable {
+    let persistedUpdatedAt: String?
+    let sourceVersion: String?
+    let persistedReason: String?
 }
 
 private struct NativeDiscoveryPagination: Decodable {
@@ -693,6 +765,15 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         currentUser = response.user
         await syncLocalTastePreferencesIfNeeded()
         nativeLogger.log("apple login success user=\(response.user.username, privacy: .public)")
+    }
+
+    func loadPlaceScoreDebug(for placeId: String) async throws -> NativePlaceScoreDebugResponse {
+        try await api.getPlaceScoreDebug(
+            placeId: placeId,
+            selectedInterests: selectedInterests,
+            selectedVibe: selectedVibe,
+            token: authToken
+        )
     }
 
     func logout() {
@@ -1568,6 +1649,12 @@ private struct NativeAPIClient {
         let familyName: String?
     }
 
+    private struct PlaceScoreDebugBody: Encodable {
+        let placeId: String
+        let selectedInterests: [String]
+        let selectedVibe: String?
+    }
+
     func login(email: String, password: String) async throws -> NativeLoginResponse {
         try await request(
             path: "/api/auth/login",
@@ -1656,6 +1743,24 @@ private struct NativeAPIClient {
             path: "/api/recommendations/today?location=\(encodedLocation)&type=city&latitude=\(latitude)&longitude=\(longitude)",
             method: "GET",
             token: token
+        )
+    }
+
+    func getPlaceScoreDebug(
+        placeId: String,
+        selectedInterests: [String],
+        selectedVibe: String?,
+        token: String?
+    ) async throws -> NativePlaceScoreDebugResponse {
+        try await request(
+            path: "/api/debug/place-score",
+            method: "POST",
+            token: token,
+            body: PlaceScoreDebugBody(
+                placeId: placeId,
+                selectedInterests: selectedInterests,
+                selectedVibe: selectedVibe
+            )
         )
     }
 
@@ -2206,6 +2311,7 @@ private struct NativeDiscoveryTileLink: View {
     @EnvironmentObject private var appState: NativeAppState
     let item: NativeDiscoveryColumnItem
     let columnWidth: CGFloat
+    let onDebugTap: (() -> Void)?
 
     var body: some View {
         Group {
@@ -2221,7 +2327,8 @@ private struct NativeDiscoveryTileLink: View {
                     },
                     onSkipSwipe: {
                         appState.dismissDiscoveryPlace(item.place.id)
-                    }
+                    },
+                    onDebugTap: onDebugTap
                 )
                 .frame(width: columnWidth, height: nativeDiscoveryTileHeight(for: item.index))
             } else {
@@ -2239,7 +2346,8 @@ private struct NativeDiscoveryTileLink: View {
                         },
                         onSkipSwipe: {
                             appState.dismissDiscoveryPlace(item.place.id)
-                        }
+                        },
+                        onDebugTap: onDebugTap
                     )
                     .frame(width: columnWidth, height: nativeDiscoveryTileHeight(for: item.index))
                 }
@@ -2258,6 +2366,7 @@ private struct NativeDiscoveryMasonryView: View {
     let leftItems: [NativeDiscoveryColumnItem]
     let rightItems: [NativeDiscoveryColumnItem]
     let containerWidth: CGFloat
+    let onDebugTap: (NativePlace) -> Void
     private let columnGap: CGFloat = 12
 
     private var columnWidth: CGFloat {
@@ -2316,7 +2425,8 @@ private struct NativeDiscoveryMasonryView: View {
             ForEach(positionedItems) { positioned in
                 NativeDiscoveryTileLink(
                     item: positioned.item,
-                    columnWidth: positioned.width
+                    columnWidth: positioned.width,
+                    onDebugTap: nativeDiscoveryScoreDebugMode ? { onDebugTap(positioned.item.place) } : nil
                 )
                 .offset(x: positioned.x, y: positioned.y)
             }
@@ -3723,9 +3833,30 @@ private struct NativeDiscoverScreen: View {
     @State private var showLocationSheet = false
     @State private var showSearchSheet = false
     @State private var showNotificationsSheet = false
+    @State private var showDiscoveryScoreDebug = nativeDiscoveryScoreDebugMode
+    @State private var selectedDebugPlace: NativePlace?
 
     private var balancedColumns: (left: [NativeDiscoveryColumnItem], right: [NativeDiscoveryColumnItem]) {
         buildNativeBalancedDiscoveryColumns(places: appState.discoveryPlaces)
+    }
+
+    private var discoveryScoreCounts: (mustVisit: Int, fitsYou: Int, worthALook: Int, maybe: Int, unscored: Int) {
+        appState.discoveryPlaces.reduce(into: (0, 0, 0, 0, 0)) { result, place in
+            guard let badge = nativeCompatibilityBadge(for: place.similarityStat) else {
+                result.4 += 1
+                return
+            }
+            switch badge.label {
+            case "Must visit":
+                result.0 += 1
+            case "Fits you":
+                result.1 += 1
+            case "Worth a look":
+                result.2 += 1
+            default:
+                result.3 += 1
+            }
+        }
     }
 
     var body: some View {
@@ -3908,7 +4039,10 @@ private struct NativeDiscoverScreen: View {
                         NativeDiscoveryMasonryView(
                             leftItems: balancedColumns.left,
                             rightItems: balancedColumns.right,
-                            containerWidth: contentWidth
+                            containerWidth: contentWidth,
+                            onDebugTap: { place in
+                                selectedDebugPlace = place
+                            }
                         )
 
                         if appState.isDiscoveryLoadingMore {
@@ -3929,6 +4063,37 @@ private struct NativeDiscoverScreen: View {
             }
         }
         .background(Color.black.ignoresSafeArea())
+        .overlay(alignment: .bottomTrailing) {
+            if showDiscoveryScoreDebug {
+                NativeDiscoveryScoreDebugPanel(
+                    totalLoaded: appState.discoveryPlaces.count,
+                    mustVisitCount: discoveryScoreCounts.mustVisit,
+                    fitsYouCount: discoveryScoreCounts.fitsYou,
+                    worthALookCount: discoveryScoreCounts.worthALook,
+                    maybeCount: discoveryScoreCounts.maybe,
+                    unscoredCount: discoveryScoreCounts.unscored,
+                    onToggle: {
+                        showDiscoveryScoreDebug.toggle()
+                    }
+                )
+                .padding(.trailing, 16)
+                .padding(.bottom, appState.showFloatingTabBar ? (appState.shouldShowUnlockVibeCTA ? 184 : 100) : 22)
+            } else if nativeDiscoveryScoreDebugMode {
+                Button {
+                    showDiscoveryScoreDebug.toggle()
+                } label: {
+                    Image(systemName: "ladybug.fill")
+                        .font(.system(size: 17, weight: .black))
+                        .foregroundStyle(.black)
+                        .frame(width: 46, height: 46)
+                        .background(nativeAccent)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(.trailing, 16)
+                .padding(.bottom, appState.showFloatingTabBar ? (appState.shouldShowUnlockVibeCTA ? 184 : 100) : 22)
+            }
+        }
         .safeAreaInset(edge: .bottom) {
             if appState.shouldShowUnlockVibeCTA {
                 HStack {
@@ -4002,6 +4167,12 @@ private struct NativeDiscoverScreen: View {
                 title: "Notifications",
                 message: "Notifications will plug into the native app once the rest of the discovery shell is locked in."
             )
+        }
+        .sheet(item: $selectedDebugPlace) { place in
+            NavigationView {
+                NativePlaceScoreDebugSheet(place: place)
+            }
+            .navigationViewStyle(.stack)
         }
         .refreshable {
             await appState.refreshDiscovery()
@@ -4141,6 +4312,247 @@ private struct NativeTodayRecommendationCard: View {
                     showConfetti = false
                 }
             }
+        }
+    }
+}
+
+private struct NativeDiscoveryScoreDebugPanel: View {
+    let totalLoaded: Int
+    let mustVisitCount: Int
+    let fitsYouCount: Int
+    let worthALookCount: Int
+    let maybeCount: Int
+    let unscoredCount: Int
+    let onToggle: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Text("Discovery debug")
+                    .font(.system(size: 13, weight: .black))
+                    .foregroundStyle(.white)
+                Spacer(minLength: 0)
+                Button(action: onToggle) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(width: 24, height: 24)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Loaded \(totalLoaded)")
+                Text("Must visit \(mustVisitCount)")
+                Text("Fits you \(fitsYouCount)")
+                Text("Worth a look \(worthALookCount)")
+                Text("Maybe \(maybeCount)")
+                if unscoredCount > 0 {
+                    Text("Unscored \(unscoredCount)")
+                }
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.84))
+        }
+        .padding(14)
+        .frame(width: 176, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color.black.opacity(0.92))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(nativeAccent.opacity(0.5), lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct NativePlaceScoreDebugSheet: View {
+    @EnvironmentObject private var appState: NativeAppState
+    let place: NativePlace
+    @State private var payload: NativePlaceScoreDebugResponse?
+    @State private var errorMessage: String?
+    @State private var isLoading = true
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(place.name)
+                        .font(.system(size: 24, weight: .black))
+                        .foregroundStyle(.white)
+                    Text("Score audit")
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundStyle(nativeAccent)
+                        .textCase(.uppercase)
+                }
+
+                if isLoading {
+                    NativeSurfaceCard {
+                        HStack(spacing: 12) {
+                            ProgressView().tint(nativeAccent)
+                            Text("Loading score audit...")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
+                    }
+                } else if let errorMessage {
+                    NativeInlineError(message: errorMessage)
+                } else if let payload {
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Effective score")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            Text("\(payload.effectiveScore ?? payload.calculation.finalScore)%")
+                                .font(.system(size: 28, weight: .black))
+                                .foregroundStyle(.white)
+                            Text(payload.effectiveClassification)
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundStyle(nativeAccent)
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Calculation")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            NativeDebugRow(label: "Final computed", value: "\(payload.calculation.finalScore)%")
+                            NativeDebugRow(label: "Computed class", value: payload.calculation.classification)
+                            NativeDebugRow(label: "Unclamped", value: "\(payload.calculation.unclampedScore)")
+                            NativeDebugRow(label: "Base score", value: "\(payload.calculation.baseScore)")
+                            NativeDebugRow(label: "Diversity seed", value: "\(payload.calculation.diversitySeed)")
+                            NativeDebugRow(label: "Base similarity input", value: payload.calculation.baseSimilarityInput.map(String.init) ?? "nil")
+                            NativeDebugRow(label: "Matched interests", value: "\(payload.calculation.matchedInterestCount)")
+                            NativeDebugRow(label: "Matched vibe", value: payload.calculation.matchedVibe ? "yes" : "no")
+                            NativeDebugRow(label: "Noise penalty", value: "\(payload.calculation.noisePenalty)")
+                            NativeDebugRow(label: "Moment overlap", value: "\(payload.calculation.momentOverlapCount)")
+                            NativeDebugRow(label: "Bookmark overlap", value: "\(payload.calculation.bookmarkOverlapCount)")
+                            NativeDebugRow(label: "Social overlap", value: "\(payload.calculation.socialOverlapCount)")
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Inputs")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            NativeDebugRow(label: "Selected interests", value: payload.calculation.selectedInterests.isEmpty ? "none" : payload.calculation.selectedInterests.joined(separator: ", "))
+                            NativeDebugRow(label: "Selected vibe", value: payload.calculation.selectedVibe ?? "none")
+                            NativeDebugRow(label: "Bookmarked", value: payload.interactions.isBookmarked ? "yes" : "no")
+                            NativeDebugRow(label: "Visited", value: payload.interactions.isVisited ? "yes" : "no")
+                            NativeDebugRow(label: "Vibed", value: payload.interactions.isVibed ? "yes" : "no")
+                            NativeDebugRow(label: "Commented", value: payload.interactions.isCommented ? "yes" : "no")
+                            NativeDebugRow(label: "Recent", value: payload.interactions.isRecent ? "yes" : "no")
+                            NativeDebugRow(label: "Followed place match", value: payload.interactions.followedPlaceMatch ? "yes" : "no")
+                            NativeDebugRow(label: "Moment rating", value: payload.interactions.momentRating.map { "\($0)/5" } ?? "none")
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Persisted snapshot")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            NativeDebugRow(label: "Similarity %", value: payload.persistedScore?.similarityPercentage.map(String.init) ?? "nil")
+                            NativeDebugRow(label: "Match score", value: payload.persistedScore?.matchScore.map(String.init) ?? "nil")
+                            NativeDebugRow(label: "Distance km", value: payload.persistedScore?.distanceKm.map { String(format: "%.2f", $0) } ?? "nil")
+                            NativeDebugRow(label: "Source version", value: payload.persistedScore?.sourceVersion ?? "nil")
+                            NativeDebugRow(label: "Updated at", value: payload.persistedScore?.updatedAt ?? "nil")
+                            NativeDebugRow(label: "Reason", value: payload.persistedScore?.recommendationReason ?? "nil")
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Contributions")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            ForEach(payload.calculation.contributions) { contribution in
+                                HStack(alignment: .top, spacing: 10) {
+                                    Text(contribution.delta >= 0 ? "+\(contribution.delta)" : "\(contribution.delta)")
+                                        .font(.system(size: 12, weight: .black))
+                                        .foregroundStyle(contribution.delta >= 0 ? nativeAccent : .red.opacity(0.9))
+                                        .frame(width: 44, alignment: .leading)
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(contribution.label)
+                                            .font(.system(size: 13, weight: .bold))
+                                            .foregroundStyle(.white)
+                                        if let note = contribution.note, !note.isEmpty {
+                                            Text(note)
+                                                .font(.system(size: 12, weight: .medium))
+                                                .foregroundStyle(.white.opacity(0.56))
+                                        }
+                                    }
+                                    Spacer(minLength: 0)
+                                }
+                            }
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Signals & history")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            NativeDebugRow(label: "Bookmark keywords", value: nativeDebugListLabel(payload.availableSignals.bookmarkKeywords))
+                            NativeDebugRow(label: "Moment keywords", value: nativeDebugListLabel(payload.availableSignals.momentKeywords))
+                            NativeDebugRow(label: "Social keywords", value: nativeDebugListLabel(payload.availableSignals.socialKeywords))
+                            NativeDebugRow(label: "Taste keywords", value: nativeDebugListLabel(payload.availableSignals.tasteKeywords))
+                            NativeDebugRow(label: "History updatedAt", value: payload.history.persistedUpdatedAt ?? "nil")
+                            NativeDebugRow(label: "History sourceVersion", value: payload.history.sourceVersion ?? "nil")
+                            NativeDebugRow(label: "History reason", value: payload.history.persistedReason ?? "nil")
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 28)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationTitle("Score debug")
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: place.id) {
+            await loadDebug()
+        }
+    }
+
+    private func loadDebug() async {
+        isLoading = true
+        errorMessage = nil
+        do {
+            payload = try await appState.loadPlaceScoreDebug(for: place.id)
+        } catch {
+            errorMessage = "Could not load score audit right now."
+        }
+        isLoading = false
+    }
+}
+
+private struct NativeDebugRow: View {
+    let label: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.system(size: 11, weight: .black))
+                .foregroundStyle(.white.opacity(0.42))
+                .textCase(.uppercase)
+            Text(value)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.82))
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -5248,8 +5660,29 @@ private struct NativeDiscoveryPlaceCard: View {
     let isVisited: Bool
     let onSaveSwipe: () -> Void
     let onSkipSwipe: () -> Void
+    let onDebugTap: (() -> Void)?
     @State private var dragOffset: CGFloat = 0
     @State private var isHorizontalDrag = false
+
+    init(
+        place: NativePlace,
+        width: CGFloat,
+        height: CGFloat,
+        isBookmarked: Bool,
+        isVisited: Bool,
+        onSaveSwipe: @escaping () -> Void,
+        onSkipSwipe: @escaping () -> Void,
+        onDebugTap: (() -> Void)? = nil
+    ) {
+        self.place = place
+        self.width = width
+        self.height = height
+        self.isBookmarked = isBookmarked
+        self.isVisited = isVisited
+        self.onSaveSwipe = onSaveSwipe
+        self.onSkipSwipe = onSkipSwipe
+        self.onDebugTap = onDebugTap
+    }
 
     private var moodBadge: NativeMoodBadgeMeta {
         nativeDiscoveryMoodBadge(for: place)
@@ -5408,6 +5841,20 @@ private struct NativeDiscoveryPlaceCard: View {
                 }
             }
             .padding(16)
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if let onDebugTap, nativeDiscoveryScoreDebugMode {
+                Button(action: onDebugTap) {
+                    Image(systemName: "ladybug.fill")
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundStyle(.black)
+                        .frame(width: 32, height: 32)
+                        .background(nativeAccent)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(16)
+            }
         }
         .overlay(alignment: .trailing) {
             if !nativeDiscoveryLayoutDebugMode && isHorizontalDrag && dragOffset > 48 {
@@ -8114,6 +8561,11 @@ private func nativeAvatarFallbackURL(for text: String) -> String {
     let initial = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1)).uppercased()
     let encoded = initial.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "V"
     return "https://placehold.co/400x400/111111/D3FF48?text=\(encoded)"
+}
+
+private func nativeDebugListLabel(_ values: [String]) -> String {
+    let joined = values.joined(separator: ", ")
+    return joined.isEmpty ? "none" : joined
 }
 
 private struct NativeCheckInScreen: View {
