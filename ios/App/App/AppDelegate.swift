@@ -725,6 +725,11 @@ private enum NativeSavedSection: String, CaseIterable, Identifiable {
     var id: String { rawValue }
 }
 
+private struct NativeDiscoveryCategoryTab: Hashable, Identifiable {
+    let id: String
+    let label: String
+}
+
 private struct NativeMoodBadgeMeta {
     let label: String
     let icon: String
@@ -1467,6 +1472,19 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     func dismissDiscoveryPlace(_ placeId: String) {
         discoveryPlaces.removeAll { $0.id == placeId }
+    }
+
+    func savePlace(_ place: NativePlace) async throws {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to save places.")
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        guard !isBookmarked(place.id) else { return }
+
+        _ = try await api.bookmarkPlace(token: token, place: place)
+        savedPlaces.insert(place, at: 0)
+        rebuildOwnFeedItems()
     }
 
     func toggleBookmark(for place: NativePlace) async throws {
@@ -2636,6 +2654,10 @@ private func nativeDiscoveryMoodBadge(for place: NativePlace) -> NativeMoodBadge
     return nativePlaceMoodBadges[6]
 }
 
+private func nativeDiscoveryCategoryLabel(for place: NativePlace) -> String {
+    nativeDiscoveryMoodBadge(for: place).label
+}
+
 private func nativeCompatibilityBadge(for match: Int?) -> NativeCompatibilityBadgeMeta? {
     guard let match else { return nil }
     if match >= 85 {
@@ -2679,6 +2701,7 @@ private struct NativeDiscoveryTileLink: View {
     let item: NativeDiscoveryColumnItem
     let columnWidth: CGFloat
     let onDebugTap: (() -> Void)?
+    let onDiscoveryToast: (String) -> Void
 
     var body: some View {
         Group {
@@ -2690,10 +2713,16 @@ private struct NativeDiscoveryTileLink: View {
                     isBookmarked: appState.isBookmarked(item.place.id),
                     isVisited: appState.isVisited(item.place.id),
                     onSaveSwipe: {
-                        Task { try? await appState.toggleBookmark(for: item.place) }
+                        Task {
+                            try? await appState.savePlace(item.place)
+                            await MainActor.run {
+                                onDiscoveryToast("Added to saved")
+                            }
+                        }
                     },
                     onSkipSwipe: {
                         appState.dismissDiscoveryPlace(item.place.id)
+                        onDiscoveryToast("Place hidden")
                     },
                     onDebugTap: onDebugTap
                 )
@@ -2709,10 +2738,16 @@ private struct NativeDiscoveryTileLink: View {
                         isBookmarked: appState.isBookmarked(item.place.id),
                         isVisited: appState.isVisited(item.place.id),
                         onSaveSwipe: {
-                            Task { try? await appState.toggleBookmark(for: item.place) }
+                            Task {
+                                try? await appState.savePlace(item.place)
+                                await MainActor.run {
+                                    onDiscoveryToast("Added to saved")
+                                }
+                            }
                         },
                         onSkipSwipe: {
                             appState.dismissDiscoveryPlace(item.place.id)
+                            onDiscoveryToast("Place hidden")
                         },
                         onDebugTap: onDebugTap
                     )
@@ -2734,6 +2769,7 @@ private struct NativeDiscoveryMasonryView: View {
     let rightItems: [NativeDiscoveryColumnItem]
     let containerWidth: CGFloat
     let onDebugTap: (NativePlace) -> Void
+    let onDiscoveryToast: (String) -> Void
     private let columnGap: CGFloat = 12
 
     private var columnWidth: CGFloat {
@@ -2793,7 +2829,8 @@ private struct NativeDiscoveryMasonryView: View {
                 NativeDiscoveryTileLink(
                     item: positioned.item,
                     columnWidth: positioned.width,
-                    onDebugTap: nativeDiscoveryScoreDebugMode ? { onDebugTap(positioned.item.place) } : nil
+                    onDebugTap: nativeDiscoveryScoreDebugMode ? { onDebugTap(positioned.item.place) } : nil,
+                    onDiscoveryToast: onDiscoveryToast
                 )
                 .offset(x: positioned.x, y: positioned.y)
             }
@@ -4203,13 +4240,37 @@ private struct NativeDiscoverScreen: View {
     @State private var showDiscoveryScoreDebug = nativeDiscoveryScoreDebugMode
     @State private var showTodayRecommendationDebug = false
     @State private var selectedDebugPlace: NativePlace?
+    @State private var selectedDiscoveryTabId = "all"
+    @State private var discoverySwipeToastMessage: String?
 
-    private var balancedColumns: (left: [NativeDiscoveryColumnItem], right: [NativeDiscoveryColumnItem]) {
-        buildNativeBalancedDiscoveryColumns(places: appState.discoveryPlaces)
+    private var discoveryTabs: [NativeDiscoveryCategoryTab] {
+        var labelsById: [String: String] = [:]
+        let counts = appState.discoveryPlaces.reduce(into: [String: Int]()) { result, place in
+            let label = nativeDiscoveryCategoryLabel(for: place)
+            let id = label.lowercased().replacingOccurrences(of: " ", with: "-")
+            labelsById[id] = label
+            result[id, default: 0] += 1
+        }
+
+        let categoryTabs = counts.map { entry in
+            NativeDiscoveryCategoryTab(id: entry.key, label: labelsById[entry.key] ?? entry.key)
+        }
+        .sorted { left, right in
+            let leftCount = counts[left.id, default: 0]
+            let rightCount = counts[right.id, default: 0]
+            if leftCount != rightCount { return leftCount > rightCount }
+            return left.label.localizedCaseInsensitiveCompare(right.label) == .orderedAscending
+        }
+
+        return [NativeDiscoveryCategoryTab(id: "all", label: "All")] + categoryTabs
+    }
+
+    private var selectedDiscoveryPlaces: [NativePlace] {
+        discoveryPlaces(for: selectedDiscoveryTabId)
     }
 
     private var discoveryScoreCounts: (mustVisit: Int, fitsYou: Int, worthALook: Int, maybe: Int, unscored: Int) {
-        appState.discoveryPlaces.reduce(into: (0, 0, 0, 0, 0)) { result, place in
+        selectedDiscoveryPlaces.reduce(into: (0, 0, 0, 0, 0)) { result, place in
             guard let badge = nativeCompatibilityBadge(for: place.similarityStat) else {
                 result.4 += 1
                 return
@@ -4230,207 +4291,36 @@ private struct NativeDiscoverScreen: View {
     var body: some View {
         GeometryReader { proxy in
             let contentWidth = proxy.size.width - 32
-
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 20) {
-                    HStack(alignment: .top, spacing: 16) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Your vibe picks in")
-                                .font(.system(size: 26, weight: .black))
-                                .tracking(-1.3)
-                                .foregroundStyle(.white)
-
-                            Button {
-                                showLocationSheet = true
-                            } label: {
-                                HStack(spacing: 6) {
-                                    Text(appState.selectedLocation.label)
-                                        .font(.system(size: 26, weight: .black))
-                                        .tracking(-1.3)
-                                    Image(systemName: "chevron.down")
-                                        .font(.system(size: 16, weight: .black))
-                                }
-                                .foregroundStyle(nativeAccent)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 6)
-                                .background(Color.white.opacity(0.06))
-                                .overlay(
-                                    Capsule().stroke(nativeBorder, lineWidth: 1)
-                                )
-                                .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-
-                        }
-                        Spacer(minLength: 0)
-                        HStack(spacing: 8) {
-                            Button {
-                                showSearchSheet = true
-                            } label: {
-                                Image(systemName: "magnifyingglass")
-                                    .font(.system(size: 17, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 44, height: 44)
-                                    .background(nativeSurface)
-                                    .overlay(
-                                        Circle().stroke(nativeBorder, lineWidth: 1)
-                                    )
-                                    .clipShape(Circle())
-                            }
-                            .buttonStyle(.plain)
-
-                            Button {
-                                showNotificationsSheet = true
-                            } label: {
-                                Image(systemName: "bell")
-                                    .font(.system(size: 17, weight: .bold))
-                                    .foregroundStyle(.white)
-                                    .frame(width: 44, height: 44)
-                                    .background(nativeSurface)
-                                    .overlay(
-                                        Circle().stroke(nativeBorder, lineWidth: 1)
-                                    )
-                                    .clipShape(Circle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-
-                    if let discoveryErrorMessage = appState.discoveryErrorMessage {
-                        NativeInlineError(message: discoveryErrorMessage)
-                    }
-
-                    Button {
-                        Task { await appState.loadTodayRecommendation() }
-                    } label: {
-                        HStack(spacing: 14) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Today recommendation")
-                                    .font(.system(size: 19, weight: .black))
-                                    .foregroundStyle(.black)
-                                Text("Get one strong pick for today near you.")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(Color.black.opacity(0.72))
-                            }
-                            Spacer(minLength: 0)
-                            Group {
-                                if appState.isTodayRecommendationLoading {
-                                    ProgressView()
-                                        .tint(.black)
-                                } else {
-                                    Image(systemName: "die.face.5.fill")
-                                        .font(.system(size: 18, weight: .black))
-                                        .foregroundStyle(.black)
-                                }
-                            }
-                            .frame(width: 36, height: 36)
-                            .background(Color.black.opacity(0.08))
-                            .clipShape(Circle())
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            nativeAccent,
-                                            Color(red: 176 / 255, green: 1, blue: 72 / 255),
-                                        ],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                        )
-                        .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .buttonStyle(.plain)
-
-                    if let todayRecommendationErrorMessage = appState.todayRecommendationErrorMessage {
-                        NativeInlineError(message: todayRecommendationErrorMessage)
-                    }
-
-                    if let todayRecommendation = appState.todayRecommendation {
-                        NavigationLink {
-                            NativePlaceDetailScreen(initialPlace: todayRecommendation.place)
-                        } label: {
-                            NativeTodayRecommendationCard(
-                                recommendation: todayRecommendation,
-                                containerWidth: contentWidth,
-                                onDebugTap: nativeTodayRecommendationScoreDebugMode ? {
+            ZStack(alignment: .top) {
+                ZStack {
+                    ForEach(discoveryTabs) { tab in
+                        NativeDiscoveryTabPage(
+                            tab: tab,
+                            tabs: discoveryTabs,
+                            places: discoveryPlaces(for: tab.id),
+                            contentWidth: contentWidth,
+                            selectedTabId: $selectedDiscoveryTabId,
+                            onLocationTap: { showLocationSheet = true },
+                            onSearchTap: { showSearchSheet = true },
+                            onNotificationsTap: { showNotificationsSheet = true },
+                            onPlaceDebugTap: { place in selectedDebugPlace = place },
+                            onTodayDebugTap: {
+                                if nativeTodayRecommendationScoreDebugMode {
                                     showTodayRecommendationDebug = true
-                                } : nil
-                            )
-                        }
-                        .frame(width: contentWidth, alignment: .leading)
-                        .overlay(
-                            Group {
-                                if nativeTodayRecommendationDebugMode {
-                                    RoundedRectangle(cornerRadius: 30, style: .continuous)
-                                        .stroke(Color.red, lineWidth: 2)
-                                        .overlay(alignment: .topTrailing) {
-                                            NativeLayoutDebugBadge(title: "LINK")
-                                                .padding(10)
-                                        }
                                 }
-                            }
+                            },
+                            onDiscoveryToast: { message in
+                                showDiscoverySwipeToast(message)
+                            },
+                            onSwitchTab: switchDiscoveryTab
                         )
-                        .buttonStyle(.plain)
-                    }
-
-                    if appState.isDiscoveryLoading && appState.discoveryPlaces.isEmpty {
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Cooking your picks")
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundStyle(nativeAccent.opacity(0.9))
-                                    .textCase(.uppercase)
-                                Text("We're cooking places for you in \(appState.selectedLocation.label).")
-                                    .font(.system(size: 20, weight: .black))
-                                    .foregroundStyle(.white)
-                                Text("Lining up the first places that fit your current taste.")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.58))
-                            }
-                        }
-                    } else if appState.discoveryPlaces.isEmpty {
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("No places yet for \(appState.selectedLocation.label).")
-                                    .font(.system(size: 20, weight: .black))
-                                    .foregroundStyle(.white)
-                                Text("Pull to refresh to try again.")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.58))
-                            }
-                        }
-                    } else {
-                        NativeDiscoveryMasonryView(
-                            leftItems: balancedColumns.left,
-                            rightItems: balancedColumns.right,
-                            containerWidth: contentWidth,
-                            onDebugTap: { place in
-                                selectedDebugPlace = place
-                            }
-                        )
-
-                        if appState.isDiscoveryLoadingMore {
-                            HStack {
-                                Spacer()
-                                ProgressView()
-                                    .tint(nativeAccent)
-                                Spacer()
-                            }
-                            .padding(.top, 8)
-                        }
+                        .environmentObject(appState)
+                        .opacity(selectedDiscoveryTabId == tab.id ? 1 : 0)
+                        .allowsHitTesting(selectedDiscoveryTabId == tab.id)
+                        .zIndex(selectedDiscoveryTabId == tab.id ? 1 : 0)
                     }
                 }
-                .frame(width: contentWidth, alignment: .leading)
-                .padding(.horizontal, 16)
-                .padding(.top, 12)
-                .padding(.bottom, 18)
+
             }
         }
         .background(Color.black.ignoresSafeArea())
@@ -4463,6 +4353,14 @@ private struct NativeDiscoverScreen: View {
                 .buttonStyle(.plain)
                 .padding(.trailing, 16)
                 .padding(.bottom, appState.showFloatingTabBar ? (appState.shouldShowUnlockVibeCTA ? 184 : 100) : 22)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if let discoverySwipeToastMessage {
+                NativeDiscoveryToast(message: discoverySwipeToastMessage)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, appState.showFloatingTabBar ? (appState.shouldShowUnlockVibeCTA ? 176 : 96) : 18)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -4551,8 +4449,298 @@ private struct NativeDiscoverScreen: View {
             }
             .navigationViewStyle(.stack)
         }
+        .onChange(of: appState.discoveryPlaces.map(\.id)) { _ in
+            if !discoveryTabs.contains(where: { $0.id == selectedDiscoveryTabId }) {
+                selectedDiscoveryTabId = "all"
+            }
+        }
         .refreshable {
             await appState.refreshDiscovery()
+        }
+    }
+
+    private func switchDiscoveryTab(by delta: Int) {
+        guard let currentIndex = discoveryTabs.firstIndex(where: { $0.id == selectedDiscoveryTabId }) else {
+            selectedDiscoveryTabId = "all"
+            return
+        }
+        let nextIndex = min(max(currentIndex + delta, 0), discoveryTabs.count - 1)
+        guard nextIndex != currentIndex else { return }
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+            selectedDiscoveryTabId = discoveryTabs[nextIndex].id
+        }
+    }
+
+    private func discoveryPlaces(for tabId: String) -> [NativePlace] {
+        guard tabId != "all" else { return appState.discoveryPlaces }
+        return appState.discoveryPlaces.filter { place in
+            nativeDiscoveryCategoryLabel(for: place).lowercased().replacingOccurrences(of: " ", with: "-") == tabId
+        }
+    }
+
+    private func showDiscoverySwipeToast(_ message: String) {
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+            discoverySwipeToastMessage = message
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            guard discoverySwipeToastMessage == message else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                discoverySwipeToastMessage = nil
+            }
+        }
+    }
+}
+
+private struct NativeDiscoveryTabPage: View {
+    @EnvironmentObject private var appState: NativeAppState
+    let tab: NativeDiscoveryCategoryTab
+    let tabs: [NativeDiscoveryCategoryTab]
+    let places: [NativePlace]
+    let contentWidth: CGFloat
+    @Binding var selectedTabId: String
+    let onLocationTap: () -> Void
+    let onSearchTap: () -> Void
+    let onNotificationsTap: () -> Void
+    let onPlaceDebugTap: (NativePlace) -> Void
+    let onTodayDebugTap: () -> Void
+    let onDiscoveryToast: (String) -> Void
+    let onSwitchTab: (Int) -> Void
+
+    private var balancedColumns: (left: [NativeDiscoveryColumnItem], right: [NativeDiscoveryColumnItem]) {
+        buildNativeBalancedDiscoveryColumns(places: places)
+    }
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            LazyVStack(alignment: .leading, spacing: 20) {
+                NativeDiscoveryTopHeader(
+                    locationLabel: appState.selectedLocation.label,
+                    onLocationTap: onLocationTap,
+                    onSearchTap: onSearchTap,
+                    onNotificationsTap: onNotificationsTap
+                )
+
+                if let discoveryErrorMessage = appState.discoveryErrorMessage {
+                    NativeInlineError(message: discoveryErrorMessage)
+                }
+
+                NativeDiscoveryCategoryTabs(
+                    tabs: tabs,
+                    selectedTabId: $selectedTabId
+                )
+                .padding(.bottom, 8)
+
+                if tab.id == "all" {
+                    Button {
+                        Task { await appState.loadTodayRecommendation() }
+                    } label: {
+                        HStack(spacing: 14) {
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("Today recommendation")
+                                    .font(.system(size: 19, weight: .black))
+                                    .foregroundStyle(.black)
+                                Text("Get one strong pick for today near you.")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(Color.black.opacity(0.72))
+                            }
+                            Spacer(minLength: 0)
+                            Group {
+                                if appState.isTodayRecommendationLoading {
+                                    ProgressView()
+                                        .tint(.black)
+                                } else {
+                                    Image(systemName: "die.face.5.fill")
+                                        .font(.system(size: 18, weight: .black))
+                                        .foregroundStyle(.black)
+                                }
+                            }
+                            .frame(width: 36, height: 36)
+                            .background(Color.black.opacity(0.08))
+                            .clipShape(Circle())
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            nativeAccent,
+                                            Color(red: 176 / 255, green: 1, blue: 72 / 255),
+                                        ],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                        )
+                        .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                    }
+                    .frame(maxWidth: .infinity)
+                    .buttonStyle(.plain)
+
+                    if let todayRecommendationErrorMessage = appState.todayRecommendationErrorMessage {
+                        NativeInlineError(message: todayRecommendationErrorMessage)
+                    }
+
+                    if let todayRecommendation = appState.todayRecommendation {
+                        NavigationLink {
+                            NativePlaceDetailScreen(initialPlace: todayRecommendation.place)
+                        } label: {
+                            NativeTodayRecommendationCard(
+                                recommendation: todayRecommendation,
+                                containerWidth: contentWidth,
+                                onDebugTap: nativeTodayRecommendationScoreDebugMode ? onTodayDebugTap : nil
+                            )
+                        }
+                        .frame(width: contentWidth, alignment: .leading)
+                        .overlay(
+                            Group {
+                                if nativeTodayRecommendationDebugMode {
+                                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                                        .stroke(Color.red, lineWidth: 2)
+                                        .overlay(alignment: .topTrailing) {
+                                            NativeLayoutDebugBadge(title: "LINK")
+                                                .padding(10)
+                                        }
+                                }
+                            }
+                        )
+                        .buttonStyle(.plain)
+                    }
+                }
+
+                if appState.isDiscoveryLoading && places.isEmpty {
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Cooking your picks")
+                                .font(.system(size: 11, weight: .black))
+                                .foregroundStyle(nativeAccent.opacity(0.9))
+                                .textCase(.uppercase)
+                            Text("We're cooking places for you in \(appState.selectedLocation.label).")
+                                .font(.system(size: 20, weight: .black))
+                                .foregroundStyle(.white)
+                            Text("Lining up the first places that fit your current taste.")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.58))
+                        }
+                    }
+                } else if places.isEmpty {
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(tab.id == "all" ? "No places yet for \(appState.selectedLocation.label)." : "No \(tab.label.lowercased()) spots yet in \(appState.selectedLocation.label).")
+                                .font(.system(size: 20, weight: .black))
+                                .foregroundStyle(.white)
+                            Text(tab.id == "all" ? "Pull to refresh to try again." : "Swipe or tap another tab to explore a different vibe.")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.58))
+                        }
+                    }
+                } else {
+                    NativeDiscoveryMasonryView(
+                        leftItems: balancedColumns.left,
+                        rightItems: balancedColumns.right,
+                        containerWidth: contentWidth,
+                        onDebugTap: onPlaceDebugTap,
+                        onDiscoveryToast: onDiscoveryToast
+                    )
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 24)
+                            .onEnded { value in
+                                let horizontal = value.translation.width
+                                let vertical = value.translation.height
+                                guard abs(horizontal) > abs(vertical), abs(horizontal) > 36 else { return }
+                                onSwitchTab(horizontal < 0 ? 1 : -1)
+                            }
+                    )
+
+                    if appState.isDiscoveryLoadingMore {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .tint(nativeAccent)
+                            Spacer()
+                        }
+                        .padding(.top, 8)
+                    }
+                }
+            }
+            .frame(width: contentWidth, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 18)
+        }
+        .refreshable {
+            await appState.refreshDiscovery()
+        }
+    }
+}
+
+private struct NativeDiscoveryTopHeader: View {
+    let locationLabel: String
+    let onLocationTap: () -> Void
+    let onSearchTap: () -> Void
+    let onNotificationsTap: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Your vibe picks in")
+                    .font(.system(size: 26, weight: .black))
+                    .tracking(-1.3)
+                    .foregroundStyle(.white)
+
+                Button(action: onLocationTap) {
+                    HStack(spacing: 6) {
+                        Text(locationLabel)
+                            .font(.system(size: 26, weight: .black))
+                            .tracking(-1.3)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 16, weight: .black))
+                    }
+                    .foregroundStyle(nativeAccent)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.white.opacity(0.06))
+                    .overlay(
+                        Capsule().stroke(nativeBorder, lineWidth: 1)
+                    )
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 8) {
+                Button(action: onSearchTap) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(nativeSurface)
+                        .overlay(
+                            Circle().stroke(nativeBorder, lineWidth: 1)
+                        )
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+
+                Button(action: onNotificationsTap) {
+                    Image(systemName: "bell")
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 44, height: 44)
+                        .background(nativeSurface)
+                        .overlay(
+                            Circle().stroke(nativeBorder, lineWidth: 1)
+                        )
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
         }
     }
 }
@@ -4705,6 +4893,64 @@ private struct NativeTodayRecommendationCard: View {
                 }
             }
         }
+    }
+}
+
+private struct NativeDiscoveryCategoryTabs: View {
+    let tabs: [NativeDiscoveryCategoryTab]
+    @Binding var selectedTabId: String
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 20) {
+                ForEach(tabs) { tab in
+                    Button {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
+                            selectedTabId = tab.id
+                        }
+                    } label: {
+                        VStack(spacing: 8) {
+                            Text(tab.label)
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundStyle(selectedTabId == tab.id ? .white : .white.opacity(0.62))
+
+                            Capsule(style: .continuous)
+                                .fill(selectedTabId == tab.id ? nativeAccent : Color.clear)
+                                .frame(height: 3)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 2)
+        }
+    }
+}
+
+private struct NativeDiscoveryToast: View {
+    let message: String
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(nativeAccent)
+
+            Text(message)
+                .font(.system(size: 14, weight: .black))
+                .foregroundStyle(.white)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background(
+            Capsule(style: .continuous)
+                .fill(Color(red: 19 / 255, green: 19 / 255, blue: 22 / 255).opacity(0.96))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(nativeBorder, lineWidth: 1)
+                )
+        )
     }
 }
 
@@ -6568,60 +6814,60 @@ private struct NativeDiscoveryPlaceCard: View {
             }
         }
         .overlay(alignment: .topLeading) {
-            Group {
-                if let compatibilityBadge {
-                    Text(compatibilityBadge.label)
-                        .font(.system(size: 11, weight: .black))
-                        .foregroundStyle(compatibilityBadge.foreground)
+            VStack(alignment: .leading, spacing: 8) {
+                Group {
+                    if let compatibilityBadge {
+                        Text(compatibilityBadge.label)
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundStyle(compatibilityBadge.foreground)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(compatibilityBadge.background)
+                            .clipShape(Capsule())
+                    } else {
+                        HStack(spacing: 6) {
+                            Image(systemName: moodBadge.icon)
+                                .font(.system(size: 12, weight: .bold))
+                            Text(moodBadge.label)
+                                .font(.system(size: 11, weight: .black))
+                        }
+                        .foregroundStyle(moodBadge.foreground)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 8)
-                        .background(compatibilityBadge.background)
+                        .background(moodBadge.background)
                         .clipShape(Capsule())
-                } else {
-                    HStack(spacing: 6) {
-                        Image(systemName: moodBadge.icon)
-                            .font(.system(size: 12, weight: .bold))
-                        Text(moodBadge.label)
-                            .font(.system(size: 11, weight: .black))
                     }
-                    .foregroundStyle(moodBadge.foreground)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(moodBadge.background)
-                    .clipShape(Capsule())
+                }
+
+                if isBookmarked || isVisited {
+                    HStack(spacing: 8) {
+                        if isBookmarked {
+                            Image(systemName: "bookmark.fill")
+                                .font(.system(size: 11, weight: .black))
+                                .foregroundStyle(nativeAccent)
+                        }
+                        if isVisited {
+                            Image(systemName: "mappin.and.ellipse")
+                                .font(.system(size: 11, weight: .black))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .padding(.leading, 4)
                 }
             }
             .padding(.top, 12)
             .padding(.leading, 12)
         }
         .overlay(alignment: .topTrailing) {
-            VStack(alignment: .trailing, spacing: 6) {
+            Group {
                 if appState.currentUser != nil, let score = place.similarityStat {
                     Text("\(score)%")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.68))
-                }
-                if isBookmarked {
-                    Text("Saved")
-                        .font(.system(size: 10, weight: .black))
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(.white)
-                        .clipShape(Capsule())
-                }
-                if isVisited {
-                    Text("Visited")
-                        .font(.system(size: 10, weight: .black))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(Color.black.opacity(0.72))
-                        .clipShape(Capsule())
+                        .padding(.top, 12)
+                        .padding(.trailing, 12)
                 }
             }
-            .padding(.top, 12)
-            .padding(.trailing, 12)
         }
         .overlay(alignment: .center) {
             if nativeDiscoveryLayoutDebugMode {
@@ -6674,7 +6920,7 @@ private struct NativeDiscoveryPlaceCard: View {
         }
         .overlay(alignment: .trailing) {
             if !nativeDiscoveryLayoutDebugMode && isHorizontalDrag && dragOffset > 48 {
-                Text("Save")
+                Text("Saved")
                     .font(.system(size: 11, weight: .black))
                     .foregroundStyle(.black)
                     .padding(.horizontal, 12)

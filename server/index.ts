@@ -57,7 +57,7 @@ const GOOGLE_CLIENT_IDS = process.env.GOOGLE_CLIENT_IDS;
 const NATIVE_IOS_GOOGLE_CLIENT_ID = '937557434052-dj8h3e2pr7s85dmv4o4b2nttfjh40ma4.apps.googleusercontent.com';
 const APPLE_CLIENT_ID = process.env.APPLE_CLIENT_ID;
 const APPLE_CLIENT_IDS = process.env.APPLE_CLIENT_IDS;
-const NATIVE_IOS_APPLE_CLIENT_ID = 'club.vibinn.app';
+const NATIVE_IOS_APPLE_CLIENT_ID = 'club.vibinn.ios';
 
 const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_ENDPOINT
   ? new S3Client({
