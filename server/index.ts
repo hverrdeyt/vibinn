@@ -4393,11 +4393,11 @@ async function getTodayRecommendationForUser(input: {
     .filter((candidate) => !recommendationContext.visitedPlaceIds.has(candidate.place.id))
     .filter((candidate) => (candidate.score ?? 0) >= 78)
     .sort((left, right) => {
-      if ((right.score ?? 0) !== (left.score ?? 0)) {
-        return (right.score ?? 0) - (left.score ?? 0);
-      }
       if (left.distanceMiles !== right.distanceMiles) {
         return left.distanceMiles - right.distanceMiles;
+      }
+      if ((right.score ?? 0) !== (left.score ?? 0)) {
+        return (right.score ?? 0) - (left.score ?? 0);
       }
       return (right.place.rating ?? 0) - (left.place.rating ?? 0);
     });

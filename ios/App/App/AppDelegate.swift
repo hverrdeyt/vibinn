@@ -3670,6 +3670,7 @@ private struct NativeDiscoverScreen: View {
                             .background(Color.black.opacity(0.08))
                             .clipShape(Circle())
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 18)
                         .padding(.vertical, 16)
                         .background(
@@ -3685,7 +3686,9 @@ private struct NativeDiscoverScreen: View {
                                     )
                                 )
                         )
+                        .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
                     }
+                    .frame(maxWidth: .infinity)
                     .buttonStyle(.plain)
 
                     if let todayRecommendationErrorMessage = appState.todayRecommendationErrorMessage {
