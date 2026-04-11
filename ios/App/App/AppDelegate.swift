@@ -13,6 +13,8 @@ private let useNativeIOSShell = true
 private let nativeDiscoveryLayoutDebugMode = false
 private let nativeTodayRecommendationDebugMode = false
 private let nativeDiscoveryScoreDebugMode = true
+private let nativeTodayRecommendationScoreDebugMode = true
+private let nativeTravelerScoreDebugMode = true
 private let nativeAccent = Color(red: 211 / 255, green: 1, blue: 72 / 255)
 private let nativeBorder = Color.white.opacity(0.08)
 private let nativeSurface = Color.white.opacity(0.06)
@@ -319,6 +321,99 @@ private struct NativeTodayRecommendationResponse: Decodable {
     let compatibilityScore: Int
     let distanceMiles: Double
     let todayReason: String
+}
+
+private struct NativeTodayRecommendationDebugResponse: Decodable {
+    let criteria: NativeTodayRecommendationDebugCriteria
+    let profileContext: NativeTodayRecommendationDebugProfileContext
+    let poolSummary: NativeTodayRecommendationDebugPoolSummary
+    let selectedCandidate: NativeTodayRecommendationDebugCandidate?
+    let topCandidates: [NativeTodayRecommendationDebugCandidate]
+}
+
+private struct NativeTodayRecommendationDebugCriteria: Decodable {
+    let minScore: Int
+    let preferredDistanceMiles: Double
+    let fallbackDistanceMiles: Double
+    let allowedClassifications: [String]
+    let excludesVisited: Bool
+}
+
+private struct NativeTodayRecommendationDebugProfileContext: Decodable {
+    let selectedInterests: [String]
+    let selectedVibe: String?
+    let bookmarkedCount: Int
+    let visitedCount: Int
+    let followedPlacesCount: Int
+    let socialKeywordCount: Int
+}
+
+private struct NativeTodayRecommendationDebugPoolSummary: Decodable {
+    let totalAreaCandidates: Int
+    let rankedCandidates: Int
+    let nearbyCandidates: Int
+    let fallbackCandidates: Int
+}
+
+private struct NativeTodayRecommendationDebugCandidate: Decodable, Identifiable {
+    let placeId: String
+    let placeName: String
+    let distanceMiles: Double
+    let score: Int?
+    let classification: String
+    let reason: String?
+    let isVisited: Bool?
+    let persistedSourceVersion: String?
+    let persistedUpdatedAt: String?
+    let bestTime: String?
+    let selectionBucket: String?
+    let todayReason: String?
+
+    var id: String { placeId }
+}
+
+private struct NativeTravelerScoreDebugResponse: Decodable {
+    let travelerId: String
+    let travelerUsername: String
+    let effectiveScore: Int
+    let persistedScore: Int?
+    let persistedReason: String?
+    let persistedUpdatedAt: String?
+    let descriptor: String?
+    let calculation: NativeTravelerScoreCalculation
+    let overlaps: NativeTravelerScoreOverlaps
+    let reasoning: NativeTravelerScoreReasoning
+    let viewerContext: NativeTravelerScoreViewerContext
+}
+
+private struct NativeTravelerScoreCalculation: Decodable {
+    let baseScore: Int
+    let overlapPlaces: Int
+    let overlapPlacesDelta: Int
+    let overlapKeywords: Int
+    let overlapKeywordsDelta: Int
+    let isFollowing: Bool
+    let followingDelta: Int
+    let interactionCount: Int
+    let interactionBoost: Int
+    let interactionDelta: Int
+    let computedScore: Int
+}
+
+private struct NativeTravelerScoreOverlaps: Decodable {
+    let sharedPlaceNames: [String]
+    let sharedTasteKeywords: [String]
+}
+
+private struct NativeTravelerScoreReasoning: Decodable {
+    let computedReason: String
+    let persistedReason: String?
+}
+
+private struct NativeTravelerScoreViewerContext: Decodable {
+    let selectedInterests: [String]
+    let selectedVibe: String?
+    let tasteKeywords: [String]
 }
 
 private struct NativePlaceScoreDebugResponse: Decodable {
@@ -774,6 +869,25 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             selectedVibe: selectedVibe,
             token: authToken
         )
+    }
+
+    func loadTodayRecommendationDebug() async throws -> NativeTodayRecommendationDebugResponse {
+        guard let token = authToken else {
+            throw NSError(domain: "NativeTodayRecommendationDebug", code: 1, userInfo: [NSLocalizedDescriptionKey: "Login required"])
+        }
+        guard let coordinate = currentCoordinate else {
+            throw NSError(domain: "NativeTodayRecommendationDebug", code: 2, userInfo: [NSLocalizedDescriptionKey: "Location required"])
+        }
+        return try await api.getTodayRecommendationDebug(
+            token: token,
+            location: selectedLocation.label,
+            latitude: coordinate.latitude,
+            longitude: coordinate.longitude
+        )
+    }
+
+    func loadTravelerScoreDebug(for travelerId: String) async throws -> NativeTravelerScoreDebugResponse {
+        try await api.getTravelerScoreDebug(id: travelerId, token: authToken)
     }
 
     func logout() {
@@ -1761,6 +1875,28 @@ private struct NativeAPIClient {
                 selectedInterests: selectedInterests,
                 selectedVibe: selectedVibe
             )
+        )
+    }
+
+    func getTodayRecommendationDebug(
+        token: String,
+        location: String,
+        latitude: Double,
+        longitude: Double
+    ) async throws -> NativeTodayRecommendationDebugResponse {
+        let encodedLocation = location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? location
+        return try await request(
+            path: "/api/debug/today-recommendation?location=\(encodedLocation)&type=city&latitude=\(latitude)&longitude=\(longitude)",
+            method: "GET",
+            token: token
+        )
+    }
+
+    func getTravelerScoreDebug(id: String, token: String?) async throws -> NativeTravelerScoreDebugResponse {
+        try await request(
+            path: "/api/debug/travelers/\(id)",
+            method: "GET",
+            token: token
         )
     }
 
@@ -3834,6 +3970,7 @@ private struct NativeDiscoverScreen: View {
     @State private var showSearchSheet = false
     @State private var showNotificationsSheet = false
     @State private var showDiscoveryScoreDebug = nativeDiscoveryScoreDebugMode
+    @State private var showTodayRecommendationDebug = false
     @State private var selectedDebugPlace: NativePlace?
 
     private var balancedColumns: (left: [NativeDiscoveryColumnItem], right: [NativeDiscoveryColumnItem]) {
@@ -3990,7 +4127,10 @@ private struct NativeDiscoverScreen: View {
                         } label: {
                             NativeTodayRecommendationCard(
                                 recommendation: todayRecommendation,
-                                containerWidth: contentWidth
+                                containerWidth: contentWidth,
+                                onDebugTap: nativeTodayRecommendationScoreDebugMode ? {
+                                    showTodayRecommendationDebug = true
+                                } : nil
                             )
                         }
                         .frame(width: contentWidth, alignment: .leading)
@@ -4174,6 +4314,12 @@ private struct NativeDiscoverScreen: View {
             }
             .navigationViewStyle(.stack)
         }
+        .sheet(isPresented: $showTodayRecommendationDebug) {
+            NavigationView {
+                NativeTodayRecommendationDebugSheet()
+            }
+            .navigationViewStyle(.stack)
+        }
         .refreshable {
             await appState.refreshDiscovery()
         }
@@ -4183,6 +4329,7 @@ private struct NativeDiscoverScreen: View {
 private struct NativeTodayRecommendationCard: View {
     let recommendation: NativeTodayRecommendationResponse
     let containerWidth: CGFloat
+    let onDebugTap: (() -> Void)?
     @State private var showConfetti = false
 
     private var contentWidth: CGFloat {
@@ -4287,6 +4434,20 @@ private struct NativeTodayRecommendationCard: View {
                 NativeConfettiBurstView()
                     .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
                     .transition(.opacity)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if let onDebugTap, nativeTodayRecommendationScoreDebugMode {
+                Button(action: onDebugTap) {
+                    Image(systemName: "ladybug.fill")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundStyle(.black)
+                        .frame(width: 34, height: 34)
+                        .background(nativeAccent)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(14)
             }
         }
         .overlay(
@@ -4534,6 +4695,283 @@ private struct NativePlaceScoreDebugSheet: View {
             payload = try await appState.loadPlaceScoreDebug(for: place.id)
         } catch {
             errorMessage = "Could not load score audit right now."
+        }
+        isLoading = false
+    }
+}
+
+private struct NativeTodayRecommendationDebugSheet: View {
+    @EnvironmentObject private var appState: NativeAppState
+    @State private var payload: NativeTodayRecommendationDebugResponse?
+    @State private var errorMessage: String?
+    @State private var isLoading = true
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Today recommendation")
+                        .font(.system(size: 24, weight: .black))
+                        .foregroundStyle(.white)
+                    Text("Selection debug")
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundStyle(nativeAccent)
+                        .textCase(.uppercase)
+                }
+
+                if isLoading {
+                    NativeSurfaceCard {
+                        HStack(spacing: 12) {
+                            ProgressView().tint(nativeAccent)
+                            Text("Loading today recommendation audit...")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
+                    }
+                } else if let errorMessage {
+                    NativeInlineError(message: errorMessage)
+                } else if let payload {
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Criteria")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            NativeDebugRow(label: "Min score", value: "\(payload.criteria.minScore)%")
+                            NativeDebugRow(label: "Preferred distance", value: String(format: "%.1f mi", payload.criteria.preferredDistanceMiles))
+                            NativeDebugRow(label: "Fallback distance", value: String(format: "%.1f mi", payload.criteria.fallbackDistanceMiles))
+                            NativeDebugRow(label: "Allowed classes", value: payload.criteria.allowedClassifications.joined(separator: ", "))
+                            NativeDebugRow(label: "Exclude visited", value: payload.criteria.excludesVisited ? "yes" : "no")
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Profile context")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            NativeDebugRow(label: "Selected interests", value: nativeDebugListLabel(payload.profileContext.selectedInterests))
+                            NativeDebugRow(label: "Selected vibe", value: payload.profileContext.selectedVibe ?? "none")
+                            NativeDebugRow(label: "Bookmarked count", value: "\(payload.profileContext.bookmarkedCount)")
+                            NativeDebugRow(label: "Visited count", value: "\(payload.profileContext.visitedCount)")
+                            NativeDebugRow(label: "Followed places", value: "\(payload.profileContext.followedPlacesCount)")
+                            NativeDebugRow(label: "Social keywords", value: "\(payload.profileContext.socialKeywordCount)")
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Pool summary")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            NativeDebugRow(label: "Area candidates", value: "\(payload.poolSummary.totalAreaCandidates)")
+                            NativeDebugRow(label: "Ranked candidates", value: "\(payload.poolSummary.rankedCandidates)")
+                            NativeDebugRow(label: "Nearby candidates", value: "\(payload.poolSummary.nearbyCandidates)")
+                            NativeDebugRow(label: "Fallback candidates", value: "\(payload.poolSummary.fallbackCandidates)")
+                        }
+                    }
+
+                    if let selected = payload.selectedCandidate {
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Selected candidate")
+                                    .font(.system(size: 12, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.42))
+                                    .textCase(.uppercase)
+                                Text(selected.placeName)
+                                    .font(.system(size: 20, weight: .black))
+                                    .foregroundStyle(.white)
+                                NativeDebugRow(label: "Classification", value: selected.classification)
+                                NativeDebugRow(label: "Score", value: selected.score.map { "\($0)%" } ?? "nil")
+                                NativeDebugRow(label: "Distance", value: String(format: "%.2f mi", selected.distanceMiles))
+                                NativeDebugRow(label: "Bucket", value: selected.selectionBucket ?? "nil")
+                                NativeDebugRow(label: "Base reason", value: selected.reason ?? "nil")
+                                NativeDebugRow(label: "Today reason", value: selected.todayReason ?? "nil")
+                                NativeDebugRow(label: "Best time", value: selected.bestTime ?? "nil")
+                                NativeDebugRow(label: "Persisted version", value: selected.persistedSourceVersion ?? "nil")
+                                NativeDebugRow(label: "Persisted updatedAt", value: selected.persistedUpdatedAt ?? "nil")
+                            }
+                        }
+                    }
+
+                    if !payload.topCandidates.isEmpty {
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Top candidates")
+                                    .font(.system(size: 12, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.42))
+                                    .textCase(.uppercase)
+                                ForEach(payload.topCandidates) { candidate in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        HStack(alignment: .top, spacing: 8) {
+                                            Text(candidate.placeName)
+                                                .font(.system(size: 14, weight: .bold))
+                                                .foregroundStyle(.white)
+                                            Spacer(minLength: 0)
+                                            Text(candidate.score.map { "\($0)%" } ?? "nil")
+                                                .font(.system(size: 13, weight: .black))
+                                                .foregroundStyle(nativeAccent)
+                                        }
+                                        Text("\(candidate.classification) • \(String(format: "%.2f mi", candidate.distanceMiles))")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.72))
+                                        if let todayReason = candidate.todayReason ?? candidate.reason {
+                                            Text(todayReason)
+                                                .font(.system(size: 12, weight: .medium))
+                                                .foregroundStyle(.white.opacity(0.56))
+                                                .fixedSize(horizontal: false, vertical: true)
+                                        }
+                                    }
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    if candidate.id != payload.topCandidates.last?.id {
+                                        Divider().background(Color.white.opacity(0.08))
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 28)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationTitle("Today debug")
+        .navigationBarTitleDisplayMode(.inline)
+        .task {
+            await loadDebug()
+        }
+    }
+
+    private func loadDebug() async {
+        isLoading = true
+        errorMessage = nil
+        do {
+            payload = try await appState.loadTodayRecommendationDebug()
+        } catch {
+            errorMessage = "Could not load today recommendation debug right now."
+        }
+        isLoading = false
+    }
+}
+
+private struct NativeTravelerScoreDebugSheet: View {
+    @EnvironmentObject private var appState: NativeAppState
+    let traveler: NativeTravelerSummary
+    @State private var payload: NativeTravelerScoreDebugResponse?
+    @State private var errorMessage: String?
+    @State private var isLoading = true
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(traveler.displayName ?? traveler.username)
+                        .font(.system(size: 24, weight: .black))
+                        .foregroundStyle(.white)
+                    Text("Traveler score debug")
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundStyle(nativeAccent)
+                        .textCase(.uppercase)
+                }
+
+                if isLoading {
+                    NativeSurfaceCard {
+                        HStack(spacing: 12) {
+                            ProgressView().tint(nativeAccent)
+                            Text("Loading traveler score audit...")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
+                    }
+                } else if let errorMessage {
+                    NativeInlineError(message: errorMessage)
+                } else if let payload {
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Effective score")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            Text("\(payload.effectiveScore)%")
+                                .font(.system(size: 28, weight: .black))
+                                .foregroundStyle(.white)
+                            if let persistedScore = payload.persistedScore {
+                                NativeDebugRow(label: "Persisted score", value: "\(persistedScore)%")
+                            }
+                            NativeDebugRow(label: "Descriptor", value: payload.descriptor ?? "nil")
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Calculation")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            NativeDebugRow(label: "Base score", value: "\(payload.calculation.baseScore)")
+                            NativeDebugRow(label: "Overlap places", value: "\(payload.calculation.overlapPlaces)")
+                            NativeDebugRow(label: "Overlap places delta", value: "+\(payload.calculation.overlapPlacesDelta)")
+                            NativeDebugRow(label: "Overlap keywords", value: "\(payload.calculation.overlapKeywords)")
+                            NativeDebugRow(label: "Overlap keywords delta", value: "+\(payload.calculation.overlapKeywordsDelta)")
+                            NativeDebugRow(label: "Following", value: payload.calculation.isFollowing ? "yes" : "no")
+                            NativeDebugRow(label: "Following delta", value: payload.calculation.followingDelta == 0 ? "0" : "+\(payload.calculation.followingDelta)")
+                            NativeDebugRow(label: "Interaction count", value: "\(payload.calculation.interactionCount)")
+                            NativeDebugRow(label: "Interaction boost", value: "\(payload.calculation.interactionBoost)")
+                            NativeDebugRow(label: "Interaction delta", value: payload.calculation.interactionDelta == 0 ? "0" : "+\(payload.calculation.interactionDelta)")
+                            NativeDebugRow(label: "Computed score", value: "\(payload.calculation.computedScore)%")
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Reasoning")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            NativeDebugRow(label: "Computed reason", value: payload.reasoning.computedReason)
+                            NativeDebugRow(label: "Persisted reason", value: payload.reasoning.persistedReason ?? "nil")
+                            NativeDebugRow(label: "Persisted updatedAt", value: payload.persistedUpdatedAt ?? "nil")
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Overlap with viewer")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                                .textCase(.uppercase)
+                            NativeDebugRow(label: "Shared places", value: nativeDebugListLabel(payload.overlaps.sharedPlaceNames))
+                            NativeDebugRow(label: "Shared taste keywords", value: nativeDebugListLabel(payload.overlaps.sharedTasteKeywords))
+                            NativeDebugRow(label: "Viewer interests", value: nativeDebugListLabel(payload.viewerContext.selectedInterests))
+                            NativeDebugRow(label: "Viewer vibe", value: payload.viewerContext.selectedVibe ?? "none")
+                            NativeDebugRow(label: "Viewer taste keywords", value: nativeDebugListLabel(payload.viewerContext.tasteKeywords))
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 16)
+            .padding(.bottom, 28)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationTitle("Traveler debug")
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: traveler.id) {
+            await loadDebug()
+        }
+    }
+
+    private func loadDebug() async {
+        isLoading = true
+        errorMessage = nil
+        do {
+            payload = try await appState.loadTravelerScoreDebug(for: traveler.id)
+        } catch {
+            errorMessage = "Could not load traveler score debug right now."
         }
         isLoading = false
     }
@@ -7171,6 +7609,7 @@ private struct NativeTravelerProfileScreen: View {
     @State private var isLoading = false
     @State private var isTogglingFollow = false
     @State private var showShareSheet = false
+    @State private var showTravelerScoreDebug = false
     @State private var errorMessage: String?
 
     init(initialTraveler: NativeTravelerSummary) {
@@ -7322,6 +7761,20 @@ private struct NativeTravelerProfileScreen: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                         }
                         .buttonStyle(.plain)
+
+                        if nativeTravelerScoreDebugMode {
+                            Button {
+                                showTravelerScoreDebug = true
+                            } label: {
+                                Image(systemName: "ladybug.fill")
+                                    .font(.system(size: 15, weight: .black))
+                                    .foregroundStyle(.black)
+                                    .frame(width: 44, height: 44)
+                                    .background(nativeAccent)
+                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
                 .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
@@ -7368,6 +7821,12 @@ private struct NativeTravelerProfileScreen: View {
         }
         .sheet(isPresented: $showShareSheet) {
             NativeShareSheet(items: ["https://vibinn.club/u/\(traveler.username)"])
+        }
+        .sheet(isPresented: $showTravelerScoreDebug) {
+            NavigationView {
+                NativeTravelerScoreDebugSheet(traveler: traveler)
+            }
+            .navigationViewStyle(.stack)
         }
     }
 

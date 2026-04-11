@@ -8,7 +8,7 @@ import type { Prisma } from '@prisma/client';
 import { MOCK_PLACES, SIMILAR_TRAVELERS } from '../src/mockData';
 import { prisma } from './prisma';
 import { generateAiCompatibilityAssessment, generatePlaceAiEnrichment } from './placeEnrichment';
-import { queueTravelerProfileDescriptorRefresh } from './travelerProfileEnrichment';
+import { generateTravelerProfileDescriptor, queueTravelerProfileDescriptorRefresh } from './travelerProfileEnrichment';
 import {
   createCollection,
   getBookmarks,
@@ -5806,6 +5806,388 @@ app.post('/api/debug/place-score', optionalAuth, async (req: AuthenticatedReques
         persistedUpdatedAt: persistedScore?.updatedAt ?? null,
         sourceVersion: persistedScore?.sourceVersion ?? null,
         persistedReason: persistedScore?.recommendationReason ?? null,
+      },
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/debug/today-recommendation', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const locationLabel = String(req.query.location || '').trim() || 'Boston';
+    const locationType = String(req.query.type || '').trim() || 'city';
+    const latitude = Number(req.query.latitude);
+    const longitude = Number(req.query.longitude);
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      res.status(400).json({ error: 'latitude and longitude are required' });
+      return;
+    }
+
+    const recommendationContext = await getUserRecommendationContext(req.authUserId!);
+    let candidatePlaces: Awaited<ReturnType<typeof getCachedDiscoveryPlacesByLocation>> = [];
+
+    try {
+      await ensureLocationCandidatePool(
+        locationLabel,
+        locationType,
+        recommendationContext.selectedInterests,
+        recommendationContext.selectedVibe,
+        false,
+      );
+      candidatePlaces = await getCachedDiscoveryPlacesByLocation(locationLabel, locationType);
+    } catch (error) {
+      console.error('Today recommendation debug area candidate load failed', error);
+      candidatePlaces = getFallbackDiscoveryPlaces(locationLabel);
+    }
+
+    if (candidatePlaces.length === 0) {
+      candidatePlaces = getFallbackDiscoveryPlaces(locationLabel);
+    }
+
+    const candidateIds = candidatePlaces.map((place) => place.id);
+    if (candidateIds.length === 0) {
+      res.json({
+        criteria: {
+          minScore: 78,
+          preferredDistanceMiles: 1,
+          fallbackDistanceMiles: 2,
+          allowedClassifications: ['Must visit', 'Fits you'],
+          excludesVisited: true,
+        },
+        poolSummary: {
+          totalAreaCandidates: 0,
+          rankedCandidates: 0,
+          nearbyCandidates: 0,
+          fallbackCandidates: 0,
+        },
+        topCandidates: [],
+      });
+      return;
+    }
+
+    await refreshUserPlaceScores(req.authUserId!, candidateIds);
+
+    const [persistedScores, candidates] = await Promise.all([
+      prisma.userPlaceScore.findMany({
+        where: {
+          userId: req.authUserId!,
+          placeId: { in: candidateIds },
+        },
+        select: {
+          placeId: true,
+          similarityPercentage: true,
+          matchScore: true,
+          recommendationReason: true,
+          sourceVersion: true,
+          updatedAt: true,
+        },
+      }),
+      prisma.place.findMany({
+        where: { id: { in: candidateIds } },
+        include: { aiEnrichment: true },
+      }),
+    ]);
+
+    const scoreMap = new Map(
+      persistedScores.map((item) => [
+        item.placeId,
+        {
+          score: item.similarityPercentage ?? item.matchScore ?? null,
+          reason: item.recommendationReason ?? null,
+          sourceVersion: item.sourceVersion ?? null,
+          updatedAt: item.updatedAt,
+        },
+      ]),
+    );
+
+    const origin = { latitude, longitude };
+    const candidatePlaceMap = new Map(candidatePlaces.map((place) => [place.id, place]));
+
+    const rankedCandidates = candidates
+      .map((place) => {
+        const mappedPlace = candidatePlaceMap.get(place.id);
+        if (!mappedPlace || mappedPlace.latitude == null || mappedPlace.longitude == null) return null;
+        if (isServiceLikePlace({
+          name: mappedPlace.name,
+          tags: mappedPlace.tags,
+          category: mappedPlace.category,
+          hook: mappedPlace.hook,
+          description: mappedPlace.description,
+          whyYoullLikeIt: mappedPlace.whyYoullLikeIt,
+        })) return null;
+
+        const distanceMiles = distanceBetweenMiles(origin, {
+          latitude: mappedPlace.latitude,
+          longitude: mappedPlace.longitude,
+        });
+        const persisted = scoreMap.get(place.id);
+        const score = persisted?.score ?? computeRecommendationScore(
+          {
+            id: mappedPlace.id,
+            tags: mappedPlace.tags,
+            category: mappedPlace.category,
+            similarityStat: mappedPlace.similarityStat,
+            rating: typeof mappedPlace.rating === 'number' ? mappedPlace.rating : null,
+            hook: mappedPlace.hook,
+            description: mappedPlace.description,
+            whyYoullLikeIt: mappedPlace.whyYoullLikeIt,
+          },
+          {
+            selectedInterests: recommendationContext.selectedInterests,
+            selectedVibe: recommendationContext.selectedVibe,
+            bookmarkKeywords: recommendationContext.bookmarkKeywords,
+            momentKeywords: recommendationContext.momentKeywords,
+            socialKeywords: recommendationContext.socialKeywords,
+            isBookmarked: recommendationContext.bookmarkedPlaceIds.has(mappedPlace.id),
+            isVisited: recommendationContext.visitedPlaceIds.has(mappedPlace.id),
+            isVibed: recommendationContext.vibedPlaceIds.has(mappedPlace.id),
+            isCommented: recommendationContext.commentedPlaceIds.has(mappedPlace.id),
+            isRecent: recommendationContext.recentPlaceIds.has(mappedPlace.id),
+            followedPlaceMatch: recommendationContext.followedPlaceIds.has(mappedPlace.id),
+            momentRating: recommendationContext.momentRatingsByPlaceId.get(mappedPlace.id) ?? null,
+          },
+        );
+
+        const classification = describeRecommendationClassification(score);
+        return {
+          placeId: place.id,
+          placeName: mappedPlace.name,
+          distanceMiles: Number(distanceMiles.toFixed(2)),
+          score,
+          classification,
+          reason: persisted?.reason ?? buildRecommendationReason({
+            place: {
+              category: mappedPlace.category,
+              tags: mappedPlace.tags,
+            },
+            selectedInterests: recommendationContext.selectedInterests,
+            selectedVibe: recommendationContext.selectedVibe,
+            tasteKeywords: recommendationContext.tasteKeywords,
+            followedTravelerVisits: 0,
+            followedPlaceMatch: recommendationContext.followedPlaceIds.has(mappedPlace.id),
+            socialOverlap: recommendationContext.socialKeywords.size > 0,
+            isBookmarked: recommendationContext.bookmarkedPlaceIds.has(mappedPlace.id),
+            isVisited: recommendationContext.visitedPlaceIds.has(mappedPlace.id),
+            isVibed: recommendationContext.vibedPlaceIds.has(mappedPlace.id),
+            isCommented: recommendationContext.commentedPlaceIds.has(mappedPlace.id),
+            isRecent: recommendationContext.recentPlaceIds.has(mappedPlace.id),
+            isDismissed: recommendationContext.manuallyDismissedPlaceIds.has(mappedPlace.id),
+          }),
+          isVisited: recommendationContext.visitedPlaceIds.has(mappedPlace.id),
+          persistedSourceVersion: persisted?.sourceVersion ?? null,
+          persistedUpdatedAt: persisted?.updatedAt ?? null,
+          bestTime: mappedPlace.bestTime ?? place.aiEnrichment?.bestTime ?? null,
+        };
+      })
+      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
+      .filter((candidate) => !candidate.isVisited)
+      .filter((candidate) => (candidate.score ?? 0) >= 78)
+      .sort((left, right) => {
+        if (left.distanceMiles !== right.distanceMiles) return left.distanceMiles - right.distanceMiles;
+        if ((right.score ?? 0) !== (left.score ?? 0)) return (right.score ?? 0) - (left.score ?? 0);
+        return 0;
+      });
+
+    const nearbyCandidates = rankedCandidates.filter((candidate) => candidate.distanceMiles <= 1);
+    const fallbackCandidates = rankedCandidates.filter((candidate) => candidate.distanceMiles <= 2);
+    const selected = nearbyCandidates[0] ?? fallbackCandidates[0] ?? null;
+
+    res.json({
+      criteria: {
+        minScore: 78,
+        preferredDistanceMiles: 1,
+        fallbackDistanceMiles: 2,
+        allowedClassifications: ['Must visit', 'Fits you'],
+        excludesVisited: true,
+      },
+      profileContext: {
+        selectedInterests: recommendationContext.selectedInterests,
+        selectedVibe: recommendationContext.selectedVibe,
+        bookmarkedCount: recommendationContext.bookmarkedPlaceIds.size,
+        visitedCount: recommendationContext.visitedPlaceIds.size,
+        followedPlacesCount: recommendationContext.followedPlaceIds.size,
+        socialKeywordCount: recommendationContext.socialKeywords.size,
+      },
+      poolSummary: {
+        totalAreaCandidates: candidatePlaces.length,
+        rankedCandidates: rankedCandidates.length,
+        nearbyCandidates: nearbyCandidates.length,
+        fallbackCandidates: fallbackCandidates.length,
+      },
+      selectedCandidate: selected
+        ? {
+            ...selected,
+            selectionBucket: selected.distanceMiles <= 1 ? 'preferred_under_1_mile' : 'fallback_under_2_miles',
+            todayReason: buildTodayRecommendationReason({
+              baseReason: selected.reason,
+              bestTime: selected.bestTime,
+              distanceMiles: selected.distanceMiles,
+              score: selected.score ?? 0,
+            }),
+          }
+        : null,
+      topCandidates: rankedCandidates.slice(0, 5),
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/debug/travelers/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const travelerId = req.params.id;
+    const userId = req.authUserId!;
+    if (!travelerId || travelerId === userId) {
+      res.status(400).json({ error: 'A different traveler id is required' });
+      return;
+    }
+
+    const context = await getUserRecommendationContext(userId);
+    const myPlaceIds = new Set([...context.bookmarkedPlaceIds, ...context.visitedPlaceIds]);
+
+    const [traveler, travelerMoments, persistedSimilarity, interactionCount] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: travelerId },
+        include: {
+          bookmarks: {
+            orderBy: { createdAt: 'desc' },
+            include: {
+              place: {
+                include: {
+                  aiEnrichment: true,
+                  media: { orderBy: { sortOrder: 'asc' } },
+                },
+              },
+            },
+            take: 6,
+          },
+          moments: {
+            where: { privacy: 'PUBLIC' },
+            orderBy: { visitedAt: 'desc' },
+            include: {
+              place: {
+                include: {
+                  aiEnrichment: true,
+                  media: { orderBy: { sortOrder: 'asc' } },
+                },
+              },
+            },
+            take: 12,
+          },
+        },
+      }),
+      prisma.moment.findMany({
+        where: {
+          userId: travelerId,
+          privacy: 'PUBLIC',
+        },
+        select: {
+          placeId: true,
+          place: {
+            select: {
+              name: true,
+              category: true,
+              aiEnrichment: { select: { vibeTags: true } },
+            },
+          },
+        },
+        take: 24,
+      }),
+      prisma.travelerSimilarity.findUnique({
+        where: {
+          userId_travelerId: {
+            userId,
+            travelerId,
+          },
+        },
+      }),
+      prisma.vibin.count({
+        where: {
+          senderUserId: userId,
+          receiverUserId: travelerId,
+        },
+      }),
+    ]);
+
+    if (!traveler) {
+      res.status(404).json({ error: 'Traveler not found' });
+      return;
+    }
+
+    const overlapPlaceMap = new Map<string, string>();
+    for (const moment of travelerMoments) {
+      if (myPlaceIds.has(moment.placeId)) {
+        overlapPlaceMap.set(moment.placeId, moment.place.name);
+      }
+    }
+
+    const travelerKeywords = collectTasteKeywords(travelerMoments.map((moment) => moment.place));
+    const sharedTasteKeywords = Array.from(context.tasteKeywords).filter((keyword) => travelerKeywords.has(keyword));
+    const isFollowing = context.followedUserIds.has(travelerId);
+    const overlapPlaces = overlapPlaceMap.size;
+    const overlapKeywords = sharedTasteKeywords.length;
+    const interactionBoost = interactionCount * 2;
+    const computedScore = computeTravelerMatchScore({
+      overlapPlaces,
+      overlapKeywords,
+      isFollowing,
+      interactionBoost,
+    });
+    const relevanceReason = buildTravelerReason({ overlapPlaces, overlapKeywords, isFollowing });
+    const descriptor = await generateTravelerProfileDescriptor({
+      userId: traveler.id,
+      displayName: traveler.displayName,
+      moments: traveler.moments.map((moment) => ({
+        caption: moment.caption,
+        vibeTags: moment.place.aiEnrichment?.vibeTags ?? [],
+        place: {
+          name: moment.place.name,
+          category: moment.place.category ?? undefined,
+          tags: (moment.place.aiEnrichment?.vibeTags ?? []).map((tag) => tag.trim()).filter(Boolean),
+        },
+      })),
+      bookmarkedPlaces: traveler.bookmarks.map((bookmark) => ({
+        name: bookmark.place.name,
+        category: bookmark.place.category ?? undefined,
+        tags: (bookmark.place.aiEnrichment?.vibeTags ?? []).map((tag) => tag.trim()).filter(Boolean),
+      })),
+    });
+
+    res.json({
+      travelerId,
+      travelerUsername: traveler.username,
+      effectiveScore: persistedSimilarity?.matchScore ?? computedScore,
+      persistedScore: persistedSimilarity?.matchScore ?? null,
+      persistedReason: persistedSimilarity?.relevanceReason ?? null,
+      persistedUpdatedAt: persistedSimilarity?.updatedAt ?? null,
+      descriptor,
+      calculation: {
+        baseScore: 46,
+        overlapPlaces,
+        overlapPlacesDelta: Math.min(overlapPlaces * 12, 28),
+        overlapKeywords,
+        overlapKeywordsDelta: Math.min(overlapKeywords * 5, 18),
+        isFollowing,
+        followingDelta: isFollowing ? 8 : 0,
+        interactionCount,
+        interactionBoost,
+        interactionDelta: Math.min(interactionBoost, 10),
+        computedScore,
+      },
+      overlaps: {
+        sharedPlaceNames: Array.from(overlapPlaceMap.values()),
+        sharedTasteKeywords,
+      },
+      reasoning: {
+        computedReason: relevanceReason,
+        persistedReason: persistedSimilarity?.relevanceReason ?? null,
+      },
+      viewerContext: {
+        selectedInterests: context.selectedInterests,
+        selectedVibe: context.selectedVibe,
+        tasteKeywords: Array.from(context.tasteKeywords).sort(),
       },
     });
   } catch (error) {
