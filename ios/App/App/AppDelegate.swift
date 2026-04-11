@@ -10,6 +10,7 @@ import SafariServices
 
 private let useNativeIOSShell = true
 private let nativeDiscoveryLayoutDebugMode = false
+private let nativeTodayRecommendationDebugMode = false
 private let nativeAccent = Color(red: 211 / 255, green: 1, blue: 72 / 255)
 private let nativeBorder = Color.white.opacity(0.08)
 private let nativeSurface = Color.white.opacity(0.06)
@@ -3699,8 +3700,24 @@ private struct NativeDiscoverScreen: View {
                         NavigationLink {
                             NativePlaceDetailScreen(initialPlace: todayRecommendation.place)
                         } label: {
-                            NativeTodayRecommendationCard(recommendation: todayRecommendation)
+                            NativeTodayRecommendationCard(
+                                recommendation: todayRecommendation,
+                                containerWidth: contentWidth
+                            )
                         }
+                        .frame(width: contentWidth, alignment: .leading)
+                        .overlay(
+                            Group {
+                                if nativeTodayRecommendationDebugMode {
+                                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                                        .stroke(Color.red, lineWidth: 2)
+                                        .overlay(alignment: .topTrailing) {
+                                            NativeLayoutDebugBadge(title: "LINK")
+                                                .padding(10)
+                                        }
+                                }
+                            }
+                        )
                         .buttonStyle(.plain)
                     }
 
@@ -3837,7 +3854,12 @@ private struct NativeDiscoverScreen: View {
 
 private struct NativeTodayRecommendationCard: View {
     let recommendation: NativeTodayRecommendationResponse
+    let containerWidth: CGFloat
     @State private var showConfetti = false
+
+    private var contentWidth: CGFloat {
+        max(containerWidth - 44, 0)
+    }
 
     private var badge: NativeCompatibilityBadgeMeta? {
         nativeCompatibilityBadge(for: recommendation.compatibilityScore)
@@ -3853,7 +3875,7 @@ private struct NativeTodayRecommendationCard: View {
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             NativeRemoteImage(url: recommendation.place.image ?? recommendation.place.images?.first)
-                .frame(maxWidth: .infinity)
+                .frame(width: containerWidth)
                 .frame(height: 300)
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
@@ -3886,6 +3908,7 @@ private struct NativeTodayRecommendationCard: View {
                             .clipShape(Capsule())
                     }
                 }
+                .frame(width: contentWidth, alignment: .leading)
 
                 Spacer()
 
@@ -3893,9 +3916,10 @@ private struct NativeTodayRecommendationCard: View {
                     Text(recommendation.place.name)
                         .font(.system(size: 30, weight: .black))
                         .foregroundStyle(.white)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .frame(width: contentWidth, alignment: .leading)
                         .multilineTextAlignment(.leading)
                         .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
 
                     HStack(spacing: 8) {
                         Text("\(recommendation.compatibilityScore)% match")
@@ -3904,17 +3928,23 @@ private struct NativeTodayRecommendationCard: View {
                     }
                     .font(.system(size: 13, weight: .bold))
                     .foregroundStyle(nativeAccent)
+                    .frame(width: contentWidth, alignment: .leading)
 
                     Text(recommendation.todayReason)
                         .font(.system(size: 14, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.82))
+                        .frame(width: contentWidth, alignment: .leading)
+                        .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                 }
+                .frame(width: contentWidth, alignment: .leading)
             }
             .padding(22)
+            .frame(width: containerWidth, alignment: .leading)
         }
-        .frame(maxWidth: .infinity)
+        .frame(width: containerWidth)
         .frame(height: 300)
+        .clipped()
         .contentShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
         .background(
             RoundedRectangle(cornerRadius: 30, style: .continuous)
@@ -3931,6 +3961,18 @@ private struct NativeTodayRecommendationCard: View {
                     .transition(.opacity)
             }
         }
+        .overlay(
+            Group {
+                if nativeTodayRecommendationDebugMode {
+                    RoundedRectangle(cornerRadius: 30, style: .continuous)
+                        .stroke(Color.blue, lineWidth: 2)
+                        .overlay(alignment: .topLeading) {
+                            NativeLayoutDebugBadge(title: "CARD")
+                                .padding(10)
+                        }
+                }
+            }
+        )
         .shadow(color: nativeAccent.opacity(0.22), radius: 20, y: 12)
         .onAppear {
             showConfetti = false
@@ -3943,6 +3985,24 @@ private struct NativeTodayRecommendationCard: View {
                 }
             }
         }
+    }
+}
+
+private struct NativeLayoutDebugBadge: View {
+    let title: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("TODAY DEBUG")
+                .font(.system(size: 11, weight: .black))
+            Text(title)
+                .font(.system(size: 11, weight: .bold))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(Color.black.opacity(0.82))
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 }
 

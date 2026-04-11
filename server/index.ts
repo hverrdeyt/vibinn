@@ -4273,18 +4273,30 @@ async function getTodayRecommendationForUser(input: {
   longitude: number;
 }) {
   const recommendationContext = await getUserRecommendationContext(input.userId);
-  const discovery = await getDiscoveryPlacesForUser({
-    userId: input.userId,
-    locationLabel: input.locationLabel,
-    locationType: input.locationType,
-    selectedInterests: recommendationContext.selectedInterests,
-    selectedVibe: recommendationContext.selectedVibe,
-    page: 1,
-    limit: 80,
-  });
+  let candidatePlaces: Awaited<ReturnType<typeof getCachedDiscoveryPlacesByLocation>> = [];
 
-  const discoveryPlaces = discovery.places;
-  const candidateIds = discoveryPlaces.map((place) => place.id);
+  try {
+    await ensureLocationCandidatePool(
+      input.locationLabel,
+      input.locationType,
+      recommendationContext.selectedInterests,
+      recommendationContext.selectedVibe,
+      false,
+    );
+    candidatePlaces = await getCachedDiscoveryPlacesByLocation(
+      input.locationLabel,
+      input.locationType,
+    );
+  } catch (error) {
+    console.error('Today recommendation area candidate load failed', error);
+    candidatePlaces = getFallbackDiscoveryPlaces(input.locationLabel);
+  }
+
+  if (candidatePlaces.length === 0) {
+    candidatePlaces = getFallbackDiscoveryPlaces(input.locationLabel);
+  }
+
+  const candidateIds = candidatePlaces.map((place) => place.id);
   if (candidateIds.length === 0) {
     return null;
   }
@@ -4327,27 +4339,36 @@ async function getTodayRecommendationForUser(input: {
     longitude: input.longitude,
   };
 
+  const candidatePlaceMap = new Map(candidatePlaces.map((place) => [place.id, place]));
+
   const rankedCandidates = candidates
     .map((place) => {
-      if (place.latitude == null || place.longitude == null) return null;
+      const mappedPlace = candidatePlaceMap.get(place.id);
+      if (!mappedPlace || mappedPlace.latitude == null || mappedPlace.longitude == null) return null;
+      if (isServiceLikePlace({
+        name: mappedPlace.name,
+        tags: mappedPlace.tags,
+        category: mappedPlace.category,
+        hook: mappedPlace.hook,
+        description: mappedPlace.description,
+        whyYoullLikeIt: mappedPlace.whyYoullLikeIt,
+      })) return null;
 
       const distanceMiles = distanceBetweenMiles(origin, {
-        latitude: place.latitude,
-        longitude: place.longitude,
+        latitude: mappedPlace.latitude,
+        longitude: mappedPlace.longitude,
       });
       const persisted = scoreMap.get(place.id);
       const score = persisted?.score ?? computeRecommendationScore(
         {
-          id: place.id,
-          tags: place.aiEnrichment?.vibeTags ?? [place.category].filter(Boolean),
-          category: place.category,
-          rating: place.rating,
-          hook: place.aiEnrichment?.hook ?? null,
-          description: place.aiEnrichment?.description ?? null,
-          whyYoullLikeIt: [
-            ...(place.aiEnrichment?.description ? [place.aiEnrichment.description] : []),
-            ...(place.aiEnrichment?.bestTime ? [`best at ${place.aiEnrichment.bestTime}`] : []),
-          ],
+          id: mappedPlace.id,
+          tags: mappedPlace.tags,
+          category: mappedPlace.category,
+          similarityStat: mappedPlace.similarityStat,
+          rating: typeof mappedPlace.rating === 'number' ? mappedPlace.rating : null,
+          hook: mappedPlace.hook,
+          description: mappedPlace.description,
+          whyYoullLikeIt: mappedPlace.whyYoullLikeIt,
         },
         {
           selectedInterests: recommendationContext.selectedInterests,
@@ -4355,13 +4376,13 @@ async function getTodayRecommendationForUser(input: {
           bookmarkKeywords: recommendationContext.bookmarkKeywords,
           momentKeywords: recommendationContext.momentKeywords,
           socialKeywords: recommendationContext.socialKeywords,
-          isBookmarked: recommendationContext.bookmarkedPlaceIds.has(place.id),
-          isVisited: recommendationContext.visitedPlaceIds.has(place.id),
-          isVibed: recommendationContext.vibedPlaceIds.has(place.id),
-          isCommented: recommendationContext.commentedPlaceIds.has(place.id),
-          isRecent: recommendationContext.recentPlaceIds.has(place.id),
-          followedPlaceMatch: recommendationContext.followedPlaceIds.has(place.id),
-          momentRating: recommendationContext.momentRatingsByPlaceId.get(place.id) ?? null,
+          isBookmarked: recommendationContext.bookmarkedPlaceIds.has(mappedPlace.id),
+          isVisited: recommendationContext.visitedPlaceIds.has(mappedPlace.id),
+          isVibed: recommendationContext.vibedPlaceIds.has(mappedPlace.id),
+          isCommented: recommendationContext.commentedPlaceIds.has(mappedPlace.id),
+          isRecent: recommendationContext.recentPlaceIds.has(mappedPlace.id),
+          followedPlaceMatch: recommendationContext.followedPlaceIds.has(mappedPlace.id),
+          momentRating: recommendationContext.momentRatingsByPlaceId.get(mappedPlace.id) ?? null,
         },
       );
 
@@ -4371,21 +4392,21 @@ async function getTodayRecommendationForUser(input: {
         score,
         reason: persisted?.reason ?? buildRecommendationReason({
           place: {
-            category: place.category,
-            tags: place.aiEnrichment?.vibeTags ?? [place.category].filter(Boolean),
+            category: mappedPlace.category,
+            tags: mappedPlace.tags,
           },
           selectedInterests: recommendationContext.selectedInterests,
           selectedVibe: recommendationContext.selectedVibe,
           tasteKeywords: recommendationContext.tasteKeywords,
           followedTravelerVisits: 0,
-          followedPlaceMatch: recommendationContext.followedPlaceIds.has(place.id),
+          followedPlaceMatch: recommendationContext.followedPlaceIds.has(mappedPlace.id),
           socialOverlap: recommendationContext.socialKeywords.size > 0,
-          isBookmarked: recommendationContext.bookmarkedPlaceIds.has(place.id),
-          isVisited: recommendationContext.visitedPlaceIds.has(place.id),
-          isVibed: recommendationContext.vibedPlaceIds.has(place.id),
-          isCommented: recommendationContext.commentedPlaceIds.has(place.id),
-          isRecent: recommendationContext.recentPlaceIds.has(place.id),
-          isDismissed: recommendationContext.manuallyDismissedPlaceIds.has(place.id),
+          isBookmarked: recommendationContext.bookmarkedPlaceIds.has(mappedPlace.id),
+          isVisited: recommendationContext.visitedPlaceIds.has(mappedPlace.id),
+          isVibed: recommendationContext.vibedPlaceIds.has(mappedPlace.id),
+          isCommented: recommendationContext.commentedPlaceIds.has(mappedPlace.id),
+          isRecent: recommendationContext.recentPlaceIds.has(mappedPlace.id),
+          isDismissed: recommendationContext.manuallyDismissedPlaceIds.has(mappedPlace.id),
         }),
       };
     })
