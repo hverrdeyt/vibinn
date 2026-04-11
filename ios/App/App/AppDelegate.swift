@@ -4230,7 +4230,7 @@ private struct NativeDiscoverScreen: View {
                                     ProgressView()
                                         .tint(.black)
                                 } else {
-                                    Image(systemName: "sparkles")
+                                    Image(systemName: "die.face.5.fill")
                                         .font(.system(size: 18, weight: .black))
                                         .foregroundStyle(.black)
                                 }

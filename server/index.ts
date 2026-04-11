@@ -2715,6 +2715,12 @@ function buildTodayRecommendationReason(input: {
   return `High-compatibility pick for today that is only ${distanceLabel}.`;
 }
 
+function pickRandomTodayRecommendationCandidate<T>(candidates: T[]): T | null {
+  if (candidates.length === 0) return null;
+  const index = Math.floor(Math.random() * candidates.length);
+  return candidates[index] ?? null;
+}
+
 async function getUserRecommendationContext(userId: string): Promise<RecommendationContext> {
   const cached = recommendationContextCache.get(userId);
   if (cached && cached.expiresAt > Date.now()) {
@@ -4676,25 +4682,26 @@ async function getTodayRecommendationForUser(input: {
 
   const nearbyCandidates = rankedCandidates.filter((candidate) => candidate.distanceMiles <= 1);
   const fallbackCandidates = rankedCandidates.filter((candidate) => candidate.distanceMiles <= 2);
-  const bestCandidate = nearbyCandidates[0] ?? fallbackCandidates[0];
-  if (!bestCandidate) {
+  const selectedCandidate = pickRandomTodayRecommendationCandidate(nearbyCandidates)
+    ?? pickRandomTodayRecommendationCandidate(fallbackCandidates);
+  if (!selectedCandidate) {
     return null;
   }
 
-  const place = await getPlaceDetailsByInternalId(bestCandidate.place.id, input.userId);
+  const place = await getPlaceDetailsByInternalId(selectedCandidate.place.id, input.userId);
   if (!place) {
     return null;
   }
 
   return {
     place,
-    distanceMiles: Number(bestCandidate.distanceMiles.toFixed(1)),
-    compatibilityScore: bestCandidate.score ?? place.similarityStat ?? 0,
+    distanceMiles: Number(selectedCandidate.distanceMiles.toFixed(1)),
+    compatibilityScore: selectedCandidate.score ?? place.similarityStat ?? 0,
     todayReason: buildTodayRecommendationReason({
-      baseReason: bestCandidate.reason ?? place.recommendationReason,
-      bestTime: place.bestTime ?? bestCandidate.place.aiEnrichment?.bestTime ?? null,
-      distanceMiles: bestCandidate.distanceMiles,
-      score: bestCandidate.score ?? place.similarityStat ?? 0,
+      baseReason: selectedCandidate.reason ?? place.recommendationReason,
+      bestTime: place.bestTime ?? selectedCandidate.place.aiEnrichment?.bestTime ?? null,
+      distanceMiles: selectedCandidate.distanceMiles,
+      score: selectedCandidate.score ?? place.similarityStat ?? 0,
     }),
   };
 }
@@ -5992,7 +5999,8 @@ app.get('/api/debug/today-recommendation', requireAuth, async (req: Authenticate
 
     const nearbyCandidates = rankedCandidates.filter((candidate) => candidate.distanceMiles <= 1);
     const fallbackCandidates = rankedCandidates.filter((candidate) => candidate.distanceMiles <= 2);
-    const selected = nearbyCandidates[0] ?? fallbackCandidates[0] ?? null;
+    const selected = pickRandomTodayRecommendationCandidate(nearbyCandidates)
+      ?? pickRandomTodayRecommendationCandidate(fallbackCandidates);
 
     res.json({
       criteria: {
