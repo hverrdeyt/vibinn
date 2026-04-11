@@ -1078,13 +1078,29 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func requestPushNotifications() async {
-        let granted = await withCheckedContinuation { continuation in
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
-                continuation.resume(returning: granted)
+        let settings = await withCheckedContinuation { continuation in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                continuation.resume(returning: settings)
             }
         }
-        guard granted else { return }
-        UIApplication.shared.registerForRemoteNotifications()
+
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            UIApplication.shared.registerForRemoteNotifications()
+        case .notDetermined:
+            let granted = await withCheckedContinuation { continuation in
+                UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
+                    continuation.resume(returning: granted)
+                }
+            }
+            guard granted else { return }
+            UIApplication.shared.registerForRemoteNotifications()
+        case .denied:
+            guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+            UIApplication.shared.open(url)
+        @unknown default:
+            return
+        }
     }
 
     func presentAuthGate(reason: String, postAuthAction: NativePostAuthAction? = nil) {
@@ -6575,6 +6591,43 @@ private struct NativeProfileScreen: View {
                                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                                     }
                                 }
+                            }
+                        }
+
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text("Push notifications")
+                                    .font(.system(size: 15, weight: .black))
+                                    .foregroundStyle(.white)
+
+                                Text("Enable notifications so we can test follows, vibin, and recommendation alerts on this device.")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.62))
+
+                                Button {
+                                    Task {
+                                        await appState.requestPushNotifications()
+                                    }
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "bell.badge")
+                                            .font(.system(size: 15, weight: .bold))
+                                        Text("Allow notifications")
+                                            .font(.system(size: 15, weight: .black))
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 14)
+                                    .frame(maxWidth: .infinity)
+                                    .background(nativeAccent.opacity(0.14))
+                                    .foregroundStyle(nativeAccent)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                            .stroke(nativeAccent.opacity(0.35), lineWidth: 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
 

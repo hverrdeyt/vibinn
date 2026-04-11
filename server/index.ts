@@ -4,6 +4,8 @@ import crypto from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { cert, getApps, initializeApp as initializeFirebaseAdminApp } from 'firebase-admin/app';
+import { getMessaging } from 'firebase-admin/messaging';
 import type { Prisma } from '@prisma/client';
 import { MOCK_PLACES, SIMILAR_TRAVELERS } from '../src/mockData';
 import { prisma } from './prisma';
@@ -58,6 +60,10 @@ const NATIVE_IOS_GOOGLE_CLIENT_ID = '937557434052-dj8h3e2pr7s85dmv4o4b2nttfjh40m
 const APPLE_CLIENT_ID = process.env.APPLE_CLIENT_ID;
 const APPLE_CLIENT_IDS = process.env.APPLE_CLIENT_IDS;
 const NATIVE_IOS_APPLE_CLIENT_ID = 'club.vibinn.ios';
+const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
+const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
+const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY;
+const FIREBASE_SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
 const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_ENDPOINT
   ? new S3Client({
@@ -334,6 +340,115 @@ async function buildUniqueUsername(base: string) {
   return candidate;
 }
 
+function getFirebaseMessagingClient() {
+  try {
+    if (getApps().length > 0) {
+      return getMessaging();
+    }
+
+    if (FIREBASE_SERVICE_ACCOUNT_JSON) {
+      const parsed = JSON.parse(FIREBASE_SERVICE_ACCOUNT_JSON) as {
+        project_id?: string;
+        client_email?: string;
+        private_key?: string;
+      };
+      if (parsed.project_id && parsed.client_email && parsed.private_key) {
+        initializeFirebaseAdminApp({
+          credential: cert({
+            projectId: parsed.project_id,
+            clientEmail: parsed.client_email,
+            privateKey: parsed.private_key.replace(/\\n/g, '\n'),
+          }),
+        });
+        return getMessaging();
+      }
+    }
+
+    if (FIREBASE_PROJECT_ID && FIREBASE_CLIENT_EMAIL && FIREBASE_PRIVATE_KEY) {
+      initializeFirebaseAdminApp({
+        credential: cert({
+          projectId: FIREBASE_PROJECT_ID,
+          clientEmail: FIREBASE_CLIENT_EMAIL,
+          privateKey: FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n'),
+        }),
+      });
+      return getMessaging();
+    }
+  } catch (error) {
+    console.error('Failed to initialize Firebase Admin SDK', error);
+  }
+
+  return null;
+}
+
+async function sendPushNotification(input: {
+  userId: string;
+  title: string;
+  body: string;
+  data?: Record<string, string>;
+}) {
+  const messaging = getFirebaseMessagingClient();
+  if (!messaging) {
+    return;
+  }
+
+  const [settings, devices] = await Promise.all([
+    prisma.userNotificationSettings.findUnique({
+      where: { userId: input.userId },
+      select: { pushEnabled: true },
+    }),
+    prisma.userDevice.findMany({
+      where: {
+        userId: input.userId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        fcmToken: true,
+      },
+    }),
+  ]);
+
+  if (settings?.pushEnabled === false || devices.length === 0) {
+    return;
+  }
+
+  const response = await messaging.sendEachForMulticast({
+    tokens: devices.map((device) => device.fcmToken),
+    notification: {
+      title: input.title,
+      body: input.body,
+    },
+    data: input.data,
+    apns: {
+      payload: {
+        aps: {
+          sound: 'default',
+        },
+      },
+    },
+  });
+
+  const invalidDeviceIds = response.responses.flatMap((result, index) => {
+    if (!result.error) {
+      return [];
+    }
+    const code = result.error.code;
+    if (code === 'messaging/registration-token-not-registered' || code === 'messaging/invalid-registration-token') {
+      return [devices[index]?.id].filter(Boolean) as string[];
+    }
+    console.error('Push send failed', code, result.error.message);
+    return [];
+  });
+
+  if (invalidDeviceIds.length > 0) {
+    await prisma.userDevice.updateMany({
+      where: { id: { in: invalidDeviceIds } },
+      data: { isActive: false },
+    });
+  }
+}
+
 async function createSession(userId: string) {
   const token = crypto.randomUUID();
   await prisma.session.create({
@@ -364,6 +479,17 @@ async function createNotification(input: {
       targetId: input.targetId ?? null,
       title: input.title,
       body: input.body,
+    },
+  });
+
+  void sendPushNotification({
+    userId: input.userId,
+    title: input.title,
+    body: input.body,
+    data: {
+      type: input.type,
+      ...(input.targetType ? { targetType: input.targetType } : {}),
+      ...(input.targetId ? { targetId: input.targetId } : {}),
     },
   });
 }
