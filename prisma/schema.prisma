@@ -94,6 +94,10 @@ model User {
   vibinsReceived    Vibin[]              @relation("VibinReceiver")
   followsGiven      Follow[]             @relation("FollowSource")
   followsReceived   Follow[]             @relation("FollowTarget")
+  blocksGiven       UserBlock[]          @relation("UserBlockSource")
+  blocksReceived    UserBlock[]          @relation("UserBlockTarget")
+  reportsGiven      UserReport[]         @relation("UserReportReporter")
+  reportsReceived   UserReport[]         @relation("UserReportTargetUser")
   travelerScores    TravelerSimilarity[] @relation("TravelerScoreOwner")
   travelerMatches   TravelerSimilarity[] @relation("TravelerScoreMatch")
   placeScores       UserPlaceScore[]
@@ -317,6 +321,33 @@ model Follow {
   targetUser User @relation("FollowTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
 
   @@unique([sourceUserId, targetUserId])
+}
+
+model UserBlock {
+  id            String   @id @default(cuid())
+  sourceUserId  String
+  targetUserId  String
+  reason        String?
+  createdAt     DateTime @default(now())
+
+  sourceUser User @relation("UserBlockSource", fields: [sourceUserId], references: [id], onDelete: Cascade)
+  targetUser User @relation("UserBlockTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceUserId, targetUserId])
+}
+
+model UserReport {
+  id           String     @id @default(cuid())
+  reporterId   String
+  targetType   TargetType
+  targetId     String
+  targetUserId String?
+  reason       String
+  details      String?
+  createdAt    DateTime   @default(now())
+
+  reporter   User  @relation("UserReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetUser User? @relation("UserReportTargetUser", fields: [targetUserId], references: [id], onDelete: SetNull)
 }
 
 model TravelerSimilarity {

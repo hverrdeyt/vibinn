@@ -578,6 +578,12 @@ private struct NativeTravelerFollowersResponse: Decodable {
     let travelers: [NativeFollowerListItem]
 }
 
+private struct NativeModerationActionResponse: Decodable {
+    let ok: Bool
+    let reportId: String?
+    let blockedUserId: String?
+}
+
 private struct NativeTravelerProfileResponse: Decodable {
     let traveler: NativeTravelerSummary
     let bookmarks: [NativePlace]
@@ -590,6 +596,17 @@ private struct NativePlaceLookupResponse: Decodable {
 
 private struct NativeMomentResponse: Decodable {
     let moment: NativeCreatedMoment
+}
+
+private enum NativeReportReason: String, CaseIterable, Identifiable {
+    case spam = "Spam or scam"
+    case harassment = "Harassment or bullying"
+    case hate = "Hate or abusive content"
+    case sexual = "Sexual or inappropriate content"
+    case violence = "Violence or dangerous behavior"
+    case other = "Other"
+
+    var id: String { rawValue }
 }
 
 private struct NativeCreatedMoment: Decodable {
@@ -731,6 +748,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var followedTravelers: [NativeTravelerSummary] = []
     @Published var suggestedTravelers: [NativeTravelerSummary] = []
     @Published var feedItems: [NativeFeedItem] = []
+    @Published var blockedTravelerIds: Set<String> = []
     @Published var showFloatingTabBar = true
     @Published var currentCoordinate: CLLocationCoordinate2D?
     @Published var profileErrorMessage: String?
@@ -1220,12 +1238,12 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
     }
 
-    func createCollection(label: String) async throws {
+    func createCollection(label: String, placeIds: [String]) async throws {
         guard let token = authToken else {
             throw URLError(.userAuthenticationRequired)
         }
 
-        let collection = try await api.createCollection(token: token, label: label, placeIds: [])
+        let collection = try await api.createCollection(token: token, label: label, placeIds: placeIds)
         collections.insert(collection, at: 0)
         rebuildOwnFeedItems()
     }
@@ -1414,6 +1432,10 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         return followedTravelers.contains(where: { $0.id == travelerId })
     }
 
+    func isBlocked(_ travelerId: String) -> Bool {
+        blockedTravelerIds.contains(travelerId)
+    }
+
     func toggleFollowQuietly(for traveler: NativeTravelerSummary) async throws -> NativeAPIClient.NativeToggleFollowResponse {
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to follow travelers.")
@@ -1453,6 +1475,40 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             await refreshFeed()
         }
         return result
+    }
+
+    func reportTarget(
+        targetType: String,
+        targetId: String,
+        targetUserId: String?,
+        reason: NativeReportReason
+    ) async throws {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to report content.")
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        _ = try await api.reportTarget(
+            token: token,
+            targetType: targetType,
+            targetId: targetId,
+            targetUserId: targetUserId,
+            reason: reason.rawValue
+        )
+    }
+
+    func blockTraveler(_ traveler: NativeTravelerSummary) async throws {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to block accounts.")
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        _ = try await api.blockUser(token: token, targetUserId: traveler.id)
+        blockedTravelerIds.insert(traveler.id)
+        followStateOverrides[traveler.id] = false
+        followedTravelers.removeAll { $0.id == traveler.id }
+        suggestedTravelers.removeAll { $0.id == traveler.id }
+        feedItems.removeAll { $0.traveler.id == traveler.id }
     }
 
     func fetchComments(targetType: String, targetId: String) async throws -> [NativeComment] {
@@ -2144,6 +2200,48 @@ private struct NativeAPIClient {
             method: "POST",
             token: token,
             body: NativeToggleFollowBody(targetUserId: targetUserId)
+        )
+    }
+
+    private struct NativeReportBody: Encodable {
+        let targetType: String
+        let targetId: String
+        let targetUserId: String?
+        let reason: String
+        let details: String?
+    }
+
+    func reportTarget(
+        token: String,
+        targetType: String,
+        targetId: String,
+        targetUserId: String?,
+        reason: String
+    ) async throws -> NativeModerationActionResponse {
+        try await request(
+            path: "/api/reports",
+            method: "POST",
+            token: token,
+            body: NativeReportBody(
+                targetType: targetType,
+                targetId: targetId,
+                targetUserId: targetUserId,
+                reason: reason,
+                details: nil
+            )
+        )
+    }
+
+    private struct NativeBlockBody: Encodable {
+        let reason: String?
+    }
+
+    func blockUser(token: String, targetUserId: String) async throws -> NativeModerationActionResponse {
+        try await request(
+            path: "/api/users/\(targetUserId)/block",
+            method: "POST",
+            token: token,
+            body: NativeBlockBody(reason: "Blocked from native iOS app")
         )
     }
 
@@ -5061,6 +5159,7 @@ private struct NativeSavedScreen: View {
     @State private var expandedSavedCities: Set<String> = []
     @State private var showCreateCollectionSheet = false
     @State private var newCollectionName = ""
+    @State private var selectedCollectionPlaceIds: Set<String> = []
     @State private var isCreatingCollection = false
 
     var body: some View {
@@ -5101,47 +5200,105 @@ private struct NativeSavedScreen: View {
                 ZStack {
                     Color.black.ignoresSafeArea()
 
-                    VStack(alignment: .leading, spacing: 18) {
-                        Text("New collection")
-                            .font(.system(size: 24, weight: .black))
-                            .foregroundStyle(.white)
+                    ScrollView(showsIndicators: false) {
+                        VStack(alignment: .leading, spacing: 18) {
+                            Text("New collection")
+                                .font(.system(size: 24, weight: .black))
+                                .foregroundStyle(.white)
 
-                        TextField("Collection name", text: $newCollectionName)
-                            .textInputAutocapitalization(.words)
-                            .autocorrectionDisabled()
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 14)
-                            .background(Color.white.opacity(0.06))
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            TextField("Collection name", text: $newCollectionName)
+                                .textInputAutocapitalization(.words)
+                                .autocorrectionDisabled()
+                                .font(.system(size: 17, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
-                        Button {
-                            Task {
-                                await createCollection()
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Choose from your saved places")
+                                    .font(.system(size: 12, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.42))
+                                    .textCase(.uppercase)
+                                Text("Pick the saved places you want to include in this collection.")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.6))
                             }
-                        } label: {
-                            HStack {
-                                Spacer()
-                                if isCreatingCollection {
-                                    ProgressView().tint(.black)
-                                } else {
-                                    Text("Create collection")
-                                        .font(.system(size: 15, weight: .black))
+
+                            if appState.savedPlaces.isEmpty {
+                                NativeSurfaceCard {
+                                    Text("Save a few places first, then you can group them into a collection.")
+                                        .font(.system(size: 14, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.64))
                                 }
-                                Spacer()
-                            }
-                            .padding(.vertical, 14)
-                            .background(nativeAccent)
-                            .foregroundStyle(.black)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isCreatingCollection || newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            } else {
+                                LazyVStack(spacing: 10) {
+                                    ForEach(appState.savedPlaces) { place in
+                                        Button {
+                                            toggleCollectionPlace(place.id)
+                                        } label: {
+                                            HStack(spacing: 12) {
+                                                NativeRemoteImage(url: place.image ?? place.images?.first)
+                                                    .frame(width: 56, height: 56)
+                                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
 
-                        Spacer()
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text(place.name)
+                                                        .font(.system(size: 15, weight: .bold))
+                                                        .foregroundStyle(.white)
+                                                        .multilineTextAlignment(.leading)
+                                                    Text(place.location)
+                                                        .font(.system(size: 12, weight: .medium))
+                                                        .foregroundStyle(.white.opacity(0.56))
+                                                        .lineLimit(2)
+                                                }
+
+                                                Spacer(minLength: 0)
+
+                                                Image(systemName: selectedCollectionPlaceIds.contains(place.id) ? "checkmark.circle.fill" : "circle")
+                                                    .font(.system(size: 22, weight: .bold))
+                                                    .foregroundStyle(selectedCollectionPlaceIds.contains(place.id) ? nativeAccent : .white.opacity(0.28))
+                                            }
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 12)
+                                            .background(Color.white.opacity(0.05))
+                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+
+                            Button {
+                                Task {
+                                    await createCollection()
+                                }
+                            } label: {
+                                HStack {
+                                    Spacer()
+                                    if isCreatingCollection {
+                                        ProgressView().tint(.black)
+                                    } else {
+                                        Text("Create collection")
+                                            .font(.system(size: 15, weight: .black))
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.vertical, 14)
+                                .background(nativeAccent)
+                                .foregroundStyle(.black)
+                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(
+                                isCreatingCollection ||
+                                newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ||
+                                selectedCollectionPlaceIds.isEmpty
+                            )
+                        }
+                        .padding(20)
                     }
-                    .padding(20)
                 }
                 .navigationTitle("Add collection")
                 .navigationBarTitleDisplayMode(.inline)
@@ -5238,6 +5395,8 @@ private struct NativeSavedScreen: View {
             VStack(alignment: .leading, spacing: 14) {
                 if appState.currentUser != nil {
                     Button {
+                        newCollectionName = ""
+                        selectedCollectionPlaceIds = []
                         showCreateCollectionSheet = true
                     } label: {
                         HStack(spacing: 10) {
@@ -5308,16 +5467,28 @@ private struct NativeSavedScreen: View {
         }
     }
 
+    private func toggleCollectionPlace(_ placeId: String) {
+        if selectedCollectionPlaceIds.contains(placeId) {
+            selectedCollectionPlaceIds.remove(placeId)
+        } else {
+            selectedCollectionPlaceIds.insert(placeId)
+        }
+    }
+
     private func createCollection() async {
         let trimmedName = newCollectionName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { return }
+        guard !trimmedName.isEmpty, !selectedCollectionPlaceIds.isEmpty else { return }
 
         isCreatingCollection = true
         defer { isCreatingCollection = false }
 
         do {
-            try await appState.createCollection(label: trimmedName)
+            try await appState.createCollection(
+                label: trimmedName,
+                placeIds: Array(selectedCollectionPlaceIds)
+            )
             newCollectionName = ""
+            selectedCollectionPlaceIds = []
             showCreateCollectionSheet = false
             activeSection = .collections
         } catch {
@@ -6394,6 +6565,11 @@ private struct NativeFeedCard: View {
     @State private var commentDraft = ""
     @State private var isCommentsLoading = false
     @State private var commentsErrorMessage: String?
+    @State private var showReportPostDialog = false
+    @State private var showReportAccountDialog = false
+    @State private var showBlockAccountDialog = false
+    @State private var moderationAlertMessage = ""
+    @State private var showModerationAlert = false
 
     var body: some View {
         NativeSurfaceCard {
@@ -6436,12 +6612,38 @@ private struct NativeFeedCard: View {
 
                     Spacer(minLength: 0)
 
-                    Image(systemName: activityIcon)
-                        .font(.system(size: 14, weight: .black))
-                        .foregroundStyle(.white.opacity(0.65))
-                        .frame(width: 28, height: 28)
-                        .background(Color.white.opacity(0.06))
-                        .clipShape(Circle())
+                    HStack(spacing: 8) {
+                        Image(systemName: activityIcon)
+                            .font(.system(size: 14, weight: .black))
+                            .foregroundStyle(.white.opacity(0.65))
+                            .frame(width: 28, height: 28)
+                            .background(Color.white.opacity(0.06))
+                            .clipShape(Circle())
+
+                        if appState.currentUser?.id != item.traveler.id {
+                            Menu {
+                                Button("Report post") {
+                                    showReportPostDialog = true
+                                }
+                                Button("Report account") {
+                                    showReportAccountDialog = true
+                                }
+                                Button(role: .destructive) {
+                                    showBlockAccountDialog = true
+                                } label: {
+                                    Text("Block account")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis")
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.72))
+                                    .frame(width: 28, height: 28)
+                                    .background(Color.white.opacity(0.06))
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
 
                 if let caption = item.caption, !caption.isEmpty {
@@ -6576,6 +6778,39 @@ private struct NativeFeedCard: View {
                 }
             }
         }
+        .confirmationDialog("Report post", isPresented: $showReportPostDialog, titleVisibility: .visible) {
+            ForEach(NativeReportReason.allCases) { reason in
+                Button(reason.rawValue) {
+                    Task { await reportPost(reason) }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Choose the reason that best describes this content.")
+        }
+        .confirmationDialog("Report account", isPresented: $showReportAccountDialog, titleVisibility: .visible) {
+            ForEach(NativeReportReason.allCases) { reason in
+                Button(reason.rawValue) {
+                    Task { await reportAccount(reason) }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Choose the reason that best describes this account.")
+        }
+        .confirmationDialog("Block account?", isPresented: $showBlockAccountDialog, titleVisibility: .visible) {
+            Button("Block \(item.traveler.username)", role: .destructive) {
+                Task { await blockAccount() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You will no longer see posts or profile activity from this account.")
+        }
+        .alert("Done", isPresented: $showModerationAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(moderationAlertMessage)
+        }
     }
 
     private var activityLabel: String {
@@ -6657,6 +6892,62 @@ private struct NativeFeedCard: View {
             commentsErrorMessage = nil
         } catch {
             commentsErrorMessage = "Could not post comment right now."
+        }
+    }
+
+    private var reportPostTargetType: String? {
+        if item.collection != nil { return "COLLECTION" }
+        guard let place = item.place else { return nil }
+        return place.momentId != nil ? "MOMENT" : "PLACE"
+    }
+
+    private var reportPostTargetId: String? {
+        if let collection = item.collection { return collection.id }
+        guard let place = item.place else { return nil }
+        return place.momentId ?? place.id
+    }
+
+    private func reportPost(_ reason: NativeReportReason) async {
+        guard let targetType = reportPostTargetType, let targetId = reportPostTargetId else { return }
+        do {
+            try await appState.reportTarget(
+                targetType: targetType,
+                targetId: targetId,
+                targetUserId: item.traveler.id,
+                reason: reason
+            )
+            moderationAlertMessage = "Thanks. This post has been reported."
+            showModerationAlert = true
+        } catch {
+            moderationAlertMessage = "Could not report this post right now."
+            showModerationAlert = true
+        }
+    }
+
+    private func reportAccount(_ reason: NativeReportReason) async {
+        do {
+            try await appState.reportTarget(
+                targetType: "PROFILE",
+                targetId: item.traveler.id,
+                targetUserId: item.traveler.id,
+                reason: reason
+            )
+            moderationAlertMessage = "Thanks. This account has been reported."
+            showModerationAlert = true
+        } catch {
+            moderationAlertMessage = "Could not report this account right now."
+            showModerationAlert = true
+        }
+    }
+
+    private func blockAccount() async {
+        do {
+            try await appState.blockTraveler(item.traveler)
+            moderationAlertMessage = "This account has been blocked."
+            showModerationAlert = true
+        } catch {
+            moderationAlertMessage = "Could not block this account right now."
+            showModerationAlert = true
         }
     }
 }
@@ -7600,6 +7891,7 @@ private struct NativeFollowerRow: View {
 }
 
 private struct NativeTravelerProfileScreen: View {
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var appState: NativeAppState
     @State private var traveler: NativeTravelerSummary
     @State private var bookmarks: [NativePlace] = []
@@ -7610,6 +7902,10 @@ private struct NativeTravelerProfileScreen: View {
     @State private var isTogglingFollow = false
     @State private var showShareSheet = false
     @State private var showTravelerScoreDebug = false
+    @State private var showReportAccountDialog = false
+    @State private var showBlockAccountDialog = false
+    @State private var moderationAlertMessage = ""
+    @State private var showModerationAlert = false
     @State private var errorMessage: String?
 
     init(initialTraveler: NativeTravelerSummary) {
@@ -7775,6 +8071,25 @@ private struct NativeTravelerProfileScreen: View {
                             }
                             .buttonStyle(.plain)
                         }
+
+                        Menu {
+                            Button("Report account") {
+                                showReportAccountDialog = true
+                            }
+                            Button(role: .destructive) {
+                                showBlockAccountDialog = true
+                            } label: {
+                                Text("Block account")
+                            }
+                        } label: {
+                            Image(systemName: "ellipsis")
+                                .font(.system(size: 15, weight: .black))
+                                .foregroundStyle(.white)
+                                .frame(width: 44, height: 44)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
@@ -7827,6 +8142,29 @@ private struct NativeTravelerProfileScreen: View {
                 NativeTravelerScoreDebugSheet(traveler: traveler)
             }
             .navigationViewStyle(.stack)
+        }
+        .confirmationDialog("Report account", isPresented: $showReportAccountDialog, titleVisibility: .visible) {
+            ForEach(NativeReportReason.allCases) { reason in
+                Button(reason.rawValue) {
+                    Task { await reportAccount(reason) }
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Choose the reason that best describes this account.")
+        }
+        .confirmationDialog("Block account?", isPresented: $showBlockAccountDialog, titleVisibility: .visible) {
+            Button("Block \(traveler.username)", role: .destructive) {
+                Task { await blockAccount() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("You will no longer see this account or their feed activity.")
+        }
+        .alert("Done", isPresented: $showModerationAlert) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(moderationAlertMessage)
         }
     }
 
@@ -8058,6 +8396,32 @@ private struct NativeTravelerProfileScreen: View {
             )
         } catch {
             errorMessage = "Could not update follow right now."
+        }
+    }
+
+    private func reportAccount(_ reason: NativeReportReason) async {
+        do {
+            try await appState.reportTarget(
+                targetType: "PROFILE",
+                targetId: traveler.id,
+                targetUserId: traveler.id,
+                reason: reason
+            )
+            moderationAlertMessage = "Thanks. This account has been reported."
+            showModerationAlert = true
+        } catch {
+            moderationAlertMessage = "Could not report this account right now."
+            showModerationAlert = true
+        }
+    }
+
+    private func blockAccount() async {
+        do {
+            try await appState.blockTraveler(traveler)
+            dismiss()
+        } catch {
+            moderationAlertMessage = "Could not block this account right now."
+            showModerationAlert = true
         }
     }
 }

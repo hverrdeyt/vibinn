@@ -6655,6 +6655,26 @@ app.post('/api/follows/toggle', requireAuth, async (req: AuthenticatedRequest, r
       return;
     }
 
+    const blockingRelationship = await prisma.userBlock.findFirst({
+      where: {
+        OR: [
+          {
+            sourceUserId: req.authUserId!,
+            targetUserId,
+          },
+          {
+            sourceUserId: targetUserId,
+            targetUserId: req.authUserId!,
+          },
+        ],
+      },
+    });
+
+    if (blockingRelationship) {
+      res.status(400).json({ error: 'Cannot follow a blocked account' });
+      return;
+    }
+
     const existing = await prisma.follow.findFirst({
       where: {
         sourceUserId: req.authUserId!,
@@ -6728,6 +6748,113 @@ app.post('/api/follows/toggle', requireAuth, async (req: AuthenticatedRequest, r
     });
 
     res.json({ active: true, followersCount });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/reports', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const {
+      targetType,
+      targetId,
+      targetUserId,
+      reason,
+      details,
+    } = req.body as {
+      targetType?: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
+      targetId?: string;
+      targetUserId?: string;
+      reason?: string;
+      details?: string;
+    };
+
+    const allowedTargetTypes = new Set(['PROFILE', 'MOMENT', 'PLACE', 'PLACE_VISIT', 'COLLECTION']);
+    if (!targetType || !allowedTargetTypes.has(targetType) || !targetId || !reason?.trim()) {
+      res.status(400).json({ error: 'targetType, targetId, and reason are required' });
+      return;
+    }
+
+    const report = await prisma.userReport.create({
+      data: {
+        reporterId: req.authUserId!,
+        targetType,
+        targetId,
+        targetUserId: targetUserId ?? null,
+        reason: reason.trim(),
+        details: details?.trim() || null,
+      },
+    });
+
+    res.status(201).json({ ok: true, reportId: report.id });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/users/:id/block', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const targetUserId = req.params.id;
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : null;
+
+    if (!targetUserId || targetUserId === req.authUserId) {
+      res.status(400).json({ error: 'A different target user is required' });
+      return;
+    }
+
+    await prisma.userBlock.upsert({
+      where: {
+        sourceUserId_targetUserId: {
+          sourceUserId: req.authUserId!,
+          targetUserId,
+        },
+      },
+      update: { reason },
+      create: {
+        sourceUserId: req.authUserId!,
+        targetUserId,
+        reason,
+      },
+    });
+
+    await prisma.follow.deleteMany({
+      where: {
+        OR: [
+          {
+            sourceUserId: req.authUserId!,
+            targetUserId,
+          },
+          {
+            sourceUserId: targetUserId,
+            targetUserId: req.authUserId!,
+          },
+        ],
+      },
+    });
+
+    res.json({ ok: true, blockedUserId: targetUserId });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.delete('/api/users/:id/block', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const targetUserId = req.params.id;
+
+    if (!targetUserId || targetUserId === req.authUserId) {
+      res.status(400).json({ error: 'A different target user is required' });
+      return;
+    }
+
+    await prisma.userBlock.deleteMany({
+      where: {
+        sourceUserId: req.authUserId!,
+        targetUserId,
+      },
+    });
+
+    res.json({ ok: true, blockedUserId: targetUserId });
   } catch (error) {
     handleError(res, error);
   }

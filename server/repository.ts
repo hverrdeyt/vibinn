@@ -140,6 +140,31 @@ function getPlaceScoreOverride(
   return overrideMap.get(placeId) ?? { similarityStat: null, recommendationReason: null };
 }
 
+async function getBlockedUserIdsSet(userId?: string) {
+  if (!userId) return new Set<string>();
+
+  const blocks = await prisma.userBlock.findMany({
+    where: {
+      OR: [
+        { sourceUserId: userId },
+        { targetUserId: userId },
+      ],
+    },
+    select: {
+      sourceUserId: true,
+      targetUserId: true,
+    },
+  });
+
+  const blocked = new Set<string>();
+  for (const block of blocks) {
+    if (block.sourceUserId === userId) blocked.add(block.targetUserId);
+    if (block.targetUserId === userId) blocked.add(block.sourceUserId);
+  }
+
+  return blocked;
+}
+
 type ClientPlace = ReturnType<typeof mapPlaceForClient> & {
   momentId?: string;
   ownerUserId?: string;
@@ -663,6 +688,7 @@ export async function updateProfile(userId: string | undefined, payload: { displ
 
 export async function getTravelerDiscovery(userId?: string) {
   const currentUser = await getCurrentUser(prisma, userId);
+  const blockedUserIds = await getBlockedUserIdsSet(currentUser.id);
 
   const [followedUsers, similarUsers, profileVibins] = await Promise.all([
     prisma.follow.findMany({
@@ -876,10 +902,13 @@ export async function getTravelerDiscovery(userId?: string) {
         orderBy: { createdAt: 'desc' },
         take: 24,
       });
-  const fallbackTravelerIds = new Set(fallbackTravelers.map((traveler) => traveler.id));
+  const visibleFollowedUsers = followedUsers.filter((item) => !blockedUserIds.has(item.targetUser.id));
+  const visibleSimilarUsers = similarUsers.filter((item) => !blockedUserIds.has(item.traveler.id));
+  const visibleFallbackTravelers = fallbackTravelers.filter((traveler) => !blockedUserIds.has(traveler.id));
+  const fallbackTravelerIds = new Set(visibleFallbackTravelers.map((traveler) => traveler.id));
 
   const followedTravelerDescriptors = await Promise.all(
-    followedUsers.map(async (item) => {
+    visibleFollowedUsers.map(async (item) => {
       const descriptor = await generateTravelerProfileDescriptor({
         userId: item.targetUser.id,
         displayName: item.targetUser.displayName,
@@ -892,8 +921,8 @@ export async function getTravelerDiscovery(userId?: string) {
 
   const similarTravelerDescriptors = await Promise.all(
     [
-      ...similarUsers.map((item) => item.traveler),
-      ...fallbackTravelers.filter((traveler) => !similarUsers.some((item) => item.traveler.id === traveler.id)),
+      ...visibleSimilarUsers.map((item) => item.traveler),
+      ...visibleFallbackTravelers.filter((traveler) => !visibleSimilarUsers.some((item) => item.traveler.id === traveler.id)),
     ].map(async (traveler) => {
       const descriptor = await generateTravelerProfileDescriptor({
         userId: traveler.id,
@@ -908,6 +937,7 @@ export async function getTravelerDiscovery(userId?: string) {
   const followedDescriptorMap = new Map(followedTravelerDescriptors);
   const similarDescriptorMap = new Map(similarTravelerDescriptors);
   const feedSavedDrops = followedUsers
+    .filter((item) => !blockedUserIds.has(item.targetUser.id))
     .flatMap((item) =>
       item.targetUser.bookmarks.map((bookmark) => ({
         id: `saved-${item.targetUser.id}-${bookmark.id}`,
@@ -924,7 +954,7 @@ export async function getTravelerDiscovery(userId?: string) {
     .map(({ createdAtMs: _createdAtMs, ...entry }) => entry);
 
   return {
-    followedTravelers: followedUsers.map((item) =>
+    followedTravelers: visibleFollowedUsers.map((item) =>
       trimTravelerForFeed(buildProfileUserWithMatch(
         item.targetUser,
         item.targetUser.moments.map(mapMomentForClient),
@@ -951,17 +981,17 @@ export async function getTravelerDiscovery(userId?: string) {
       )),
     ),
     similarTravelers: [
-      ...similarUsers.map((item) => ({
+      ...visibleSimilarUsers.map((item) => ({
         user: item.traveler,
         matchScore: item.matchScore,
         relevanceReason: item.relevanceReason,
       })),
-      ...fallbackTravelers
+      ...visibleFallbackTravelers
         .filter((traveler) =>
-          !followedUsers.some((follow) => follow.targetUser.id === traveler.id)
-          && !similarUsers.some((item) => item.traveler.id === traveler.id),
+          !visibleFollowedUsers.some((follow) => follow.targetUser.id === traveler.id)
+          && !visibleSimilarUsers.some((item) => item.traveler.id === traveler.id),
         )
-        .slice(0, Math.max(0, 12 - similarUsers.length))
+        .slice(0, Math.max(0, 12 - visibleSimilarUsers.length))
         .map((traveler, index) => ({
           user: traveler,
           matchScore: Math.max(58, 76 - index),
@@ -1001,6 +1031,7 @@ export async function getTravelerDiscovery(userId?: string) {
 
 export async function getFollowingFeed(userId?: string) {
   const currentUser = await getCurrentUser(prisma, userId);
+  const blockedUserIds = await getBlockedUserIdsSet(currentUser.id);
   const [followedUsers, similarUsers, fallbackTravelers, profileVibins] = await Promise.all([
     prisma.follow.findMany({
       where: { sourceUserId: currentUser.id },
@@ -1201,17 +1232,20 @@ export async function getFollowingFeed(userId?: string) {
     }),
   ]);
   const vibinMap = new Map(profileVibins.map((item) => [item.targetId, item._count._all]));
-  const followedUserIds = new Set(followedUsers.map((item) => item.targetUser.id));
+  const visibleFollowedUsers = followedUsers.filter((item) => !blockedUserIds.has(item.targetUser.id));
+  const visibleSimilarUsers = similarUsers.filter((item) => !blockedUserIds.has(item.traveler.id));
+  const visibleFallbackTravelers = fallbackTravelers.filter((traveler) => !blockedUserIds.has(traveler.id));
+  const followedUserIds = new Set(visibleFollowedUsers.map((item) => item.targetUser.id));
 
   const followedPlaceIds = Array.from(new Set([
-    ...followedUsers.flatMap((item) => item.targetUser.bookmarks.map((bookmark) => bookmark.placeId)),
-    ...followedUsers.flatMap((item) => item.targetUser.moments.map((moment) => moment.placeId)),
-    ...followedUsers.flatMap((item) => item.targetUser.collections.flatMap((collection) => collection.places.map((entry) => entry.placeId))),
+    ...visibleFollowedUsers.flatMap((item) => item.targetUser.bookmarks.map((bookmark) => bookmark.placeId)),
+    ...visibleFollowedUsers.flatMap((item) => item.targetUser.moments.map((moment) => moment.placeId)),
+    ...visibleFollowedUsers.flatMap((item) => item.targetUser.collections.flatMap((collection) => collection.places.map((entry) => entry.placeId))),
   ]));
   const followedPlaceOverrideMap = await getUserPlaceScoreOverrideMap(currentUser.id, followedPlaceIds);
 
   const followedTravelerDescriptors = await Promise.all(
-    followedUsers.map(async (item) => {
+    visibleFollowedUsers.map(async (item) => {
       const descriptor = await generateTravelerProfileDescriptor({
         userId: item.targetUser.id,
         displayName: item.targetUser.displayName,
@@ -1224,10 +1258,10 @@ export async function getFollowingFeed(userId?: string) {
   const followedDescriptorMap = new Map(followedTravelerDescriptors);
   const suggestedTravelerDescriptors = await Promise.all(
     [
-      ...similarUsers.map((item) => item.traveler),
-      ...fallbackTravelers.filter((traveler) =>
+      ...visibleSimilarUsers.map((item) => item.traveler),
+      ...visibleFallbackTravelers.filter((traveler) =>
         !followedUserIds.has(traveler.id)
-        && !similarUsers.some((item) => item.traveler.id === traveler.id),
+        && !visibleSimilarUsers.some((item) => item.traveler.id === traveler.id),
       ),
     ].map(async (traveler) => {
       const descriptor = await generateTravelerProfileDescriptor({
@@ -1241,7 +1275,7 @@ export async function getFollowingFeed(userId?: string) {
   );
   const suggestedDescriptorMap = new Map(suggestedTravelerDescriptors);
 
-  const followedTravelers = followedUsers.map((item) =>
+  const followedTravelers = visibleFollowedUsers.map((item) =>
     trimTravelerForFeed(buildProfileUserWithMatch(
       item.targetUser,
       item.targetUser.moments.map((moment) => {
@@ -1283,7 +1317,7 @@ export async function getFollowingFeed(userId?: string) {
     )),
   );
 
-  const feedSavedDrops = followedUsers
+  const feedSavedDrops = visibleFollowedUsers
     .flatMap((item) =>
       item.targetUser.bookmarks.map((bookmark) => ({
         id: `saved-${item.targetUser.id}-${bookmark.id}`,
@@ -1304,7 +1338,7 @@ export async function getFollowingFeed(userId?: string) {
 
   const travelerMap = new Map(followedTravelers.map((traveler) => [traveler.id, traveler]));
   const fullTravelerFeedMap = new Map(
-    followedUsers.map((item) => [
+    visibleFollowedUsers.map((item) => [
       item.targetUser.id,
       buildProfileUserWithMatch(
         item.targetUser,
@@ -1395,7 +1429,7 @@ export async function getFollowingFeed(userId?: string) {
     });
 
   const suggestedTravelers = [
-    ...similarUsers
+    ...visibleSimilarUsers
       .filter((item) => !followedUserIds.has(item.traveler.id))
       .map((item) =>
         trimTravelerForFeed(buildProfileUserWithMatch(
@@ -1424,10 +1458,10 @@ export async function getFollowingFeed(userId?: string) {
           },
         )),
       ),
-    ...fallbackTravelers
+    ...visibleFallbackTravelers
       .filter((traveler) =>
         !followedUserIds.has(traveler.id)
-        && !similarUsers.some((item) => item.traveler.id === traveler.id),
+        && !visibleSimilarUsers.some((item) => item.traveler.id === traveler.id),
       )
       .slice(0, 12)
       .map((traveler, index) =>
@@ -1680,6 +1714,13 @@ export async function getPublicTravelerSuggestions(limit = 12) {
 }
 
 export async function getTravelerProfile(travelerId: string, viewerUserId?: string) {
+  if (viewerUserId) {
+    const blockedUserIds = await getBlockedUserIdsSet(viewerUserId);
+    if (blockedUserIds.has(travelerId)) {
+      return null;
+    }
+  }
+
   const traveler = await prisma.user.findUnique({
     where: { id: travelerId },
     include: {
@@ -1796,6 +1837,7 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
 }
 
 export async function getTravelerFollowers(travelerId: string, viewerUserId?: string) {
+  const blockedUserIds = viewerUserId ? await getBlockedUserIdsSet(viewerUserId) : new Set<string>();
   const followers = await prisma.follow.findMany({
     where: {
       targetUserId: travelerId,
@@ -1812,7 +1854,9 @@ export async function getTravelerFollowers(travelerId: string, viewerUserId?: st
   });
 
   return Promise.all(
-    followers.map(async (follow) => {
+    followers
+      .filter((follow) => !blockedUserIds.has(follow.sourceUser.id))
+      .map(async (follow) => {
       const user = follow.sourceUser;
       const similarity = viewerUserId
         ? await prisma.travelerSimilarity.findFirst({
