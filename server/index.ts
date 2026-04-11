@@ -5132,6 +5132,77 @@ app.post('/api/notifications/read-all', requireAuth, async (req: AuthenticatedRe
   }
 });
 
+app.post('/api/me/push-devices', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const {
+      fcmToken,
+      platform,
+      appVersion,
+    } = req.body as {
+      fcmToken?: string;
+      platform?: string;
+      appVersion?: string | null;
+    };
+
+    const normalizedToken = fcmToken?.trim();
+    const normalizedPlatform = platform?.trim().toLowerCase() || 'ios';
+
+    if (!normalizedToken) {
+      res.status(400).json({ error: 'fcmToken is required' });
+      return;
+    }
+
+    await prisma.userDevice.upsert({
+      where: { fcmToken: normalizedToken },
+      update: {
+        userId: req.authUserId!,
+        platform: normalizedPlatform,
+        appVersion: appVersion?.trim() || null,
+        isActive: true,
+        lastSeenAt: new Date(),
+      },
+      create: {
+        userId: req.authUserId!,
+        fcmToken: normalizedToken,
+        platform: normalizedPlatform,
+        appVersion: appVersion?.trim() || null,
+        isActive: true,
+      },
+    });
+
+    res.status(201).json({ ok: true });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.delete('/api/me/push-devices', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { fcmToken } = req.body as { fcmToken?: string };
+    const normalizedToken = fcmToken?.trim();
+
+    if (!normalizedToken) {
+      res.status(400).json({ error: 'fcmToken is required' });
+      return;
+    }
+
+    await prisma.userDevice.updateMany({
+      where: {
+        userId: req.authUserId!,
+        fcmToken: normalizedToken,
+      },
+      data: {
+        isActive: false,
+        lastSeenAt: new Date(),
+      },
+    });
+
+    res.json({ ok: true });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.get('/api/settings/account', requireAuth, (req: AuthenticatedRequest, res) => {
   void getAccountSettings(req.authUserId).then((payload) => res.json(payload));
 });

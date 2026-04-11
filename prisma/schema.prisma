@@ -103,6 +103,7 @@ model User {
   placeScores       UserPlaceScore[]
   shares            Share[]
   sessions          Session[]
+  devices           UserDevice[]
 }
 
 model Session {
@@ -113,6 +114,22 @@ model Session {
   expiresAt  DateTime
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model UserDevice {
+  id         String   @id @default(cuid())
+  userId     String
+  fcmToken   String   @unique
+  platform   String
+  appVersion String?
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  lastSeenAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isActive])
 }
 
 model WaitlistEntry {

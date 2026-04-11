@@ -4,8 +4,11 @@ import AVKit
 import MapKit
 import CoreLocation
 import PhotosUI
+import UserNotifications
 import AuthenticationServices
 import Capacitor
+import FirebaseCore
+import FirebaseMessaging
 import GoogleSignIn
 import os
 import SafariServices
@@ -31,6 +34,13 @@ private let nativeLocationOptions = [
 
 private let nativeTravelerProfileHorizontalPadding: CGFloat = 22
 private let nativeGoogleClientID = "937557434052-dj8h3e2pr7s85dmv4o4b2nttfjh40ma4.apps.googleusercontent.com"
+private let nativePushTokenNotification = Notification.Name("NativePushTokenDidUpdate")
+
+private enum NativeLocationPermissionState {
+    case notDetermined
+    case authorized
+    case denied
+}
 
 private struct NativePreferenceSwipeCard: Identifiable, Hashable {
     let id: String
@@ -61,13 +71,34 @@ private enum NativePostAuthAction {
     case openCheckIn(place: NativePlace?)
 }
 
-final class AppDelegate: NSObject, UIApplicationDelegate {
+final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate, MessagingDelegate {
 
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
+        if FirebaseApp.app() == nil {
+            FirebaseApp.configure()
+        }
+        UNUserNotificationCenter.current().delegate = self
+        Messaging.messaging().delegate = self
+        Messaging.messaging().token { token, error in
+            if let error {
+                nativeLogger.error("firebase messaging token preload failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            guard let token, !token.isEmpty else { return }
+            NotificationCenter.default.post(name: nativePushTokenNotification, object: token)
+        }
         return true
+    }
+
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Messaging.messaging().apnsToken = deviceToken
+    }
+
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        nativeLogger.error("remote notification registration failed: \(error.localizedDescription, privacy: .public)")
     }
 
     func application(_ app: UIApplication, open url: URL, options: [UIApplication.OpenURLOptionsKey: Any] = [:]) -> Bool {
@@ -87,6 +118,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
             continue: userActivity,
             restorationHandler: restorationHandler
         )
+    }
+
+    func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
+        guard let fcmToken, !fcmToken.isEmpty else { return }
+        NotificationCenter.default.post(name: nativePushTokenNotification, object: fcmToken)
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+    ) {
+        completionHandler([.banner, .badge, .sound])
     }
 }
 
@@ -108,6 +152,16 @@ private func nativeTopViewController(
         return nativeTopViewController(base: presentedViewController)
     }
     return base
+}
+
+private func nativeAppVersionString() -> String? {
+    let info = Bundle.main.infoDictionary
+    let shortVersion = info?["CFBundleShortVersionString"] as? String
+    let buildNumber = info?["CFBundleVersion"] as? String
+    if let shortVersion, let buildNumber {
+        return "\(shortVersion) (\(buildNumber))"
+    }
+    return shortVersion ?? buildNumber
 }
 
 private struct NativeAppleSignInPayload {
@@ -781,6 +835,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var blockedTravelerIds: Set<String> = []
     @Published var showFloatingTabBar = true
     @Published var currentCoordinate: CLLocationCoordinate2D?
+    @Published var locationPermissionState: NativeLocationPermissionState = .notDetermined
     @Published var profileErrorMessage: String?
     @Published var discoveryErrorMessage: String?
     @Published var feedErrorMessage: String?
@@ -797,6 +852,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private let locationKey = "vibinn_native_location_label"
     private let selectedInterestsKey = "vibinn_native_selected_interests"
     private let selectedVibeKey = "vibinn_native_selected_vibe"
+    private let pushTokenKey = "vibinn_native_push_token"
+    private let syncedPushTokenKey = "vibinn_native_synced_push_token"
     private let locationManager = CLLocationManager()
     private var floatingTabBarHideDepth = 0
     private var followStateOverrides: [String: Bool] = [:]
@@ -818,20 +875,29 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         self.selectedVibe = UserDefaults.standard.string(forKey: selectedVibeKey)
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
-        if locationManager.authorizationStatus == .authorizedAlways || locationManager.authorizationStatus == .authorizedWhenInUse {
+        syncLocationPermissionState(with: locationManager.authorizationStatus)
+        if locationPermissionState == .authorized {
             locationManager.startUpdatingLocation()
-        } else if locationManager.authorizationStatus == .notDetermined {
-            locationManager.requestWhenInUseAuthorization()
         }
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePushTokenUpdated(_:)),
+            name: nativePushTokenNotification,
+            object: nil
+        )
         nativeLogger.log("NativeAppState init. location=\(self.selectedLocation.label, privacy: .public) onboarding=\(self.hasCompletedOnboarding, privacy: .public)")
     }
 
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
     nonisolated func locationManagerDidChangeAuthorization(_ manager: CLLocationManager) {
-        switch manager.authorizationStatus {
-        case .authorizedAlways, .authorizedWhenInUse:
-            manager.startUpdatingLocation()
-        default:
-            break
+        Task { @MainActor in
+            self.syncLocationPermissionState(with: manager.authorizationStatus)
+            if self.locationPermissionState == .authorized {
+                manager.startUpdatingLocation()
+            }
         }
     }
 
@@ -839,6 +905,35 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         guard let coordinate = locations.last?.coordinate else { return }
         Task { @MainActor in
             self.currentCoordinate = coordinate
+        }
+    }
+
+    private func syncLocationPermissionState(with status: CLAuthorizationStatus) {
+        switch status {
+        case .authorizedAlways, .authorizedWhenInUse:
+            locationPermissionState = .authorized
+        case .denied, .restricted:
+            locationPermissionState = .denied
+        case .notDetermined:
+            locationPermissionState = .notDetermined
+        @unknown default:
+            locationPermissionState = .denied
+        }
+    }
+
+    var shouldShowLocationAccessCTA: Bool {
+        locationPermissionState != .authorized
+    }
+
+    func requestLocationAccessOrOpenSettings() {
+        switch locationPermissionState {
+        case .authorized:
+            locationManager.startUpdatingLocation()
+        case .notDetermined:
+            locationManager.requestWhenInUseAuthorization()
+        case .denied:
+            guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
+            UIApplication.shared.open(url)
         }
     }
 
@@ -861,6 +956,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             let session = try await api.getAuthSession(token: token)
             currentUser = session.user
             await syncLocalTastePreferencesIfNeeded()
+            await syncPushTokenIfPossible()
             nativeLogger.log("bootstrap session ok user=\(session.user.username, privacy: .public)")
         } catch {
             nativeLogger.error("bootstrap failed: \(error.localizedDescription, privacy: .public)")
@@ -874,6 +970,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = response.token
         currentUser = response.user
         await syncLocalTastePreferencesIfNeeded()
+        await syncPushTokenIfPossible()
         nativeLogger.log("login success user=\(response.user.username, privacy: .public)")
     }
 
@@ -883,6 +980,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = response.token
         currentUser = response.user
         await syncLocalTastePreferencesIfNeeded()
+        await syncPushTokenIfPossible()
         nativeLogger.log("register success user=\(response.user.username, privacy: .public)")
     }
 
@@ -893,6 +991,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = response.token
         currentUser = response.user
         await syncLocalTastePreferencesIfNeeded()
+        await syncPushTokenIfPossible()
         nativeLogger.log("google login success user=\(response.user.username, privacy: .public)")
     }
 
@@ -909,6 +1008,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = response.token
         currentUser = response.user
         await syncLocalTastePreferencesIfNeeded()
+        await syncPushTokenIfPossible()
         nativeLogger.log("apple login success user=\(response.user.username, privacy: .public)")
     }
 
@@ -941,6 +1041,16 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func logout() {
+        let tokenToUnregister = currentPushToken
+        let authTokenToUse = authToken
+        if let tokenToUnregister, let authTokenToUse {
+            Task {
+                try? await api.unregisterPushDevice(
+                    fcmToken: tokenToUnregister,
+                    token: authTokenToUse
+                )
+            }
+        }
         NativeGoogleSignInCoordinator.signOut()
         clearSession()
         discoveryPlaces = []
@@ -965,6 +1075,16 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         showCheckInSheet = false
         checkInPrefilledPlace = nil
         pendingPostAuthAction = nil
+    }
+
+    func requestPushNotifications() async {
+        let granted = await withCheckedContinuation { continuation in
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .badge, .sound]) { granted, _ in
+                continuation.resume(returning: granted)
+            }
+        }
+        guard granted else { return }
+        UIApplication.shared.registerForRemoteNotifications()
     }
 
     func presentAuthGate(reason: String, postAuthAction: NativePostAuthAction? = nil) {
@@ -1075,6 +1195,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 reason: "Log in to get today's recommendation.",
                 postAuthAction: .openTodayRecommendation
             )
+            return
+        }
+
+        guard locationPermissionState == .authorized else {
+            todayRecommendationErrorMessage = nil
             return
         }
 
@@ -1780,9 +1905,49 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         set { UserDefaults.standard.set(newValue, forKey: authTokenKey) }
     }
 
+    private var currentPushToken: String? {
+        get { UserDefaults.standard.string(forKey: pushTokenKey) }
+        set { UserDefaults.standard.set(newValue, forKey: pushTokenKey) }
+    }
+
+    private var lastSyncedPushToken: String? {
+        get { UserDefaults.standard.string(forKey: syncedPushTokenKey) }
+        set { UserDefaults.standard.set(newValue, forKey: syncedPushTokenKey) }
+    }
+
     private func clearSession() {
         authToken = nil
         currentUser = nil
+        lastSyncedPushToken = nil
+    }
+
+    @objc
+    private func handlePushTokenUpdated(_ notification: Notification) {
+        guard let token = notification.object as? String, !token.isEmpty else { return }
+        currentPushToken = token
+        Task { [weak self] in
+            await self?.syncPushTokenIfPossible()
+        }
+    }
+
+    private func syncPushTokenIfPossible(force: Bool = false) async {
+        guard let authToken, currentUser != nil, let currentPushToken, !currentPushToken.isEmpty else { return }
+        if !force && lastSyncedPushToken == currentPushToken {
+            return
+        }
+
+        do {
+            try await api.registerPushDevice(
+                fcmToken: currentPushToken,
+                platform: "ios",
+                appVersion: nativeAppVersionString(),
+                token: authToken
+            )
+            lastSyncedPushToken = currentPushToken
+            nativeLogger.log("push token sync success")
+        } catch {
+            nativeLogger.error("push token sync failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func rebuildOwnFeedItems() {
@@ -1922,6 +2087,12 @@ private struct NativeAPIClient {
         let selectedVibe: String?
     }
 
+    private struct PushDeviceBody: Encodable {
+        let fcmToken: String
+        let platform: String
+        let appVersion: String?
+    }
+
     func login(email: String, password: String) async throws -> NativeLoginResponse {
         try await request(
             path: "/api/auth/login",
@@ -1968,6 +2139,40 @@ private struct NativeAPIClient {
                 email: email,
                 givenName: givenName,
                 familyName: familyName
+            )
+        )
+    }
+
+    func registerPushDevice(
+        fcmToken: String,
+        platform: String,
+        appVersion: String?,
+        token: String
+    ) async throws {
+        let _: NativeEmptyResponse = try await request(
+            path: "/api/me/push-devices",
+            method: "POST",
+            token: token,
+            body: PushDeviceBody(
+                fcmToken: fcmToken,
+                platform: platform,
+                appVersion: appVersion
+            )
+        )
+    }
+
+    func unregisterPushDevice(
+        fcmToken: String,
+        token: String
+    ) async throws {
+        let _: NativeEmptyResponse = try await request(
+            path: "/api/me/push-devices",
+            method: "DELETE",
+            token: token,
+            body: PushDeviceBody(
+                fcmToken: fcmToken,
+                platform: "ios",
+                appVersion: nil
             )
         )
     }
@@ -4237,11 +4442,13 @@ private struct NativeDiscoverScreen: View {
     @State private var showLocationSheet = false
     @State private var showSearchSheet = false
     @State private var showNotificationsSheet = false
+    @State private var showTodayRecommendationLocationSheet = false
     @State private var showDiscoveryScoreDebug = nativeDiscoveryScoreDebugMode
     @State private var showTodayRecommendationDebug = false
     @State private var selectedDebugPlace: NativePlace?
     @State private var selectedDiscoveryTabId = "all"
     @State private var discoverySwipeToastMessage: String?
+    @State private var isLocationAccessBannerDismissed = false
 
     private var discoveryTabs: [NativeDiscoveryCategoryTab] {
         var labelsById: [String: String] = [:]
@@ -4267,6 +4474,13 @@ private struct NativeDiscoverScreen: View {
 
     private var selectedDiscoveryPlaces: [NativePlace] {
         discoveryPlaces(for: selectedDiscoveryTabId)
+    }
+
+    private var shouldShowTodayRecommendationCTA: Bool {
+        appState.discoveryPlaces.contains { place in
+            guard let score = place.similarityStat else { return false }
+            return score >= 70
+        }
     }
 
     private var discoveryScoreCounts: (mustVisit: Int, fitsYou: Int, worthALook: Int, maybe: Int, unscored: Int) {
@@ -4299,14 +4513,31 @@ private struct NativeDiscoverScreen: View {
                             tabs: discoveryTabs,
                             places: discoveryPlaces(for: tab.id),
                             contentWidth: contentWidth,
+                            shouldShowTodayRecommendationCTA: shouldShowTodayRecommendationCTA,
+                            shouldShowLocationAccessCTA: appState.shouldShowLocationAccessCTA && !isLocationAccessBannerDismissed,
                             selectedTabId: $selectedDiscoveryTabId,
                             onLocationTap: { showLocationSheet = true },
                             onSearchTap: { showSearchSheet = true },
                             onNotificationsTap: { showNotificationsSheet = true },
+                            onLocationAccessTap: {
+                                appState.requestLocationAccessOrOpenSettings()
+                            },
+                            onLocationAccessDismiss: {
+                                withAnimation(.easeOut(duration: 0.2)) {
+                                    isLocationAccessBannerDismissed = true
+                                }
+                            },
                             onPlaceDebugTap: { place in selectedDebugPlace = place },
                             onTodayDebugTap: {
                                 if nativeTodayRecommendationScoreDebugMode {
                                     showTodayRecommendationDebug = true
+                                }
+                            },
+                            onTodayRecommendationTap: {
+                                if appState.locationPermissionState == .authorized {
+                                    Task { await appState.loadTodayRecommendation() }
+                                } else {
+                                    showTodayRecommendationLocationSheet = true
                                 }
                             },
                             onDiscoveryToast: { message in
@@ -4449,9 +4680,25 @@ private struct NativeDiscoverScreen: View {
             }
             .navigationViewStyle(.stack)
         }
+        .sheet(isPresented: $showTodayRecommendationLocationSheet) {
+            NativeTodayRecommendationLocationSheet(
+                onAllowAccess: {
+                    showTodayRecommendationLocationSheet = false
+                    appState.requestLocationAccessOrOpenSettings()
+                },
+                onCancel: {
+                    showTodayRecommendationLocationSheet = false
+                }
+            )
+        }
         .onChange(of: appState.discoveryPlaces.map(\.id)) { _ in
             if !discoveryTabs.contains(where: { $0.id == selectedDiscoveryTabId }) {
                 selectedDiscoveryTabId = "all"
+            }
+        }
+        .onChange(of: appState.locationPermissionState) { state in
+            if state == .authorized {
+                isLocationAccessBannerDismissed = true
             }
         }
         .refreshable {
@@ -4498,12 +4745,17 @@ private struct NativeDiscoveryTabPage: View {
     let tabs: [NativeDiscoveryCategoryTab]
     let places: [NativePlace]
     let contentWidth: CGFloat
+    let shouldShowTodayRecommendationCTA: Bool
+    let shouldShowLocationAccessCTA: Bool
     @Binding var selectedTabId: String
     let onLocationTap: () -> Void
     let onSearchTap: () -> Void
     let onNotificationsTap: () -> Void
+    let onLocationAccessTap: () -> Void
+    let onLocationAccessDismiss: () -> Void
     let onPlaceDebugTap: (NativePlace) -> Void
     let onTodayDebugTap: () -> Void
+    let onTodayRecommendationTap: () -> Void
     let onDiscoveryToast: (String) -> Void
     let onSwitchTab: (Int) -> Void
 
@@ -4525,15 +4777,22 @@ private struct NativeDiscoveryTabPage: View {
                     NativeInlineError(message: discoveryErrorMessage)
                 }
 
+                if shouldShowLocationAccessCTA {
+                    NativeLocationAccessCard(
+                        onAllowAccess: onLocationAccessTap,
+                        onDismiss: onLocationAccessDismiss
+                    )
+                }
+
                 NativeDiscoveryCategoryTabs(
                     tabs: tabs,
                     selectedTabId: $selectedTabId
                 )
                 .padding(.bottom, 8)
 
-                if tab.id == "all" {
+                if tab.id == "all" && shouldShowTodayRecommendationCTA {
                     Button {
-                        Task { await appState.loadTodayRecommendation() }
+                        onTodayRecommendationTap()
                     } label: {
                         HStack(spacing: 14) {
                             VStack(alignment: .leading, spacing: 6) {
@@ -4925,6 +5184,114 @@ private struct NativeDiscoveryCategoryTabs: View {
             }
             .padding(.top, 2)
         }
+    }
+}
+
+private struct NativeLocationAccessCard: View {
+    let onAllowAccess: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("See places closer to you")
+                        .font(.system(size: 18, weight: .black))
+                        .foregroundStyle(.white)
+                    Text("Allow location access to unlock nearby picks and better recommendations.")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.64))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(width: 28, height: 28)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            Button(action: onAllowAccess) {
+                Text("Allow Access")
+                    .font(.system(size: 14, weight: .black))
+                    .foregroundStyle(.black)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(nativeAccent)
+                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .fill(nativeProfileHeaderFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(nativeBorder, lineWidth: 1)
+                )
+        )
+    }
+}
+
+private struct NativeTodayRecommendationLocationSheet: View {
+    let onAllowAccess: () -> Void
+    let onCancel: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Capsule()
+                .fill(Color.white.opacity(0.18))
+                .frame(width: 42, height: 5)
+                .frame(maxWidth: .infinity)
+                .padding(.top, 10)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Location is needed")
+                    .font(.system(size: 22, weight: .black))
+                    .foregroundStyle(.white)
+                Text("Today recommendation uses your location to find the best nearby place for today.")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.64))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 12) {
+                Button(action: onCancel) {
+                    Text("Cancel")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.plain)
+
+                Button(action: onAllowAccess) {
+                    Text("Allow Access")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(nativeAccent)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 20)
+        .background(Color.black.ignoresSafeArea())
     }
 }
 
