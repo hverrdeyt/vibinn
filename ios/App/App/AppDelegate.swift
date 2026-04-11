@@ -3748,6 +3748,7 @@ private struct NativeDiscoverScreen: View {
                         }
                     }
                 }
+                .frame(width: contentWidth, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.top, 12)
                 .padding(.bottom, 18)

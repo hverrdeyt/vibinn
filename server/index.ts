@@ -4280,7 +4280,7 @@ async function getTodayRecommendationForUser(input: {
     selectedInterests: recommendationContext.selectedInterests,
     selectedVibe: recommendationContext.selectedVibe,
     page: 1,
-    limit: 20,
+    limit: 80,
   });
 
   const discoveryPlaces = discovery.places;
