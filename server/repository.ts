@@ -2016,10 +2016,29 @@ export async function getNotifications(userId?: string) {
           : item.targetType === 'MOMENT' || item.targetType === 'PLACE_VISIT'
             ? 'visited'
             : null;
+      const messageKind =
+        item.type === 'FOLLOW'
+          ? 'follow'
+          : item.type === 'VIBIN'
+            ? placeContext === 'saved'
+              ? 'vibin_saved'
+              : placeContext === 'visited'
+                ? 'vibin_visited'
+                : 'vibin'
+            : item.type === 'COMMENT'
+              ? placeContext === 'saved'
+                ? 'comment_saved'
+                : placeContext === 'visited'
+                  ? 'comment_visited'
+                  : 'comment'
+              : item.type === 'SYSTEM'
+                ? 'system'
+                : 'generic';
 
       return {
         id: item.id,
         notificationType: item.type,
+        messageKind,
         targetType: item.targetType,
         targetId: item.targetId,
         type: item.targetType === 'PLACE' ? 'place' : 'traveler',
@@ -2061,6 +2080,7 @@ export async function getNotifications(userId?: string) {
       return {
         ...item,
         notificationType: 'SYSTEM',
+        messageKind: 'system',
         targetType: 'PLACE',
         targetId: item.placeId,
         createdAt: item.time,
@@ -2076,6 +2096,7 @@ export async function getNotifications(userId?: string) {
     return {
       ...item,
       notificationType: 'FOLLOW',
+      messageKind: 'follow',
       targetType: 'PROFILE',
       targetId: item.travelerId,
       createdAt: item.time,

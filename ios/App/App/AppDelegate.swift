@@ -667,6 +667,7 @@ private struct NativeNotificationActor: Decodable, Identifiable {
 private struct NativeNotificationItem: Decodable, Identifiable {
     let id: String
     let notificationType: String?
+    let messageKind: String?
     let targetType: String?
     let targetId: String?
     let placeTitle: String?
@@ -3770,29 +3771,48 @@ private struct NativeNotificationRow: View {
     }
 
     private var subtitleSuffix: String {
-        switch notification.notificationType {
-        case "FOLLOW":
+        switch notification.messageKind {
+        case "follow":
             return "followed you"
-        case "VIBIN":
-            if notification.placeContext == "saved" || notification.targetType == "PLACE" {
-                return "sent you a vibin on a place you saved"
-            }
-            if notification.placeContext == "visited" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
-                return "sent you a vibin on a place you visited"
-            }
+        case "vibin_saved":
+            return "sent you a vibin on a place you saved"
+        case "vibin_visited":
+            return "sent you a vibin on a place you visited"
+        case "vibin":
             return "sent you a vibin"
-        case "COMMENT":
-            if notification.placeContext == "saved" || notification.targetType == "PLACE" {
-                return "commented on a place you saved"
-            }
-            if notification.placeContext == "visited" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
-                return "commented on a place you visited"
-            }
+        case "comment_saved":
+            return "commented on a place you saved"
+        case "comment_visited":
+            return "commented on a place you visited"
+        case "comment":
             return "commented on your activity"
-        case "SYSTEM":
+        case "system":
             return notification.body
         default:
-            return notification.body
+            switch notification.notificationType {
+            case "FOLLOW":
+                return "followed you"
+            case "VIBIN":
+                if notification.placeContext == "saved" || notification.targetType == "PLACE" {
+                    return "sent you a vibin on a place you saved"
+                }
+                if notification.placeContext == "visited" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
+                    return "sent you a vibin on a place you visited"
+                }
+                return "sent you a vibin"
+            case "COMMENT":
+                if notification.placeContext == "saved" || notification.targetType == "PLACE" {
+                    return "commented on a place you saved"
+                }
+                if notification.placeContext == "visited" || notification.targetType == "MOMENT" || notification.targetType == "PLACE_VISIT" {
+                    return "commented on a place you visited"
+                }
+                return "commented on your activity"
+            case "SYSTEM":
+                return notification.body
+            default:
+                return notification.body
+            }
         }
     }
 
