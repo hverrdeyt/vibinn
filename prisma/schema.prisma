@@ -10,6 +10,7 @@ datasource db {
 enum AuthProvider {
   MANUAL
   GOOGLE
+  APPLE
 }
 
 enum LocationType {
@@ -67,6 +68,7 @@ model User {
   displayName       String?
   email             String               @unique
   passwordHash      String?
+  appleSubject      String?              @unique
   bio               String
   avatarUrl         String
   authProvider      AuthProvider         @default(MANUAL)

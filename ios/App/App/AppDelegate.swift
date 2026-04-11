@@ -3,6 +3,7 @@ import SwiftUI
 import AVKit
 import MapKit
 import CoreLocation
+import AuthenticationServices
 import Capacitor
 import GoogleSignIn
 import os
@@ -85,9 +86,36 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 }
 
 @MainActor
+private func nativeTopViewController(
+    base: UIViewController? = UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .flatMap(\.windows)
+        .first(where: \.isKeyWindow)?
+        .rootViewController
+) -> UIViewController? {
+    if let navigationController = base as? UINavigationController {
+        return nativeTopViewController(base: navigationController.visibleViewController)
+    }
+    if let tabBarController = base as? UITabBarController {
+        return nativeTopViewController(base: tabBarController.selectedViewController)
+    }
+    if let presentedViewController = base?.presentedViewController {
+        return nativeTopViewController(base: presentedViewController)
+    }
+    return base
+}
+
+private struct NativeAppleSignInPayload {
+    let idToken: String
+    let email: String?
+    let givenName: String?
+    let familyName: String?
+}
+
+@MainActor
 private enum NativeGoogleSignInCoordinator {
     static func signIn(clientID: String) async throws -> String {
-        guard let presentingViewController = topViewController() else {
+        guard let presentingViewController = nativeTopViewController() else {
             throw NSError(domain: "NativeGoogleSignIn", code: 1, userInfo: [NSLocalizedDescriptionKey: "No presenting view controller available."])
         }
 
@@ -104,24 +132,74 @@ private enum NativeGoogleSignInCoordinator {
     static func signOut() {
         GIDSignIn.sharedInstance.signOut()
     }
+}
 
-    private static func topViewController(
-        base: UIViewController? = UIApplication.shared.connectedScenes
-            .compactMap { $0 as? UIWindowScene }
-            .flatMap(\.windows)
-            .first(where: \.isKeyWindow)?
-            .rootViewController
-    ) -> UIViewController? {
-        if let navigationController = base as? UINavigationController {
-            return topViewController(base: navigationController.visibleViewController)
+private final class NativeAppleSignInCoordinator: NSObject {
+    private var continuation: CheckedContinuation<NativeAppleSignInPayload, Error>?
+    private weak var presentationAnchor: ASPresentationAnchor?
+
+    @MainActor
+    func signIn() async throws -> NativeAppleSignInPayload {
+        guard let presentingViewController = nativeTopViewController(),
+              let window = presentingViewController.view.window ?? UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .flatMap(\.windows)
+                .first(where: \.isKeyWindow) else {
+            throw NSError(domain: "NativeAppleSignIn", code: 1, userInfo: [NSLocalizedDescriptionKey: "No presenting view controller available."])
         }
-        if let tabBarController = base as? UITabBarController {
-            return topViewController(base: tabBarController.selectedViewController)
+
+        presentationAnchor = window
+
+        return try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+            let provider = ASAuthorizationAppleIDProvider()
+            let request = provider.createRequest()
+            request.requestedScopes = [.fullName, .email]
+
+            let controller = ASAuthorizationController(authorizationRequests: [request])
+            controller.delegate = self
+            controller.presentationContextProvider = self
+            controller.performRequests()
         }
-        if let presentedViewController = base?.presentedViewController {
-            return topViewController(base: presentedViewController)
+    }
+}
+
+extension NativeAppleSignInCoordinator: ASAuthorizationControllerDelegate {
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
+            continuation?.resume(throwing: NSError(domain: "NativeAppleSignIn", code: 2, userInfo: [NSLocalizedDescriptionKey: "Apple did not return a valid credential."]))
+            continuation = nil
+            return
         }
-        return base
+
+        guard
+            let tokenData = credential.identityToken,
+            let token = String(data: tokenData, encoding: .utf8),
+            !token.isEmpty
+        else {
+            continuation?.resume(throwing: NSError(domain: "NativeAppleSignIn", code: 3, userInfo: [NSLocalizedDescriptionKey: "Apple did not return an identity token."]))
+            continuation = nil
+            return
+        }
+
+        continuation?.resume(returning: NativeAppleSignInPayload(
+            idToken: token,
+            email: credential.email,
+            givenName: credential.fullName?.givenName,
+            familyName: credential.fullName?.familyName
+        ))
+        continuation = nil
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        continuation?.resume(throwing: error)
+        continuation = nil
+    }
+}
+
+extension NativeAppleSignInCoordinator: ASAuthorizationControllerPresentationContextProviding {
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        presentationAnchor ?? ASPresentationAnchor()
     }
 }
 
@@ -599,6 +677,22 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         currentUser = response.user
         await syncLocalTastePreferencesIfNeeded()
         nativeLogger.log("google login success user=\(response.user.username, privacy: .public)")
+    }
+
+    func loginWithApple() async throws {
+        nativeLogger.log("apple login start")
+        let coordinator = NativeAppleSignInCoordinator()
+        let payload = try await coordinator.signIn()
+        let response = try await api.appleAuth(
+            idToken: payload.idToken,
+            email: payload.email,
+            givenName: payload.givenName,
+            familyName: payload.familyName
+        )
+        authToken = response.token
+        currentUser = response.user
+        await syncLocalTastePreferencesIfNeeded()
+        nativeLogger.log("apple login success user=\(response.user.username, privacy: .public)")
     }
 
     func logout() {
@@ -1467,6 +1561,13 @@ private struct NativeAPIClient {
         let idToken: String
     }
 
+    private struct AppleAuthBody: Encodable {
+        let idToken: String
+        let email: String?
+        let givenName: String?
+        let familyName: String?
+    }
+
     func login(email: String, password: String) async throws -> NativeLoginResponse {
         try await request(
             path: "/api/auth/login",
@@ -1495,6 +1596,25 @@ private struct NativeAPIClient {
             method: "POST",
             token: nil,
             body: GoogleAuthBody(idToken: idToken)
+        )
+    }
+
+    func appleAuth(
+        idToken: String,
+        email: String?,
+        givenName: String?,
+        familyName: String?
+    ) async throws -> NativeLoginResponse {
+        try await request(
+            path: "/api/auth/apple",
+            method: "POST",
+            token: nil,
+            body: AppleAuthBody(
+                idToken: idToken,
+                email: email,
+                givenName: givenName,
+                familyName: familyName
+            )
         )
     }
 
@@ -2787,6 +2907,31 @@ private struct NativeAuthScreen: View {
                         VStack(spacing: 14) {
                             Button {
                                 Task {
+                                    await submitApple()
+                                }
+                            } label: {
+                                HStack {
+                                    Spacer()
+                                    if isSubmitting {
+                                        ProgressView().tint(.white)
+                                    } else {
+                                        Label(
+                                            mode == .login ? "Continue with Apple" : "Sign up with Apple",
+                                            systemImage: "apple.logo"
+                                        )
+                                        .font(.system(size: 16, weight: .bold))
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.vertical, 16)
+                                .background(Color.white)
+                                .foregroundStyle(.black)
+                                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                            }
+                            .disabled(isSubmitting)
+
+                            Button {
+                                Task {
                                     await submitGoogle()
                                 }
                             } label: {
@@ -2940,6 +3085,18 @@ private struct NativeAuthScreen: View {
             try await appState.loginWithGoogle()
         } catch {
             errorMessage = "Could not continue with Google right now."
+        }
+    }
+
+    private func submitApple() async {
+        errorMessage = nil
+        isSubmitting = true
+        defer { isSubmitting = false }
+
+        do {
+            try await appState.loginWithApple()
+        } catch {
+            errorMessage = "Could not continue with Apple right now."
         }
     }
 }
@@ -5110,6 +5267,27 @@ private struct NativeDiscoveryPlaceCard: View {
         return moodBadge.label.uppercased()
     }
 
+    private var distanceLabel: String? {
+        guard
+            let origin = appState.currentCoordinate,
+            let latitude = place.latitude,
+            let longitude = place.longitude
+        else {
+            return nil
+        }
+
+        let miles = nativeDistanceBetweenMiles(
+            (latitude: origin.latitude, longitude: origin.longitude),
+            (latitude: latitude, longitude: longitude)
+        )
+
+        if miles < 0.2 {
+            return "Walkable"
+        }
+
+        return String(format: "%.1f mi away", miles)
+    }
+
     private var debugBorderColor: Color {
         switch Int(height) {
         case 328: return .red
@@ -5213,14 +5391,23 @@ private struct NativeDiscoveryPlaceCard: View {
             }
         }
         .overlay(alignment: .bottomLeading) {
-            Text(bottomLabel)
-                .font(.system(size: 11, weight: .black))
-                .foregroundStyle(.white.opacity(0.88))
-                .padding(.horizontal, 12)
-                .padding(.vertical, 7)
-                .background(Color.white.opacity(0.12))
-                .clipShape(Capsule())
-                .padding(16)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(bottomLabel)
+                    .font(.system(size: 11, weight: .black))
+                    .foregroundStyle(.white.opacity(0.88))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.white.opacity(0.12))
+                    .clipShape(Capsule())
+
+                if let distanceLabel {
+                    Text(distanceLabel)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .padding(.leading, 2)
+                }
+            }
+            .padding(16)
         }
         .overlay(alignment: .trailing) {
             if !nativeDiscoveryLayoutDebugMode && isHorizontalDrag && dragOffset > 48 {
@@ -7912,6 +8099,15 @@ private func nativeResolvedImageURL(_ url: String?) -> String? {
     }
     let sanitized = raw.hasPrefix("/") ? raw : "/\(raw)"
     return "https://api.vibinn.club\(sanitized)"
+}
+
+private func nativeDistanceBetweenMiles(
+    _ origin: (latitude: Double, longitude: Double),
+    _ destination: (latitude: Double, longitude: Double)
+) -> Double {
+    let originLocation = CLLocation(latitude: origin.latitude, longitude: origin.longitude)
+    let destinationLocation = CLLocation(latitude: destination.latitude, longitude: destination.longitude)
+    return originLocation.distance(from: destinationLocation) / 1609.344
 }
 
 private func nativeAvatarFallbackURL(for text: String) -> String {

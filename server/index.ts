@@ -55,6 +55,9 @@ const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_IOS_CLIENT_ID = process.env.GOOGLE_IOS_CLIENT_ID;
 const GOOGLE_CLIENT_IDS = process.env.GOOGLE_CLIENT_IDS;
 const NATIVE_IOS_GOOGLE_CLIENT_ID = '937557434052-dj8h3e2pr7s85dmv4o4b2nttfjh40ma4.apps.googleusercontent.com';
+const APPLE_CLIENT_ID = process.env.APPLE_CLIENT_ID;
+const APPLE_CLIENT_IDS = process.env.APPLE_CLIENT_IDS;
+const NATIVE_IOS_APPLE_CLIENT_ID = 'club.vibinn.app';
 
 const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_ENDPOINT
   ? new S3Client({
@@ -85,6 +88,10 @@ const recommendationContextCache = new Map<string, {
   expiresAt: number;
   value: RecommendationContext;
 }>();
+let appleKeyCache: {
+  expiresAt: number;
+  keys: Array<Record<string, string>>;
+} | null = null;
 
 type AuthenticatedRequest = express.Request & {
   authUserId?: string;
@@ -168,6 +175,111 @@ function getAllowedGoogleClientIds() {
         .filter((value): value is string => Boolean(value))
     )
   );
+}
+
+function getAllowedAppleClientIds() {
+  return Array.from(
+    new Set(
+      [
+        APPLE_CLIENT_ID,
+        NATIVE_IOS_APPLE_CLIENT_ID,
+        ...(APPLE_CLIENT_IDS?.split(',') ?? []),
+      ]
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value))
+    )
+  );
+}
+
+function decodeBase64URL(value: string) {
+  const normalized = value
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .padEnd(Math.ceil(value.length / 4) * 4, '=');
+  return Buffer.from(normalized, 'base64');
+}
+
+async function getAppleSigningKeys() {
+  if (appleKeyCache && appleKeyCache.expiresAt > Date.now()) {
+    return appleKeyCache.keys;
+  }
+
+  const response = await fetch('https://appleid.apple.com/auth/keys');
+  if (!response.ok) {
+    throw new Error('Could not verify Apple sign-in');
+  }
+
+  const payload = await response.json() as { keys?: Array<Record<string, string>> };
+  const keys = payload.keys ?? [];
+  appleKeyCache = {
+    expiresAt: Date.now() + 1000 * 60 * 60,
+    keys,
+  };
+  return keys;
+}
+
+async function verifyAppleIdToken(idToken: string) {
+  const segments = idToken.split('.');
+  if (segments.length !== 3) {
+    throw new Error('Invalid Apple identity token');
+  }
+
+  const [headerSegment, payloadSegment, signatureSegment] = segments;
+  const header = JSON.parse(decodeBase64URL(headerSegment).toString('utf8')) as {
+    alg?: string;
+    kid?: string;
+  };
+  const payload = JSON.parse(decodeBase64URL(payloadSegment).toString('utf8')) as {
+    iss?: string;
+    aud?: string;
+    exp?: number;
+    iat?: number;
+    sub?: string;
+    email?: string;
+    email_verified?: string | boolean;
+  };
+
+  if (header.alg !== 'RS256' || !header.kid) {
+    throw new Error('Invalid Apple identity token');
+  }
+
+  if (payload.iss !== 'https://appleid.apple.com') {
+    throw new Error('Invalid Apple issuer');
+  }
+
+  const allowedClientIds = getAllowedAppleClientIds();
+  if (allowedClientIds.length > 0 && (!payload.aud || !allowedClientIds.includes(payload.aud))) {
+    throw new Error('Apple client mismatch');
+  }
+
+  if (!payload.sub) {
+    throw new Error('Apple subject is missing');
+  }
+
+  if (!payload.exp || payload.exp * 1000 <= Date.now()) {
+    throw new Error('Apple identity token expired');
+  }
+
+  const keys = await getAppleSigningKeys();
+  const jwk = keys.find((key) => key.kid === header.kid);
+  if (!jwk) {
+    throw new Error('Could not verify Apple sign-in');
+  }
+
+  const publicKey = crypto.createPublicKey({
+    key: jwk as crypto.JsonWebKey,
+    format: 'jwk',
+  });
+  const verifier = crypto.createVerify('RSA-SHA256');
+  verifier.update(`${headerSegment}.${payloadSegment}`);
+  verifier.end();
+
+  const isValid = verifier.verify(publicKey, decodeBase64URL(signatureSegment));
+  if (!isValid) {
+    throw new Error('Invalid Apple identity token signature');
+  }
+
+  return payload;
 }
 
 async function verifyGoogleIdToken(idToken: string) {
@@ -4626,6 +4738,87 @@ app.post('/api/auth/google', async (req, res) => {
             emailVerifiedAt: new Date(),
           },
         });
+    await ensureDefaultUserRelations(user.id);
+
+    const token = await createSession(user.id);
+    res.json({ token, user: await mapUserForClientWithTasteState(user) });
+  } catch (error) {
+    if (error instanceof Error) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.post('/api/auth/apple', async (req, res) => {
+  try {
+    const {
+      idToken,
+      email,
+      givenName,
+      familyName,
+    } = req.body as {
+      idToken?: string;
+      email?: string;
+      givenName?: string;
+      familyName?: string;
+    };
+
+    if (!idToken) {
+      res.status(400).json({ error: 'Apple ID token is required' });
+      return;
+    }
+
+    const appleProfile = await verifyAppleIdToken(idToken);
+    const normalizedEmail = (appleProfile.email ?? email)?.toLowerCase().trim() ?? null;
+    const fullName = [givenName?.trim(), familyName?.trim()].filter(Boolean).join(' ').trim();
+    const fallbackDisplayName = fullName || (normalizedEmail?.split('@')[0] ?? 'Apple Traveler');
+    const fallbackAvatar = `https://placehold.co/400x400/111111/D3FF48?text=${encodeURIComponent((fallbackDisplayName.slice(0, 1) || 'A').toUpperCase())}`;
+
+    const existingBySubject = await prisma.user.findUnique({
+      where: { appleSubject: appleProfile.sub },
+    });
+
+    const existingByEmail = normalizedEmail
+      ? await prisma.user.findUnique({
+          where: { email: normalizedEmail },
+        })
+      : null;
+
+    const existingUser = existingBySubject ?? existingByEmail;
+
+    if (!existingUser && !normalizedEmail) {
+      res.status(400).json({ error: 'Apple did not provide an email for this account.' });
+      return;
+    }
+
+    const user = existingUser
+      ? await prisma.user.update({
+          where: { id: existingUser.id },
+          data: {
+            appleSubject: appleProfile.sub,
+            displayName: existingUser.displayName ?? fallbackDisplayName,
+            avatarUrl: existingUser.avatarUrl.includes('placehold.co')
+              ? fallbackAvatar
+              : existingUser.avatarUrl,
+            emailVerifiedAt: existingUser.emailVerifiedAt ?? new Date(),
+            authProvider: 'APPLE',
+          },
+        })
+      : await prisma.user.create({
+          data: {
+            username: await buildUniqueUsername(buildUsernameFromName(fallbackDisplayName)),
+            displayName: fallbackDisplayName,
+            email: normalizedEmail!,
+            bio: 'Still building my travel graph.',
+            avatarUrl: fallbackAvatar,
+            authProvider: 'APPLE',
+            appleSubject: appleProfile.sub,
+            emailVerifiedAt: new Date(),
+          },
+        });
+
     await ensureDefaultUserRelations(user.id);
 
     const token = await createSession(user.id);
