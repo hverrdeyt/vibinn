@@ -1457,6 +1457,23 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
     }
 
+    func refreshMyMomentsOnly() async {
+        nativeLogger.log("refreshMyMomentsOnly start")
+        guard let token = authToken else { return }
+
+        do {
+            let moments = try await api.getMoments(token: token)
+            let uniqueMoments = Array(
+                Dictionary(moments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values
+            )
+            myMoments = uniqueMoments
+            rebuildOwnFeedItems()
+            nativeLogger.log("refreshMyMomentsOnly success moments=\(self.myMoments.count, privacy: .public)")
+        } catch {
+            nativeLogger.error("refreshMyMomentsOnly failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     func refreshSavedContent() async {
         nativeLogger.log("refreshSavedContent start")
         savedErrorMessage = nil
@@ -6740,6 +6757,7 @@ private struct NativeProfileScreen: View {
     @State private var ownFollowersCount: Int?
     @State private var blockedUsers: [NativeBlockedUser] = []
     @State private var isBlockedUsersLoading = false
+    @State private var hasLoadedInitialProfileState = false
 
     private var currentTravelerSummary: NativeTravelerSummary? {
         guard let user = appState.currentUser else { return nil }
@@ -6765,7 +6783,7 @@ private struct NativeProfileScreen: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 16, pinnedViews: [.sectionHeaders]) {
+            VStack(alignment: .leading, spacing: 16) {
                 if let user = appState.currentUser {
                     VStack(alignment: .leading, spacing: 14) {
                         VStack(alignment: .leading, spacing: 10) {
@@ -6916,21 +6934,21 @@ private struct NativeProfileScreen: View {
                     )
                 }
 
-                Section {
-                    VStack(alignment: .leading, spacing: 18) {
-                        if let profileErrorMessage = appState.profileErrorMessage {
-                            NativeInlineError(message: profileErrorMessage)
-                        }
-
-                        ownProfileSectionContent
-                    }
-                    .id(activeSection)
+                NativeProfileTabs(activeSection: $activeSection)
                     .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
-                    .padding(.top, 12)
-                    .padding(.bottom, 140)
-                } header: {
-                    NativeProfileTabs(activeSection: $activeSection)
+                    .padding(.top, 4)
+
+                VStack(alignment: .leading, spacing: 18) {
+                    if let profileErrorMessage = appState.profileErrorMessage {
+                        NativeInlineError(message: profileErrorMessage)
+                    }
+
+                    ownProfileSectionContent
                 }
+                .id(activeSection)
+                .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
+                .padding(.top, 12)
+                .padding(.bottom, 140)
             }
         }
         .background(Color.black.ignoresSafeArea())
@@ -7173,27 +7191,30 @@ private struct NativeProfileScreen: View {
             }
             .navigationViewStyle(.stack)
         }
-        .task {
-            guard appState.currentUser != nil else { return }
-            if appState.savedPlaces.isEmpty && appState.collections.isEmpty {
-                await appState.refreshSavedContent()
-            }
-            if appState.myMoments.isEmpty {
-                await appState.refreshProfile()
-            } else if appState.ownFeedItemsCache.isEmpty {
-                await appState.refreshProfile()
-            }
-            if let user = appState.currentUser,
-               ownFollowersCount == nil,
-               let response = try? await appState.fetchTravelerProfile(id: user.id) {
-                ownFollowersCount = response.traveler.followersCount
-            }
-        }
         .onAppear {
             if expandedSavedCities.isEmpty {
                 expandedSavedCities = Set(savedCityGroups.map(\.city))
             }
             nativeLogger.log("NativeProfileScreen appear saved=\(appState.savedPlaces.count, privacy: .public) collections=\(appState.collections.count, privacy: .public) moments=\(appState.myMoments.count, privacy: .public)")
+            guard !hasLoadedInitialProfileState else { return }
+            hasLoadedInitialProfileState = true
+            Task {
+                guard appState.currentUser != nil else { return }
+                if appState.savedPlaces.isEmpty && appState.collections.isEmpty {
+                    await appState.refreshSavedContent()
+                }
+                if appState.myMoments.isEmpty {
+                    await appState.refreshMyMomentsOnly()
+                } else if appState.ownFeedItemsCache.isEmpty {
+                    await appState.refreshSavedContent()
+                    await appState.refreshMyMomentsOnly()
+                }
+                if let user = appState.currentUser,
+                   ownFollowersCount == nil,
+                   let response = try? await appState.fetchTravelerProfile(id: user.id) {
+                    ownFollowersCount = response.traveler.followersCount
+                }
+            }
         }
         .onAppear {
             let appearance = UINavigationBarAppearance()
