@@ -16,9 +16,10 @@ import SafariServices
 private let useNativeIOSShell = true
 private let nativeDiscoveryLayoutDebugMode = false
 private let nativeTodayRecommendationDebugMode = false
-private let nativeDiscoveryScoreDebugMode = true
-private let nativeTodayRecommendationScoreDebugMode = true
-private let nativeTravelerScoreDebugMode = true
+private let nativeScoreDebugToolsEnabled = false
+private let nativeDiscoveryScoreDebugMode = nativeScoreDebugToolsEnabled
+private let nativeTodayRecommendationScoreDebugMode = nativeScoreDebugToolsEnabled
+private let nativeTravelerScoreDebugMode = nativeScoreDebugToolsEnabled
 private let nativeAccent = Color(red: 211 / 255, green: 1, blue: 72 / 255)
 private let nativeBorder = Color.white.opacity(0.08)
 private let nativeSurface = Color.white.opacity(0.06)
@@ -35,6 +36,7 @@ private let nativeLocationOptions = [
 private let nativeTravelerProfileHorizontalPadding: CGFloat = 22
 private let nativeGoogleClientID = "937557434052-dj8h3e2pr7s85dmv4o4b2nttfjh40ma4.apps.googleusercontent.com"
 private let nativePushTokenNotification = Notification.Name("NativePushTokenDidUpdate")
+private let nativePushTokenUserDefaultsKey = "vibinn_native_push_token"
 
 private enum NativeLocationPermissionState {
     case notDetermined
@@ -88,6 +90,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                 return
             }
             guard let token, !token.isEmpty else { return }
+            UserDefaults.standard.set(token, forKey: nativePushTokenUserDefaultsKey)
             NotificationCenter.default.post(name: nativePushTokenNotification, object: token)
         }
         return true
@@ -95,6 +98,15 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         Messaging.messaging().apnsToken = deviceToken
+        Messaging.messaging().token { token, error in
+            if let error {
+                nativeLogger.error("firebase messaging token after apns failed: \(error.localizedDescription, privacy: .public)")
+                return
+            }
+            guard let token, !token.isEmpty else { return }
+            UserDefaults.standard.set(token, forKey: nativePushTokenUserDefaultsKey)
+            NotificationCenter.default.post(name: nativePushTokenNotification, object: token)
+        }
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {
@@ -122,6 +134,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
         guard let fcmToken, !fcmToken.isEmpty else { return }
+        UserDefaults.standard.set(fcmToken, forKey: nativePushTokenUserDefaultsKey)
         NotificationCenter.default.post(name: nativePushTokenNotification, object: fcmToken)
     }
 
@@ -881,8 +894,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private let locationKey = "vibinn_native_location_label"
     private let selectedInterestsKey = "vibinn_native_selected_interests"
     private let selectedVibeKey = "vibinn_native_selected_vibe"
-    private let pushTokenKey = "vibinn_native_push_token"
     private let syncedPushTokenKey = "vibinn_native_synced_push_token"
+    private let hasPromptedForPushAfterContentActionKeyPrefix = "vibinn_native_push_prompt_after_content_action"
     private let locationManager = CLLocationManager()
     private var floatingTabBarHideDepth = 0
     private var followStateOverrides: [String: Bool] = [:]
@@ -893,6 +906,19 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             return currentUser.hasCompletedTastePreferences != true
         }
         return true
+    }
+
+    var debugCurrentPushToken: String? {
+        currentPushToken
+    }
+
+    var debugLastSyncedPushToken: String? {
+        lastSyncedPushToken
+    }
+
+    var hasSyncedCurrentPushToken: Bool {
+        guard let currentPushToken else { return false }
+        return currentPushToken == lastSyncedPushToken
     }
 
     override init() {
@@ -985,6 +1011,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             let session = try await api.getAuthSession(token: token)
             currentUser = session.user
             await syncLocalTastePreferencesIfNeeded()
+            await refreshCurrentPushTokenFromFirebase()
             await syncPushTokenIfPossible()
             nativeLogger.log("bootstrap session ok user=\(session.user.username, privacy: .public)")
         } catch {
@@ -999,6 +1026,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = response.token
         currentUser = response.user
         await syncLocalTastePreferencesIfNeeded()
+        await refreshCurrentPushTokenFromFirebase()
         await syncPushTokenIfPossible()
         nativeLogger.log("login success user=\(response.user.username, privacy: .public)")
     }
@@ -1009,6 +1037,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = response.token
         currentUser = response.user
         await syncLocalTastePreferencesIfNeeded()
+        await refreshCurrentPushTokenFromFirebase()
         await syncPushTokenIfPossible()
         nativeLogger.log("register success user=\(response.user.username, privacy: .public)")
     }
@@ -1020,6 +1049,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = response.token
         currentUser = response.user
         await syncLocalTastePreferencesIfNeeded()
+        await refreshCurrentPushTokenFromFirebase()
         await syncPushTokenIfPossible()
         nativeLogger.log("google login success user=\(response.user.username, privacy: .public)")
     }
@@ -1028,6 +1058,10 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         nativeLogger.log("apple login start")
         let coordinator = NativeAppleSignInCoordinator()
         let payload = try await coordinator.signIn()
+        try await completeAppleLogin(payload: payload)
+    }
+
+    func completeAppleLogin(payload: NativeAppleSignInPayload) async throws {
         let response = try await api.appleAuth(
             idToken: payload.idToken,
             email: payload.email,
@@ -1037,6 +1071,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = response.token
         currentUser = response.user
         await syncLocalTastePreferencesIfNeeded()
+        await refreshCurrentPushTokenFromFirebase()
         await syncPushTokenIfPossible()
         nativeLogger.log("apple login success user=\(response.user.username, privacy: .public)")
     }
@@ -1127,6 +1162,31 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         case .denied:
             guard let url = URL(string: UIApplication.openSettingsURLString) else { return }
             await UIApplication.shared.open(url)
+        @unknown default:
+            return
+        }
+    }
+
+    func requestPushNotificationsAfterFirstContentActionIfNeeded() async {
+        guard let currentUser else { return }
+        let promptKey = "\(hasPromptedForPushAfterContentActionKeyPrefix)_\(currentUser.id)"
+        guard !UserDefaults.standard.bool(forKey: promptKey) else { return }
+
+        let settings: UNNotificationSettings = await withCheckedContinuation { continuation in
+            UNUserNotificationCenter.current().getNotificationSettings { settings in
+                continuation.resume(returning: settings)
+            }
+        }
+
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            UserDefaults.standard.set(true, forKey: promptKey)
+            UIApplication.shared.registerForRemoteNotifications()
+        case .notDetermined:
+            UserDefaults.standard.set(true, forKey: promptKey)
+            await requestPushNotifications()
+        case .denied:
+            UserDefaults.standard.set(true, forKey: promptKey)
         @unknown default:
             return
         }
@@ -1595,6 +1655,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             at: 0
         )
         rebuildOwnFeedItems()
+        await requestPushNotificationsAfterFirstContentActionIfNeeded()
 
         async let profileTask = refreshProfile()
         async let feedTask = refreshFeed()
@@ -1655,6 +1716,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         _ = try await api.bookmarkPlace(token: token, place: place)
         savedPlaces.insert(place, at: 0)
         rebuildOwnFeedItems()
+        await requestPushNotificationsAfterFirstContentActionIfNeeded()
     }
 
     func toggleBookmark(for place: NativePlace) async throws {
@@ -1669,6 +1731,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         } else {
             _ = try await api.bookmarkPlace(token: token, place: place)
             savedPlaces.insert(place, at: 0)
+            await requestPushNotificationsAfterFirstContentActionIfNeeded()
         }
         rebuildOwnFeedItems()
     }
@@ -1965,8 +2028,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     private var currentPushToken: String? {
-        get { UserDefaults.standard.string(forKey: pushTokenKey) }
-        set { UserDefaults.standard.set(newValue, forKey: pushTokenKey) }
+        get { UserDefaults.standard.string(forKey: nativePushTokenUserDefaultsKey) }
+        set { UserDefaults.standard.set(newValue, forKey: nativePushTokenUserDefaultsKey) }
     }
 
     private var lastSyncedPushToken: String? {
@@ -1989,6 +2052,23 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
     }
 
+    private func refreshCurrentPushTokenFromFirebase() async {
+        let token: String? = await withCheckedContinuation { continuation in
+            Messaging.messaging().token { token, error in
+                if let error {
+                    nativeLogger.error("firebase messaging token refresh failed: \(error.localizedDescription, privacy: .public)")
+                    continuation.resume(returning: nil)
+                    return
+                }
+                continuation.resume(returning: token)
+            }
+        }
+
+        guard let token, !token.isEmpty else { return }
+        currentPushToken = token
+        UserDefaults.standard.set(token, forKey: nativePushTokenUserDefaultsKey)
+    }
+
     private func syncPushTokenIfPossible(force: Bool = false) async {
         guard let authToken, currentUser != nil, let currentPushToken, !currentPushToken.isEmpty else { return }
         if !force && lastSyncedPushToken == currentPushToken {
@@ -2007,6 +2087,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         } catch {
             nativeLogger.error("push token sync failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    func forceSyncPushTokenForDebug() async {
+        await refreshCurrentPushTokenFromFirebase()
+        await syncPushTokenIfPossible(force: true)
     }
 
     private func rebuildOwnFeedItems() {
@@ -3864,15 +3949,25 @@ private struct NativeNotificationRow: View {
 
                 VStack(alignment: .leading, spacing: 4) {
                     if shouldShowPlaceName, let place = notification.place {
-                        Text(notification.placeTitle ?? place.name)
-                            .font(.system(size: 14, weight: .black))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Image(systemName: "mappin.and.ellipse")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.46))
+                            Text(notification.placeTitle ?? place.name)
+                                .font(.system(size: 14, weight: .regular))
+                                .foregroundStyle(.white.opacity(0.62))
+                                .lineLimit(1)
+                        }
                     } else if let placeTitle = notification.placeTitle {
-                        Text(placeTitle)
-                            .font(.system(size: 14, weight: .black))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
+                        HStack(spacing: 6) {
+                            Image(systemName: "mappin.and.ellipse")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.46))
+                            Text(placeTitle)
+                                .font(.system(size: 14, weight: .regular))
+                                .foregroundStyle(.white.opacity(0.62))
+                                .lineLimit(1)
+                        }
                     }
 
                     subtitleView
@@ -3989,110 +4084,104 @@ private struct NativeAuthScreen: View {
 
     var body: some View {
         NavigationView {
-            ZStack {
-                LinearGradient(
-                    colors: [Color(red: 9 / 255, green: 9 / 255, blue: 11 / 255), .black],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .ignoresSafeArea()
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 20) {
+                    HStack {
+                        Capsule()
+                            .fill(Color.white.opacity(0.16))
+                            .frame(width: 42, height: 5)
+                        Spacer()
+                    }
+                    .padding(.top, 6)
 
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 20) {
-                        HStack {
-                            Text(mode == .login ? "Log in" : "Register")
-                                .font(.system(size: 14, weight: .black))
-                                .foregroundStyle(.white)
-                            Spacer()
-                        }
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 14)
-                        .background(Color.black.opacity(0.75))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 999, style: .continuous)
-                                .stroke(nativeBorder, lineWidth: 1)
-                        )
-                        .clipShape(Capsule())
-
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text(mode == .login ? "Pick up where your taste graph left off." : "Make your travel graph yours.")
-                                .font(.system(size: 34, weight: .black))
-                                .foregroundStyle(.white)
-                            Text(mode == .login
-                                 ? "Use Google or your email to continue natively."
-                                 : "Start with Google or create your account natively.")
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.58))
-                            if let promptReason, !promptReason.isEmpty {
-                                Text(promptReason)
-                                    .font(.system(size: 14, weight: .bold))
-                                    .foregroundStyle(nativeAccent)
-                            }
-                        }
-
-                        VStack(spacing: 14) {
+                    HStack(alignment: .top, spacing: 12) {
+                        Text("Sign in to your account")
+                            .font(.system(size: 30, weight: .black))
+                            .foregroundStyle(.white)
+                        Spacer()
+                        if allowsDismissal {
                             Button {
-                                Task {
-                                    await submitApple()
-                                }
+                                appState.dismissAuthGate()
                             } label: {
-                                HStack {
-                                    Spacer()
-                                    if isSubmitting {
-                                        ProgressView().tint(.white)
-                                    } else {
-                                        Label(
-                                            mode == .login ? "Continue with Apple" : "Sign up with Apple",
-                                            systemImage: "apple.logo"
-                                        )
-                                        .font(.system(size: 16, weight: .bold))
-                                    }
-                                    Spacer()
-                                }
-                                .padding(.vertical, 16)
-                                .background(Color.white)
-                                .foregroundStyle(.black)
-                                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.8))
+                                    .frame(width: 38, height: 38)
+                                    .background(nativeSurface)
+                                    .overlay(Circle().stroke(nativeBorder, lineWidth: 1))
+                                    .clipShape(Circle())
                             }
-                            .disabled(isSubmitting)
+                            .buttonStyle(.plain)
+                        }
+                    }
 
-                            Button {
-                                Task {
-                                    await submitGoogle()
+                    VStack(spacing: 12) {
+                        Button {
+                            Task {
+                                await submitApple()
+                            }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Spacer()
+                                if isSubmitting {
+                                    ProgressView().tint(.black)
+                                } else {
+                                    Image(systemName: "apple.logo")
+                                        .font(.system(size: 18, weight: .bold))
+                                    Text(mode == .login ? "Continue with Apple" : "Sign up with Apple")
+                                        .font(.system(size: 16, weight: .black))
                                 }
-                            } label: {
-                                HStack {
-                                    Spacer()
-                                    if isSubmitting {
-                                        ProgressView().tint(.white)
-                                    } else {
+                                Spacer()
+                            }
+                            .padding(.vertical, 16)
+                            .background(Color.white)
+                            .foregroundStyle(.black)
+                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        }
+                        .disabled(isSubmitting)
+
+                        Button {
+                            Task {
+                                await submitGoogle()
+                            }
+                        } label: {
+                            HStack(spacing: 10) {
+                                Spacer()
+                                if isSubmitting {
+                                    ProgressView().tint(.black)
+                                } else {
+                                    Image("GoogleSignInMark")
+                                        .resizable()
+                                        .interpolation(.high)
+                                        .frame(width: 22, height: 22)
                                     Text(mode == .login ? "Continue with Google" : "Sign up with Google")
-                                        .font(.system(size: 16, weight: .bold))
-                                    }
-                                    Spacer()
+                                        .font(.system(size: 16, weight: .black))
                                 }
-                                .padding(.vertical, 16)
-                                .background(Color.white.opacity(0.08))
-                                .foregroundStyle(.white)
-                                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                                Spacer()
                             }
-                            .disabled(isSubmitting)
-
-                            HStack(spacing: 12) {
-                                Rectangle().fill(nativeBorder).frame(height: 1)
-                                Text("OR")
-                                    .font(.system(size: 11, weight: .black))
-                                    .foregroundStyle(.white.opacity(0.35))
-                                Rectangle().fill(nativeBorder).frame(height: 1)
-                            }
-
-                            Picker("Mode", selection: $mode) {
-                                ForEach(AuthMode.allCases) { item in
-                                    Text(item.rawValue).tag(item)
-                                }
-                            }
-                            .pickerStyle(.segmented)
+                            .padding(.vertical, 16)
+                            .background(Color.white)
+                            .foregroundStyle(.black)
+                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                         }
+                        .disabled(isSubmitting)
+
+                        HStack(spacing: 12) {
+                            Rectangle().fill(nativeBorder).frame(height: 1)
+                            Text("OR")
+                                .font(.system(size: 11, weight: .black))
+                                .foregroundStyle(.white.opacity(0.35))
+                            Rectangle().fill(nativeBorder).frame(height: 1)
+                        }
+                    }
+
+                    VStack(spacing: 14) {
+                        Picker("Mode", selection: $mode) {
+                            ForEach(AuthMode.allCases) { item in
+                                Text(item.rawValue).tag(item)
+                            }
+                        }
+                        .pickerStyle(.segmented)
 
                         NativeSurfaceCard {
                             VStack(spacing: 16) {
@@ -4143,24 +4232,15 @@ private struct NativeAuthScreen: View {
                             }
                         }
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 24)
-                    .padding(.bottom, 28)
                 }
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 28)
             }
+            .background(Color.black.ignoresSafeArea())
+            .navigationBarHidden(true)
         }
         .navigationViewStyle(.stack)
-        .overlay(alignment: .topTrailing) {
-            if allowsDismissal {
-                Button("Close") {
-                    appState.dismissAuthGate()
-                }
-                .font(.system(size: 15, weight: .black))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-            }
-        }
     }
 
     private var canSubmit: Bool {
@@ -4225,6 +4305,7 @@ private struct NativeAuthScreen: View {
             errorMessage = "Could not continue with Apple right now."
         }
     }
+
 }
 
 private struct NativeOnboardingScreen: View {
@@ -6884,7 +6965,7 @@ private struct NativeProfileScreen: View {
                                 Text("Settings")
                                     .font(.system(size: 18, weight: .black))
                                     .foregroundStyle(.white)
-                                Text("Manage your account session and test native auth flows.")
+                                Text("Manage your account, notifications, and safety controls.")
                                     .font(.system(size: 14, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.64))
                             }
@@ -6892,7 +6973,7 @@ private struct NativeProfileScreen: View {
 
                         NativeSurfaceCard {
                             VStack(alignment: .leading, spacing: 14) {
-                                Text("Authentication")
+                                Text("Account")
                                     .font(.system(size: 15, weight: .black))
                                     .foregroundStyle(.white)
 
@@ -6906,7 +6987,13 @@ private struct NativeProfileScreen: View {
                                             .foregroundStyle(.white.opacity(0.6))
                                     }
 
-                                    Text("Use these actions to simulate logout and return to the native login screen.")
+                                    if let email = user.email, !email.isEmpty {
+                                        Text(email)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.5))
+                                    }
+
+                                    Text("Signed in on this device.")
                                         .font(.system(size: 13, weight: .medium))
                                         .foregroundStyle(.white.opacity(0.62))
 
@@ -6929,33 +7016,9 @@ private struct NativeProfileScreen: View {
                                             .foregroundStyle(.white)
                                             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                                         }
-
-                                        Button {
-                                            appState.logout()
-                                            showSettingsSheet = false
-                                            appState.presentAuthGate(reason: "Log in to keep building your travel graph.")
-                                        } label: {
-                                            HStack {
-                                                Image(systemName: "person.crop.circle.badge.plus")
-                                                    .font(.system(size: 15, weight: .bold))
-                                                Text("Go to login")
-                                                    .font(.system(size: 15, weight: .black))
-                                                Spacer()
-                                            }
-                                            .padding(.horizontal, 16)
-                                            .padding(.vertical, 14)
-                                            .frame(maxWidth: .infinity)
-                                            .background(nativeAccent.opacity(0.14))
-                                            .foregroundStyle(nativeAccent)
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                                    .stroke(nativeAccent.opacity(0.35), lineWidth: 1)
-                                            )
-                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                        }
                                     }
                                 } else {
-                                    Text("You are currently signed out. Return to the auth screen to sign in again.")
+                                    Text("You are currently signed out.")
                                         .font(.system(size: 13, weight: .medium))
                                         .foregroundStyle(.white.opacity(0.62))
 
@@ -6987,11 +7050,11 @@ private struct NativeProfileScreen: View {
 
                         NativeSurfaceCard {
                             VStack(alignment: .leading, spacing: 14) {
-                                Text("Push notifications")
+                                Text("Notifications")
                                     .font(.system(size: 15, weight: .black))
                                     .foregroundStyle(.white)
 
-                                Text("Enable notifications so we can test follows, vibin, and recommendation alerts on this device.")
+                                Text("Stay up to date on follows, vibin, comments, and recommendations.")
                                     .font(.system(size: 13, weight: .medium))
                                     .foregroundStyle(.white.opacity(0.62))
 
@@ -7003,7 +7066,7 @@ private struct NativeProfileScreen: View {
                                     HStack {
                                         Image(systemName: "bell.badge")
                                             .font(.system(size: 15, weight: .bold))
-                                        Text("Allow notifications")
+                                        Text("Notification settings")
                                             .font(.system(size: 15, weight: .black))
                                         Spacer()
                                     }
@@ -7111,12 +7174,14 @@ private struct NativeProfileScreen: View {
             .navigationViewStyle(.stack)
         }
         .task {
-            if appState.currentUser != nil && appState.savedPlaces.isEmpty && appState.collections.isEmpty {
+            guard appState.currentUser != nil else { return }
+            if appState.savedPlaces.isEmpty && appState.collections.isEmpty {
                 await appState.refreshSavedContent()
+            }
+            if appState.myMoments.isEmpty {
+                await appState.refreshProfile()
             } else if appState.ownFeedItemsCache.isEmpty {
-                if appState.currentUser != nil {
-                    await appState.refreshSavedContent()
-                }
+                await appState.refreshProfile()
             }
             if let user = appState.currentUser,
                ownFollowersCount == nil,
@@ -7284,7 +7349,7 @@ private struct NativeFeedScreen: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 18) {
+            LazyVStack(alignment: .leading, spacing: 18, pinnedViews: [.sectionHeaders]) {
                 HStack(alignment: .top, spacing: 14) {
                     Text("Feed")
                         .font(.system(size: 32, weight: .black))
@@ -7325,32 +7390,42 @@ private struct NativeFeedScreen: View {
                 }
 
                 if !isSuggestedDismissed && !appState.suggestedTravelers.isEmpty {
-                    HStack {
-                        NativeSectionTitle("Suggested people")
-                        Spacer()
-                        Button {
-                            isSuggestedDismissed = true
-                        } label: {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 12, weight: .black))
-                                .foregroundStyle(.white.opacity(0.55))
-                                .frame(width: 30, height: 30)
-                                .background(Color.white.opacity(0.06))
-                                .clipShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 12) {
-                            ForEach(appState.suggestedTravelers.prefix(6)) { traveler in
-                                NavigationLink {
-                                    NativeTravelerProfileScreen(initialTraveler: traveler)
+                    Section {
+                        Color.clear
+                            .frame(height: 0)
+                    } header: {
+                        VStack(alignment: .leading, spacing: 12) {
+                            HStack {
+                                NativeSectionTitle("Suggested people")
+                                Spacer()
+                                Button {
+                                    isSuggestedDismissed = true
                                 } label: {
-                                    NativeSuggestedTravelerCard(traveler: traveler)
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 12, weight: .black))
+                                        .foregroundStyle(.white.opacity(0.55))
+                                        .frame(width: 30, height: 30)
+                                        .background(Color.white.opacity(0.06))
+                                        .clipShape(Circle())
                                 }
                                 .buttonStyle(.plain)
                             }
+
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                HStack(spacing: 12) {
+                                    ForEach(appState.suggestedTravelers.prefix(6)) { traveler in
+                                        NavigationLink {
+                                            NativeTravelerProfileScreen(initialTraveler: traveler)
+                                        } label: {
+                                            NativeSuggestedTravelerCard(traveler: traveler)
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
                         }
+                        .padding(.vertical, 10)
+                        .background(Color.black.opacity(0.98))
                     }
                 }
 
@@ -10160,32 +10235,6 @@ private struct NativePlaceDetailScreen: View {
                     .buttonStyle(.plain)
                 }
 
-                if !relatedPlaces.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        NativeSectionTitle("Nearby picks")
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 12) {
-                                ForEach(relatedPlaces.prefix(6)) { relatedPlace in
-                                    NavigationLink {
-                                        NativePlaceDetailScreen(initialPlace: relatedPlace)
-                                    } label: {
-                                        VStack(alignment: .leading, spacing: 8) {
-                                            NativeRemoteImage(url: relatedPlace.image)
-                                                .frame(width: 178, height: 118)
-                                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                            Text(relatedPlace.name)
-                                                .font(.system(size: 14, weight: .black))
-                                                .foregroundStyle(.white)
-                                                .lineLimit(2)
-                                        }
-                                        .frame(width: 178, alignment: .leading)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                    }
-                }
             }
 
             if let errorMessage {
