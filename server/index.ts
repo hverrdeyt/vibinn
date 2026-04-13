@@ -494,16 +494,18 @@ async function createNotification(input: {
   });
 }
 
-function mapUserForClient(user: { id: string; username: string; displayName: string | null; email: string }) {
+function mapUserForClient(user: { id: string; username: string; displayName: string | null; email: string; bio?: string | null; avatarUrl?: string | null }) {
   return {
     id: user.id,
     username: user.username,
     displayName: user.displayName ?? user.username,
     email: user.email,
+    bio: user.bio ?? null,
+    avatarUrl: user.avatarUrl ?? null,
   };
 }
 
-async function mapUserForClientWithTasteState(user: { id: string; username: string; displayName: string | null; email: string }) {
+async function mapUserForClientWithTasteState(user: { id: string; username: string; displayName: string | null; email: string; bio?: string | null; avatarUrl?: string | null }) {
   const preferences = await prisma.userPreference.findUnique({
     where: { userId: user.id },
     select: { onboardingCompleted: true },
@@ -558,6 +560,56 @@ async function ensureDefaultUserRelations(userId: string) {
       console.error('ensureDefaultUserRelations failed', task.reason);
     }
   }
+}
+
+async function eraseAccount(userId: string) {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      username: true,
+      email: true,
+    },
+  });
+
+  if (!user) {
+    throw new Error('User not found');
+  }
+
+  const deletedSuffix = `${Date.now()}-${user.id.slice(0, 8)}`;
+  const deletedUsername = await buildUniqueUsername(`deleted.${user.id.slice(0, 8)}`);
+  const deletedEmail = `deleted+${deletedSuffix}@vibinn.invalid`;
+  const deletedAvatar = 'https://placehold.co/400x400/111111/D3FF48?text=D';
+
+  await prisma.$transaction([
+    prisma.follow.deleteMany({
+      where: {
+        OR: [
+          { sourceUserId: user.id },
+          { targetUserId: user.id },
+        ],
+      },
+    }),
+    prisma.userDevice.updateMany({
+      where: { userId: user.id },
+      data: { isActive: false },
+    }),
+    prisma.session.deleteMany({
+      where: { userId: user.id },
+    }),
+    prisma.user.update({
+      where: { id: user.id },
+      data: {
+        username: deletedUsername,
+        displayName: 'Deleted account',
+        email: deletedEmail,
+        passwordHash: hashPassword(crypto.randomUUID()),
+        bio: 'This account has been deleted.',
+        avatarUrl: deletedAvatar,
+        appleSubject: null,
+      },
+    }),
+  ]);
 }
 
 function normalizeLocationPart(part: string) {
@@ -5208,6 +5260,12 @@ app.post('/api/waitlist', async (req, res) => {
 app.patch('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
   void updateProfile(req.authUserId, req.body)
     .then((user) => res.json({ user }))
+    .catch((error) => handleError(res, error));
+});
+
+app.delete('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
+  void eraseAccount(req.authUserId!)
+    .then(() => res.status(204).send())
     .catch((error) => handleError(res, error));
 });
 

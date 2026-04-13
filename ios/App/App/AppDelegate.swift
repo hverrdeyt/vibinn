@@ -17,6 +17,7 @@ private let useNativeIOSShell = true
 private let nativeDiscoveryLayoutDebugMode = false
 private let nativeTodayRecommendationDebugMode = false
 private let nativeScoreDebugToolsEnabled = false
+private let nativePlaceDetailLayoutDebugMode = false
 private let nativeDiscoveryScoreDebugMode = nativeScoreDebugToolsEnabled
 private let nativeTodayRecommendationScoreDebugMode = nativeScoreDebugToolsEnabled
 private let nativeTravelerScoreDebugMode = nativeScoreDebugToolsEnabled
@@ -304,6 +305,8 @@ private struct NativeAuthUser: Codable {
     let displayName: String?
     let username: String
     let email: String?
+    let bio: String?
+    let avatarUrl: String?
     let hasCompletedTastePreferences: Bool?
 }
 
@@ -1141,6 +1144,36 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         pendingPostAuthAction = nil
     }
 
+    func updateProfile(
+        displayName: String,
+        username: String,
+        bio: String,
+        avatarUrl: String
+    ) async throws {
+        guard let authToken else {
+            throw NSError(domain: "NativeProfileUpdate", code: 1, userInfo: [NSLocalizedDescriptionKey: "Login required"])
+        }
+
+        let updatedUser = try await api.updateProfile(
+            token: authToken,
+            displayName: displayName,
+            username: username,
+            bio: bio,
+            avatarUrl: avatarUrl
+        )
+
+        currentUser = updatedUser
+    }
+
+    func deleteAccount() async throws {
+        guard let authToken else {
+            throw NSError(domain: "NativeDeleteAccount", code: 1, userInfo: [NSLocalizedDescriptionKey: "Login required"])
+        }
+
+        try await api.deleteProfile(token: authToken)
+        logout()
+    }
+
     func requestPushNotifications() async {
         let settings: UNNotificationSettings = await withCheckedContinuation { continuation in
             UNUserNotificationCenter.current().getNotificationSettings { settings in
@@ -1264,6 +1297,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     displayName: currentUser.displayName,
                     username: currentUser.username,
                     email: currentUser.email,
+                    bio: currentUser.bio,
+                    avatarUrl: currentUser.avatarUrl,
                     hasCompletedTastePreferences: true
                 )
             }
@@ -1531,6 +1566,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     displayName: currentUser.displayName,
                     username: currentUser.username,
                     email: currentUser.email,
+                    bio: currentUser.bio,
+                    avatarUrl: currentUser.avatarUrl,
                     hasCompletedTastePreferences: true
                 )
             }
@@ -2426,6 +2463,13 @@ private struct NativeAPIClient {
         let onboardingCompleted: Bool
     }
 
+    private struct UpdateProfileBody: Encodable {
+        let displayName: String
+        let username: String
+        let bio: String
+        let avatarUrl: String
+    }
+
     func savePreferences(
         token: String,
         selectedInterests: [String],
@@ -2448,6 +2492,35 @@ private struct NativeAPIClient {
 
     func getProfile(token: String) async throws -> NativeProfileResponse {
         try await request(path: "/api/profile/me", method: "GET", token: token)
+    }
+
+    func updateProfile(
+        token: String,
+        displayName: String,
+        username: String,
+        bio: String,
+        avatarUrl: String
+    ) async throws -> NativeAuthUser {
+        let response: NativeAuthSessionResponse = try await request(
+            path: "/api/profile/me",
+            method: "PATCH",
+            token: token,
+            body: UpdateProfileBody(
+                displayName: displayName,
+                username: username,
+                bio: bio,
+                avatarUrl: avatarUrl
+            )
+        )
+        return response.user
+    }
+
+    func deleteProfile(token: String) async throws {
+        let _: NativeEmptyResponse = try await request(
+            path: "/api/profile/me",
+            method: "DELETE",
+            token: token
+        )
     }
 
     func getBookmarks(token: String) async throws -> [NativePlace] {
@@ -6765,8 +6838,8 @@ private struct NativeProfileScreen: View {
             id: user.id,
             username: user.username,
             displayName: user.displayName,
-            avatar: nil,
-            bio: user.email,
+            avatar: user.avatarUrl,
+            bio: user.bio ?? user.email,
             descriptor: nil,
             matchScore: nil,
             followersCount: ownFollowersCount,
@@ -6789,7 +6862,7 @@ private struct NativeProfileScreen: View {
                         VStack(alignment: .leading, spacing: 10) {
                             HStack(alignment: .top, spacing: 14) {
                                 NativeAvatarCircle(
-                                    url: nil,
+                                    url: user.avatarUrl,
                                     fallbackText: user.displayName ?? user.username,
                                     size: 60,
                                     fontSize: 21
@@ -6967,10 +7040,13 @@ private struct NativeProfileScreen: View {
             }
         }
         .sheet(isPresented: $showEditProfileSheet) {
-            NativePlaceholderSheet(
-                title: "Edit profile",
-                message: "Native edit profile flow will plug in here next."
-            )
+            if let user = appState.currentUser {
+                NativeEditProfileSheet(
+                    user: user,
+                    onClose: { showEditProfileSheet = false },
+                    onDeleted: { showEditProfileSheet = false }
+                )
+            }
         }
         .sheet(isPresented: $showSettingsSheet) {
             NavigationView {
@@ -7360,6 +7436,223 @@ private struct NativeProfileScreen: View {
             expandedSavedCities.remove(city)
         } else {
             expandedSavedCities.insert(city)
+        }
+    }
+}
+
+private struct NativeEditProfileSheet: View {
+    @EnvironmentObject private var appState: NativeAppState
+
+    let user: NativeAuthUser
+    let onClose: () -> Void
+    let onDeleted: () -> Void
+
+    @State private var displayName: String
+    @State private var username: String
+    @State private var bio: String
+    @State private var avatarUrl: String
+    @State private var errorMessage: String?
+    @State private var isSaving = false
+    @State private var isDeleting = false
+    @State private var showDeleteConfirmation = false
+
+    init(user: NativeAuthUser, onClose: @escaping () -> Void, onDeleted: @escaping () -> Void) {
+        self.user = user
+        self.onClose = onClose
+        self.onDeleted = onDeleted
+        _displayName = State(initialValue: user.displayName ?? "")
+        _username = State(initialValue: user.username)
+        _bio = State(initialValue: user.bio ?? "")
+        _avatarUrl = State(initialValue: user.avatarUrl ?? "")
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Text("Edit profile")
+                        .font(.system(size: 18, weight: .black))
+                        .foregroundStyle(.white)
+                    Spacer()
+                }
+                .overlay(alignment: .trailing) {
+                    Button {
+                        onClose()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 18)
+
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        NativeSurfaceCard {
+                            HStack(spacing: 14) {
+                                NativeAvatarCircle(
+                                    url: avatarUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : avatarUrl,
+                                    fallbackText: displayName.isEmpty ? username : displayName,
+                                    size: 68,
+                                    fontSize: 24
+                                )
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(displayName.isEmpty ? user.displayName ?? user.username : displayName)
+                                        .font(.system(size: 18, weight: .black))
+                                        .foregroundStyle(.white)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    Text("@\(username)")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(.white.opacity(0.58))
+                                    if let email = user.email, !email.isEmpty {
+                                        Text(email)
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.42))
+                                    }
+                                }
+                            }
+                        }
+
+                        NativeSurfaceCard {
+                            VStack(spacing: 16) {
+                                NativeInputField(title: "Display name", text: $displayName, keyboard: .default, secure: false)
+                                NativeInputField(title: "Username", text: $username, keyboard: .default, secure: false)
+                                NativeMultilineInputField(title: "Bio", text: $bio, height: 108)
+                                NativeInputField(title: "Avatar URL", text: $avatarUrl, keyboard: .URL, secure: false)
+
+                                if let errorMessage {
+                                    Text(errorMessage)
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundStyle(.red.opacity(0.92))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+
+                                Button {
+                                    Task {
+                                        await saveProfile()
+                                    }
+                                } label: {
+                                    HStack {
+                                        Spacer()
+                                        if isSaving {
+                                            ProgressView().tint(.black)
+                                        } else {
+                                            Text("Save changes")
+                                                .font(.system(size: 16, weight: .black))
+                                        }
+                                        Spacer()
+                                    }
+                                    .padding(.vertical, 16)
+                                    .background(nativeAccent)
+                                    .foregroundStyle(.black)
+                                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(!canSave)
+                            }
+                        }
+
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Danger zone")
+                                    .font(.system(size: 15, weight: .black))
+                                    .foregroundStyle(.white)
+                                Text("Deleting your account will sign you out on this device and remove your personal profile identity.")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.62))
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                Button {
+                                    showDeleteConfirmation = true
+                                } label: {
+                                    HStack {
+                                        Image(systemName: "trash")
+                                            .font(.system(size: 15, weight: .bold))
+                                        if isDeleting {
+                                            ProgressView().tint(.red)
+                                        } else {
+                                            Text("Delete account")
+                                                .font(.system(size: 15, weight: .black))
+                                        }
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 14)
+                                    .frame(maxWidth: .infinity)
+                                    .background(Color.red.opacity(0.12))
+                                    .foregroundStyle(Color.red.opacity(0.92))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                            .stroke(Color.red.opacity(0.36), lineWidth: 1)
+                                    )
+                                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isDeleting)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 30)
+                }
+            }
+        }
+        .alert("Delete account?", isPresented: $showDeleteConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                Task {
+                    await deleteAccount()
+                }
+            }
+        } message: {
+            Text("This will remove your account identity and sign you out on this device.")
+        }
+    }
+
+    private var canSave: Bool {
+        !isSaving
+            && !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func saveProfile() async {
+        errorMessage = nil
+        isSaving = true
+        defer { isSaving = false }
+
+        do {
+            try await appState.updateProfile(
+                displayName: displayName.trimmingCharacters(in: .whitespacesAndNewlines),
+                username: username.trimmingCharacters(in: .whitespacesAndNewlines),
+                bio: bio.trimmingCharacters(in: .whitespacesAndNewlines),
+                avatarUrl: avatarUrl.trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+            onClose()
+        } catch {
+            errorMessage = "Could not save your profile right now."
+        }
+    }
+
+    private func deleteAccount() async {
+        errorMessage = nil
+        isDeleting = true
+        defer { isDeleting = false }
+
+        do {
+            try await appState.deleteAccount()
+            onDeleted()
+        } catch {
+            errorMessage = "Could not delete your account right now."
         }
     }
 }
@@ -9823,30 +10116,55 @@ private struct NativeProfileMiniStat: View {
     }
 }
 
+private enum NativePlaceDetailSheetState {
+    case collapsed
+    case `default`
+    case expanded
+}
+
 private struct NativePlaceDetailScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @Environment(\.openURL) private var openURL
     @State private var place: NativePlace
     @State private var travelerMoments: [NativePlaceTravelerMoment] = []
-    @State private var relatedPlaces: [NativePlace] = []
     @State private var selectedMediaIndex = 0
-    @State private var interactiveMapRegion = MKCoordinateRegion()
+    @State private var sheetState: NativePlaceDetailSheetState = .default
     @State private var isLoading = false
     @State private var isTogglingBookmark = false
     @State private var errorMessage: String?
     @State private var shareURL: URL?
+    @State private var sheetContentAtTop = true
 
     init(initialPlace: NativePlace) {
         _place = State(initialValue: initialPlace)
     }
 
     var body: some View {
-        ScrollView(showsIndicators: false) {
-            resolvedPlaceContent
-            .padding(20)
-            .padding(.bottom, 28)
+        GeometryReader { geometry in
+            ZStack(alignment: .bottom) {
+                mapBackground(in: geometry)
+
+                placeDetailSheet(in: geometry)
+
+                if sheetState != .collapsed {
+                    floatingActionBar(bottomInset: geometry.safeAreaInsets.bottom)
+                        .padding(.horizontal, 20)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .zIndex(2)
+                } else if openDirectionsURL != nil {
+                    collapsedDirectionsCTA(bottomInset: geometry.safeAreaInsets.bottom)
+                        .padding(.horizontal, 20)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .zIndex(2)
+                }
+
+                if nativePlaceDetailLayoutDebugMode {
+                    placeDetailDebugOverlay(in: geometry)
+                        .zIndex(3)
+                }
+            }
+            .background(Color.black.ignoresSafeArea())
         }
-        .background(Color.black.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarHidden(false)
         .toolbar {
@@ -9877,76 +10195,16 @@ private struct NativePlaceDetailScreen: View {
                 .buttonStyle(.plain)
             }
         }
-        .safeAreaInset(edge: .bottom) {
-            HStack(spacing: 12) {
-                Button {
-                    appState.presentCheckInFlow(prefilledPlace: place)
-                } label: {
-                    HStack {
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 15, weight: .bold))
-                            Text("Been Here")
-                                .font(.system(size: 15, weight: .black))
-                        }
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(Color.white.opacity(0.1))
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-
-                Button {
-                    Task {
-                        await toggleBookmark()
-                    }
-                } label: {
-                    HStack {
-                        Spacer()
-                        HStack(spacing: 8) {
-                            Image(systemName: appState.isBookmarked(place.id) ? "bookmark.fill" : "bookmark")
-                                .font(.system(size: 15, weight: .bold))
-                            if isTogglingBookmark {
-                                ProgressView().tint(.black)
-                            } else {
-                                Text(appState.isBookmarked(place.id) ? "Saved" : "Save")
-                                    .font(.system(size: 15, weight: .black))
-                            }
-                        }
-                        Spacer()
-                    }
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .fill(appState.isBookmarked(place.id) ? nativeAccent : Color.white.opacity(0.1))
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 20, style: .continuous)
-                            .stroke(nativeAccent, lineWidth: 1.5)
-                    )
-                    .foregroundStyle(appState.isBookmarked(place.id) ? .black : nativeAccent)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .contentShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                .disabled(isTogglingBookmark)
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 10)
-            .padding(.bottom, 10)
-            .background(Color.black.opacity(0.94))
-        }
         .onAppear {
             appState.pushFloatingTabBarHidden()
         }
         .onDisappear {
             appState.popFloatingTabBarHidden()
+        }
+        .onChange(of: sheetState) { nextState in
+            nativeLogger.log(
+                "place detail sheet state id=\(self.place.id, privacy: .public) state=\(String(describing: nextState), privacy: .public)"
+            )
         }
         .task {
             await loadLatestPlace()
@@ -9959,17 +10217,174 @@ private struct NativePlaceDetailScreen: View {
         }
     }
 
-    private var resolvedPlaceContent: some View {
-        return VStack(alignment: .leading, spacing: 22) {
-            ZStack(alignment: .topLeading) {
-                TabView(selection: $selectedMediaIndex) {
-                    ForEach(Array(mediaUrls.enumerated()), id: \.offset) { index, url in
-                        NativeRemoteImage(url: url)
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .clipped()
-                            .tag(index)
+    @ViewBuilder
+    private func placeDetailSheet(in geometry: GeometryProxy) -> some View {
+        let topInset = geometry.safeAreaInsets.top
+        let bottomInset = geometry.safeAreaInsets.bottom
+        let height = sheetExpandedHeight(
+            containerHeight: geometry.size.height,
+            topInset: topInset,
+            bottomInset: bottomInset
+        )
+        let offset = sheetOffset(
+            for: sheetState,
+            containerHeight: geometry.size.height,
+            topInset: topInset,
+            bottomInset: bottomInset
+        )
+        let contentBottomPadding = max(geometry.safeAreaInsets.bottom + 112, 152)
+
+        ZStack(alignment: .top) {
+            Group {
+                if sheetState == .collapsed {
+                    resolvedPlaceContent(bottomInset: geometry.safeAreaInsets.bottom, includeActions: false)
+                        .padding(.bottom, contentBottomPadding)
+                        .frame(maxHeight: .infinity, alignment: .top)
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(compactSheetGesture())
+                } else {
+                    ZStack {
+                        NativePlaceExpandedScrollContainer(
+                            isScrollEnabled: sheetState == .expanded,
+                            showsIndicators: false,
+                            onTopStateChange: { isAtTop in
+                                sheetContentAtTop = isAtTop
+                            },
+                            onPullDownFromTop: {
+                                guard sheetState == .expanded else { return }
+                                withAnimation(placeSheetTransitionAnimation) {
+                                    sheetState = .collapsed
+                                }
+                            }
+                        ) {
+                            resolvedPlaceContent(bottomInset: geometry.safeAreaInsets.bottom, includeActions: false)
+                                .padding(.bottom, contentBottomPadding)
+                        }
+
+                        if sheetState == .default {
+                            VStack(spacing: 0) {
+                                Color.clear
+                                    .frame(height: 430)
+                                    .allowsHitTesting(false)
+                                Color.clear
+                                    .contentShape(Rectangle())
+                                    .simultaneousGesture(compactSheetGesture())
+                            }
+                        }
                     }
                 }
+            }
+
+            if (sheetState == .default || (sheetState == .expanded && sheetContentAtTop)), let topTagLabel {
+                HStack(spacing: 0) {
+                    Text(topTagLabel)
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(nativeAccent)
+                        .clipShape(Capsule())
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 16)
+                .allowsHitTesting(false)
+                .zIndex(1)
+            }
+
+            sheetInteractionHeader()
+                .padding(.top, 10)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height, alignment: .top)
+        .modifier(NativePlaceDetailSheetSurfaceModifier())
+        .offset(y: offset)
+        .ignoresSafeArea(edges: .bottom)
+    }
+
+    private func sheetInteractionHeader() -> some View {
+        Color.clear
+        .frame(maxWidth: .infinity)
+        .frame(height: sheetState == .expanded ? 20 : 12, alignment: .top)
+        .contentShape(Rectangle())
+        .gesture(sheetControlGesture())
+    }
+
+    private func mapBackground(in geometry: GeometryProxy) -> some View {
+        let topInset = geometry.safeAreaInsets.top
+        let bottomInset = geometry.safeAreaInsets.bottom
+        let coveredBottomInset = sheetVisibleHeight(
+            for: .default,
+            containerHeight: geometry.size.height,
+            topInset: topInset,
+            bottomInset: bottomInset
+        )
+
+        return ZStack {
+            if let displayMapRegion, let mapCoordinate {
+                NativePlaceBackgroundMap(
+                    region: displayMapRegion,
+                    coordinate: mapCoordinate,
+                    userCoordinate: appState.currentCoordinate.map { CLLocationCoordinate2D(latitude: $0.latitude, longitude: $0.longitude) },
+                    coveredBottomInset: coveredBottomInset,
+                    isInteractive: true
+                )
+                .ignoresSafeArea()
+            } else {
+                Color.black.ignoresSafeArea()
+            }
+
+            LinearGradient(
+                colors: [
+                    Color.black.opacity(0.08),
+                    Color.black.opacity(0.18),
+                    Color.black.opacity(0.48),
+                    Color.black.opacity(0.78)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+            .allowsHitTesting(false)
+
+            if sheetState == .default, mapCoordinate != nil {
+                defaultModePlaceMarkerOverlay(topInset: topInset, containerHeight: geometry.size.height)
+                    .allowsHitTesting(false)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func defaultModePlaceMarkerOverlay(topInset: CGFloat, containerHeight: CGFloat) -> some View {
+        let defaultVisibleMapHeight = max(containerHeight / 7.0, 72)
+        let markerY = topInset + max(defaultVisibleMapHeight * 0.38, 32)
+
+        Image("VibinnMapPin")
+            .resizable()
+            .scaledToFill()
+            .frame(width: 34, height: 34)
+            .clipShape(Circle())
+            .overlay(
+                Circle()
+                    .stroke(Color.black.opacity(0.16), lineWidth: 2)
+            )
+            .shadow(color: Color.black.opacity(0.28), radius: 10, y: 6)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .padding(.top, markerY)
+    }
+
+    private func resolvedPlaceContent(bottomInset: CGFloat, includeActions: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 22) {
+            ZStack(alignment: .topLeading) {
+                TabView(selection: $selectedMediaIndex) {
+                    ForEach(heroMediaItems) { item in
+                        heroMediaView(item)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .clipped()
+                            .tag(item.index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
                 .frame(maxWidth: .infinity)
                 .frame(height: 430)
                 .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
@@ -9987,8 +10402,20 @@ private struct NativePlaceDetailScreen: View {
                     .frame(height: 118)
                     .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
                 }
-
-                HStack(alignment: .top) {
+                .overlay(alignment: .bottom) {
+                    if heroMediaItems.count > 1 {
+                        HStack(spacing: 6) {
+                            ForEach(heroMediaItems) { item in
+                                Capsule()
+                                    .fill(item.index == selectedMediaIndex ? nativeAccent : Color.white.opacity(0.26))
+                                    .frame(width: item.index == selectedMediaIndex ? 22 : 10, height: 4)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 14)
+                    }
+                }
+                .overlay(alignment: .topLeading) {
                     if let topTag = topTagLabel {
                         Text(topTag)
                             .font(.system(size: 12, weight: .black))
@@ -9997,26 +10424,14 @@ private struct NativePlaceDetailScreen: View {
                             .padding(.vertical, 8)
                             .background(nativeAccent)
                             .clipShape(Capsule())
+                            .padding(16)
                     }
-                    Spacer(minLength: 0)
-                }
-                .padding(16)
-
-                if mediaUrls.count > 1 {
-                    HStack(spacing: 6) {
-                        ForEach(Array(mediaUrls.enumerated()), id: \.offset) { index, _ in
-                            Capsule()
-                                .fill(index == selectedMediaIndex ? nativeAccent : Color.white.opacity(0.14))
-                                .frame(width: index == selectedMediaIndex ? 30 : 12, height: 4)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                    .padding(.bottom, 18)
                 }
 
             }
             .frame(maxWidth: .infinity)
             .frame(height: 430)
+            .padding(.horizontal, -20)
 
             VStack(alignment: .leading, spacing: 12) {
                 Text(place.name)
@@ -10197,44 +10612,7 @@ private struct NativePlaceDetailScreen: View {
                     }
                 }
 
-                if let mapRegion {
-                    NativeSurfaceCard {
-                        VStack(alignment: .leading, spacing: 10) {
-                            Text("Maps overview")
-                                .font(.system(size: 11, weight: .black))
-                                .foregroundStyle(.white.opacity(0.45))
-                                .textCase(.uppercase)
-                            Map(coordinateRegion: $interactiveMapRegion, interactionModes: .all)
-                                .frame(height: 190)
-                                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                                .onAppear {
-                                    interactiveMapRegion = mapRegion
-                                }
-                        }
-                    }
-
-                    if let openInMapsURL {
-                        Button {
-                            openURL(openInMapsURL)
-                        } label: {
-                            HStack(spacing: 10) {
-                                Image(systemName: "map")
-                                    .font(.system(size: 15, weight: .bold))
-                                Text("Open in Maps")
-                                    .font(.system(size: 15, weight: .black))
-                                Spacer()
-                                Image(systemName: "arrow.up.right")
-                                    .font(.system(size: 14, weight: .bold))
-                            }
-                            .foregroundStyle(.black)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 16)
-                            .background(nativeAccent)
-                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                } else if let openInMapsURL {
+                if let openInMapsURL {
                     Button {
                         openURL(openInMapsURL)
                     } label: {
@@ -10258,11 +10636,27 @@ private struct NativePlaceDetailScreen: View {
 
             }
 
+            if includeActions {
+                floatingActionBar(bottomInset: bottomInset)
+            }
+
             if let errorMessage {
                 Text(errorMessage)
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundStyle(.red.opacity(0.9))
             }
+        }
+        .padding(.horizontal, 20)
+    }
+
+    @ViewBuilder
+    private func heroMediaView(_ item: NativePlaceHeroMediaItem) -> some View {
+        NativeRemoteImage(url: item.url)
+    }
+
+    private var heroMediaItems: [NativePlaceHeroMediaItem] {
+        mediaUrls.enumerated().map { index, url in
+            NativePlaceHeroMediaItem(index: index, url: url)
         }
     }
 
@@ -10389,12 +10783,354 @@ private struct NativePlaceDetailScreen: View {
         URL(string: "https://vibinn.club/app/place/\(place.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? place.id)")
     }
 
-    private var mapRegion: MKCoordinateRegion? {
+    private var mapCoordinate: CLLocationCoordinate2D? {
         guard let latitude = place.latitude, let longitude = place.longitude else { return nil }
-        return MKCoordinateRegion(
-            center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
-            span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+        return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    private var displayMapRegion: MKCoordinateRegion? {
+        preferredMapRegion()
+    }
+
+    @ViewBuilder
+    private func floatingActionBar(bottomInset: CGFloat) -> some View {
+        HStack(spacing: 12) {
+            Button {
+                appState.presentCheckInFlow(prefilledPlace: place)
+            } label: {
+                HStack {
+                    Spacer()
+                    HStack(spacing: 8) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 15, weight: .bold))
+                        Text("Been Here")
+                            .font(.system(size: 15, weight: .black))
+                    }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(Color.black.opacity(0.86))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+                .foregroundStyle(.white)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .shadow(color: Color.black.opacity(0.28), radius: 12, y: 8)
+
+            Button {
+                Task {
+                    await toggleBookmark()
+                }
+            } label: {
+                HStack {
+                    Spacer()
+                    HStack(spacing: 8) {
+                        Image(systemName: appState.isBookmarked(place.id) ? "bookmark.fill" : "bookmark")
+                            .font(.system(size: 15, weight: .bold))
+                        if isTogglingBookmark {
+                            ProgressView().tint(.black)
+                        } else {
+                            Text(appState.isBookmarked(place.id) ? "Saved" : "Save")
+                                .font(.system(size: 15, weight: .black))
+                        }
+                    }
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(appState.isBookmarked(place.id) ? nativeAccent : Color.black.opacity(0.86))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .stroke(nativeAccent, lineWidth: 1.5)
+                )
+                .foregroundStyle(appState.isBookmarked(place.id) ? .black : nativeAccent)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(isTogglingBookmark)
+            .shadow(color: Color.black.opacity(0.28), radius: 12, y: 8)
+        }
+        .padding(.bottom, max(bottomInset, 12))
+    }
+
+    @ViewBuilder
+    private func collapsedDirectionsCTA(bottomInset: CGFloat) -> some View {
+        if let openDirectionsURL {
+            Button {
+                openURL(openDirectionsURL)
+            } label: {
+                HStack(spacing: 10) {
+                    Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                        .font(.system(size: 15, weight: .bold))
+                    Text("Get directions")
+                        .font(.system(size: 15, weight: .black))
+                    Spacer(minLength: 0)
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 13, weight: .bold))
+                }
+                .foregroundStyle(.black)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
+                .background(nativeAccent)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .shadow(color: Color.black.opacity(0.24), radius: 14, y: 8)
+            .padding(.bottom, max(bottomInset + 84, 96))
+        }
+    }
+
+    private func sheetExpandedHeight(containerHeight: CGFloat, topInset: CGFloat, bottomInset: CGFloat) -> CGFloat {
+        max(containerHeight, 0)
+    }
+
+    private func sheetVisibleHeight(
+        for state: NativePlaceDetailSheetState,
+        containerHeight: CGFloat,
+        topInset: CGFloat,
+        bottomInset: CGFloat
+    ) -> CGFloat {
+        let totalHeight = max(containerHeight, 0)
+        switch state {
+        case .collapsed:
+            return totalHeight / 7.0
+        case .default:
+            return totalHeight * (6.0 / 7.0)
+        case .expanded:
+            return sheetExpandedHeight(containerHeight: containerHeight, topInset: topInset, bottomInset: bottomInset)
+        }
+    }
+
+    private func sheetOffset(
+        for state: NativePlaceDetailSheetState,
+        containerHeight: CGFloat,
+        topInset: CGFloat,
+        bottomInset: CGFloat
+    ) -> CGFloat {
+        let expandedHeight = sheetExpandedHeight(
+            containerHeight: containerHeight,
+            topInset: topInset,
+            bottomInset: bottomInset
         )
+        let visibleHeight = min(
+            sheetVisibleHeight(
+                for: state,
+                containerHeight: containerHeight,
+                topInset: topInset,
+                bottomInset: bottomInset
+            ),
+            expandedHeight
+        )
+        return max(expandedHeight - visibleHeight, 0)
+    }
+
+    private func sheetControlGesture() -> some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onEnded { value in
+                finishSheetTransition(
+                    translation: value.translation.height,
+                    predictedTranslation: value.predictedEndTranslation.height
+                )
+            }
+    }
+
+    private func finishSheetTransition(translation: CGFloat, predictedTranslation: CGFloat) {
+        let resolvedTranslation: CGFloat
+        if abs(predictedTranslation) > abs(translation) {
+            resolvedTranslation = predictedTranslation
+        } else {
+            resolvedTranslation = translation
+        }
+
+        let nextState = nextSheetState(from: sheetState, translation: resolvedTranslation)
+        guard nextState != sheetState else { return }
+        withAnimation(placeSheetTransitionAnimation) {
+            sheetState = nextState
+        }
+    }
+
+    private func nextSheetState(from current: NativePlaceDetailSheetState, translation: CGFloat) -> NativePlaceDetailSheetState {
+        let strongThreshold: CGFloat = 188
+        let standardThreshold: CGFloat = 124
+
+        if translation <= -strongThreshold {
+            switch current {
+            case .collapsed: return .expanded
+            case .default: return .expanded
+            case .expanded: return .expanded
+            }
+        }
+
+        if translation <= -standardThreshold {
+            switch current {
+            case .collapsed: return .default
+            case .default: return .expanded
+            case .expanded: return .expanded
+            }
+        }
+
+        if translation >= strongThreshold {
+            switch current {
+            case .expanded: return .collapsed
+            case .default: return .collapsed
+            case .collapsed: return .collapsed
+            }
+        }
+
+        if translation >= standardThreshold {
+            switch current {
+            case .expanded: return .default
+            case .default: return .collapsed
+            case .collapsed: return .collapsed
+            }
+        }
+
+        return current
+    }
+
+    private func compactSheetGesture() -> some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onEnded { value in
+                guard abs(value.translation.height) > abs(value.translation.width) * 1.1 else { return }
+                switch sheetState {
+                case .collapsed:
+                    guard value.translation.height < -116 else { return }
+                    withAnimation(placeSheetTransitionAnimation) {
+                        sheetState = .expanded
+                    }
+                case .default:
+                    if value.translation.height < -116 {
+                        withAnimation(placeSheetTransitionAnimation) {
+                            sheetState = .expanded
+                        }
+                    } else if value.translation.height > 116 {
+                        withAnimation(placeSheetTransitionAnimation) {
+                            sheetState = .collapsed
+                        }
+                    }
+                case .expanded:
+                    break
+                }
+            }
+    }
+
+    private func expandedContentCollapseGesture() -> some Gesture {
+        DragGesture(minimumDistance: 18)
+            .onEnded { value in
+                guard abs(value.translation.height) > abs(value.translation.width) * 1.1 else { return }
+                let resolvedPull = max(value.translation.height, value.predictedEndTranslation.height)
+                guard resolvedPull > 28 else { return }
+                guard sheetContentAtTop || resolvedPull > 72 else { return }
+                withAnimation(placeSheetTransitionAnimation) {
+                    sheetState = .collapsed
+                }
+            }
+    }
+
+    private var placeSheetTransitionAnimation: Animation {
+        .interactiveSpring(response: 0.58, dampingFraction: 0.9, blendDuration: 0.22)
+    }
+
+    private func preferredMapRegion() -> MKCoordinateRegion? {
+        guard let latitude = place.latitude, let longitude = place.longitude else { return nil }
+        let placeCoordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        if let origin = appState.currentCoordinate {
+            let userCoordinate = CLLocationCoordinate2D(latitude: origin.latitude, longitude: origin.longitude)
+            let latitudeDelta = max(abs(placeCoordinate.latitude - userCoordinate.latitude) * 2.4, 0.015)
+            let longitudeDelta = max(abs(placeCoordinate.longitude - userCoordinate.longitude) * 2.2, 0.015)
+            let centeredLongitude = (placeCoordinate.longitude + userCoordinate.longitude) / 2
+            return MKCoordinateRegion(
+                center: CLLocationCoordinate2D(
+                    latitude: placeCoordinate.latitude - (latitudeDelta * 0.52),
+                    longitude: centeredLongitude
+                ),
+                span: MKCoordinateSpan(latitudeDelta: latitudeDelta, longitudeDelta: longitudeDelta)
+            )
+        }
+        let span = MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
+        return MKCoordinateRegion(
+            center: CLLocationCoordinate2D(
+                latitude: latitude - (span.latitudeDelta * 0.48),
+                longitude: longitude
+            ),
+            span: span
+        )
+    }
+
+    @ViewBuilder
+    private func placeDetailDebugOverlay(in geometry: GeometryProxy) -> some View {
+        let topInset = geometry.safeAreaInsets.top
+        let bottomInset = geometry.safeAreaInsets.bottom
+        let height = sheetExpandedHeight(
+            containerHeight: geometry.size.height,
+            topInset: topInset,
+            bottomInset: bottomInset
+        )
+        let visibleHeight = min(
+            sheetVisibleHeight(
+                for: sheetState,
+                containerHeight: geometry.size.height,
+                topInset: topInset,
+                bottomInset: bottomInset
+            ),
+            height
+        )
+        let offset = sheetOffset(
+            for: sheetState,
+            containerHeight: geometry.size.height,
+            topInset: topInset,
+            bottomInset: bottomInset
+        )
+        let region = displayMapRegion
+
+        VStack(alignment: .leading, spacing: 4) {
+            Text("PLACE DEBUG")
+                .font(.system(size: 10, weight: .black))
+                .foregroundStyle(.black)
+            Text("state: \(sheetState.debugLabel)")
+            Text(String(format: "sheet h: %.1f  visible: %.1f", height, visibleHeight))
+            Text(String(format: "offset: %.1f", offset))
+            Text("map interactive: yes")
+            Text("content: \(sheetState == .collapsed ? "static" : "scroll")")
+            Text("media: \(mediaUrls.count)")
+            if let region {
+                Text(
+                    String(
+                        format: "map center: %.4f, %.4f",
+                        region.center.latitude,
+                        region.center.longitude
+                    )
+                )
+                Text(
+                    String(
+                        format: "map span: %.4f, %.4f",
+                        region.span.latitudeDelta,
+                        region.span.longitudeDelta
+                    )
+                )
+            } else {
+                Text("map: unavailable")
+            }
+        }
+        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+        .foregroundStyle(.white)
+        .padding(10)
+        .background(Color.red.opacity(0.88))
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.top, geometry.safeAreaInsets.top + 10)
+        .padding(.leading, 12)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .allowsHitTesting(false)
     }
 
     private var similarPlaceTravelers: [NativeSimilarPlaceTraveler] {
@@ -10463,6 +11199,15 @@ private struct NativePlaceDetailScreen: View {
         }
         return place.mapsUrl.flatMap(URL.init(string:))
     }
+
+    private var openDirectionsURL: URL? {
+        guard let latitude = place.latitude, let longitude = place.longitude else { return openInMapsURL }
+        if let origin = appState.currentCoordinate {
+            return URL(string: "http://maps.apple.com/?saddr=\(origin.latitude),\(origin.longitude)&daddr=\(latitude),\(longitude)&dirflg=d")
+        }
+        let name = place.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? place.name
+        return URL(string: "http://maps.apple.com/?daddr=\(latitude),\(longitude)&q=\(name)&dirflg=d")
+    }
     private func loadLatestPlace() async {
         guard !isLoading else { return }
         isLoading = true
@@ -10487,15 +11232,11 @@ private struct NativePlaceDetailScreen: View {
 
         let nextPlace = mergedPlaceRetainingPresentation(place, with: resolvedPayload.place)
         travelerMoments = resolvedPayload.travelerMoments ?? []
-        relatedPlaces = resolvedPayload.relatedPlaces ?? []
         place = nextPlace
         errorMessage = nil
         nativeLogger.log(
             "place detail final score id=\(self.place.id, privacy: .public) finalScore=\(String(describing: nextPlace.similarityStat), privacy: .public) headerPrimary=\(self.compatibilityHeaderPrimary, privacy: .public)"
         )
-        if let mapRegion {
-            interactiveMapRegion = mapRegion
-        }
     }
 
     private func toggleBookmark() async {
@@ -10511,6 +11252,19 @@ private struct NativePlaceDetailScreen: View {
             } else {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+}
+
+private extension NativePlaceDetailSheetState {
+    var debugLabel: String {
+        switch self {
+        case .collapsed:
+            return "collapsed"
+        case .default:
+            return "default"
+        case .expanded:
+            return "expanded"
         }
     }
 }
@@ -10533,6 +11287,328 @@ private struct NativePlaceDetailRow: View {
         }
     }
 }
+
+private struct NativePlaceExpandedScrollContainer<Content: View>: UIViewRepresentable {
+    let isScrollEnabled: Bool
+    let showsIndicators: Bool
+    let onTopStateChange: (Bool) -> Void
+    let onPullDownFromTop: () -> Void
+    let content: Content
+
+    init(
+        isScrollEnabled: Bool,
+        showsIndicators: Bool,
+        onTopStateChange: @escaping (Bool) -> Void,
+        onPullDownFromTop: @escaping () -> Void,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.isScrollEnabled = isScrollEnabled
+        self.showsIndicators = showsIndicators
+        self.onTopStateChange = onTopStateChange
+        self.onPullDownFromTop = onPullDownFromTop
+        self.content = content()
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeUIView(context: Context) -> UIScrollView {
+        let scrollView = UIScrollView()
+        scrollView.delegate = context.coordinator
+        scrollView.backgroundColor = .clear
+        scrollView.alwaysBounceVertical = true
+        scrollView.bounces = true
+        scrollView.showsVerticalScrollIndicator = showsIndicators
+        scrollView.showsHorizontalScrollIndicator = false
+        scrollView.contentInsetAdjustmentBehavior = .never
+        scrollView.keyboardDismissMode = .onDrag
+        scrollView.isScrollEnabled = isScrollEnabled
+
+        let hostingController = UIHostingController(rootView: content)
+        hostingController.view.backgroundColor = .clear
+        hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+
+        context.coordinator.hostingController = hostingController
+        context.coordinator.scrollView = scrollView
+
+        scrollView.addSubview(hostingController.view)
+
+        NSLayoutConstraint.activate([
+            hostingController.view.leadingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.leadingAnchor),
+            hostingController.view.trailingAnchor.constraint(equalTo: scrollView.contentLayoutGuide.trailingAnchor),
+            hostingController.view.topAnchor.constraint(equalTo: scrollView.contentLayoutGuide.topAnchor),
+            hostingController.view.bottomAnchor.constraint(equalTo: scrollView.contentLayoutGuide.bottomAnchor),
+            hostingController.view.widthAnchor.constraint(equalTo: scrollView.frameLayoutGuide.widthAnchor)
+        ])
+
+        DispatchQueue.main.async {
+            onTopStateChange(true)
+        }
+
+        return scrollView
+    }
+
+    func updateUIView(_ scrollView: UIScrollView, context: Context) {
+        context.coordinator.parent = self
+        scrollView.showsVerticalScrollIndicator = showsIndicators
+        scrollView.isScrollEnabled = isScrollEnabled
+        context.coordinator.hostingController?.rootView = content
+    }
+
+    final class Coordinator: NSObject, UIScrollViewDelegate {
+        var parent: NativePlaceExpandedScrollContainer
+        weak var scrollView: UIScrollView?
+        var hostingController: UIHostingController<Content>?
+        private var didTriggerCollapseDuringDrag = false
+        private var lastTopState = true
+
+        init(parent: NativePlaceExpandedScrollContainer) {
+            self.parent = parent
+        }
+
+        func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+            didTriggerCollapseDuringDrag = false
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            let isAtTop = scrollView.contentOffset.y <= 1
+            if isAtTop != lastTopState {
+                lastTopState = isAtTop
+                DispatchQueue.main.async {
+                    self.parent.onTopStateChange(isAtTop)
+                }
+            }
+
+            guard parent.isScrollEnabled else { return }
+
+            let translation = scrollView.panGestureRecognizer.translation(in: scrollView).y
+            let velocity = scrollView.panGestureRecognizer.velocity(in: scrollView).y
+
+            if isAtTop && translation > 0 {
+                scrollView.contentOffset.y = 0
+                if !didTriggerCollapseDuringDrag && (translation > 118 || velocity > 1080) {
+                    didTriggerCollapseDuringDrag = true
+                    DispatchQueue.main.async {
+                        self.parent.onPullDownFromTop()
+                    }
+                }
+            }
+        }
+
+        func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            if !decelerate {
+                didTriggerCollapseDuringDrag = false
+            }
+        }
+
+        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+            didTriggerCollapseDuringDrag = false
+        }
+    }
+}
+
+private struct NativePlaceBackgroundMap: UIViewRepresentable {
+    let region: MKCoordinateRegion
+    let coordinate: CLLocationCoordinate2D
+    let userCoordinate: CLLocationCoordinate2D?
+    let coveredBottomInset: CGFloat
+    let isInteractive: Bool
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIView(context: Context) -> MKMapView {
+        let mapView = MKMapView(frame: .zero)
+        mapView.delegate = context.coordinator
+        mapView.pointOfInterestFilter = .excludingAll
+        mapView.showsCompass = false
+        mapView.showsScale = false
+        mapView.showsTraffic = false
+        mapView.showsBuildings = false
+        mapView.showsUserLocation = userCoordinate != nil
+        mapView.isPitchEnabled = false
+        mapView.isRotateEnabled = false
+        mapView.isScrollEnabled = isInteractive
+        mapView.isZoomEnabled = isInteractive
+        context.coordinator.lastCoveredBottomInset = coveredBottomInset
+        syncAnnotations(on: mapView)
+        context.coordinator.applyProgrammaticRegion(region, to: mapView, animated: false)
+        context.coordinator.didApplyInitialRegion = true
+        context.coordinator.lastPlaceCoordinate = coordinate
+        context.coordinator.lastUserCoordinate = userCoordinate
+        context.coordinator.lastAppliedRegion = region
+        return mapView
+    }
+
+    func updateUIView(_ mapView: MKMapView, context: Context) {
+        mapView.pointOfInterestFilter = .excludingAll
+        mapView.showsUserLocation = userCoordinate != nil
+        mapView.isScrollEnabled = isInteractive
+        mapView.isZoomEnabled = isInteractive
+        syncAnnotations(on: mapView)
+
+        let placeChanged = context.coordinator.lastPlaceCoordinate.map {
+            abs($0.latitude - coordinate.latitude) > 0.0001 || abs($0.longitude - coordinate.longitude) > 0.0001
+        } ?? true
+        let userChanged = nativeCoordinatesDiffer(context.coordinator.lastUserCoordinate, userCoordinate)
+        let insetChanged = abs(context.coordinator.lastCoveredBottomInset - coveredBottomInset) > 1
+        let regionChanged = context.coordinator.lastAppliedRegion.map {
+            !nativeRegionsApproximatelyEqual($0, region)
+        } ?? true
+        if placeChanged || userChanged || insetChanged || !context.coordinator.didApplyInitialRegion || (!context.coordinator.userInteracted && regionChanged) {
+            context.coordinator.lastCoveredBottomInset = coveredBottomInset
+            context.coordinator.applyProgrammaticRegion(region, to: mapView, animated: false)
+            context.coordinator.didApplyInitialRegion = true
+            context.coordinator.lastPlaceCoordinate = coordinate
+            context.coordinator.lastUserCoordinate = userCoordinate
+            context.coordinator.lastAppliedRegion = region
+        }
+    }
+
+    private func syncAnnotations(on mapView: MKMapView) {
+        let existingPlaceAnnotations = mapView.annotations.compactMap { $0 as? NativePlaceMapPointAnnotation }
+        if existingPlaceAnnotations.count != 1
+            || existingPlaceAnnotations.first?.coordinate.latitude != coordinate.latitude
+            || existingPlaceAnnotations.first?.coordinate.longitude != coordinate.longitude {
+            mapView.removeAnnotations(existingPlaceAnnotations)
+            let annotation = NativePlaceMapPointAnnotation()
+            annotation.coordinate = coordinate
+            mapView.addAnnotation(annotation)
+        }
+    }
+
+    final class Coordinator: NSObject, MKMapViewDelegate {
+        var didApplyInitialRegion = false
+        var lastPlaceCoordinate: CLLocationCoordinate2D?
+        var lastUserCoordinate: CLLocationCoordinate2D?
+        var lastAppliedRegion: MKCoordinateRegion?
+        var lastCoveredBottomInset: CGFloat = 0
+        var userInteracted = false
+        private var isApplyingProgrammaticRegion = false
+
+        func applyProgrammaticRegion(_ region: MKCoordinateRegion, to mapView: MKMapView, animated: Bool) {
+            isApplyingProgrammaticRegion = true
+            let annotations = mapView.annotations
+            if !annotations.isEmpty {
+                let edgePadding = UIEdgeInsets(top: 28, left: 24, bottom: max(lastCoveredBottomInset + 24, 24), right: 24)
+                mapView.showAnnotations(annotations, animated: animated)
+                mapView.layoutIfNeeded()
+                mapView.setVisibleMapRect(mapView.visibleMapRect, edgePadding: edgePadding, animated: false)
+            } else {
+                mapView.setRegion(region, animated: animated)
+            }
+        }
+
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if annotation is MKUserLocation {
+                return nil
+            }
+            guard annotation is NativePlaceMapPointAnnotation else { return nil }
+
+            let identifier = "NativePlaceMapPin"
+            let view = mapView.dequeueReusableAnnotationView(withIdentifier: identifier) ?? MKAnnotationView(annotation: annotation, reuseIdentifier: identifier)
+            view.annotation = annotation
+            view.canShowCallout = false
+            view.frame = CGRect(x: 0, y: 0, width: 34, height: 34)
+            view.image = nativeCircularPlacePinImage(size: CGSize(width: 34, height: 34))
+            view.centerOffset = CGPoint(x: 0, y: -17)
+            return view
+        }
+
+        func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
+            if isApplyingProgrammaticRegion {
+                isApplyingProgrammaticRegion = false
+            } else {
+                userInteracted = true
+            }
+        }
+    }
+}
+
+private final class NativePlaceMapPointAnnotation: MKPointAnnotation {}
+
+private struct NativePlaceHeroMediaItem: Identifiable {
+    let index: Int
+    let url: String
+
+    var id: Int { index }
+}
+
+private struct NativePlaceDetailSheetSurfaceModifier: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .background(
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .fill(Color.black.opacity(0.96))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 30, style: .continuous)
+                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+    }
+}
+
+private func nativeRegionsApproximatelyEqual(_ lhs: MKCoordinateRegion, _ rhs: MKCoordinateRegion) -> Bool {
+    abs(lhs.center.latitude - rhs.center.latitude) < 0.0001 &&
+    abs(lhs.center.longitude - rhs.center.longitude) < 0.0001 &&
+    abs(lhs.span.latitudeDelta - rhs.span.latitudeDelta) < 0.0001 &&
+    abs(lhs.span.longitudeDelta - rhs.span.longitudeDelta) < 0.0001
+}
+
+private func nativeCoordinatesDiffer(_ lhs: CLLocationCoordinate2D?, _ rhs: CLLocationCoordinate2D?) -> Bool {
+    switch (lhs, rhs) {
+    case (nil, nil):
+        return false
+    case let (left?, right?):
+        return abs(left.latitude - right.latitude) > 0.0001 || abs(left.longitude - right.longitude) > 0.0001
+    default:
+        return true
+    }
+}
+
+private func nativeCircularPlacePinImage(size: CGSize) -> UIImage? {
+    let baseImage = UIImage(named: "VibinnMapPin")
+    let renderer = UIGraphicsImageRenderer(size: size)
+    return renderer.image { context in
+        let rect = CGRect(origin: .zero, size: size)
+        let insetRect = rect.insetBy(dx: 1, dy: 1)
+        UIBezierPath(ovalIn: insetRect).addClip()
+
+        if let baseImage {
+            baseImage.draw(in: insetRect)
+        } else {
+            nativeAccentUIColor.setFill()
+            context.fill(insetRect)
+
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = .center
+            let attributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: size.width * 0.42, weight: .black),
+                .foregroundColor: UIColor.black,
+                .paragraphStyle: paragraph
+            ]
+            let text = "V"
+            let textSize = text.size(withAttributes: attributes)
+            let textRect = CGRect(
+                x: insetRect.midX - textSize.width / 2,
+                y: insetRect.midY - textSize.height / 2,
+                width: textSize.width,
+                height: textSize.height
+            )
+            text.draw(in: textRect, withAttributes: attributes)
+        }
+
+        UIColor.black.withAlphaComponent(0.16).setStroke()
+        let borderPath = UIBezierPath(ovalIn: insetRect)
+        borderPath.lineWidth = 2
+        borderPath.stroke()
+    }
+}
+
+private let nativeAccentUIColor = UIColor(red: 0.827, green: 1.0, blue: 0.282, alpha: 1.0)
 
 private struct NativeSimilarPlaceTraveler: Identifiable {
     let id: String
@@ -11390,6 +12466,32 @@ private struct NativeInputField: View {
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                     .keyboardType(keyboard)
             }
+        }
+    }
+}
+
+private struct NativeMultilineInputField: View {
+    let title: String
+    @Binding var text: String
+    let height: CGFloat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.system(size: 12, weight: .black))
+                .foregroundStyle(.white.opacity(0.45))
+                .textCase(.uppercase)
+
+            TextEditor(text: $text)
+                .textInputAutocapitalization(.sentences)
+                .autocorrectionDisabled()
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(.white)
+                .frame(height: height)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 12)
+                .background(nativeSurfaceStrong)
+                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         }
     }
 }
