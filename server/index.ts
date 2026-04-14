@@ -1072,12 +1072,13 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
   const mainText = rawPlace.displayName?.text ?? 'Unnamed place';
   const locationBits = parseLocationBits(rawPlace.formattedAddress);
   const category = (rawPlace.primaryType ?? rawPlace.types?.[0] ?? 'recommended spot').replace(/_/g, ' ');
-  const photoUri = rawPlace.photos?.[0]?.name
-    ? await fetchGooglePhotoUri(rawPlace.photos[0].name).catch((error) => {
+  const photoUris = rawPlace.photos?.length
+    ? await fetchGooglePhotoUris(rawPlace.photos.map((photo) => photo.name), 5).catch((error) => {
         console.error(error);
-        return null;
+        return [];
       })
-    : null;
+    : [];
+  const photoUri = photoUris[0] ?? null;
 
   const place = await prisma.place.upsert({
     where: { googlePlaceId: rawPlace.id },
@@ -1092,6 +1093,17 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       rating: rawPlace.rating ?? null,
       priceLevel: mapGooglePriceLevel(rawPlace.priceLevel),
       primaryImageUrl: photoUri ?? undefined,
+      media: photoUris.length > 0
+        ? {
+            deleteMany: {},
+            create: photoUris.map((uri, index) => ({
+              mediaType: 'image',
+              url: uri,
+              sortOrder: index,
+              source: 'google-places',
+            })),
+          }
+        : undefined,
     },
     create: {
       googlePlaceId: rawPlace.id,
@@ -1105,15 +1117,14 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       rating: rawPlace.rating ?? null,
       priceLevel: mapGooglePriceLevel(rawPlace.priceLevel),
       primaryImageUrl: photoUri ?? undefined,
-      media: photoUri
+      media: photoUris.length > 0
         ? {
-            create: [
-              {
+            create: photoUris.map((uri, index) => ({
                 mediaType: 'image',
-                url: photoUri,
-                sortOrder: 0,
-              },
-            ],
+                url: uri,
+                sortOrder: index,
+                source: 'google-places',
+              })),
           }
         : undefined,
     },
@@ -1125,7 +1136,7 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
     location: [locationBits.city, locationBits.country].filter(Boolean).join(', ') || rawPlace.formattedAddress || 'Unknown location',
     description: '',
     image: photoUri ?? place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
-    images: photoUri ? [photoUri] : [place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place'],
+    images: photoUris.length > 0 ? photoUris : [place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place'],
     tags: (rawPlace.types?.slice(0, 3).map((type) => type.replace(/_/g, ' ')) ?? [category]).slice(0, 3),
     similarityStat: 82,
     whyYoullLikeIt: [],
@@ -1174,6 +1185,60 @@ function buildPreferenceDrivenQueries(
 
   const interestQueries = selectedInterests.flatMap((interest) => {
     switch (interest) {
+      case 'good_coffee':
+        return [
+          `best coffee in ${locationLabel}`,
+          `specialty coffee in ${locationLabel}`,
+          `good espresso bar in ${locationLabel}`,
+        ];
+      case 'aesthetic_cafes':
+        return [
+          `aesthetic cafe in ${locationLabel}`,
+          `cute cafe in ${locationLabel}`,
+          `instagrammable cafe in ${locationLabel}`,
+        ];
+      case 'desserts_sweet_treats':
+        return [
+          `best desserts in ${locationLabel}`,
+          `sweet treats in ${locationLabel}`,
+          `dessert cafe in ${locationLabel}`,
+        ];
+      case 'street_food_casual_eats':
+        return [
+          `best casual eats in ${locationLabel}`,
+          `street food in ${locationLabel}`,
+          `cheap eats in ${locationLabel}`,
+        ];
+      case 'asian_comfort_food':
+        return [
+          `best ramen in ${locationLabel}`,
+          `best sushi in ${locationLabel}`,
+          `asian comfort food in ${locationLabel}`,
+        ];
+      case 'drinks_nightlife':
+        return [
+          `best bars in ${locationLabel}`,
+          `nightlife in ${locationLabel}`,
+          `cocktail bar in ${locationLabel}`,
+        ];
+      case 'shop_stroll':
+        return [
+          `best local boutiques in ${locationLabel}`,
+          `shopping streets in ${locationLabel}`,
+          `best area to walk and shop in ${locationLabel}`,
+        ];
+      case 'fun_activities':
+        return [
+          `fun things to do in ${locationLabel}`,
+          `cool activities in ${locationLabel}`,
+          `unique places to visit in ${locationLabel}`,
+        ];
+      case 'parks_outdoor':
+        return [
+          `best parks in ${locationLabel}`,
+          `best outdoor spots in ${locationLabel}`,
+          `scenic walk in ${locationLabel}`,
+        ];
       case 'nature':
         return [
           `best parks in ${locationLabel}`,
@@ -1253,7 +1318,7 @@ function buildPreferenceDrivenQueries(
     ...interestQueries,
     ...vibeQueries,
     ...locationQueries,
-  ]).slice(0, 8);
+  ]).slice(0, 12);
 }
 
 async function getDiscoveryPlacesByLocation(
@@ -2062,7 +2127,7 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,primaryType,types,rating,priceLevel,googleMapsUri,regularOpeningHours.weekdayDescriptions',
+      'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,primaryType,types,rating,priceLevel,googleMapsUri,regularOpeningHours.weekdayDescriptions,photos',
     },
   });
 
@@ -2313,6 +2378,15 @@ const PLACE_INTEREST_MATCHERS: Record<string, string[]> = {
   shopping: ['shopping', 'market', 'boutique', 'concept store', 'mall', 'retail', 'gift', 'design shop', 'bazaar', 'showroom'],
   party: ['nightlife', 'bar', 'cocktail', 'rooftop', 'live music', 'music', 'dj', 'club', 'late night', 'jazz', 'speakeasy'],
   adventure: ['adventure', 'walkable', 'viewpoint', 'hike', 'trail', 'outdoor', 'easy stop', 'detour', 'quick escape', 'open air'],
+  good_coffee: ['coffee', 'espresso', 'specialty coffee', 'roastery', 'coffee bar', 'latte', 'matcha'],
+  aesthetic_cafes: ['aesthetic', 'cute cafe', 'stylish cafe', 'cafe', 'design', 'brunch', 'pastry', 'visual'],
+  desserts_sweet_treats: ['dessert', 'sweet', 'pastry', 'bakery', 'ice cream', 'gelato', 'cake', 'cookie', 'treat'],
+  street_food_casual_eats: ['street food', 'casual', 'cheap eats', 'burger', 'fried chicken', 'taco', 'sandwich', 'comfort food'],
+  asian_comfort_food: ['ramen', 'sushi', 'udon', 'noodles', 'izakaya', 'korean', 'japanese', 'asian comfort'],
+  drinks_nightlife: ['nightlife', 'bar', 'cocktail', 'wine', 'beer', 'rooftop', 'late night', 'speakeasy'],
+  shop_stroll: ['shopping', 'shop', 'boutique', 'vintage', 'market', 'stroll', 'walkable', 'browse'],
+  fun_activities: ['activity', 'experience', 'museum', 'gallery', 'arcade', 'fun', 'unique', 'things to do'],
+  parks_outdoor: ['park', 'outdoor', 'garden', 'trail', 'waterfront', 'scenic', 'green', 'walk'],
 };
 
 const PLACE_VIBE_MATCHERS: Record<string, string[]> = {
@@ -2392,7 +2466,7 @@ function getPlacePreferenceNoisePenalty(place: {
 
   let penalty = 0;
 
-  if (input.selectedInterests.includes('party')) {
+  if (input.selectedInterests.includes('party') || input.selectedInterests.includes('drinks_nightlife')) {
     if (
       haystack.includes('park') ||
       haystack.includes('nature preserve') ||
@@ -2403,7 +2477,7 @@ function getPlacePreferenceNoisePenalty(place: {
     }
   }
 
-  if (input.selectedInterests.includes('shopping')) {
+  if (input.selectedInterests.includes('shopping') || input.selectedInterests.includes('shop_stroll')) {
     if (
       haystack.includes('park') ||
       haystack.includes('nature preserve') ||
@@ -2414,8 +2488,8 @@ function getPlacePreferenceNoisePenalty(place: {
   }
 
   if (
-    input.selectedInterests.includes('party') &&
-    input.selectedInterests.includes('shopping') &&
+    (input.selectedInterests.includes('party') || input.selectedInterests.includes('drinks_nightlife')) &&
+    (input.selectedInterests.includes('shopping') || input.selectedInterests.includes('shop_stroll')) &&
     (haystack.includes('coffee shop') || haystack.includes('cafe'))
   ) {
     penalty += 12;
@@ -2441,7 +2515,10 @@ function shouldKeepPlaceForPreferences(place: {
     return false;
   }
 
-  if (input.selectedInterests.length === 1 && input.selectedInterests[0] === 'shopping') {
+  if (
+    input.selectedInterests.length === 1 &&
+    (input.selectedInterests[0] === 'shopping' || input.selectedInterests[0] === 'shop_stroll')
+  ) {
     const haystack = [
       place.category ?? '',
       place.hook ?? '',
@@ -3122,11 +3199,11 @@ async function fetchTicketmasterEvents(input: {
   });
 
   const selectedInterests = input.selectedInterests ?? [];
-  const shoppingOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'shopping');
-  const natureOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'nature');
-  const cafeOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'cafe');
-  const cultureOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'culture');
-  const partySelected = selectedInterests.includes('party');
+  const shoppingOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'shopping' || interest === 'shop_stroll');
+  const natureOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'nature' || interest === 'parks_outdoor');
+  const cafeOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'cafe' || interest === 'good_coffee' || interest === 'aesthetic_cafes');
+  const cultureOnly = selectedInterests.length > 0 && selectedInterests.every((interest) => interest === 'culture' || interest === 'fun_activities');
+  const partySelected = selectedInterests.includes('party') || selectedInterests.includes('drinks_nightlife');
 
   if (!shoppingOnly && !natureOnly && !cafeOnly) {
     params.set('classificationName', 'music');
@@ -3146,7 +3223,7 @@ async function fetchTicketmasterEvents(input: {
     params.set('keyword', 'outdoor garden park festival');
   } else if (cafeOnly) {
     params.set('keyword', 'acoustic listening community intimate');
-  } else if (partySelected && selectedInterests.includes('shopping')) {
+  } else if (partySelected && (selectedInterests.includes('shopping') || selectedInterests.includes('shop_stroll'))) {
     params.set('keyword', 'concert nightlife market pop up');
   }
 
@@ -3260,6 +3337,15 @@ function getEventPreferenceAffinity(event: {
     shopping: ['market', 'fair', 'expo', 'pop up', 'bazaar', 'vendor', 'makers'],
     party: ['concert', 'music', 'dance', 'dj', 'nightlife', 'festival', 'electronic', 'after dark'],
     adventure: ['sports', 'outdoor', 'active', 'arena', 'race'],
+    good_coffee: ['coffee', 'latte', 'espresso', 'listening', 'community'],
+    aesthetic_cafes: ['design', 'art', 'visual', 'fashion', 'immersive'],
+    desserts_sweet_treats: ['dessert', 'sweet', 'festival', 'bakery'],
+    street_food_casual_eats: ['food', 'street', 'market', 'festival', 'casual'],
+    asian_comfort_food: ['ramen', 'sushi', 'asian', 'japanese', 'korean'],
+    drinks_nightlife: ['concert', 'music', 'dance', 'dj', 'nightlife', 'festival', 'electronic', 'after dark'],
+    shop_stroll: ['market', 'fair', 'expo', 'pop up', 'bazaar', 'vendor', 'makers'],
+    fun_activities: ['festival', 'museum', 'gallery', 'immersive', 'sports', 'active'],
+    parks_outdoor: ['outdoor', 'park', 'festival', 'garden'],
   };
 
   let matchedInterestCount = 0;
@@ -3302,7 +3388,7 @@ function shouldKeepEventForPreferences(event: {
   const affinity = getEventPreferenceAffinity(event, input);
   if (affinity.matchedInterestCount > 0 || affinity.matchedVibe) return true;
 
-  if (input.selectedInterests.includes('shopping')) {
+  if (input.selectedInterests.includes('shopping') || input.selectedInterests.includes('shop_stroll')) {
     return false;
   }
 
@@ -3417,15 +3503,15 @@ function buildEventCompatibilityReason(event: {
     : Math.round((startsAt.getTime() - Date.now()) / (1000 * 60 * 60 * 24));
   const scoreLabel = event.score >= 88 ? 'very strong' : event.score >= 78 ? 'strong' : 'solid';
 
-  if (input.selectedInterests.includes('party') && (normalizedTags.some((tag) => tag.includes('concert') || tag.includes('festival') || tag.includes('music')) || normalizedName.includes('live') || normalizedCategory.includes('music'))) {
+  if ((input.selectedInterests.includes('party') || input.selectedInterests.includes('drinks_nightlife')) && (normalizedTags.some((tag) => tag.includes('concert') || tag.includes('festival') || tag.includes('music')) || normalizedName.includes('live') || normalizedCategory.includes('music'))) {
     return `it looks like a ${scoreLabel} nightlife fit, with live-music energy that lines up with what you usually lean toward`;
   }
 
-  if (input.selectedInterests.includes('culture') && normalizedTags.some((tag) => tag.includes('arts') || tag.includes('museum') || tag.includes('theatre') || tag.includes('jazz'))) {
+  if ((input.selectedInterests.includes('culture') || input.selectedInterests.includes('fun_activities')) && normalizedTags.some((tag) => tag.includes('arts') || tag.includes('museum') || tag.includes('theatre') || tag.includes('jazz'))) {
     return `it reads as a ${scoreLabel} culture pick, with more arts-led energy than the average event in this city`;
   }
 
-  if (input.selectedInterests.includes('shopping') && (normalizedTags.some((tag) => tag.includes('market') || tag.includes('fair') || tag.includes('bazaar')) || normalizedDescription.includes('vendor'))) {
+  if ((input.selectedInterests.includes('shopping') || input.selectedInterests.includes('shop_stroll')) && (normalizedTags.some((tag) => tag.includes('market') || tag.includes('fair') || tag.includes('bazaar')) || normalizedDescription.includes('vendor'))) {
     return `it feels like a ${scoreLabel} shopping-and-browse pick, especially if you are in the mood for markets, makers, and pop-ups`;
   }
 
@@ -3702,7 +3788,7 @@ async function getDiscoveryEventsForUser(options: {
       ),
     );
 
-    if (filteredEvents.length > 0 || selectedInterests.includes('shopping')) {
+    if (filteredEvents.length > 0 || selectedInterests.includes('shopping') || selectedInterests.includes('shop_stroll')) {
       events = filteredEvents;
     }
   }
@@ -3892,6 +3978,15 @@ function buildRecommendationReason(input: {
     shopping: 'good browse',
     party: 'after-dark plan',
     adventure: 'easy detour',
+    good_coffee: 'coffee run',
+    aesthetic_cafes: 'aesthetic cafe streak',
+    desserts_sweet_treats: 'sweet treat hunt',
+    street_food_casual_eats: 'casual eats streak',
+    asian_comfort_food: 'asian comfort run',
+    drinks_nightlife: 'after-dark plan',
+    shop_stroll: 'shop-and-stroll mood',
+    fun_activities: 'things-to-do streak',
+    parks_outdoor: 'green reset',
   };
 
   const vibeLabelMap: Record<string, string> = {

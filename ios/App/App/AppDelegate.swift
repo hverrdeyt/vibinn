@@ -4,6 +4,7 @@ import AVKit
 import MapKit
 import CoreLocation
 import PhotosUI
+import ImageIO
 import UserNotifications
 import AuthenticationServices
 import Capacitor
@@ -49,23 +50,20 @@ private struct NativePreferenceSwipeCard: Identifiable, Hashable {
     let id: String
     let title: String
     let description: String
+    let symbol: String
     let imageURL: String
 }
 
 private let nativeInterestSwipeCards: [NativePreferenceSwipeCard] = [
-    NativePreferenceSwipeCard(id: "cafe", title: "Cafe hopping", description: "good coffee, good light, and better neighborhood energy.", imageURL: "https://images.unsplash.com/photo-1554118811-1e0d58224f24?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "culture", title: "Culture", description: "museums, old streets, and places with a story to tell.", imageURL: "https://images.unsplash.com/photo-1518998053901-5348d3961a04?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "nature", title: "Nature days", description: "touch grass, reset the brain, keep the camera ready.", imageURL: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "party", title: "Nightlife & music", description: "city lights, live sets, and plans that start after dark.", imageURL: "https://images.unsplash.com/photo-1493225457124-a3eb161ffa5f?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "shopping", title: "Shopping & markets", description: "concept stores, local markets, and receipts worth keeping.", imageURL: "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=800&q=80"),
-]
-
-private let nativeVibeSwipeCards: [NativePreferenceSwipeCard] = [
-    NativePreferenceSwipeCard(id: "aesthetic", title: "Aesthetic", description: "camera-roll worthy and low effort to love.", imageURL: "https://images.unsplash.com/photo-1523275335684-37898b6baf30?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "solo", title: "Solo", description: "quiet, low-pressure wandering with no group chat chaos.", imageURL: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "spontaneous", title: "Spontaneous", description: "last-minute pivots, easy detours, and stories you did not plan.", imageURL: "https://images.unsplash.com/photo-1533174072545-7a4b6ad7a6c3?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "luxury", title: "Luxury", description: "good taste, soft sheets, and not pretending otherwise.", imageURL: "https://images.unsplash.com/photo-1566073771259-6a8506099945?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "budget", title: "Budget", description: "great finds without burning the whole wallet.", imageURL: "https://images.unsplash.com/photo-1527631746610-bca00a040d60?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "aesthetic_cafes", title: "Aesthetic cafes", description: "visual cafes with strong mood, light, and camera-roll payoff.", symbol: "sparkles", imageURL: "https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "desserts_sweet_treats", title: "Desserts & sweet treats", description: "pastries, bakeries, ice cream, and spots worth saving for sugar runs.", symbol: "birthday.cake.fill", imageURL: "https://images.unsplash.com/photo-1488477181946-6428a0291777?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "street_food_casual_eats", title: "Street food & casual eats", description: "cheap eats, quick comfort, and no-fuss local favorites.", symbol: "fork.knife", imageURL: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "asian_comfort_food", title: "Ramen, sushi & Asian comfort", description: "ramen, sushi, noodles, and comfort spots that feel like an easy yes.", symbol: "takeoutbag.and.cup.and.straw.fill", imageURL: "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "drinks_nightlife", title: "Drinks & nightlife", description: "cocktail bars, wine spots, rooftops, and plans that start after dark.", symbol: "wineglass.fill", imageURL: "https://images.unsplash.com/photo-1514933651103-005eec06c04b?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "shop_stroll", title: "Shop & stroll", description: "boutiques, markets, vintage finds, and neighborhoods worth wandering.", symbol: "bag.fill", imageURL: "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "good_coffee", title: "Good coffee", description: "specialty coffee, espresso bars, and places that nail the cup.", symbol: "cup.and.saucer.fill", imageURL: "https://images.unsplash.com/photo-1447933601403-0c6688de566e?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "fun_activities", title: "Fun activities", description: "things to do when you want more than a meal and a stronger story.", symbol: "figure.2.and.child.holdinghands", imageURL: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "parks_outdoor", title: "Parks & outdoor", description: "green resets, scenic walks, and places that feel good outside.", symbol: "tree.fill", imageURL: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80"),
 ]
 
 private enum NativePostAuthAction {
@@ -739,6 +737,7 @@ private struct NativeCreatedMoment: Decodable {
     let visitedDate: String
     let visitedAtIso: String?
     let caption: String?
+    let uploadedMedia: [String]?
     let place: NativePlace?
 }
 
@@ -747,6 +746,7 @@ private struct NativeMoment: Decodable, Identifiable {
     let visitedDate: String
     let visitedAtIso: String?
     let caption: String?
+    let uploadedMedia: [String]?
     let rating: Int?
     let wouldRevisit: String?
     let place: NativePlace
@@ -827,6 +827,56 @@ private enum NativeSavedSection: String, CaseIterable, Identifiable {
 private struct NativeDiscoveryCategoryTab: Hashable, Identifiable {
     let id: String
     let label: String
+    let icon: String
+}
+
+private let nativeInterestAliasMap: [String: String] = [
+    "cafe": "good_coffee",
+    "nature": "parks_outdoor",
+    "shopping": "shop_stroll",
+    "party": "drinks_nightlife",
+    "culture": "fun_activities",
+    "adventure": "fun_activities",
+]
+
+private func nativeCanonicalInterests(_ selectedInterests: [String]) -> Set<String> {
+    Set(selectedInterests.map { nativeInterestAliasMap[$0] ?? $0 })
+}
+
+private func nativeDiscoveryFilterTabs(for selectedInterests: [String]) -> [NativeDiscoveryCategoryTab] {
+    let selected = nativeCanonicalInterests(selectedInterests)
+    var tabs: [NativeDiscoveryCategoryTab] = [
+        .init(id: "all", label: "All", icon: "square.grid.2x2.fill"),
+        .init(id: "eat", label: "Eat", icon: "fork.knife"),
+        .init(id: "new-trending", label: "New & trending", icon: "flame.fill"),
+        .init(id: "date-night", label: "Date night", icon: "heart.fill"),
+        .init(id: "cool-spots", label: "Cool spots", icon: "sparkles"),
+        .init(id: "group-hangout", label: "Group hangout", icon: "person.3.fill"),
+        .init(id: "aesthetic", label: "Aesthetic", icon: "camera.filters"),
+        .init(id: "child-friendly", label: "Child friendly", icon: "figure.and.child.holdinghands"),
+        .init(id: "cheap-food", label: "Cheap food", icon: "tag.fill"),
+    ]
+
+    if selected.contains("good_coffee") {
+        tabs.insert(.init(id: "coffee", label: "Coffee", icon: "cup.and.saucer.fill"), at: 2)
+    }
+    if selected.contains("desserts_sweet_treats") {
+        tabs.insert(.init(id: "dessert", label: "Dessert", icon: "birthday.cake.fill"), at: min(3, tabs.count))
+    }
+    if selected.contains("drinks_nightlife") {
+        tabs.insert(.init(id: "drinks", label: "Drinks", icon: "wineglass.fill"), at: min(4, tabs.count))
+    }
+    if selected.contains("fun_activities") {
+        tabs.append(.init(id: "culture", label: "Culture", icon: "building.columns.fill"))
+    }
+    if selected.contains("shop_stroll") {
+        tabs.append(.init(id: "shop-stroll", label: "Shop & stroll", icon: "bag.fill"))
+    }
+    if selected.contains("parks_outdoor") {
+        tabs.append(.init(id: "parks-outdoor", label: "Parks & outdoor", icon: "tree.fill"))
+    }
+
+    return tabs
 }
 
 private struct NativeMoodBadgeMeta {
@@ -1163,6 +1213,14 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         )
 
         currentUser = updatedUser
+    }
+
+    func uploadAvatarImage(_ image: UIImage) async throws -> String {
+        guard let authToken else {
+            throw NSError(domain: "NativeAvatarUpload", code: 1, userInfo: [NSLocalizedDescriptionKey: "Login required"])
+        }
+
+        return try await api.uploadAvatarImage(token: authToken, image: image)
     }
 
     func deleteAccount() async throws {
@@ -1685,6 +1743,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw URLError(.userAuthenticationRequired)
         }
 
+        nativeLogger.log("submitCheckIn appState start place=\(place.id, privacy: .public) media=\(uploadedMedia.count, privacy: .public)")
+
         let createdMoment = try await api.createMoment(
             token: token,
             placeId: place.id,
@@ -1695,26 +1755,59 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             uploadedMedia: uploadedMedia
         )
 
-        let resolvedPlace = createdMoment.place ?? place
+        nativeLogger.log("submitCheckIn createMoment success id=\(createdMoment.id, privacy: .public)")
+
+        let resolvedPlaceBase = createdMoment.place ?? place
+        let resolvedUploadedMedia = (createdMoment.uploadedMedia ?? uploadedMedia).filter { !$0.isEmpty }
+        let resolvedPlace = NativePlace(
+            id: resolvedPlaceBase.id,
+            name: resolvedPlaceBase.name,
+            location: resolvedPlaceBase.location,
+            address: resolvedPlaceBase.address,
+            category: resolvedPlaceBase.category,
+            description: resolvedPlaceBase.description,
+            hook: resolvedPlaceBase.hook,
+            image: resolvedUploadedMedia.first ?? resolvedPlaceBase.image,
+            images: resolvedUploadedMedia.isEmpty ? resolvedPlaceBase.images : resolvedUploadedMedia,
+            tags: resolvedPlaceBase.tags,
+            attitudeLabel: resolvedPlaceBase.attitudeLabel,
+            bestTime: resolvedPlaceBase.bestTime,
+            similarityStat: resolvedPlaceBase.similarityStat,
+            whyYoullLikeIt: resolvedPlaceBase.whyYoullLikeIt,
+            recommendationReason: resolvedPlaceBase.recommendationReason,
+            rating: resolvedPlaceBase.rating,
+            priceLevel: resolvedPlaceBase.priceLevel,
+            openingHours: resolvedPlaceBase.openingHours,
+            mapsUrl: resolvedPlaceBase.mapsUrl,
+            latitude: resolvedPlaceBase.latitude,
+            longitude: resolvedPlaceBase.longitude,
+            priceRange: resolvedPlaceBase.priceRange,
+            momentId: createdMoment.id,
+            ownerUserId: resolvedPlaceBase.ownerUserId,
+            visitedDate: createdMoment.visitedDate,
+            visitedAtIso: createdMoment.visitedAtIso,
+            momentCaption: createdMoment.caption,
+            momentWouldRevisit: wouldRevisit,
+            momentRating: rating
+        )
         myMoments.insert(
             NativeMoment(
                 id: createdMoment.id,
                 visitedDate: createdMoment.visitedDate,
                 visitedAtIso: createdMoment.visitedAtIso,
                 caption: createdMoment.caption,
+                uploadedMedia: resolvedUploadedMedia,
                 rating: rating,
                 wouldRevisit: wouldRevisit,
                 place: resolvedPlace
             ),
             at: 0
         )
+        nativeLogger.log("submitCheckIn local moment insert complete count=\(self.myMoments.count, privacy: .public)")
         rebuildOwnFeedItems()
+        nativeLogger.log("submitCheckIn own feed rebuild complete count=\(self.ownFeedItemsCache.count, privacy: .public)")
         await requestPushNotificationsAfterFirstContentActionIfNeeded()
-
-        async let profileTask = refreshProfile()
-        async let feedTask = refreshFeed()
-        async let discoveryTask = refreshDiscovery()
-        _ = await (profileTask, feedTask, discoveryTask)
+        nativeLogger.log("submitCheckIn push permission follow-up complete")
     }
 
     func uploadCheckInImages(_ images: [UIImage]) async throws -> [String] {
@@ -2193,7 +2286,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
 
         items.append(contentsOf: myMoments.map { moment in
-            NativeFeedItem(
+            let momentMedia = (moment.uploadedMedia ?? []).filter { !$0.isEmpty }
+            return NativeFeedItem(
                 id: "own-visited-\(moment.id)",
                 type: .visited,
                 traveler: traveler,
@@ -2208,8 +2302,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     category: moment.place.category,
                     description: moment.place.description,
                     hook: moment.place.hook,
-                    image: moment.place.image,
-                    images: moment.place.images,
+                    image: momentMedia.first ?? moment.place.image,
+                    images: momentMedia.isEmpty ? moment.place.images : momentMedia,
                     tags: moment.place.tags,
                     attitudeLabel: moment.place.attitudeLabel,
                     bestTime: moment.place.bestTime,
@@ -2501,7 +2595,7 @@ private struct NativeAPIClient {
         bio: String,
         avatarUrl: String
     ) async throws -> NativeAuthUser {
-        let response: NativeAuthSessionResponse = try await request(
+        let _: NativeEmptyResponse = try await request(
             path: "/api/profile/me",
             method: "PATCH",
             token: token,
@@ -2512,7 +2606,8 @@ private struct NativeAPIClient {
                 avatarUrl: avatarUrl
             )
         )
-        return response.user
+        let session = try await getAuthSession(token: token)
+        return session.user
     }
 
     func deleteProfile(token: String) async throws {
@@ -2857,14 +2952,137 @@ private struct NativeAPIClient {
         let files: [File]
     }
 
-    func uploadCheckInImages(token: String, images: [UIImage]) async throws -> [String] {
-        let files = try images.enumerated().map { index, image -> UploadMediaBody.File in
-            guard let data = image.jpegData(compressionQuality: 0.82) else {
-                throw NSError(domain: "NativeUploadMedia", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not prepare image upload."])
+    private struct NativeImageUploadCompressionProfile {
+        let maxPixelSize: CGFloat
+        let jpegQuality: CGFloat
+    }
+
+    private func compressedJPEGData(
+        for image: UIImage,
+        profile: NativeImageUploadCompressionProfile
+    ) -> Data? {
+        let sourceSize = image.size
+        guard sourceSize.width > 0, sourceSize.height > 0 else { return nil }
+
+        let longestSide = max(sourceSize.width, sourceSize.height)
+        let scaleRatio = min(1, profile.maxPixelSize / longestSide)
+        let targetSize = CGSize(
+            width: max(1, floor(sourceSize.width * scaleRatio)),
+            height: max(1, floor(sourceSize.height * scaleRatio))
+        )
+
+        let renderedImage: UIImage
+        if scaleRatio < 0.999 {
+            let format = UIGraphicsImageRendererFormat.default()
+            format.scale = 1
+            let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+            renderedImage = renderer.image { _ in
+                image.draw(in: CGRect(origin: .zero, size: targetSize))
             }
+        } else {
+            renderedImage = image
+        }
+
+        return renderedImage.jpegData(compressionQuality: profile.jpegQuality)
+    }
+
+    private func logImageCompression(
+        context: String,
+        originalImage: UIImage,
+        compressedData: Data,
+        profile: NativeImageUploadCompressionProfile
+    ) {
+        let originalPixelWidth = Int(max(originalImage.size.width * originalImage.scale, 0))
+        let originalPixelHeight = Int(max(originalImage.size.height * originalImage.scale, 0))
+        let compressedImage = UIImage(data: compressedData)
+        let compressedPixelWidth = compressedImage.map { Int(max($0.size.width * $0.scale, 0)) } ?? 0
+        let compressedPixelHeight = compressedImage.map { Int(max($0.size.height * $0.scale, 0)) } ?? 0
+        let originalApproxData = originalImage.jpegData(compressionQuality: 1.0)
+        let originalByteCount = originalApproxData?.count ?? 0
+        let compressedByteCount = compressedData.count
+        let savedRatio: Double
+
+        if originalByteCount > 0 {
+            savedRatio = (1.0 - (Double(compressedByteCount) / Double(originalByteCount))) * 100.0
+        } else {
+            savedRatio = 0
+        }
+
+        nativeLogger.log(
+            """
+            image compression [\(context, privacy: .public)] \
+            original=\(originalPixelWidth)x\(originalPixelHeight) \(ByteCountFormatter.string(fromByteCount: Int64(originalByteCount), countStyle: .file), privacy: .public) \
+            compressed=\(compressedPixelWidth)x\(compressedPixelHeight) \(ByteCountFormatter.string(fromByteCount: Int64(compressedByteCount), countStyle: .file), privacy: .public) \
+            saved=\(String(format: "%.1f", savedRatio), privacy: .public)% \
+            profile=max\(Int(profile.maxPixelSize)) q=\(String(format: "%.2f", profile.jpegQuality), privacy: .public)
+            """
+        )
+    }
+
+    func uploadCheckInImages(token: String, images: [UIImage]) async throws -> [String] {
+        let profile = NativeImageUploadCompressionProfile(maxPixelSize: 1400, jpegQuality: 0.74)
+        var uploadedURLs: [String] = []
+        uploadedURLs.reserveCapacity(images.count)
+        var totalCompressedBytes = 0
+
+        for (index, image) in images.enumerated() {
+            let file: UploadMediaBody.File = try autoreleasepool {
+                guard let data = compressedJPEGData(for: image, profile: profile) else {
+                    throw NSError(domain: "NativeUploadMedia", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not prepare image upload."])
+                }
+                totalCompressedBytes += data.count
+                logImageCompression(
+                    context: "check-in-\(index + 1)",
+                    originalImage: image,
+                    compressedData: data,
+                    profile: profile
+                )
+                let dataUrl = "data:image/jpeg;base64,\(data.base64EncodedString())"
+                return UploadMediaBody.File(
+                    fileName: "checkin-\(index + 1).jpg",
+                    mimeType: "image/jpeg",
+                    dataUrl: dataUrl
+                )
+            }
+
+            nativeLogger.log("check-in upload request start index=\(index + 1, privacy: .public)")
+
+            let response: NativeUploadedMediaResponse = try await request(
+                path: "/api/uploads/media",
+                method: "POST",
+                token: token,
+                body: UploadMediaBody(files: [file])
+            )
+
+            nativeLogger.log("check-in upload request success index=\(index + 1, privacy: .public) files=\(response.files.count, privacy: .public)")
+
+            let urls = response.files
+                .filter { $0.mediaType == "image" }
+                .map(\.url)
+            uploadedURLs.append(contentsOf: urls)
+        }
+
+        nativeLogger.log(
+            "check-in upload payload images=\(images.count, privacy: .public) totalCompressed=\(ByteCountFormatter.string(fromByteCount: Int64(totalCompressedBytes), countStyle: .file), privacy: .public)"
+        )
+        return uploadedURLs
+    }
+
+    func uploadAvatarImage(token: String, image: UIImage) async throws -> String {
+        let profile = NativeImageUploadCompressionProfile(maxPixelSize: 1024, jpegQuality: 0.76)
+        let files = try [image].enumerated().map { index, image -> UploadMediaBody.File in
+            guard let data = compressedJPEGData(for: image, profile: profile) else {
+                throw NSError(domain: "NativeUploadAvatar", code: 1, userInfo: [NSLocalizedDescriptionKey: "Could not prepare avatar upload."])
+            }
+            logImageCompression(
+                context: "avatar-\(index + 1)",
+                originalImage: image,
+                compressedData: data,
+                profile: profile
+            )
             let dataUrl = "data:image/jpeg;base64,\(data.base64EncodedString())"
             return UploadMediaBody.File(
-                fileName: "checkin-\(index + 1).jpg",
+                fileName: "avatar-\(index + 1).jpg",
                 mimeType: "image/jpeg",
                 dataUrl: dataUrl
             )
@@ -2876,9 +3094,11 @@ private struct NativeAPIClient {
             token: token,
             body: UploadMediaBody(files: files)
         )
-        return response.files
-            .filter { $0.mediaType == "image" }
-            .map(\.url)
+
+        guard let uploadedURL = response.files.first(where: { $0.mediaType == "image" })?.url else {
+            throw NSError(domain: "NativeUploadAvatar", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not upload your avatar right now."])
+        }
+        return uploadedURL
     }
 
     private func request<T: Decodable, B: Encodable>(
@@ -3098,8 +3318,70 @@ private func nativeDiscoveryMoodBadge(for place: NativePlace) -> NativeMoodBadge
     return nativePlaceMoodBadges[6]
 }
 
+private func nativeDiscoveryHaystack(for place: NativePlace) -> String {
+    [
+        place.name,
+        place.location,
+        place.address ?? "",
+        place.category ?? "",
+        place.description ?? "",
+        place.hook ?? "",
+        (place.tags ?? []).joined(separator: " "),
+        place.attitudeLabel ?? "",
+        place.recommendationReason ?? "",
+    ]
+    .joined(separator: " ")
+    .lowercased()
+}
+
 private func nativeDiscoveryCategoryLabel(for place: NativePlace) -> String {
     nativeDiscoveryMoodBadge(for: place).label
+}
+
+private func nativePlaceMatchesDiscoveryFilter(_ place: NativePlace, filterId: String) -> Bool {
+    let haystack = nativeDiscoveryHaystack(for: place)
+    let isFoodPlace = haystack.contains("restaurant") || haystack.contains("food") || haystack.contains("eat") || haystack.contains("brunch") || haystack.contains("ramen") || haystack.contains("sushi") || haystack.contains("taco") || haystack.contains("burger")
+    let isCoffeePlace = haystack.contains("coffee") || haystack.contains("espresso") || haystack.contains("cafe") || haystack.contains("roastery") || haystack.contains("matcha")
+    let isDessertPlace = haystack.contains("dessert") || haystack.contains("pastry") || haystack.contains("bakery") || haystack.contains("ice cream") || haystack.contains("sweet")
+    let isDrinksPlace = haystack.contains("bar") || haystack.contains("cocktail") || haystack.contains("wine") || haystack.contains("beer") || haystack.contains("nightlife") || haystack.contains("speakeasy") || haystack.contains("rooftop")
+    let isOutdoorPlace = haystack.contains("park") || haystack.contains("garden") || haystack.contains("trail") || haystack.contains("outdoor") || haystack.contains("waterfront") || haystack.contains("scenic")
+    let isCulturePlace = haystack.contains("museum") || haystack.contains("gallery") || haystack.contains("bookstore") || haystack.contains("historic") || haystack.contains("library") || haystack.contains("culture")
+    let isShoppingPlace = haystack.contains("shop") || haystack.contains("shopping") || haystack.contains("boutique") || haystack.contains("market") || haystack.contains("vintage")
+    let score = place.similarityStat ?? 0
+    let rating = place.rating ?? 0
+
+    switch filterId {
+    case "eat":
+        return isFoodPlace || isDessertPlace
+    case "coffee":
+        return isCoffeePlace
+    case "dessert":
+        return isDessertPlace
+    case "drinks":
+        return isDrinksPlace
+    case "new-trending":
+        return haystack.contains("new") || haystack.contains("trending") || haystack.contains("viral") || score >= 85 || rating >= 4.6
+    case "date-night":
+        return haystack.contains("date") || haystack.contains("romantic") || haystack.contains("intimate") || haystack.contains("cocktail") || haystack.contains("wine") || haystack.contains("dessert")
+    case "cool-spots":
+        return haystack.contains("cool") || haystack.contains("unique") || haystack.contains("hidden gem") || haystack.contains("design") || haystack.contains("scenic") || score >= 80
+    case "group-hangout":
+        return haystack.contains("share") || haystack.contains("group") || haystack.contains("hangout") || haystack.contains("nightlife") || haystack.contains("food hall") || haystack.contains("outdoor")
+    case "culture":
+        return isCulturePlace
+    case "shop-stroll":
+        return isShoppingPlace || haystack.contains("stroll") || haystack.contains("walkable")
+    case "aesthetic":
+        return haystack.contains("aesthetic") || haystack.contains("design") || haystack.contains("stylish") || haystack.contains("beautiful") || haystack.contains("cute") || haystack.contains("visual")
+    case "child-friendly":
+        return haystack.contains("family") || haystack.contains("kid") || haystack.contains("children") || haystack.contains("playground") || haystack.contains("zoo") || haystack.contains("aquarium") || isOutdoorPlace
+    case "cheap-food":
+        return isFoodPlace && (haystack.contains("cheap") || haystack.contains("budget") || haystack.contains("casual") || (place.priceLevel ?? 0) <= 2)
+    case "parks-outdoor":
+        return isOutdoorPlace
+    default:
+        return true
+    }
 }
 
 private func nativeCompatibilityBadge(for match: Int?) -> NativeCompatibilityBadgeMeta? {
@@ -4401,6 +4683,7 @@ private struct NativeAuthScreen: View {
 private struct NativeOnboardingScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @State private var selectedLocation = NativeLocationOption(id: "boston", label: "Boston")
+    @State private var selectedInterests: [String] = []
     @State private var showLocationPicker = false
 
     private var onboardingSuggestedLocations: [NativeLocationOption] {
@@ -4420,6 +4703,7 @@ private struct NativeOnboardingScreen: View {
         }
         .onAppear {
             selectedLocation = appState.selectedLocation
+            selectedInterests = appState.selectedInterests
         }
         .sheet(isPresented: $showLocationPicker) {
             NativeLocationPickerSheet(
@@ -4434,90 +4718,94 @@ private struct NativeOnboardingScreen: View {
     }
 
     private var areaStage: some View {
-        VStack(alignment: .leading, spacing: 28) {
-            Spacer(minLength: 32)
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 24) {
+                Spacer(minLength: 20)
 
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Where do you want to explore?")
-                    .font(.system(size: 40, weight: .black))
-                    .foregroundStyle(.white)
-            }
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Where do you want to explore?")
+                        .font(.system(size: 40, weight: .black))
+                        .foregroundStyle(.white)
+                    Text("Pick a city and the kinds of places you want more of. We’ll use this to shape your first set of picks.")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
-            NativeSurfaceCard {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Area")
-                        .font(.system(size: 11, weight: .black))
-                        .foregroundStyle(.white.opacity(0.35))
-                        .textCase(.uppercase)
+                NativeSurfaceCard {
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("Area")
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundStyle(.white.opacity(0.35))
+                            .textCase(.uppercase)
 
-                    HStack(spacing: 12) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(selectedLocation.label)
-                                .font(.system(size: 24, weight: .black))
-                                .foregroundStyle(.white)
-                            Text("City")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.45))
+                        HStack(spacing: 12) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(selectedLocation.label)
+                                    .font(.system(size: 24, weight: .black))
+                                    .foregroundStyle(.white)
+                                Text("City")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.45))
+                            }
+
+                            Spacer()
+
+                            Button {
+                                showLocationPicker = true
+                            } label: {
+                                Text("Change")
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundStyle(.black)
+                                    .padding(.horizontal, 16)
+                                    .padding(.vertical, 10)
+                                    .background(nativeAccent)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
                         }
-
-                        Spacer()
-
-                        Button {
-                            showLocationPicker = true
-                        } label: {
-                            Text("Change")
-                                .font(.system(size: 14, weight: .black))
-                                .foregroundStyle(.black)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 10)
-                                .background(nativeAccent)
-                                .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
                     }
                 }
-            }
 
-            Spacer()
+                NativePreferenceSelectionSection(
+                    title: "Choose your interests",
+                    subtitle: "Pick up to 5. This becomes your base taste signal for discovery.",
+                    selectedInterests: $selectedInterests
+                )
 
-            Button {
-                Task {
-                    await appState.completeOnboarding(with: selectedLocation, selectedInterests: [], selectedVibe: nil)
+                Button {
+                    Task {
+                        await appState.completeOnboarding(
+                            with: selectedLocation,
+                            selectedInterests: selectedInterests,
+                            selectedVibe: nil
+                        )
+                    }
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text("Start Explore")
+                            .font(.system(size: 17, weight: .black))
+                        Spacer()
+                    }
+                    .padding(.vertical, 18)
+                    .background(selectedInterests.isEmpty ? Color.white.opacity(0.08) : nativeAccent)
+                    .foregroundStyle(selectedInterests.isEmpty ? .white.opacity(0.42) : .black)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                 }
-            } label: {
-                HStack {
-                    Spacer()
-                    Text("Start Explore")
-                        .font(.system(size: 17, weight: .black))
-                    Spacer()
-                }
-                .padding(.vertical, 18)
-                .background(nativeAccent)
-                .foregroundStyle(.black)
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .buttonStyle(.plain)
+                .disabled(selectedInterests.isEmpty)
             }
+            .padding(.horizontal, 24)
+            .padding(.bottom, 24)
         }
-        .padding(.horizontal, 24)
-        .padding(.bottom, 24)
     }
 }
 
 private struct NativePreferenceSetupScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @Environment(\.dismiss) private var dismiss
-    @State private var swipeStep: SwipeStep = .interests
-    @State private var currentCardIndex = 0
     @State private var selectedInterests: [String] = []
-    @State private var selectedVibe: String?
-
-    private enum SwipeStep {
-        case interests
-        case vibes
-    }
-
-    private var currentCards: [NativePreferenceSwipeCard] {
-        swipeStep == .interests ? nativeInterestSwipeCards : nativeVibeSwipeCards
-    }
 
     var body: some View {
         ZStack {
@@ -4526,235 +4814,200 @@ private struct NativePreferenceSetupScreen: View {
             VStack(spacing: 0) {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack {
-                        HStack(spacing: 6) {
-                            Capsule()
-                                .fill(nativeAccent)
-                                .frame(width: 44, height: 6)
-                            Capsule()
-                                .fill(swipeStep == .vibes ? nativeAccent : Color.white.opacity(0.18))
-                                .frame(width: 44, height: 6)
-                        }
+                        Capsule()
+                            .fill(nativeAccent)
+                            .frame(width: 56, height: 6)
                         Spacer()
-                        Text(swipeStep == .interests ? "Step 1 of 2" : "Step 2 of 2")
-                            .font(.system(size: 10, weight: .black, design: .monospaced))
-                            .foregroundStyle(.white.opacity(0.46))
-                            .textCase(.uppercase)
-                    }
-
-                    HStack(alignment: .bottom) {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(swipeStep == .interests ? "Swipe your vibe." : "Pick the vibe that feels most like you.")
-                                .font(.system(size: 28, weight: .black))
-                                .foregroundStyle(.white)
-                            Text("Swipe right to keep it. Left to skip.")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.4))
-                                .textCase(.uppercase)
-                        }
-
-                        Spacer()
-
                         Button {
                             dismiss()
                             appState.dismissPreferenceSetup()
                         } label: {
-                            Text("Close")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.36))
-                                .textCase(.uppercase)
+                            Image(systemName: "xmark")
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundStyle(.white.opacity(0.72))
+                                .frame(width: 34, height: 34)
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
                     }
+
+                    NativePreferenceSelectionSection(
+                        title: "Pick what sounds like your kind of day.",
+                        subtitle: "Choose up to 5. We’ll use these to refresh your discovery mix.",
+                        selectedInterests: $selectedInterests
+                    )
                 }
-                .padding(.horizontal, 24)
+                .padding(.horizontal, 20)
                 .padding(.top, 18)
 
-                ZStack {
-                    ForEach(Array(currentCards.enumerated().dropFirst(currentCardIndex).prefix(2).reversed()), id: \.element.id) { offset, card in
-                        let isTop = offset == currentCardIndex
-                        NativeSwipePreferenceCardView(
-                            card: card,
-                            isTop: isTop,
-                            onSwipe: { direction in
-                                handlePreferenceSwipe(direction: direction, cardId: card.id)
-                            }
-                        )
-                        .padding(.horizontal, 16)
-                        .padding(.bottom, 40)
+                Button {
+                    Task {
+                        await appState.updateTastePreferences(selectedInterests: selectedInterests, selectedVibe: nil)
+                        dismiss()
+                        appState.dismissPreferenceSetup()
+                        await appState.refreshDiscovery()
                     }
+                } label: {
+                    HStack {
+                        Spacer()
+                        Text("Save preferences")
+                            .font(.system(size: 16, weight: .black))
+                        Spacer()
+                    }
+                    .padding(.vertical, 16)
+                    .background(selectedInterests.isEmpty ? Color.white.opacity(0.08) : nativeAccent)
+                    .foregroundStyle(selectedInterests.isEmpty ? .white.opacity(0.42) : .black)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.top, 20)
+                .buttonStyle(.plain)
+                .disabled(selectedInterests.isEmpty)
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 18)
             }
         }
         .onAppear {
             selectedInterests = appState.selectedInterests
-            selectedVibe = appState.selectedVibe
-        }
-    }
-
-    private func handlePreferenceSwipe(direction: NativeSwipeDirection, cardId: String) {
-        let keep = direction == .right
-
-        if keep && swipeStep == .interests && !selectedInterests.contains(cardId) {
-            selectedInterests = Array((selectedInterests + [cardId]).suffix(3))
-        }
-
-        if keep && swipeStep == .vibes {
-            selectedVibe = cardId
-        }
-
-        if currentCardIndex < currentCards.count - 1 {
-            currentCardIndex += 1
-            return
-        }
-
-        if swipeStep == .interests {
-            swipeStep = .vibes
-            currentCardIndex = 0
-            return
-        }
-
-        Task {
-            await appState.updateTastePreferences(selectedInterests: selectedInterests, selectedVibe: selectedVibe)
-            dismiss()
-            appState.dismissPreferenceSetup()
-            await appState.refreshDiscovery()
         }
     }
 }
 
-private enum NativeSwipeDirection {
-    case left
-    case right
-}
+private struct NativePreferenceSelectionSection: View {
+    let title: String
+    let subtitle: String
+    @Binding var selectedInterests: [String]
 
-private struct NativeSwipePreferenceCardView: View {
-    let card: NativePreferenceSwipeCard
-    let isTop: Bool
-    let onSwipe: (NativeSwipeDirection) -> Void
-
-    @State private var dragOffset: CGSize = .zero
-    @State private var hasExited = false
+    private let columns = [
+        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 12),
+    ]
 
     var body: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width
-            let x = dragOffset.width
-            let rotation = Angle(degrees: Double(x / 18))
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(title)
+                    .font(.system(size: 28, weight: .black))
+                    .foregroundStyle(.white)
+                Text(subtitle)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.58))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
-            ZStack(alignment: .bottomLeading) {
-                AsyncImage(url: URL(string: card.imageURL)) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    case .empty:
-                        Rectangle()
-                            .fill(Color.white.opacity(0.06))
-                    case .failure:
-                        Rectangle()
-                            .fill(Color.white.opacity(0.06))
-                            .overlay(
-                                Image(systemName: "sparkles")
-                                    .font(.system(size: 28, weight: .bold))
-                                    .foregroundStyle(nativeAccent.opacity(0.85))
-                            )
-                    @unknown default:
-                        Rectangle()
-                            .fill(Color.white.opacity(0.06))
+            LazyVGrid(columns: columns, spacing: 12) {
+                ForEach(nativeInterestSwipeCards) { card in
+                    NativePreferenceSelectionCard(
+                        card: card,
+                        isSelected: selectedInterests.contains(card.id)
+                    ) {
+                        toggle(card.id)
                     }
                 }
-                .frame(width: proxy.size.width, height: proxy.size.height)
-                .clipped()
+            }
+        }
+    }
 
-                LinearGradient(
-                    colors: [.clear, Color.black.opacity(0.18), Color.black.opacity(0.86)],
-                    startPoint: .top,
-                    endPoint: .bottom
+    private func toggle(_ interestId: String) {
+        if let existingIndex = selectedInterests.firstIndex(of: interestId) {
+            selectedInterests.remove(at: existingIndex)
+            return
+        }
+
+        guard selectedInterests.count < 5 else {
+            selectedInterests.removeFirst()
+            selectedInterests.append(interestId)
+            return
+        }
+
+        selectedInterests.append(interestId)
+    }
+}
+
+private struct NativePreferenceSelectionCard: View {
+    let card: NativePreferenceSwipeCard
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            ZStack(alignment: .topTrailing) {
+                VStack(alignment: .leading, spacing: 12) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .fill(nativeSurfaceStrong)
+                            .frame(height: 92)
+
+                        AsyncImage(url: URL(string: card.imageURL)) { phase in
+                            switch phase {
+                            case .success(let image):
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            case .empty:
+                                Rectangle()
+                                    .fill(Color.white.opacity(0.04))
+                            case .failure:
+                                Rectangle()
+                                    .fill(Color.white.opacity(0.04))
+                            @unknown default:
+                                Rectangle()
+                                    .fill(Color.white.opacity(0.04))
+                            }
+                        }
+                        .frame(height: 92)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                        LinearGradient(
+                            colors: [Color.black.opacity(0.08), Color.black.opacity(0.46)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                        Image(systemName: card.symbol)
+                            .font(.system(size: 24, weight: .black))
+                            .foregroundStyle(.white)
+                            .shadow(color: .black.opacity(0.28), radius: 10, y: 4)
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(card.title)
+                            .font(.system(size: 15, weight: .black))
+                            .foregroundStyle(.white)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(card.description)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.56))
+                            .lineLimit(3)
+                            .multilineTextAlignment(.leading)
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(isSelected ? nativeAccent.opacity(0.12) : nativeSurface)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(isSelected ? nativeAccent : Color.white.opacity(0.08), lineWidth: isSelected ? 1.8 : 1)
                 )
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack {
-                        if x < -30 {
-                            NativeSwipeHintBadge(label: "Skip", foreground: .white, background: Color.black.opacity(0.42))
-                        }
-                        Spacer()
-                        if x > 30 {
-                            NativeSwipeHintBadge(label: "Keep", foreground: .black, background: nativeAccent)
-                        }
-                    }
-
-                    Spacer()
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(card.title)
-                            .font(.system(size: 34, weight: .black))
-                            .foregroundStyle(.white)
-                        Text(card.description)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.82))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                ZStack {
+                    Circle()
+                        .fill(isSelected ? nativeAccent : Color.white.opacity(0.08))
+                    Image(systemName: isSelected ? "checkmark" : "plus")
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundStyle(isSelected ? .black : .white.opacity(0.7))
                 }
-                .padding(26)
+                .frame(width: 28, height: 28)
+                .padding(10)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 34, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 34, style: .continuous)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-            )
-            .shadow(color: Color.black.opacity(0.34), radius: 28, y: 20)
-            .scaleEffect(isTop ? 1 : 0.95)
-            .offset(x: hasExited ? (dragOffset.width >= 0 ? width + 220 : -width - 220) : dragOffset.width, y: isTop ? 0 : 12)
-            .rotationEffect(isTop ? rotation : .zero)
-            .allowsHitTesting(isTop)
-            .gesture(
-                DragGesture()
-                    .onChanged { value in
-                        guard isTop else { return }
-                        dragOffset = value.translation
-                    }
-                    .onEnded { value in
-                        guard isTop else { return }
-                        let shouldSwipeRight = value.translation.width > 110 || value.predictedEndTranslation.width > 240
-                        let shouldSwipeLeft = value.translation.width < -110 || value.predictedEndTranslation.width < -240
-
-                        if shouldSwipeRight || shouldSwipeLeft {
-                            let direction: NativeSwipeDirection = shouldSwipeRight ? .right : .left
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                                hasExited = true
-                                dragOffset.width = shouldSwipeRight ? width + 220 : -width - 220
-                            }
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                                onSwipe(direction)
-                            }
-                        } else {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.78)) {
-                                dragOffset = .zero
-                            }
-                        }
-                    }
-            )
-            .animation(.spring(response: 0.28, dampingFraction: 0.88), value: dragOffset)
         }
-    }
-}
-
-private struct NativeSwipeHintBadge: View {
-    let label: String
-    let foreground: Color
-    let background: Color
-
-    var body: some View {
-        Text(label)
-            .font(.system(size: 12, weight: .black))
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 8)
-            .background(background)
-            .clipShape(Capsule())
+        .buttonStyle(.plain)
     }
 }
 
@@ -5029,25 +5282,7 @@ private struct NativeDiscoverScreen: View {
     @State private var isLocationAccessBannerDismissed = false
 
     private var discoveryTabs: [NativeDiscoveryCategoryTab] {
-        var labelsById: [String: String] = [:]
-        let counts = appState.discoveryPlaces.reduce(into: [String: Int]()) { result, place in
-            let label = nativeDiscoveryCategoryLabel(for: place)
-            let id = label.lowercased().replacingOccurrences(of: " ", with: "-")
-            labelsById[id] = label
-            result[id, default: 0] += 1
-        }
-
-        let categoryTabs = counts.map { entry in
-            NativeDiscoveryCategoryTab(id: entry.key, label: labelsById[entry.key] ?? entry.key)
-        }
-        .sorted { left, right in
-            let leftCount = counts[left.id, default: 0]
-            let rightCount = counts[right.id, default: 0]
-            if leftCount != rightCount { return leftCount > rightCount }
-            return left.label.localizedCaseInsensitiveCompare(right.label) == .orderedAscending
-        }
-
-        return [NativeDiscoveryCategoryTab(id: "all", label: "All")] + categoryTabs
+        nativeDiscoveryFilterTabs(for: appState.selectedInterests)
     }
 
     private var selectedDiscoveryPlaces: [NativePlace] {
@@ -5274,6 +5509,11 @@ private struct NativeDiscoverScreen: View {
                 selectedDiscoveryTabId = "all"
             }
         }
+        .onChange(of: appState.selectedInterests) { _ in
+            if !discoveryTabs.contains(where: { $0.id == selectedDiscoveryTabId }) {
+                selectedDiscoveryTabId = "all"
+            }
+        }
         .onChange(of: appState.locationPermissionState) { state in
             if state == .authorized {
                 isLocationAccessBannerDismissed = true
@@ -5298,9 +5538,7 @@ private struct NativeDiscoverScreen: View {
 
     private func discoveryPlaces(for tabId: String) -> [NativePlace] {
         guard tabId != "all" else { return appState.discoveryPlaces }
-        return appState.discoveryPlaces.filter { place in
-            nativeDiscoveryCategoryLabel(for: place).lowercased().replacingOccurrences(of: " ", with: "-") == tabId
-        }
+        return appState.discoveryPlaces.filter { nativePlaceMatchesDiscoveryFilter($0, filterId: tabId) }
     }
 
     private func showDiscoverySwipeToast(_ message: String) {
@@ -5739,28 +5977,36 @@ private struct NativeDiscoveryCategoryTabs: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 20) {
+            HStack(spacing: 10) {
                 ForEach(tabs) { tab in
                     Button {
                         withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
                             selectedTabId = tab.id
                         }
                     } label: {
-                        VStack(spacing: 8) {
+                        HStack(spacing: 8) {
+                            Image(systemName: tab.icon)
+                                .font(.system(size: 13, weight: .black))
                             Text(tab.label)
-                                .font(.system(size: 14, weight: .black))
-                                .foregroundStyle(selectedTabId == tab.id ? .white : .white.opacity(0.62))
-
-                            Capsule(style: .continuous)
-                                .fill(selectedTabId == tab.id ? nativeAccent : Color.clear)
-                                .frame(height: 3)
+                                .font(.system(size: 13, weight: .black))
+                                .lineLimit(1)
                         }
-                        .padding(.vertical, 4)
+                        .foregroundStyle(selectedTabId == tab.id ? .white : .white.opacity(0.62))
+                        .frame(width: 122, height: 44)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(selectedTabId == tab.id ? nativeAccent.opacity(0.22) : Color.white.opacity(0.04))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(selectedTabId == tab.id ? nativeAccent : Color.white.opacity(0.06), lineWidth: 1)
+                        )
                     }
                     .buttonStyle(.plain)
                 }
             }
             .padding(.top, 2)
+            .padding(.horizontal, 1)
         }
     }
 }
@@ -7369,12 +7615,12 @@ private struct NativeProfileScreen: View {
                     }
                 }
             case .visited:
-                if ownVisitedFeedItems.isEmpty {
+                if appState.myMoments.isEmpty {
                     emptyOwnProfileBlock("No visited places yet.")
                 } else {
                     LazyVStack(spacing: 14) {
-                        ForEach(ownVisitedFeedItems) { item in
-                            NativeFeedCard(item: item)
+                        ForEach(appState.myMoments) { moment in
+                            NativeOwnVisitedMomentCard(moment: moment)
                         }
                     }
                 }
@@ -7440,6 +7686,120 @@ private struct NativeProfileScreen: View {
     }
 }
 
+private struct NativeOwnVisitedMomentCard: View {
+    let moment: NativeMoment
+
+    var body: some View {
+        NativeSurfaceCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        (
+                            Text("You")
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundColor(.white)
+                            +
+                            Text(" visited a place")
+                                .font(.system(size: 14, weight: .medium))
+                                .foregroundColor(.white.opacity(0.78))
+                        )
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                        Text(NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate))
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.4))
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundStyle(.white.opacity(0.65))
+                        .frame(width: 28, height: 28)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Circle())
+                }
+
+                if let caption = moment.caption, !caption.isEmpty {
+                    Text(caption)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.82))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 8) {
+                    NativeFeedMetaPill(
+                        label: "Rating \(moment.rating)/5",
+                        foreground: .white.opacity(0.88),
+                        background: Color.white.opacity(0.08)
+                    )
+                    if let wouldRevisit = moment.wouldRevisit {
+                        NativeFeedMetaPill(
+                            label: nativeRevisitLabel(wouldRevisit),
+                            foreground: wouldRevisit == "yes" ? nativeAccent : .white.opacity(0.82),
+                            background: wouldRevisit == "yes" ? nativeAccent.opacity(0.16) : Color.white.opacity(0.08)
+                        )
+                    }
+                    Spacer(minLength: 0)
+                }
+
+                NativeFeedPlaceAttachment(place: enrichedPlace, activityType: .visited) {
+                    NativePlaceDetailScreen(initialPlace: enrichedPlace)
+                }
+            }
+        }
+    }
+
+    private var enrichedPlace: NativePlace {
+        let momentMedia = (moment.uploadedMedia ?? []).filter { !$0.isEmpty }
+        return NativePlace(
+            id: moment.place.id,
+            name: moment.place.name,
+            location: moment.place.location,
+            address: moment.place.address,
+            category: moment.place.category,
+            description: moment.place.description,
+            hook: moment.place.hook,
+            image: momentMedia.first ?? moment.place.image,
+            images: momentMedia.isEmpty ? moment.place.images : momentMedia,
+            tags: moment.place.tags,
+            attitudeLabel: moment.place.attitudeLabel,
+            bestTime: moment.place.bestTime,
+            similarityStat: moment.place.similarityStat,
+            whyYoullLikeIt: moment.place.whyYoullLikeIt,
+            recommendationReason: moment.place.recommendationReason,
+            rating: moment.place.rating,
+            priceLevel: moment.place.priceLevel,
+            openingHours: moment.place.openingHours,
+            mapsUrl: moment.place.mapsUrl,
+            latitude: moment.place.latitude,
+            longitude: moment.place.longitude,
+            priceRange: moment.place.priceRange,
+            momentId: moment.id,
+            ownerUserId: moment.place.ownerUserId,
+            visitedDate: moment.visitedDate,
+            visitedAtIso: moment.visitedAtIso,
+            momentCaption: moment.caption,
+            momentWouldRevisit: moment.wouldRevisit,
+            momentRating: moment.rating
+        )
+    }
+
+    private func nativeRevisitLabel(_ value: String) -> String {
+        switch value {
+        case "yes":
+            return "Would revisit"
+        case "not_sure":
+            return "Maybe revisit"
+        case "not_interested":
+            return "No revisit"
+        default:
+            return value.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+}
+
 private struct NativeEditProfileSheet: View {
     @EnvironmentObject private var appState: NativeAppState
 
@@ -7451,10 +7811,14 @@ private struct NativeEditProfileSheet: View {
     @State private var username: String
     @State private var bio: String
     @State private var avatarUrl: String
+    @State private var pickedAvatarImages: [UIImage] = []
+    @State private var selectedAvatarImage: UIImage?
     @State private var errorMessage: String?
     @State private var isSaving = false
     @State private var isDeleting = false
+    @State private var isUploadingAvatar = false
     @State private var showDeleteConfirmation = false
+    @State private var showAvatarPicker = false
 
     init(user: NativeAuthUser, onClose: @escaping () -> Void, onDeleted: @escaping () -> Void) {
         self.user = user
@@ -7499,12 +7863,7 @@ private struct NativeEditProfileSheet: View {
                     VStack(alignment: .leading, spacing: 18) {
                         NativeSurfaceCard {
                             HStack(spacing: 14) {
-                                NativeAvatarCircle(
-                                    url: avatarUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : avatarUrl,
-                                    fallbackText: displayName.isEmpty ? username : displayName,
-                                    size: 68,
-                                    fontSize: 24
-                                )
+                                avatarPreview
 
                                 VStack(alignment: .leading, spacing: 6) {
                                     Text(displayName.isEmpty ? user.displayName ?? user.username : displayName)
@@ -7519,6 +7878,38 @@ private struct NativeEditProfileSheet: View {
                                             .font(.system(size: 12, weight: .medium))
                                             .foregroundStyle(.white.opacity(0.42))
                                     }
+
+                                    HStack(spacing: 10) {
+                                        Button {
+                                            showAvatarPicker = true
+                                        } label: {
+                                            HStack(spacing: 8) {
+                                                Image(systemName: "photo.on.rectangle")
+                                                    .font(.system(size: 13, weight: .bold))
+                                                Text(isUploadingAvatar ? "Uploading..." : "Choose photo")
+                                                    .font(.system(size: 12, weight: .black))
+                                            }
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 10)
+                                            .background(nativeSurfaceStrong)
+                                            .foregroundStyle(.white)
+                                            .clipShape(Capsule())
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(isUploadingAvatar)
+
+                                        if !avatarUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedAvatarImage != nil {
+                                            Button {
+                                                selectedAvatarImage = nil
+                                                avatarUrl = ""
+                                            } label: {
+                                                Text("Remove")
+                                                    .font(.system(size: 12, weight: .black))
+                                                    .foregroundStyle(.white.opacity(0.62))
+                                            }
+                                            .buttonStyle(.plain)
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -7528,7 +7919,6 @@ private struct NativeEditProfileSheet: View {
                                 NativeInputField(title: "Display name", text: $displayName, keyboard: .default, secure: false)
                                 NativeInputField(title: "Username", text: $username, keyboard: .default, secure: false)
                                 NativeMultilineInputField(title: "Bio", text: $bio, height: 108)
-                                NativeInputField(title: "Avatar URL", text: $avatarUrl, keyboard: .URL, secure: false)
 
                                 if let errorMessage {
                                     Text(errorMessage)
@@ -7617,12 +8007,44 @@ private struct NativeEditProfileSheet: View {
         } message: {
             Text("This will remove your account identity and sign you out on this device.")
         }
+        .sheet(isPresented: $showAvatarPicker) {
+            NativeMultiImagePicker(images: $pickedAvatarImages, selectionLimit: 1)
+        }
+        .onChange(of: pickedAvatarImages) { images in
+            guard let image = images.first else { return }
+            selectedAvatarImage = image
+            Task {
+                await uploadAvatar(image)
+            }
+        }
     }
 
     private var canSave: Bool {
         !isSaving
+            && !isUploadingAvatar
             && !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    @ViewBuilder
+    private var avatarPreview: some View {
+        if let selectedAvatarImage {
+            Image(uiImage: selectedAvatarImage)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 68, height: 68)
+                .clipShape(Circle())
+                .overlay(
+                    Circle().stroke(nativeBorder, lineWidth: 1)
+                )
+        } else {
+            NativeAvatarCircle(
+                url: avatarUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : avatarUrl,
+                fallbackText: displayName.isEmpty ? username : displayName,
+                size: 68,
+                fontSize: 24
+            )
+        }
     }
 
     private func saveProfile() async {
@@ -7653,6 +8075,21 @@ private struct NativeEditProfileSheet: View {
             onDeleted()
         } catch {
             errorMessage = "Could not delete your account right now."
+        }
+    }
+
+    private func uploadAvatar(_ image: UIImage) async {
+        errorMessage = nil
+        isUploadingAvatar = true
+        defer {
+            isUploadingAvatar = false
+            pickedAvatarImages = []
+        }
+
+        do {
+            avatarUrl = try await appState.uploadAvatarImage(image)
+        } catch {
+            errorMessage = "Could not upload your profile photo right now."
         }
     }
 }
@@ -10134,6 +10571,7 @@ private struct NativePlaceDetailScreen: View {
     @State private var errorMessage: String?
     @State private var shareURL: URL?
     @State private var sheetContentAtTop = true
+    @State private var hasLoadedCanonicalDetails = false
 
     init(initialPlace: NativePlace) {
         _place = State(initialValue: initialPlace)
@@ -10142,25 +10580,29 @@ private struct NativePlaceDetailScreen: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
-                mapBackground(in: geometry)
+                if shouldRenderCanonicalContent {
+                    mapBackground(in: geometry)
 
-                placeDetailSheet(in: geometry)
+                    placeDetailSheet(in: geometry)
 
-                if sheetState != .collapsed {
-                    floatingActionBar(bottomInset: geometry.safeAreaInsets.bottom)
-                        .padding(.horizontal, 20)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .zIndex(2)
-                } else if openDirectionsURL != nil {
-                    collapsedDirectionsCTA(bottomInset: geometry.safeAreaInsets.bottom)
-                        .padding(.horizontal, 20)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                        .zIndex(2)
-                }
+                    if sheetState != .collapsed {
+                        floatingActionBar(bottomInset: geometry.safeAreaInsets.bottom)
+                            .padding(.horizontal, 20)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                            .zIndex(2)
+                    } else if openDirectionsURL != nil {
+                        collapsedDirectionsCTA(bottomInset: geometry.safeAreaInsets.bottom)
+                            .padding(.horizontal, 20)
+                            .transition(.move(edge: .bottom).combined(with: .opacity))
+                            .zIndex(2)
+                    }
 
-                if nativePlaceDetailLayoutDebugMode {
-                    placeDetailDebugOverlay(in: geometry)
-                        .zIndex(3)
+                    if nativePlaceDetailLayoutDebugMode {
+                        placeDetailDebugOverlay(in: geometry)
+                            .zIndex(3)
+                    }
+                } else {
+                    NativePlaceDetailLoadingView(placeName: place.name)
                 }
             }
             .background(Color.black.ignoresSafeArea())
@@ -10217,6 +10659,10 @@ private struct NativePlaceDetailScreen: View {
         }
     }
 
+    private var shouldRenderCanonicalContent: Bool {
+        hasLoadedCanonicalDetails || errorMessage != nil
+    }
+
     @ViewBuilder
     private func placeDetailSheet(in geometry: GeometryProxy) -> some View {
         let topInset = geometry.safeAreaInsets.top
@@ -10243,32 +10689,43 @@ private struct NativePlaceDetailScreen: View {
                         .contentShape(Rectangle())
                         .simultaneousGesture(compactSheetGesture())
                 } else {
-                    ZStack {
-                        NativePlaceExpandedScrollContainer(
-                            isScrollEnabled: sheetState == .expanded,
-                            showsIndicators: false,
-                            onTopStateChange: { isAtTop in
-                                sheetContentAtTop = isAtTop
-                            },
-                            onPullDownFromTop: {
-                                guard sheetState == .expanded else { return }
-                                withAnimation(placeSheetTransitionAnimation) {
-                                    sheetState = .collapsed
+                    if sheetState == .default {
+                        ZStack {
+                            NativePlaceExpandedScrollContainer(
+                                isScrollEnabled: false,
+                                showsIndicators: false,
+                                onTopStateChange: { isAtTop in
+                                    sheetContentAtTop = isAtTop
+                                },
+                                onPullDownFromTop: {
+                                    guard sheetState == .expanded else { return }
+                                    withAnimation(placeSheetTransitionAnimation) {
+                                        sheetState = .collapsed
+                                    }
                                 }
+                            ) {
+                                resolvedPlaceContent(bottomInset: geometry.safeAreaInsets.bottom, includeActions: false)
+                                    .padding(.bottom, contentBottomPadding)
                             }
-                        ) {
-                            resolvedPlaceContent(bottomInset: geometry.safeAreaInsets.bottom, includeActions: false)
-                                .padding(.bottom, contentBottomPadding)
                         }
-
-                        if sheetState == .default {
-                            VStack(spacing: 0) {
-                                Color.clear
-                                    .frame(height: 430)
-                                    .allowsHitTesting(false)
-                                Color.clear
-                                    .contentShape(Rectangle())
-                                    .simultaneousGesture(compactSheetGesture())
+                        .simultaneousGesture(compactSheetGesture())
+                    } else {
+                        ZStack {
+                            NativePlaceExpandedScrollContainer(
+                                isScrollEnabled: true,
+                                showsIndicators: false,
+                                onTopStateChange: { isAtTop in
+                                    sheetContentAtTop = isAtTop
+                                },
+                                onPullDownFromTop: {
+                                    guard sheetState == .expanded else { return }
+                                    withAnimation(placeSheetTransitionAnimation) {
+                                        sheetState = .collapsed
+                                    }
+                                }
+                            ) {
+                                resolvedPlaceContent(bottomInset: geometry.safeAreaInsets.bottom, includeActions: false)
+                                    .padding(.bottom, contentBottomPadding)
                             }
                         }
                     }
@@ -10789,7 +11246,12 @@ private struct NativePlaceDetailScreen: View {
     }
 
     private var displayMapRegion: MKCoordinateRegion? {
-        preferredMapRegion()
+        switch sheetState {
+        case .collapsed:
+            return preferredMapRegion(includeUserLocation: true)
+        case .default, .expanded:
+            return preferredMapRegion(includeUserLocation: false)
+        }
     }
 
     @ViewBuilder
@@ -11041,10 +11503,10 @@ private struct NativePlaceDetailScreen: View {
         .interactiveSpring(response: 0.58, dampingFraction: 0.9, blendDuration: 0.22)
     }
 
-    private func preferredMapRegion() -> MKCoordinateRegion? {
+    private func preferredMapRegion(includeUserLocation: Bool) -> MKCoordinateRegion? {
         guard let latitude = place.latitude, let longitude = place.longitude else { return nil }
         let placeCoordinate = CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
-        if let origin = appState.currentCoordinate {
+        if includeUserLocation, let origin = appState.currentCoordinate {
             let userCoordinate = CLLocationCoordinate2D(latitude: origin.latitude, longitude: origin.longitude)
             let latitudeDelta = max(abs(placeCoordinate.latitude - userCoordinate.latitude) * 2.4, 0.015)
             let longitudeDelta = max(abs(placeCoordinate.longitude - userCoordinate.longitude) * 2.2, 0.015)
@@ -11222,6 +11684,7 @@ private struct NativePlaceDetailScreen: View {
             nativeLogger.error(
                 "place detail load failed id=\(self.place.id, privacy: .public) error=No detail payload available"
             )
+            hasLoadedCanonicalDetails = true
             errorMessage = "Could not refresh place details right now."
             return
         }
@@ -11233,6 +11696,7 @@ private struct NativePlaceDetailScreen: View {
         let nextPlace = mergedPlaceRetainingPresentation(place, with: resolvedPayload.place)
         travelerMoments = resolvedPayload.travelerMoments ?? []
         place = nextPlace
+        hasLoadedCanonicalDetails = true
         errorMessage = nil
         nativeLogger.log(
             "place detail final score id=\(self.place.id, privacy: .public) finalScore=\(String(describing: nextPlace.similarityStat), privacy: .public) headerPrimary=\(self.compatibilityHeaderPrimary, privacy: .public)"
@@ -11251,6 +11715,34 @@ private struct NativePlaceDetailScreen: View {
                 errorMessage = nil
             } else {
                 errorMessage = error.localizedDescription
+            }
+        }
+    }
+}
+
+private struct NativePlaceDetailLoadingView: View {
+    let placeName: String
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 14) {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(nativeAccent)
+                    .scaleEffect(1.15)
+
+                Text("Loading place details")
+                    .font(.system(size: 16, weight: .black))
+                    .foregroundStyle(.white)
+
+                Text(placeName)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.58))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .padding(.horizontal, 28)
             }
         }
     }
@@ -11362,6 +11854,8 @@ private struct NativePlaceExpandedScrollContainer<Content: View>: UIViewRepresen
         var hostingController: UIHostingController<Content>?
         private var didTriggerCollapseDuringDrag = false
         private var lastTopState = true
+        private var latestTranslationY: CGFloat = 0
+        private var latestVelocityY: CGFloat = 0
 
         init(parent: NativePlaceExpandedScrollContainer) {
             self.parent = parent
@@ -11372,7 +11866,7 @@ private struct NativePlaceExpandedScrollContainer<Content: View>: UIViewRepresen
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
-            let isAtTop = scrollView.contentOffset.y <= 1
+            let isAtTop = scrollView.contentOffset.y <= 16
             if isAtTop != lastTopState {
                 lastTopState = isAtTop
                 DispatchQueue.main.async {
@@ -11384,10 +11878,12 @@ private struct NativePlaceExpandedScrollContainer<Content: View>: UIViewRepresen
 
             let translation = scrollView.panGestureRecognizer.translation(in: scrollView).y
             let velocity = scrollView.panGestureRecognizer.velocity(in: scrollView).y
+            latestTranslationY = translation
+            latestVelocityY = velocity
 
             if isAtTop && translation > 0 {
                 scrollView.contentOffset.y = 0
-                if !didTriggerCollapseDuringDrag && (translation > 118 || velocity > 1080) {
+                if !didTriggerCollapseDuringDrag && (translation > 104 || velocity > 980) {
                     didTriggerCollapseDuringDrag = true
                     DispatchQueue.main.async {
                         self.parent.onPullDownFromTop()
@@ -11397,6 +11893,13 @@ private struct NativePlaceExpandedScrollContainer<Content: View>: UIViewRepresen
         }
 
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            let isNearTop = scrollView.contentOffset.y <= 18
+            if !didTriggerCollapseDuringDrag && isNearTop && (latestTranslationY > 104 || latestVelocityY > 980) {
+                didTriggerCollapseDuringDrag = true
+                DispatchQueue.main.async {
+                    self.parent.onPullDownFromTop()
+                }
+            }
             if !decelerate {
                 didTriggerCollapseDuringDrag = false
             }
@@ -11490,12 +11993,24 @@ private struct NativePlaceBackgroundMap: UIViewRepresentable {
 
         func applyProgrammaticRegion(_ region: MKCoordinateRegion, to mapView: MKMapView, animated: Bool) {
             isApplyingProgrammaticRegion = true
-            let annotations = mapView.annotations
-            if !annotations.isEmpty {
-                let edgePadding = UIEdgeInsets(top: 28, left: 24, bottom: max(lastCoveredBottomInset + 24, 24), right: 24)
-                mapView.showAnnotations(annotations, animated: animated)
-                mapView.layoutIfNeeded()
-                mapView.setVisibleMapRect(mapView.visibleMapRect, edgePadding: edgePadding, animated: false)
+            let edgePadding = UIEdgeInsets(top: 28, left: 24, bottom: max(lastCoveredBottomInset + 24, 24), right: 24)
+            let placeAnnotations = mapView.annotations.compactMap { $0 as? NativePlaceMapPointAnnotation }
+            guard let placeAnnotation = placeAnnotations.first else {
+                mapView.setRegion(region, animated: animated)
+                return
+            }
+
+            if let userCoordinate = lastUserCoordinate,
+               CLLocationCoordinate2DIsValid(userCoordinate),
+               abs(userCoordinate.latitude) > 0.000001 || abs(userCoordinate.longitude) > 0.000001 {
+                let placePoint = MKMapPoint(placeAnnotation.coordinate)
+                let userPoint = MKMapPoint(userCoordinate)
+                let x = min(placePoint.x, userPoint.x)
+                let y = min(placePoint.y, userPoint.y)
+                let width = max(abs(placePoint.x - userPoint.x), 1200)
+                let height = max(abs(placePoint.y - userPoint.y), 1200)
+                let rect = MKMapRect(x: x, y: y, width: width, height: height)
+                mapView.setVisibleMapRect(rect, edgePadding: edgePadding, animated: animated)
             } else {
                 mapView.setRegion(region, animated: animated)
             }
@@ -12309,7 +12824,10 @@ private struct NativeCheckInScreen: View {
         defer { isSubmitting = false }
 
         do {
+            nativeLogger.log("submitCheckIn sheet start place=\(currentPlace.id, privacy: .public) images=\(selectedImages.count, privacy: .public)")
             let uploadedMedia = try await appState.uploadCheckInImages(selectedImages)
+            nativeLogger.log("submitCheckIn sheet upload success media=\(uploadedMedia.count, privacy: .public)")
+            selectedImages.removeAll(keepingCapacity: false)
             try await appState.submitCheckIn(
                 place: currentPlace,
                 visitedDate: resolvedVisitedDate,
@@ -12318,7 +12836,9 @@ private struct NativeCheckInScreen: View {
                 note: caption,
                 uploadedMedia: uploadedMedia
             )
+            nativeLogger.log("submitCheckIn sheet appState success")
             closeSheet()
+            nativeLogger.log("submitCheckIn sheet closed")
         } catch {
             let nsError = error as NSError
             if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorUserAuthenticationRequired {
@@ -12397,6 +12917,7 @@ private struct NativeMultiImagePicker: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, PHPickerViewControllerDelegate {
         @Binding private var images: [UIImage]
+        private let maxImportedPixelSize: CGFloat = 1600
 
         init(images: Binding<[UIImage]>) {
             self._images = images
@@ -12409,13 +12930,30 @@ private struct NativeMultiImagePicker: UIViewControllerRepresentable {
             Task {
                 var loaded: [UIImage] = []
                 for result in results {
-                    guard result.itemProvider.canLoadObject(ofClass: UIImage.self) else { continue }
+                    guard result.itemProvider.hasItemConformingToTypeIdentifier("public.image") else { continue }
                     let image = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<UIImage, Error>) in
-                        result.itemProvider.loadObject(ofClass: UIImage.self) { object, error in
+                        result.itemProvider.loadFileRepresentation(forTypeIdentifier: "public.image") { url, error in
                             if let error {
                                 continuation.resume(throwing: error)
-                            } else if let image = object as? UIImage {
-                                continuation.resume(returning: image)
+                            } else if let url {
+                                let temporaryURL = FileManager.default.temporaryDirectory
+                                    .appendingPathComponent(UUID().uuidString)
+                                    .appendingPathExtension(url.pathExtension.isEmpty ? "jpg" : url.pathExtension)
+                                do {
+                                    if FileManager.default.fileExists(atPath: temporaryURL.path) {
+                                        try FileManager.default.removeItem(at: temporaryURL)
+                                    }
+                                    try FileManager.default.copyItem(at: url, to: temporaryURL)
+                                    let image = try Self.downsampleImage(
+                                        at: temporaryURL,
+                                        maxPixelSize: self.maxImportedPixelSize
+                                    )
+                                    try? FileManager.default.removeItem(at: temporaryURL)
+                                    continuation.resume(returning: image)
+                                } catch {
+                                    try? FileManager.default.removeItem(at: temporaryURL)
+                                    continuation.resume(throwing: error)
+                                }
                             } else {
                                 continuation.resume(throwing: NSError(domain: "NativeImagePicker", code: 1, userInfo: nil))
                             }
@@ -12429,6 +12967,29 @@ private struct NativeMultiImagePicker: UIViewControllerRepresentable {
                     self.images = loaded
                 }
             }
+        }
+
+        private static func downsampleImage(at url: URL, maxPixelSize: CGFloat) throws -> UIImage {
+            let options: [CFString: Any] = [
+                kCGImageSourceShouldCache: false,
+            ]
+
+            guard let source = CGImageSourceCreateWithURL(url as CFURL, options as CFDictionary) else {
+                throw NSError(domain: "NativeImagePicker", code: 2, userInfo: [NSLocalizedDescriptionKey: "Could not read image source."])
+            }
+
+            let downsampleOptions: [CFString: Any] = [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceShouldCacheImmediately: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            ]
+
+            guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, downsampleOptions as CFDictionary) else {
+                throw NSError(domain: "NativeImagePicker", code: 3, userInfo: [NSLocalizedDescriptionKey: "Could not downsample image."])
+            }
+
+            return UIImage(cgImage: cgImage)
         }
     }
 }
@@ -12482,16 +13043,53 @@ private struct NativeMultilineInputField: View {
                 .foregroundStyle(.white.opacity(0.45))
                 .textCase(.uppercase)
 
-            TextEditor(text: $text)
-                .textInputAutocapitalization(.sentences)
-                .autocorrectionDisabled()
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(.white)
+            NativeWrappedTextView(text: $text)
                 .frame(height: height)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 12)
                 .background(nativeSurfaceStrong)
                 .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+    }
+}
+
+private struct NativeWrappedTextView: UIViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text)
+    }
+
+    func makeUIView(context: Context) -> UITextView {
+        let textView = UITextView()
+        textView.delegate = context.coordinator
+        textView.backgroundColor = .clear
+        textView.textColor = .white
+        textView.font = .systemFont(ofSize: 16, weight: .medium)
+        textView.autocorrectionType = .no
+        textView.autocapitalizationType = .sentences
+        textView.textContainerInset = .zero
+        textView.textContainer.lineFragmentPadding = 0
+        textView.showsVerticalScrollIndicator = false
+        textView.keyboardAppearance = .dark
+        return textView
+    }
+
+    func updateUIView(_ uiView: UITextView, context: Context) {
+        if uiView.text != text {
+            uiView.text = text
+        }
+    }
+
+    final class Coordinator: NSObject, UITextViewDelegate {
+        @Binding private var text: String
+
+        init(text: Binding<String>) {
+            self._text = text
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            text = textView.text
         }
     }
 }
