@@ -3165,6 +3165,9 @@ private struct NativeVibinnRootView: View {
         Group {
             if appState.isBootstrapping {
                 NativeLoadingScreen()
+            } else if !appState.hasCompletedOnboarding && appState.currentUser == nil {
+                NativeAuthScreen(allowsDismissal: false, promptReason: "Create an account to set up your city and preferences.")
+                    .environmentObject(appState)
             } else if !appState.hasCompletedOnboarding {
                 NativeOnboardingScreen()
                     .environmentObject(appState)
@@ -4685,6 +4688,12 @@ private struct NativeOnboardingScreen: View {
     @State private var selectedLocation = NativeLocationOption(id: "boston", label: "Boston")
     @State private var selectedInterests: [String] = []
     @State private var showLocationPicker = false
+    @State private var step: NativeOnboardingStep = .location
+
+    private enum NativeOnboardingStep: Hashable {
+        case location
+        case preferences
+    }
 
     private var onboardingSuggestedLocations: [NativeLocationOption] {
         nativeLocationOptions.filter { $0.id != "boston" }
@@ -4704,6 +4713,7 @@ private struct NativeOnboardingScreen: View {
         .onAppear {
             selectedLocation = appState.selectedLocation
             selectedInterests = appState.selectedInterests
+            step = .location
         }
         .sheet(isPresented: $showLocationPicker) {
             NativeLocationPickerSheet(
@@ -4718,61 +4728,31 @@ private struct NativeOnboardingScreen: View {
     }
 
     private var areaStage: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 24) {
-                Spacer(minLength: 20)
+        ZStack(alignment: .bottom) {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 24) {
+                    Spacer(minLength: 20)
 
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Where do you want to explore?")
-                        .font(.system(size: 40, weight: .black))
-                        .foregroundStyle(.white)
-                    Text("Pick a city and the kinds of places you want more of. We’ll use this to shape your first set of picks.")
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.62))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                NativeSurfaceCard {
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text("Area")
-                            .font(.system(size: 11, weight: .black))
-                            .foregroundStyle(.white.opacity(0.35))
-                            .textCase(.uppercase)
-
-                        HStack(spacing: 12) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(selectedLocation.label)
-                                    .font(.system(size: 24, weight: .black))
-                                    .foregroundStyle(.white)
-                                Text("City")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(.white.opacity(0.45))
-                            }
-
-                            Spacer()
-
-                            Button {
-                                showLocationPicker = true
-                            } label: {
-                                Text("Change")
-                                    .font(.system(size: 14, weight: .black))
-                                    .foregroundStyle(.black)
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 10)
-                                    .background(nativeAccent)
-                                    .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
+                    HStack(spacing: 10) {
+                        ForEach([NativeOnboardingStep.location, .preferences], id: \.self) { item in
+                            Capsule()
+                                .fill(item == step ? nativeAccent : Color.white.opacity(0.12))
+                                .frame(height: 6)
                         }
                     }
+
+                    switch step {
+                    case .location:
+                        locationStep
+                    case .preferences:
+                        preferenceStep
+                    }
                 }
+                .padding(.horizontal, 24)
+                .padding(.bottom, step == .preferences ? 132 : 24)
+            }
 
-                NativePreferenceSelectionSection(
-                    title: "Choose your interests",
-                    subtitle: "Pick up to 5. This becomes your base taste signal for discovery.",
-                    selectedInterests: $selectedInterests
-                )
-
+            if step == .preferences {
                 Button {
                     Task {
                         await appState.completeOnboarding(
@@ -4795,9 +4775,104 @@ private struct NativeOnboardingScreen: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(selectedInterests.isEmpty)
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
             }
-            .padding(.horizontal, 24)
-            .padding(.bottom, 24)
+        }
+    }
+
+    private var locationStep: some View {
+        VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Where do you want to explore?")
+                    .font(.system(size: 40, weight: .black))
+                    .foregroundStyle(.white)
+                Text("Start with a city. We’ll use it as the base for your first set of places.")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Area")
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundStyle(.white.opacity(0.35))
+                        .textCase(.uppercase)
+
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(selectedLocation.label)
+                                .font(.system(size: 24, weight: .black))
+                                .foregroundStyle(.white)
+                            Text("City")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.45))
+                        }
+
+                        Spacer()
+
+                        Button {
+                            showLocationPicker = true
+                        } label: {
+                            Text("Change")
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundStyle(.black)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 10)
+                                .background(nativeAccent)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                    step = .preferences
+                }
+            } label: {
+                HStack {
+                    Spacer()
+                    Text("Continue")
+                        .font(.system(size: 17, weight: .black))
+                    Spacer()
+                }
+                .padding(.vertical, 18)
+                .background(nativeAccent)
+                .foregroundStyle(.black)
+                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var preferenceStep: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Button {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                        step = .location
+                    }
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 15, weight: .black))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+            }
+
+            NativePreferenceSelectionSection(
+                title: "Pick what sounds like your kind of day.",
+                subtitle: "Choose up to 5. We’ll use these to shape your discovery mix.",
+                selectedInterests: $selectedInterests
+            )
         }
     }
 }
@@ -4936,7 +5011,7 @@ private struct NativePreferenceSelectionCard: View {
                     ZStack {
                         RoundedRectangle(cornerRadius: 18, style: .continuous)
                             .fill(nativeSurfaceStrong)
-                            .frame(height: 92)
+                            .frame(height: 148)
 
                         AsyncImage(url: URL(string: card.imageURL)) { phase in
                             switch phase {
@@ -4955,12 +5030,12 @@ private struct NativePreferenceSelectionCard: View {
                                     .fill(Color.white.opacity(0.04))
                             }
                         }
-                        .frame(height: 92)
+                        .frame(height: 148)
                         .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
                         LinearGradient(
-                            colors: [Color.black.opacity(0.08), Color.black.opacity(0.46)],
+                            colors: [Color.black.opacity(0.08), Color.black.opacity(0.6)],
                             startPoint: .top,
                             endPoint: .bottom
                         )
@@ -4978,11 +5053,6 @@ private struct NativePreferenceSelectionCard: View {
                             .foregroundStyle(.white)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text(card.description)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.56))
-                            .lineLimit(3)
-                            .multilineTextAlignment(.leading)
                     }
                 }
                 .padding(12)
