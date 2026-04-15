@@ -1155,6 +1155,29 @@ function normalizePlaceCategory(category?: string | null, tags: string[] = []) {
   return 'recommended spot';
 }
 
+function buildDiscoveryDisplayTags(
+  attitudeLabel?: string | null,
+  vibeTags: string[] = [],
+  category?: string | null,
+) {
+  const seen = new Set<string>();
+  const candidates = [
+    attitudeLabel?.trim() ?? '',
+    ...vibeTags.map((tag) => tag?.trim() ?? ''),
+    category?.trim() ?? '',
+  ];
+
+  return candidates
+    .filter(Boolean)
+    .filter((value) => {
+      const normalized = value.toLowerCase();
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    })
+    .slice(0, 5);
+}
+
 function dedupeQueries(queries: string[]) {
   return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean)));
 }
@@ -1431,7 +1454,11 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
   };
 }>) {
   const image = place.primaryImageUrl ?? place.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place';
-  const tags = place.aiEnrichment?.vibeTags.length ? place.aiEnrichment.vibeTags : [place.category].filter(Boolean);
+  const tags = buildDiscoveryDisplayTags(
+    place.aiEnrichment?.attitudeLabel,
+    place.aiEnrichment?.vibeTags ?? [],
+    place.category,
+  );
   const category = normalizePlaceCategory(place.category, tags);
   return {
     id: place.id,
@@ -4683,7 +4710,11 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       address: finalPlace.address ?? undefined,
       image: finalPlace.primaryImageUrl ?? finalPlace.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
       images: finalPlace.media.length > 0 ? finalPlace.media.map((item) => item.url) : ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
-      tags: finalPlace.aiEnrichment?.vibeTags.length ? finalPlace.aiEnrichment.vibeTags : [finalPlace.category].filter(Boolean),
+      tags: buildDiscoveryDisplayTags(
+        finalPlace.aiEnrichment?.attitudeLabel,
+        finalPlace.aiEnrichment?.vibeTags ?? [],
+        finalPlace.category,
+      ),
       attitudeLabel: finalPlace.aiEnrichment?.attitudeLabel ?? undefined,
       bestTime: finalPlace.aiEnrichment?.bestTime ?? undefined,
       similarityStat,
@@ -4722,7 +4753,11 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
     address: place.address ?? undefined,
     image: place.primaryImageUrl ?? place.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
     images: place.media.length > 0 ? place.media.map((item) => item.url) : ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
-    tags: place.aiEnrichment?.vibeTags.length ? place.aiEnrichment.vibeTags : [place.category].filter(Boolean),
+    tags: buildDiscoveryDisplayTags(
+      place.aiEnrichment?.attitudeLabel,
+      place.aiEnrichment?.vibeTags ?? [],
+      place.category,
+    ),
     attitudeLabel: place.aiEnrichment?.attitudeLabel ?? undefined,
     bestTime: place.aiEnrichment?.bestTime ?? undefined,
     similarityStat,

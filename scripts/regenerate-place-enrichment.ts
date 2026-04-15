@@ -9,6 +9,8 @@ dotenv.config();
 const limitArg = process.argv.find((arg) => arg.startsWith('--limit='));
 const limit = limitArg ? Number(limitArg.split('=')[1]) : null;
 const shouldRunAll = process.argv.includes('--all');
+const cityArg = process.argv.find((arg) => arg.startsWith('--city='));
+const city = cityArg ? cityArg.split('=')[1]?.trim() : null;
 const batchSizeArg = process.argv.find((arg) => arg.startsWith('--batch='));
 const batchSize = batchSizeArg ? Number(batchSizeArg.split('=')[1]) : 1;
 const failureLogPath = path.resolve(process.cwd(), 'tmp/place-enrichment-failures.json');
@@ -16,15 +18,35 @@ const failureLogPath = path.resolve(process.cwd(), 'tmp/place-enrichment-failure
 async function main() {
   const stalePlaces = await prisma.place.findMany({
     where: {
-      aiEnrichment: {
-        is: {
-          OR: [
-            { hook: { contains: 'keeps showing up for your vibe', mode: 'insensitive' } },
-            { attitudeLabel: 'new find' },
-          ],
-        },
-      },
       googlePlaceId: { not: null },
+      ...(city
+        ? {
+            city: {
+              equals: city,
+              mode: 'insensitive' as const,
+            },
+          }
+        : {}),
+      ...(
+        shouldRunAll || city
+          ? {}
+          : {
+              OR: [
+                { aiEnrichment: null },
+                {
+                  aiEnrichment: {
+                    is: {
+                      OR: [
+                        { hook: { contains: 'keeps showing up for your vibe', mode: 'insensitive' as const } },
+                        { attitudeLabel: 'new find' },
+                        { attitudeLabel: null },
+                      ],
+                    },
+                  },
+                },
+              ],
+            }
+      ),
     },
     include: {
       aiEnrichment: true,
@@ -32,10 +54,10 @@ async function main() {
     orderBy: {
       updatedAt: 'desc',
     },
-    take: shouldRunAll ? undefined : (limit ?? 25),
+    take: shouldRunAll || city ? undefined : (limit ?? 25),
   });
 
-  console.log(`Found ${stalePlaces.length} stale place enrichments to regenerate.`);
+  console.log(`Found ${stalePlaces.length} place enrichments to regenerate${city ? ` for ${city}` : ''}.`);
 
   let regenerated = 0;
   let failed = 0;

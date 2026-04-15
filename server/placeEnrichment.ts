@@ -79,7 +79,7 @@ function buildHeuristicPlaceAiEnrichment(place: {
       hook: truncateText(`Green reset tucked into ${locale}.`, 80),
       description: truncateText(`${titleCase(place.name)} is an easy outdoor stop for a walk, a breather, and a slower pocket of city time.`, 180),
       vibeTags: ['green reset', 'short walk', 'open air'],
-      attitudeLabel: 'green reset',
+      attitudeLabel: 'touch grass',
       bestTime: 'early morning',
     };
   }
@@ -99,7 +99,7 @@ function buildHeuristicPlaceAiEnrichment(place: {
       hook: truncateText(`Quiet culture stop with an easy browse rhythm.`, 80),
       description: truncateText(`${titleCase(place.name)} offers a compact art-and-culture pause that suits a slower visit and a more thoughtful detour through ${locale}.`, 180),
       vibeTags: ['quiet browse', 'culture fix', 'thoughtful stop'],
-      attitudeLabel: 'hidden gem',
+      attitudeLabel: 'quiet culture',
       bestTime: 'late afternoon',
     };
   }
@@ -109,8 +109,48 @@ function buildHeuristicPlaceAiEnrichment(place: {
       hook: truncateText(`Coffee stop worth folding into a slower city loop.`, 80),
       description: truncateText(`${titleCase(place.name)} feels best as an easy café pause when you want something reliable, unfussy, and easy to pair with a walk nearby.`, 180),
       vibeTags: ['coffee stop', 'easy pause', 'city break'],
-      attitudeLabel: 'coffee stop',
+      attitudeLabel: 'coffee run',
       bestTime: 'mid-morning',
+    };
+  }
+
+  if (category.includes('dessert') || category.includes('bakery') || category.includes('ice cream') || category.includes('pastry')) {
+    return {
+      hook: truncateText(`Sweet stop worth working into your ${locale} loop.`, 80),
+      description: truncateText(`${titleCase(place.name)} makes most sense when you want an easy dessert-led stop that still feels like part of the plan.`, 180),
+      vibeTags: ['sweet stop', 'dessert run', 'little treat'],
+      attitudeLabel: 'sweet stop',
+      bestTime: 'late afternoon',
+    };
+  }
+
+  if (category.includes('bar') || category.includes('cocktail') || category.includes('night') || category.includes('pub')) {
+    return {
+      hook: truncateText(`Easy place to turn the night into something.`, 80),
+      description: truncateText(`${titleCase(place.name)} works best when the plan is drinks, a little momentum, and a place that feels social without overthinking it.`, 180),
+      vibeTags: ['night out', 'date drinks', 'group plans'],
+      attitudeLabel: 'night out',
+      bestTime: 'after dark',
+    };
+  }
+
+  if (category.includes('bookstore') || category.includes('library')) {
+    return {
+      hook: truncateText(`Quiet browse energy with enough reason to stay.`, 80),
+      description: truncateText(`${titleCase(place.name)} lands best when you want a slower browse, a small reset, and something a little more thoughtful than another quick stop.`, 180),
+      vibeTags: ['bookish stop', 'quiet hang', 'slow browse'],
+      attitudeLabel: 'bookish stop',
+      bestTime: 'late afternoon',
+    };
+  }
+
+  if (category.includes('shopping') || category.includes('store') || category.includes('market') || category.includes('boutique')) {
+    return {
+      hook: truncateText(`Worth a little wander instead of a hard plan.`, 80),
+      description: truncateText(`${titleCase(place.name)} fits best when the mood is to walk around, look for something interesting, and let the stop shape the rest.`, 180),
+      vibeTags: ['shop around', 'weekend roam', 'little detour'],
+      attitudeLabel: 'shop around',
+      bestTime: 'midday',
     };
   }
 
@@ -118,7 +158,7 @@ function buildHeuristicPlaceAiEnrichment(place: {
     hook: truncateText(`${titleCase(category || 'Place')} worth a closer look in ${locale}.`, 80),
     description: truncateText(`${titleCase(place.name)} stands out as a solid ${category || 'travel'} stop when you want a low-friction addition to your plan in ${locale}.`, 180),
     vibeTags: dedupeKeywords([category || 'recommended stop', 'easy stop']),
-    attitudeLabel: null,
+    attitudeLabel: 'worth a stop',
     bestTime: null,
   };
 }
@@ -269,20 +309,22 @@ export async function generatePlaceAiEnrichment(place: {
                   'tourist attraction',
                   'new find',
                   'golden hour',
+                  'good for',
+                  'great for',
                 ],
                 avoid_description_patterns: [
                   'raw address only',
                   'copying the place name',
                   'restating category without context',
                 ],
-                tag_style: 'specific mood or use-case tags only',
+                tag_style: 'specific mood or use-case tags only, casual and hooky',
                 context_hint: locationLabel,
               },
               output_rules: {
                 hook: '1 short editorial line, max 80 chars, no place name repetition',
                 description: '1 sentence, max 180 chars, factual and not just an address',
                 vibeTags: '2 to 4 short lowercase tags, no hashtags',
-                attitudeLabel: 'short label like hidden gem, worth the hype, easy stop, date-night pick, or null',
+                attitudeLabel: '1 unique lowercase micro-tag, 2 to 4 words, casual, gen-z friendly, specific to this place, like sweet stop, night out, touch grass, bookish stop, date drinks, or coffee run',
                 bestTime: 'simple time phrase like early morning, midday, sunset, after dark, late night, or null if unclear',
               },
             }),
@@ -397,7 +439,14 @@ export async function generatePlaceAiEnrichment(place: {
     description: cleanedDescription || truncateText(`${place.name} in ${place.city ?? place.country ?? 'this area'} is a notable ${category} stop.`, 180),
     vibeTags: filteredVibeTags.length > 0 ? filteredVibeTags : dedupeKeywords([category]).slice(0, 1),
     attitudeLabel: parsed.attitudeLabel
-      ? truncateText(parsed.attitudeLabel.trim().replace(/^new find$/i, '').trim(), 28) || null
+      ? truncateText(
+          parsed.attitudeLabel
+            .trim()
+            .replace(/^new find$/i, '')
+            .replace(/^hidden gem$/i, 'worth a stop')
+            .toLowerCase(),
+          28,
+        ) || null
       : null,
     bestTime: parsed.bestTime
       ? truncateText(parsed.bestTime.trim().replace(/^golden hour$/i, '').trim(), 32) || null
