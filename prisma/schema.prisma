@@ -62,6 +62,11 @@ enum TargetType {
   COLLECTION
 }
 
+enum GooglePlaceSnapshotSource {
+  TEXT_SEARCH
+  PLACE_DETAILS
+}
+
 model User {
   id                String               @id @default(cuid())
   username          String               @unique
@@ -253,11 +258,28 @@ model Place {
   location          Location?          @relation(fields: [locationId], references: [id], onDelete: SetNull)
   media             PlaceMedia[]
   aiEnrichment      PlaceAiEnrichment?
+  googleSnapshots   PlaceGoogleSnapshot[]
   userScores        UserPlaceScore[]
   bookmarks         Bookmark[]
   dismissedByUsers  DismissedPlace[]
   moments           Moment[]
   collectionPlaces  CollectionPlace[]
+}
+
+model PlaceGoogleSnapshot {
+  id            String                    @id @default(cuid())
+  placeId       String
+  googlePlaceId String
+  source        GooglePlaceSnapshotSource
+  queryContext  String?
+  payloadJson   Json
+  fetchedAt     DateTime                  @default(now())
+  createdAt     DateTime                  @default(now())
+
+  place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@index([placeId, fetchedAt])
+  @@index([googlePlaceId, source, fetchedAt])
 }
 
 model PlaceMedia {

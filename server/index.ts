@@ -918,7 +918,7 @@ async function getPlaceSuggestions(input: string) {
         searchResults.places
           .filter((place) => isRelevantPredictionType(place.primaryType ?? place.types?.[0]))
           .slice(0, 6)
-          .map((place) => mapGoogleSearchPlaceToInternalPlace(place)),
+          .map((place) => mapGoogleSearchPlaceToInternalPlace(place, { queryContext: input })),
       );
 
       if (mappedPlaces.length > 0) {
@@ -1068,12 +1068,30 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
   rating?: number;
   priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
   photos?: Array<{ name: string }>;
+}, options?: {
+  queryContext?: string;
 }) {
-  const mainText = rawPlace.displayName?.text ?? 'Unnamed place';
-  const locationBits = parseLocationBits(rawPlace.formattedAddress);
-  const category = (rawPlace.primaryType ?? rawPlace.types?.[0] ?? 'recommended spot').replace(/_/g, ' ');
-  const photoUris = rawPlace.photos?.length
-    ? await fetchGooglePhotoUris(rawPlace.photos.map((photo) => photo.name), 5).catch((error) => {
+  const details = await fetchGooglePlaceDetails(rawPlace.id).catch((error) => {
+    console.error('Google Place Details enrichment failed during place import', {
+      googlePlaceId: rawPlace.id,
+      queryContext: options?.queryContext ?? null,
+      error,
+    });
+    return null;
+  });
+
+  const effectiveDisplayName = details?.displayName?.text ?? rawPlace.displayName?.text ?? 'Unnamed place';
+  const effectiveAddress = details?.formattedAddress ?? rawPlace.formattedAddress;
+  const effectiveLocation = details?.location ?? rawPlace.location;
+  const effectivePrimaryType = details?.primaryType ?? rawPlace.primaryType;
+  const effectiveTypes = details?.types ?? rawPlace.types;
+  const effectiveRating = details?.rating ?? rawPlace.rating ?? null;
+  const effectivePriceLevel = mapGooglePriceLevel(details?.priceLevel ?? rawPlace.priceLevel);
+  const effectivePhotoRefs = details?.photos ?? rawPlace.photos ?? [];
+  const locationBits = parseLocationBits(effectiveAddress);
+  const category = (effectivePrimaryType ?? effectiveTypes?.[0] ?? 'recommended spot').replace(/_/g, ' ');
+  const photoUris = effectivePhotoRefs.length
+    ? await fetchGooglePhotoUris(effectivePhotoRefs.map((photo) => photo.name), 5).catch((error) => {
         console.error(error);
         return [];
       })
@@ -1083,16 +1101,17 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
   const place = await prisma.place.upsert({
     where: { googlePlaceId: rawPlace.id },
     update: {
-      name: mainText,
-      address: rawPlace.formattedAddress,
+      name: effectiveDisplayName,
+      address: effectiveAddress,
       city: locationBits.city,
       country: locationBits.country,
-      latitude: rawPlace.location?.latitude ?? null,
-      longitude: rawPlace.location?.longitude ?? null,
+      latitude: effectiveLocation?.latitude ?? null,
+      longitude: effectiveLocation?.longitude ?? null,
       category,
-      rating: rawPlace.rating ?? null,
-      priceLevel: mapGooglePriceLevel(rawPlace.priceLevel),
+      rating: effectiveRating,
+      priceLevel: effectivePriceLevel,
       primaryImageUrl: photoUri ?? undefined,
+      mapsEmbedUrl: details?.googleMapsUri ?? undefined,
       media: photoUris.length > 0
         ? {
             deleteMany: {},
@@ -1107,16 +1126,17 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
     },
     create: {
       googlePlaceId: rawPlace.id,
-      name: mainText,
-      address: rawPlace.formattedAddress,
+      name: effectiveDisplayName,
+      address: effectiveAddress,
       city: locationBits.city,
       country: locationBits.country,
-      latitude: rawPlace.location?.latitude ?? null,
-      longitude: rawPlace.location?.longitude ?? null,
+      latitude: effectiveLocation?.latitude ?? null,
+      longitude: effectiveLocation?.longitude ?? null,
       category,
-      rating: rawPlace.rating ?? null,
-      priceLevel: mapGooglePriceLevel(rawPlace.priceLevel),
+      rating: effectiveRating,
+      priceLevel: effectivePriceLevel,
       primaryImageUrl: photoUri ?? undefined,
+      mapsEmbedUrl: details?.googleMapsUri ?? null,
       media: photoUris.length > 0
         ? {
             create: photoUris.map((uri, index) => ({
@@ -1130,14 +1150,32 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
     },
   });
 
+  await persistGooglePlaceSnapshot({
+    placeId: place.id,
+    googlePlaceId: rawPlace.id,
+    source: 'TEXT_SEARCH',
+    queryContext: options?.queryContext ?? null,
+    payload: rawPlace,
+  });
+
+  if (details) {
+    await persistGooglePlaceSnapshot({
+      placeId: place.id,
+      googlePlaceId: details.id,
+      source: 'PLACE_DETAILS',
+      payload: details,
+      queryContext: options?.queryContext ?? null,
+    });
+  }
+
   return {
     id: place.id,
-    name: mainText,
-    location: [locationBits.city, locationBits.country].filter(Boolean).join(', ') || rawPlace.formattedAddress || 'Unknown location',
+    name: effectiveDisplayName,
+    location: [locationBits.city, locationBits.country].filter(Boolean).join(', ') || effectiveAddress || 'Unknown location',
     description: '',
     image: photoUri ?? place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
     images: photoUris.length > 0 ? photoUris : [place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place'],
-    tags: (rawPlace.types?.slice(0, 3).map((type) => type.replace(/_/g, ' ')) ?? [category]).slice(0, 3),
+    tags: (effectiveTypes?.slice(0, 3).map((type) => type.replace(/_/g, ' ')) ?? [category]).slice(0, 3),
     similarityStat: 82,
     whyYoullLikeIt: [],
     priceRange: mapPriceLevel(mapGooglePriceLevel(rawPlace.priceLevel)),
@@ -1377,7 +1415,9 @@ async function getDiscoveryPlacesByLocation(
   if (relevantPlaces.length > 0) {
     const mappedPlaces = await Promise.all(
       relevantPlaces.slice(0, 36).map((place) =>
-        mapGoogleSearchPlaceToInternalPlace(place).catch((error) => {
+        mapGoogleSearchPlaceToInternalPlace(place, {
+          queryContext: queries.join(' | '),
+        }).catch((error) => {
           console.error('Discovery Google place mapping failed', {
             googlePlaceId: place.id,
             displayName: place.displayName?.text ?? null,
@@ -1719,7 +1759,9 @@ async function seedDiscoverySearchCandidates(
   await Promise.all(
     relevantPlaces
       .slice(0, 18)
-      .map((place) => mapGoogleSearchPlaceToInternalPlace(place).catch((error) => {
+      .map((place) => mapGoogleSearchPlaceToInternalPlace(place, {
+        queryContext: normalizedQuery,
+      }).catch((error) => {
         console.error(error);
         return null;
       })),
@@ -2353,6 +2395,37 @@ function mapGooglePriceLevel(priceLevel?: string) {
 function mapPriceLevel(value?: number | null) {
   if (!value || value <= 0) return 'Free';
   return '$'.repeat(Math.min(value, 4));
+}
+
+function toGoogleSnapshotPayload(payload: unknown): Prisma.InputJsonValue {
+  return JSON.parse(JSON.stringify(payload ?? null)) as Prisma.InputJsonValue;
+}
+
+async function persistGooglePlaceSnapshot(input: {
+  placeId: string;
+  googlePlaceId: string;
+  source: 'TEXT_SEARCH' | 'PLACE_DETAILS';
+  payload: unknown;
+  queryContext?: string | null;
+}) {
+  try {
+    await prisma.placeGoogleSnapshot.create({
+      data: {
+        placeId: input.placeId,
+        googlePlaceId: input.googlePlaceId,
+        source: input.source,
+        queryContext: input.queryContext ?? null,
+        payloadJson: toGoogleSnapshotPayload(input.payload),
+      },
+    });
+  } catch (error) {
+    console.error('Persist Google place snapshot failed', {
+      placeId: input.placeId,
+      googlePlaceId: input.googlePlaceId,
+      source: input.source,
+      error,
+    });
+  }
 }
 
 function normalizeKeyword(value: string) {
@@ -4759,6 +4832,13 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
           orderBy: { sortOrder: 'asc' },
         },
       },
+    });
+
+    await persistGooglePlaceSnapshot({
+      placeId: updated.id,
+      googlePlaceId: details.id,
+      source: 'PLACE_DETAILS',
+      payload: details,
     });
 
     await ensurePlaceAiEnrichment(updated.id);
