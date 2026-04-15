@@ -6640,6 +6640,54 @@ app.get('/api/debug/today-recommendation', requireAuth, async (req: Authenticate
   }
 });
 
+app.get('/api/debug/place-google-snapshots/:placeId', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const placeId = String(req.params.placeId || '').trim();
+    if (!placeId) {
+      res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    const place = await prisma.place.findUnique({
+      where: { id: placeId },
+      select: {
+        id: true,
+        name: true,
+        googlePlaceId: true,
+        address: true,
+        city: true,
+        country: true,
+        category: true,
+        rating: true,
+        priceLevel: true,
+        mapsEmbedUrl: true,
+      },
+    });
+
+    if (!place) {
+      res.status(404).json({ error: 'Place not found' });
+      return;
+    }
+
+    const snapshots = await prisma.placeGoogleSnapshot.findMany({
+      where: { placeId },
+      select: {
+        id: true,
+        source: true,
+        queryContext: true,
+        fetchedAt: true,
+        payloadJson: true,
+      },
+      orderBy: { fetchedAt: 'desc' },
+      take: 4,
+    });
+
+    res.json({ place, snapshots });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.get('/api/debug/travelers/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const travelerId = req.params.id;
