@@ -1097,6 +1097,7 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       })
     : [];
   const photoUri = photoUris[0] ?? null;
+  const neighborhoodBits = extractNeighborhoodFromAddressComponents(details?.addressComponents);
 
   const place = await prisma.place.upsert({
     where: { googlePlaceId: rawPlace.id },
@@ -1105,6 +1106,8 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       address: effectiveAddress,
       city: locationBits.city,
       country: locationBits.country,
+      neighborhood: neighborhoodBits.neighborhood ?? undefined,
+      adminAreaLevel4: neighborhoodBits.adminAreaLevel4 ?? undefined,
       latitude: effectiveLocation?.latitude ?? null,
       longitude: effectiveLocation?.longitude ?? null,
       category,
@@ -1130,6 +1133,8 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       address: effectiveAddress,
       city: locationBits.city,
       country: locationBits.country,
+      neighborhood: neighborhoodBits.neighborhood ?? null,
+      adminAreaLevel4: neighborhoodBits.adminAreaLevel4 ?? null,
       latitude: effectiveLocation?.latitude ?? null,
       longitude: effectiveLocation?.longitude ?? null,
       category,
@@ -1568,11 +1573,14 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     priceLevel: place.priceLevel ?? null,
   });
   const category = normalizePlaceCategory(place.category, tags);
+  const neighborhoodLabel = place.neighborhood ?? place.adminAreaLevel4 ?? undefined;
+  const priceRangeLabel = formatPriceRangeLabel({ priceLevel: place.priceLevel ?? null, country: place.country ?? null }) ?? undefined;
   return {
     id: place.id,
     name: place.name,
     location: [place.city, place.country].filter(Boolean).join(', ') || place.address || 'Unknown location',
     address: place.address ?? undefined,
+    neighborhood: neighborhoodLabel,
     description: place.aiEnrichment?.description ?? '',
     hook: place.aiEnrichment?.hook ?? '',
     image,
@@ -1587,6 +1595,7 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     ],
     rating: place.rating ?? undefined,
     priceRange: mapPriceLevel(place.priceLevel),
+    priceRangeLabel,
     category,
     latitude: place.latitude ?? undefined,
     longitude: place.longitude ?? undefined,
@@ -1660,6 +1669,7 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     name: place.name,
     location: place.location,
     address: '',
+    neighborhood: undefined,
     description: place.description,
     hook: '',
     image: place.image,
@@ -1675,6 +1685,7 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     whyYoullLikeIt: place.whyYoullLikeIt ?? [],
     rating: 0,
     priceRange: place.priceRange ?? '',
+    priceRangeLabel: undefined,
     category,
     latitude: place.latitude ?? undefined,
     longitude: place.longitude ?? undefined,
@@ -2328,7 +2339,7 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,primaryType,types,rating,priceLevel,googleMapsUri,regularOpeningHours.weekdayDescriptions,photos',
+      'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,primaryType,types,rating,priceLevel,googleMapsUri,regularOpeningHours.weekdayDescriptions,photos,addressComponents',
     },
   });
 
@@ -2340,6 +2351,12 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
     id: string;
     displayName?: { text?: string };
     formattedAddress?: string;
+    addressComponents?: Array<{
+      longText?: string;
+      shortText?: string;
+      types?: string[];
+      languageCode?: string;
+    }>;
     location?: { latitude?: number; longitude?: number };
     primaryType?: string;
     types?: string[];
@@ -2353,6 +2370,47 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
       name: string;
     }>;
   }>;
+}
+
+function extractNeighborhoodFromAddressComponents(components: Array<{
+  longText?: string;
+  shortText?: string;
+  types?: string[];
+}> | undefined | null): { neighborhood?: string | null; adminAreaLevel4?: string | null } {
+  const items = Array.isArray(components) ? components : [];
+  const pick = (type: string) => items.find((item) => (item.types ?? []).includes(type));
+
+  const neighborhood =
+    pick('neighborhood')?.longText
+    ?? pick('sublocality_level_2')?.longText
+    ?? pick('sublocality_level_1')?.longText
+    ?? pick('sublocality')?.longText
+    ?? null;
+
+  const adminAreaLevel4 = pick('administrative_area_level_4')?.longText ?? null;
+  return { neighborhood, adminAreaLevel4 };
+}
+
+function formatPriceRangeLabel(input: { priceLevel?: number | null; country?: string | null }) {
+  const level = input.priceLevel ?? null;
+  if (!level || level <= 0) return null;
+
+  // Best-effort currency symbol derived from country string. We can refine once we have postal/currency fields.
+  const country = (input.country ?? '').toLowerCase();
+  const symbol = country.includes('indonesia') ? 'Rp' : '$';
+
+  switch (level) {
+    case 1:
+      return `${symbol}10-20`;
+    case 2:
+      return `${symbol}20-40`;
+    case 3:
+      return `${symbol}40-70`;
+    case 4:
+      return `${symbol}70+`;
+    default:
+      return null;
+  }
 }
 
 async function fetchGooglePhotoUri(photoName: string) {
@@ -4862,6 +4920,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       : [];
     const photoUri = photoUris[0] ?? null;
     const locationBits = parseLocationBits(details.formattedAddress);
+    const neighborhoodBits = extractNeighborhoodFromAddressComponents(details.addressComponents);
     const updated = await prisma.place.update({
       where: { id: place.id },
       data: {
@@ -4869,6 +4928,8 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
         address: details.formattedAddress ?? place.address,
         city: locationBits.city,
         country: locationBits.country,
+        neighborhood: neighborhoodBits.neighborhood ?? undefined,
+        adminAreaLevel4: neighborhoodBits.adminAreaLevel4 ?? undefined,
         latitude: details.location?.latitude ?? place.latitude,
         longitude: details.location?.longitude ?? place.longitude,
         category: details.primaryType?.replace(/_/g, ' ') ?? place.category,

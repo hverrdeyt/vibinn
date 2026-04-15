@@ -245,6 +245,8 @@ model Place {
   address           String?
   city              String?
   country           String?
+  neighborhood      String?
+  adminAreaLevel4   String?
   category          String
   latitude          Float?
   longitude         Float?

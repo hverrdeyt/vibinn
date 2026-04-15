@@ -19,6 +19,7 @@ private let nativeDiscoveryLayoutDebugMode = false
 private let nativeTodayRecommendationDebugMode = false
 private let nativeScoreDebugToolsEnabled = false
 private let nativePlaceDetailLayoutDebugMode = false
+private let nativePreferenceLayoutDebugMode = false
 private let nativeDiscoveryScoreDebugMode = nativeScoreDebugToolsEnabled
 private let nativeTodayRecommendationScoreDebugMode = nativeScoreDebugToolsEnabled
 private let nativeTravelerScoreDebugMode = nativeScoreDebugToolsEnabled
@@ -83,26 +84,19 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         }
         UNUserNotificationCenter.current().delegate = self
         Messaging.messaging().delegate = self
-        Messaging.messaging().token { token, error in
-            if let error {
-                nativeLogger.error("firebase messaging token preload failed: \(error.localizedDescription, privacy: .public)")
-                return
-            }
-            guard let token, !token.isEmpty else { return }
-            UserDefaults.standard.set(token, forKey: nativePushTokenUserDefaultsKey)
-            NotificationCenter.default.post(name: nativePushTokenNotification, object: token)
-        }
         return true
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
         Messaging.messaging().apnsToken = deviceToken
+        nativeLogger.log("apns token received")
         Messaging.messaging().token { token, error in
             if let error {
                 nativeLogger.error("firebase messaging token after apns failed: \(error.localizedDescription, privacy: .public)")
                 return
             }
             guard let token, !token.isEmpty else { return }
+            nativeLogger.log("firebase token received after apns")
             UserDefaults.standard.set(token, forKey: nativePushTokenUserDefaultsKey)
             NotificationCenter.default.post(name: nativePushTokenNotification, object: token)
         }
@@ -133,6 +127,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
 
     func messaging(_ messaging: Messaging, didReceiveRegistrationToken fcmToken: String?) {
         guard let fcmToken, !fcmToken.isEmpty else { return }
+        nativeLogger.log("firebase messaging delegate token received")
         UserDefaults.standard.set(fcmToken, forKey: nativePushTokenUserDefaultsKey)
         NotificationCenter.default.post(name: nativePushTokenNotification, object: fcmToken)
     }
@@ -326,6 +321,7 @@ private struct NativePlace: Decodable, Identifiable {
     let name: String
     let location: String
     let address: String?
+    let neighborhood: String?
     let category: String?
     let description: String?
     let hook: String?
@@ -344,6 +340,7 @@ private struct NativePlace: Decodable, Identifiable {
     let latitude: Double?
     let longitude: Double?
     let priceRange: String?
+    let priceRangeLabel: String?
     let momentId: String?
     let ownerUserId: String?
     let visitedDate: String?
@@ -698,6 +695,12 @@ private struct NativeNotificationItem: Decodable, Identifiable {
 
 private struct NativeNotificationsResponse: Decodable {
     let notifications: [NativeNotificationItem]
+}
+
+private struct NativeNotificationSettings: Decodable {
+    let pushEnabled: Bool
+    let emailEnabled: Bool
+    let recommendationEnabled: Bool
 }
 
 private struct NativeModerationActionResponse: Decodable {
@@ -1078,6 +1081,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let response = try await api.login(email: email, password: password)
         authToken = response.token
         currentUser = response.user
+        markOnboardingRequiredAfterAuth()
         await syncLocalTastePreferencesIfNeeded()
         await refreshCurrentPushTokenFromFirebase()
         await syncPushTokenIfPossible()
@@ -1089,6 +1093,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let response = try await api.register(name: name, email: email, password: password)
         authToken = response.token
         currentUser = response.user
+        markOnboardingRequiredAfterAuth()
         await syncLocalTastePreferencesIfNeeded()
         await refreshCurrentPushTokenFromFirebase()
         await syncPushTokenIfPossible()
@@ -1101,6 +1106,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let response = try await api.googleAuth(idToken: idToken)
         authToken = response.token
         currentUser = response.user
+        markOnboardingRequiredAfterAuth()
         await syncLocalTastePreferencesIfNeeded()
         await refreshCurrentPushTokenFromFirebase()
         await syncPushTokenIfPossible()
@@ -1123,6 +1129,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         )
         authToken = response.token
         currentUser = response.user
+        markOnboardingRequiredAfterAuth()
         await syncLocalTastePreferencesIfNeeded()
         await refreshCurrentPushTokenFromFirebase()
         await syncPushTokenIfPossible()
@@ -1187,6 +1194,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         discoveryErrorMessage = nil
         feedErrorMessage = nil
         savedErrorMessage = nil
+        showAuthSheet = false
         authSheetReason = nil
         showPreferenceSetupSheet = false
         showCheckInSheet = false
@@ -1365,12 +1373,23 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
     }
 
-    func completeOnboarding(with location: NativeLocationOption, selectedInterests: [String] = [], selectedVibe: String? = nil) async {
+    func completeOnboarding(
+        with location: NativeLocationOption,
+        selectedInterests: [String] = [],
+        selectedVibe: String? = nil,
+        preserveExistingPreferences: Bool = false
+    ) async {
         selectedLocation = location
         UserDefaults.standard.set(true, forKey: onboardingKey)
         UserDefaults.standard.set(location.label, forKey: locationKey)
         hasCompletedOnboarding = true
-        await updateTastePreferences(selectedInterests: selectedInterests, selectedVibe: selectedVibe)
+        if preserveExistingPreferences {
+            if currentUser?.hasCompletedTastePreferences != true {
+                await updateTastePreferences(selectedInterests: selectedInterests, selectedVibe: selectedVibe)
+            }
+        } else {
+            await updateTastePreferences(selectedInterests: selectedInterests, selectedVibe: selectedVibe)
+        }
         Task { await self.refreshDiscovery() }
         Task { await self.refreshFeed() }
     }
@@ -1442,6 +1461,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 location: selectedLocation.label,
                 page: 1,
                 limit: 18,
+                refresh: true,
                 selectedInterests: selectedInterests,
                 selectedVibe: selectedVibe,
                 token: authToken
@@ -1632,6 +1652,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         } catch {
             nativeLogger.error("syncLocalTastePreferences failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    private func markOnboardingRequiredAfterAuth() {
+        hasCompletedOnboarding = false
+        UserDefaults.standard.set(false, forKey: onboardingKey)
     }
 
     func createCollection(label: String, placeIds: [String]) async throws {
@@ -1988,6 +2013,46 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         blockedTravelerIds.remove(userId)
     }
 
+    func fetchNotificationSettings() async throws -> NativeNotificationSettings {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to manage notifications.")
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        return try await api.getNotificationSettings(token: token)
+    }
+
+    func setPushNotificationsEnabled(
+        _ enabled: Bool,
+        currentSettings: NativeNotificationSettings
+    ) async throws {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to manage notifications.")
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        let updatedSettings = try await api.updateNotificationSettings(
+            token: token,
+            pushEnabled: enabled,
+            emailEnabled: currentSettings.emailEnabled,
+            recommendationEnabled: currentSettings.recommendationEnabled
+        )
+
+        if enabled {
+            await requestPushNotifications()
+            if currentPushToken != nil {
+                await syncPushTokenIfPossible(force: true)
+            } else {
+                nativeLogger.log("push toggle enabled: waiting for APNS/FCM token before sync")
+            }
+        } else if let currentPushToken, !currentPushToken.isEmpty {
+            try? await api.unregisterPushDevice(fcmToken: currentPushToken, token: token)
+            lastSyncedPushToken = nil
+        }
+
+        nativeLogger.log("notification settings updated pushEnabled=\(updatedSettings.pushEnabled)")
+    }
+
     func fetchNotifications() async throws -> [NativeNotificationItem] {
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to see your notifications.")
@@ -2200,6 +2265,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     private func refreshCurrentPushTokenFromFirebase() async {
+        guard Messaging.messaging().apnsToken != nil else {
+            nativeLogger.log("skip firebase token refresh: apns token not ready")
+            return
+        }
+
         let token: String? = await withCheckedContinuation { continuation in
             Messaging.messaging().token { token, error in
                 if let error {
@@ -2473,6 +2543,7 @@ private struct NativeAPIClient {
         location: String,
         page: Int,
         limit: Int,
+        refresh: Bool = false,
         selectedInterests: [String],
         selectedVibe: String?,
         token: String?
@@ -2488,6 +2559,9 @@ private struct NativeAPIClient {
         }
         if !encodedVibe.isEmpty {
             path += "&vibe=\(encodedVibe)"
+        }
+        if refresh {
+            path += "&refresh=1"
         }
         return try await request(
             path: path,
@@ -2636,6 +2710,34 @@ private struct NativeAPIClient {
     func getNotifications(token: String) async throws -> [NativeNotificationItem] {
         let response: NativeNotificationsResponse = try await request(path: "/api/notifications", method: "GET", token: token)
         return response.notifications
+    }
+
+    func getNotificationSettings(token: String) async throws -> NativeNotificationSettings {
+        try await request(path: "/api/settings/notifications", method: "GET", token: token)
+    }
+
+    private struct UpdateNotificationSettingsBody: Encodable {
+        let pushEnabled: Bool
+        let emailEnabled: Bool
+        let recommendationEnabled: Bool
+    }
+
+    func updateNotificationSettings(
+        token: String,
+        pushEnabled: Bool,
+        emailEnabled: Bool,
+        recommendationEnabled: Bool
+    ) async throws -> NativeNotificationSettings {
+        try await request(
+            path: "/api/settings/notifications",
+            method: "PATCH",
+            token: token,
+            body: UpdateNotificationSettingsBody(
+                pushEnabled: pushEnabled,
+                emailEnabled: emailEnabled,
+                recommendationEnabled: recommendationEnabled
+            )
+        )
     }
 
     private struct CreateCollectionBody: Encodable {
@@ -3165,8 +3267,8 @@ private struct NativeVibinnRootView: View {
         Group {
             if appState.isBootstrapping {
                 NativeLoadingScreen()
-            } else if !appState.hasCompletedOnboarding && appState.currentUser == nil {
-                NativeAuthScreen(allowsDismissal: false, promptReason: "Create an account to set up your city and preferences.")
+            } else if appState.currentUser == nil {
+                NativeAuthScreen(allowsDismissal: false, promptReason: "Sign in or create an account to continue.")
                     .environmentObject(appState)
             } else if !appState.hasCompletedOnboarding {
                 NativeOnboardingScreen()
@@ -3177,7 +3279,7 @@ private struct NativeVibinnRootView: View {
             }
         }
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $appState.showAuthSheet) {
+        .fullScreenCover(isPresented: $appState.showAuthSheet) {
             NativeAuthScreen(allowsDismissal: true, promptReason: appState.authSheetReason)
                 .environmentObject(appState)
         }
@@ -3202,11 +3304,13 @@ private struct NativeVibinnRootView: View {
             nativeLogger.log("RootView currentUser changed hasUser=\(value != nil, privacy: .public)")
             if value != nil, appState.showAuthSheet {
                 appState.dismissAuthGate()
-                appState.performPendingPostAuthActionIfNeeded()
             }
         }
         .onChange(of: appState.hasCompletedOnboarding) { value in
             nativeLogger.log("RootView onboarding changed=\(value, privacy: .public)")
+            if value, appState.currentUser != nil {
+                appState.performPendingPostAuthActionIfNeeded()
+            }
         }
     }
 }
@@ -3430,7 +3534,6 @@ private struct NativeDiscoveryTileLink: View {
     let item: NativeDiscoveryColumnItem
     let columnWidth: CGFloat
     let onDebugTap: (() -> Void)?
-    let onDiscoveryToast: (String) -> Void
 
     var body: some View {
         Group {
@@ -3441,18 +3544,6 @@ private struct NativeDiscoveryTileLink: View {
                     height: nativeDiscoveryTileHeight(for: item.index),
                     isBookmarked: appState.isBookmarked(item.place.id),
                     isVisited: appState.isVisited(item.place.id),
-                    onSaveSwipe: {
-                        Task {
-                            try? await appState.savePlace(item.place)
-                            await MainActor.run {
-                                onDiscoveryToast("Added to saved")
-                            }
-                        }
-                    },
-                    onSkipSwipe: {
-                        appState.dismissDiscoveryPlace(item.place.id)
-                        onDiscoveryToast("Place hidden")
-                    },
                     onDebugTap: onDebugTap
                 )
                 .frame(width: columnWidth, height: nativeDiscoveryTileHeight(for: item.index))
@@ -3466,18 +3557,6 @@ private struct NativeDiscoveryTileLink: View {
                         height: nativeDiscoveryTileHeight(for: item.index),
                         isBookmarked: appState.isBookmarked(item.place.id),
                         isVisited: appState.isVisited(item.place.id),
-                        onSaveSwipe: {
-                            Task {
-                                try? await appState.savePlace(item.place)
-                                await MainActor.run {
-                                    onDiscoveryToast("Added to saved")
-                                }
-                            }
-                        },
-                        onSkipSwipe: {
-                            appState.dismissDiscoveryPlace(item.place.id)
-                            onDiscoveryToast("Place hidden")
-                        },
                         onDebugTap: onDebugTap
                     )
                     .frame(width: columnWidth, height: nativeDiscoveryTileHeight(for: item.index))
@@ -3498,7 +3577,6 @@ private struct NativeDiscoveryMasonryView: View {
     let rightItems: [NativeDiscoveryColumnItem]
     let containerWidth: CGFloat
     let onDebugTap: (NativePlace) -> Void
-    let onDiscoveryToast: (String) -> Void
     private let columnGap: CGFloat = 12
 
     private var columnWidth: CGFloat {
@@ -3558,8 +3636,7 @@ private struct NativeDiscoveryMasonryView: View {
                 NativeDiscoveryTileLink(
                     item: positioned.item,
                     columnWidth: positioned.width,
-                    onDebugTap: nativeDiscoveryScoreDebugMode ? { onDebugTap(positioned.item.place) } : nil,
-                    onDiscoveryToast: onDiscoveryToast
+                    onDebugTap: nativeDiscoveryScoreDebugMode ? { onDebugTap(positioned.item.place) } : nil
                 )
                 .offset(x: positioned.x, y: positioned.y)
             }
@@ -4438,6 +4515,359 @@ private struct NativeAuthScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     let allowsDismissal: Bool
     let promptReason: String?
+    @State private var isSubmitting = false
+    @State private var errorMessage: String?
+    @State private var showEmailSheet = false
+
+    init(allowsDismissal: Bool = false, promptReason: String? = nil) {
+        self.allowsDismissal = allowsDismissal
+        self.promptReason = promptReason
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let safeTop = proxy.safeAreaInsets.top
+            let safeBottom = proxy.safeAreaInsets.bottom
+            let heroHeight = max(proxy.size.height * 0.58, 360)
+            let copyHeight = max(proxy.size.height * 0.22, 170)
+
+            ZStack(alignment: .topTrailing) {
+                Color.black.ignoresSafeArea()
+
+                VStack(spacing: 0) {
+                    NativeAuthHeroCollage()
+                        .frame(height: heroHeight)
+                        .clipped()
+
+                    VStack(alignment: .center, spacing: 14) {
+                        ZStack {
+                            Circle()
+                                .fill(nativeAccent)
+                            Image("VibinnMapPin")
+                                .resizable()
+                                .scaledToFit()
+                                .padding(12)
+                        }
+                        .frame(width: 58, height: 58)
+
+                        VStack(alignment: .center, spacing: 8) {
+                            Text("Create a vibe you love")
+                                .font(.system(size: 36, weight: .black))
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(.white)
+
+                            Text(promptReason ?? "Log in to save places, unlock your vibes, and keep your picks synced.")
+                                .font(.system(size: 15, weight: .regular))
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(.white.opacity(0.7))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: copyHeight, alignment: .center)
+                    .padding(.horizontal, 22)
+                    .padding(.top, 18)
+
+                    Spacer(minLength: 0)
+                }
+
+                VStack(spacing: 10) {
+                    NativeAuthLandingButton(
+                        title: "Continue with Apple",
+                        icon: .system("apple.logo"),
+                        isLoading: isSubmitting,
+                        style: .light
+                    ) {
+                        Task { await submitApple() }
+                    }
+                    .disabled(isSubmitting)
+
+                    NativeAuthLandingButton(
+                        title: "Continue with Google",
+                        icon: .asset("GoogleSignInMark"),
+                        isLoading: isSubmitting,
+                        style: .light
+                    ) {
+                        Task { await submitGoogle() }
+                    }
+                    .disabled(isSubmitting)
+
+                    NativeAuthLandingButton(
+                        title: "Continue with Email",
+                        icon: .system("envelope.fill"),
+                        isLoading: false,
+                        style: .dark
+                    ) {
+                        showEmailSheet = true
+                    }
+
+                    NativeAuthLegalText()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, safeTop + 16)
+                .padding(.bottom, safeBottom)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+
+                if allowsDismissal {
+                    Button {
+                        appState.dismissAuthGate()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.82))
+                            .frame(width: 38, height: 38)
+                            .background(Color.black.opacity(0.28))
+                            .overlay(Circle().stroke(Color.white.opacity(0.12), lineWidth: 1))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, safeTop + 12)
+                    .padding(.trailing, 20)
+                }
+
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.red.opacity(0.92))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(Color.black.opacity(0.7))
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .padding(.horizontal, 20)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                        .padding(.bottom, safeBottom + 196)
+                }
+            }
+        }
+        .background(Color.black.ignoresSafeArea())
+        .sheet(isPresented: $showEmailSheet) {
+            NativeEmailAuthSheet()
+                .environmentObject(appState)
+        }
+    }
+
+    private func submitGoogle() async {
+        errorMessage = nil
+        isSubmitting = true
+        defer { isSubmitting = false }
+
+        do {
+            try await appState.loginWithGoogle()
+        } catch {
+            errorMessage = "Could not continue with Google right now."
+        }
+    }
+
+    private func submitApple() async {
+        errorMessage = nil
+        isSubmitting = true
+        defer { isSubmitting = false }
+
+        do {
+            try await appState.loginWithApple()
+        } catch {
+            errorMessage = "Could not continue with Apple right now."
+        }
+    }
+
+}
+
+private struct NativeAuthHeroCollage: View {
+    private let heroImages = [
+        nativeInterestSwipeCards[0].imageURL,
+        nativeInterestSwipeCards[2].imageURL,
+        nativeInterestSwipeCards[4].imageURL,
+        nativeInterestSwipeCards[6].imageURL,
+    ]
+
+    var body: some View {
+        GeometryReader { proxy in
+            let spacing: CGFloat = 10
+            let columnWidth = (proxy.size.width - spacing * 3) / 2
+
+            HStack(spacing: spacing) {
+                VStack(spacing: spacing) {
+                    NativeAuthHeroTile(url: heroImages[0], height: proxy.size.height * 0.62)
+                    NativeAuthHeroTile(url: heroImages[1], height: proxy.size.height * 0.34)
+                }
+                .frame(width: columnWidth)
+
+                VStack(spacing: spacing) {
+                    NativeAuthHeroTile(url: heroImages[2], height: proxy.size.height * 0.38)
+                    NativeAuthHeroTile(url: heroImages[3], height: proxy.size.height * 0.58)
+                }
+                .frame(width: columnWidth)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, proxy.safeAreaInsets.top + 16)
+            .padding(.bottom, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(
+                LinearGradient(
+                    colors: [
+                        Color(red: 14 / 255, green: 14 / 255, blue: 18 / 255),
+                        Color.black
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay(
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0.0),
+                        Color.black.opacity(0.16),
+                        Color.black.opacity(0.72)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+        }
+    }
+}
+
+private struct NativeAuthHeroTile: View {
+    let url: String
+    let height: CGFloat
+
+    var body: some View {
+        NativeRemoteImage(url: url)
+            .frame(maxWidth: .infinity)
+            .frame(height: height)
+            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 26, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+    }
+}
+
+private struct NativeAuthLandingButton: View {
+    enum IconSource {
+        case system(String)
+        case asset(String)
+    }
+
+    enum Style {
+        case light
+        case dark
+    }
+
+    let title: String
+    let icon: IconSource
+    let isLoading: Bool
+    let style: Style
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                if isLoading {
+                    ProgressView()
+                        .tint(style == .light ? .black : .white)
+                } else {
+                    switch icon {
+                    case .system(let name):
+                        Image(systemName: name)
+                            .font(.system(size: 16, weight: .regular))
+                    case .asset(let name):
+                        Image(name)
+                            .resizable()
+                            .interpolation(.high)
+                            .frame(width: 18, height: 18)
+                    }
+                }
+                Text(title)
+                    .font(.system(size: 15, weight: .regular))
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(style == .light ? Color.white : Color.white.opacity(0.08))
+            .foregroundStyle(style == .light ? Color.black : Color.white)
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(style == .light ? Color.clear : nativeBorder, lineWidth: 1)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct NativeAuthLegalText: View {
+    private let termsURL = URL(string: "https://www.google.com")!
+    private let privacyURL = URL(string: "https://www.google.com")!
+
+    var body: some View {
+        VStack(spacing: 2) {
+            Text("By continuing, you agree to our")
+                .font(.system(size: 11, weight: .regular))
+                .foregroundStyle(.white.opacity(0.42))
+            .multilineTextAlignment(.center)
+
+            HStack(spacing: 4) {
+                Link("Terms of Service", destination: termsURL)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.82))
+                Text("•")
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.3))
+                Link("Privacy Policy", destination: privacyURL)
+                    .font(.system(size: 11, weight: .regular))
+                    .foregroundStyle(.white.opacity(0.82))
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+}
+
+private struct NativeEmailAuthSheet: View {
+    @EnvironmentObject private var appState: NativeAppState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Group {
+            if #available(iOS 16.0, *) {
+                authSheetContent
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            } else {
+                authSheetContent
+            }
+        }
+    }
+
+    private var authSheetContent: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                NativeEmailAuthForm()
+                    .environmentObject(appState)
+            }
+            .navigationTitle("Continue with Email")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.84))
+                            .frame(width: 34, height: 34)
+                            .background(nativeSurface)
+                            .overlay(Circle().stroke(nativeBorder, lineWidth: 1))
+                            .clipShape(Circle())
+                    }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+    }
+}
+
+private struct NativeEmailAuthForm: View {
+    @EnvironmentObject private var appState: NativeAppState
     @State private var mode: AuthMode = .login
     @State private var name = ""
     @State private var email = ""
@@ -4452,170 +4882,73 @@ private struct NativeAuthScreen: View {
         var id: String { rawValue }
     }
 
-    init(allowsDismissal: Bool = false, promptReason: String? = nil) {
-        self.allowsDismissal = allowsDismissal
-        self.promptReason = promptReason
-    }
-
     var body: some View {
-        NavigationView {
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 20) {
-                    HStack {
-                        Capsule()
-                            .fill(Color.white.opacity(0.16))
-                            .frame(width: 42, height: 5)
-                        Spacer()
-                    }
-                    .padding(.top, 6)
-
-                    HStack(alignment: .top, spacing: 12) {
-                        Text("Sign in to your account")
-                            .font(.system(size: 30, weight: .black))
-                            .foregroundStyle(.white)
-                        Spacer()
-                        if allowsDismissal {
-                            Button {
-                                appState.dismissAuthGate()
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 15, weight: .bold))
-                                    .foregroundStyle(.white.opacity(0.8))
-                                    .frame(width: 38, height: 38)
-                                    .background(nativeSurface)
-                                    .overlay(Circle().stroke(nativeBorder, lineWidth: 1))
-                                    .clipShape(Circle())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-
-                    VStack(spacing: 12) {
-                        Button {
-                            Task {
-                                await submitApple()
-                            }
-                        } label: {
-                            HStack(spacing: 10) {
-                                Spacer()
-                                if isSubmitting {
-                                    ProgressView().tint(.black)
-                                } else {
-                                    Image(systemName: "apple.logo")
-                                        .font(.system(size: 18, weight: .bold))
-                                    Text(mode == .login ? "Continue with Apple" : "Sign up with Apple")
-                                        .font(.system(size: 16, weight: .black))
-                                }
-                                Spacer()
-                            }
-                            .padding(.vertical, 16)
-                            .background(Color.white)
-                            .foregroundStyle(.black)
-                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                        }
-                        .disabled(isSubmitting)
-
-                        Button {
-                            Task {
-                                await submitGoogle()
-                            }
-                        } label: {
-                            HStack(spacing: 10) {
-                                Spacer()
-                                if isSubmitting {
-                                    ProgressView().tint(.black)
-                                } else {
-                                    Image("GoogleSignInMark")
-                                        .resizable()
-                                        .interpolation(.high)
-                                        .frame(width: 22, height: 22)
-                                    Text(mode == .login ? "Continue with Google" : "Sign up with Google")
-                                        .font(.system(size: 16, weight: .black))
-                                }
-                                Spacer()
-                            }
-                            .padding(.vertical, 16)
-                            .background(Color.white)
-                            .foregroundStyle(.black)
-                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                        }
-                        .disabled(isSubmitting)
-
-                        HStack(spacing: 12) {
-                            Rectangle().fill(nativeBorder).frame(height: 1)
-                            Text("OR")
-                                .font(.system(size: 11, weight: .black))
-                                .foregroundStyle(.white.opacity(0.35))
-                            Rectangle().fill(nativeBorder).frame(height: 1)
-                        }
-                    }
-
-                    VStack(spacing: 14) {
-                        Picker("Mode", selection: $mode) {
-                            ForEach(AuthMode.allCases) { item in
-                                Text(item.rawValue).tag(item)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-
-                        NativeSurfaceCard {
-                            VStack(spacing: 16) {
-                                if mode == .register {
-                                    NativeInputField(title: "Name", text: $name, keyboard: .default, secure: false)
-                                }
-                                NativeInputField(title: "Email", text: $email, keyboard: .emailAddress, secure: false)
-                                NativeInputField(title: "Password", text: $password, keyboard: .default, secure: true)
-                                if mode == .register {
-                                    NativeInputField(title: "Repeat password", text: $confirmPassword, keyboard: .default, secure: true)
-                                }
-
-                                if mode == .register && !confirmPassword.isEmpty && password != confirmPassword {
-                                    Text("Passwords need to match.")
-                                        .font(.system(size: 13, weight: .bold))
-                                        .foregroundStyle(.red.opacity(0.9))
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-
-                                if let errorMessage {
-                                    Text(errorMessage)
-                                        .font(.system(size: 14, weight: .semibold))
-                                        .foregroundStyle(.red.opacity(0.9))
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-
-                                Button {
-                                    Task {
-                                        await submit()
-                                    }
-                                } label: {
-                                    HStack {
-                                        Spacer()
-                                        if isSubmitting {
-                                            ProgressView().tint(.black)
-                                        } else {
-                                            Text(mode.rawValue)
-                                                .font(.system(size: 17, weight: .black))
-                                        }
-                                        Spacer()
-                                    }
-                                    .padding(.vertical, 16)
-                                    .background(nativeAccent)
-                                    .foregroundStyle(.black)
-                                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-                                }
-                                .disabled(!canSubmit)
-                            }
-                        }
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                Picker("Mode", selection: $mode) {
+                    ForEach(AuthMode.allCases) { item in
+                        Text(item.rawValue).tag(item)
                     }
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 18)
-                .padding(.bottom, 28)
+                .pickerStyle(.segmented)
+
+                NativeSurfaceCard {
+                    VStack(spacing: 16) {
+                        if mode == .register {
+                            NativeInputField(title: "Name", text: $name, keyboard: .default, secure: false)
+                        }
+
+                        NativeInputField(title: "Email", text: $email, keyboard: .emailAddress, secure: false)
+                        NativeInputField(title: "Password", text: $password, keyboard: .default, secure: true)
+
+                        if mode == .register {
+                            NativeInputField(title: "Repeat password", text: $confirmPassword, keyboard: .default, secure: true)
+                        }
+
+                        if mode == .register && !confirmPassword.isEmpty && password != confirmPassword {
+                            Text("Passwords need to match.")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(.red.opacity(0.9))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        if let errorMessage {
+                            Text(errorMessage)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.red.opacity(0.9))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+
+                        Button {
+                            Task {
+                                await submit()
+                            }
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if isSubmitting {
+                                    ProgressView().tint(.black)
+                                } else {
+                                    Text(mode.rawValue)
+                                        .font(.system(size: 17, weight: .black))
+                                }
+                                Spacer()
+                            }
+                            .padding(.vertical, 16)
+                            .background(nativeAccent)
+                            .foregroundStyle(.black)
+                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canSubmit)
+                    }
+                }
             }
-            .background(Color.black.ignoresSafeArea())
-            .navigationBarHidden(true)
+            .padding(.horizontal, 20)
+            .padding(.top, 20)
+            .padding(.bottom, 36)
         }
-        .navigationViewStyle(.stack)
+        .background(Color.black.ignoresSafeArea())
     }
 
     private var canSubmit: Bool {
@@ -4656,31 +4989,6 @@ private struct NativeAuthScreen: View {
                 : "Could not create your account right now."
         }
     }
-
-    private func submitGoogle() async {
-        errorMessage = nil
-        isSubmitting = true
-        defer { isSubmitting = false }
-
-        do {
-            try await appState.loginWithGoogle()
-        } catch {
-            errorMessage = "Could not continue with Google right now."
-        }
-    }
-
-    private func submitApple() async {
-        errorMessage = nil
-        isSubmitting = true
-        defer { isSubmitting = false }
-
-        do {
-            try await appState.loginWithApple()
-        } catch {
-            errorMessage = "Could not continue with Apple right now."
-        }
-    }
-
 }
 
 private struct NativeOnboardingScreen: View {
@@ -4697,6 +5005,12 @@ private struct NativeOnboardingScreen: View {
 
     private var onboardingSuggestedLocations: [NativeLocationOption] {
         nativeLocationOptions.filter { $0.id != "boston" }
+    }
+
+    private var canSkipPreferences: Bool {
+        appState.currentUser?.hasCompletedTastePreferences == true
+            || !appState.selectedInterests.isEmpty
+            || appState.selectedVibe != nil
     }
 
     var body: some View {
@@ -4753,28 +5067,48 @@ private struct NativeOnboardingScreen: View {
             }
 
             if step == .preferences {
-                Button {
-                    Task {
-                        await appState.completeOnboarding(
-                            with: selectedLocation,
-                            selectedInterests: selectedInterests,
-                            selectedVibe: nil
-                        )
+                VStack(spacing: 12) {
+                    if canSkipPreferences {
+                        Button {
+                            Task {
+                                await appState.completeOnboarding(
+                                    with: selectedLocation,
+                                    selectedInterests: appState.selectedInterests,
+                                    selectedVibe: appState.selectedVibe,
+                                    preserveExistingPreferences: true
+                                )
+                            }
+                        } label: {
+                            Text("Skip for now")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.72))
+                        }
+                        .buttonStyle(.plain)
                     }
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text("Start Explore")
-                            .font(.system(size: 17, weight: .black))
-                        Spacer()
+
+                    Button {
+                        Task {
+                            await appState.completeOnboarding(
+                                with: selectedLocation,
+                                selectedInterests: selectedInterests,
+                                selectedVibe: nil
+                            )
+                        }
+                    } label: {
+                        HStack {
+                            Spacer()
+                            Text("Start Explore")
+                                .font(.system(size: 17, weight: .black))
+                            Spacer()
+                        }
+                        .padding(.vertical, 18)
+                        .background(selectedInterests.isEmpty ? Color.white.opacity(0.08) : nativeAccent)
+                        .foregroundStyle(selectedInterests.isEmpty ? .white.opacity(0.42) : .black)
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
                     }
-                    .padding(.vertical, 18)
-                    .background(selectedInterests.isEmpty ? Color.white.opacity(0.08) : nativeAccent)
-                    .foregroundStyle(selectedInterests.isEmpty ? .white.opacity(0.42) : .black)
-                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .buttonStyle(.plain)
+                    .disabled(selectedInterests.isEmpty)
                 }
-                .buttonStyle(.plain)
-                .disabled(selectedInterests.isEmpty)
                 .padding(.horizontal, 24)
                 .padding(.bottom, 24)
             }
@@ -4952,11 +5286,21 @@ private struct NativePreferenceSelectionSection: View {
     let title: String
     let subtitle: String
     @Binding var selectedInterests: [String]
+    private let gridSpacing: CGFloat = 12
 
-    private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
-    ]
+    private func gridCardWidth(totalWidth: CGFloat) -> CGFloat {
+        floor((totalWidth - gridSpacing) / 2)
+    }
+
+    private func gridCardHeight(totalWidth: CGFloat) -> CGFloat {
+        gridCardWidth(totalWidth: totalWidth) * 1.5
+    }
+
+    private func gridContentHeight(totalWidth: CGFloat) -> CGFloat {
+        let rows = Int(ceil(Double(nativeInterestSwipeCards.count) / 2.0))
+        let cardHeight = gridCardHeight(totalWidth: totalWidth)
+        return (CGFloat(rows) * cardHeight) + (CGFloat(max(rows - 1, 0)) * gridSpacing)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -4969,16 +5313,70 @@ private struct NativePreferenceSelectionSection: View {
                     .foregroundStyle(.white.opacity(0.58))
                     .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .topLeading) {
+                if nativePreferenceLayoutDebugMode {
+                    NativePreferenceDebugBadge(
+                        title: "HEADER",
+                        value: "spacing=6"
+                    )
+                    .padding(6)
+                }
+            }
+            .overlay {
+                if nativePreferenceLayoutDebugMode {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.blue.opacity(0.9), style: StrokeStyle(lineWidth: 1.5, dash: [6, 4]))
+                }
+            }
 
-            LazyVGrid(columns: columns, spacing: 12) {
-                ForEach(nativeInterestSwipeCards) { card in
-                    NativePreferenceSelectionCard(
-                        card: card,
-                        isSelected: selectedInterests.contains(card.id)
-                    ) {
-                        toggle(card.id)
+            GeometryReader { proxy in
+                let totalWidth = proxy.size.width
+                let cardWidth = gridCardWidth(totalWidth: totalWidth)
+                let columns = [
+                    GridItem(.fixed(cardWidth), spacing: gridSpacing),
+                    GridItem(.fixed(cardWidth), spacing: gridSpacing),
+                ]
+
+                LazyVGrid(columns: columns, spacing: gridSpacing) {
+                    ForEach(nativeInterestSwipeCards) { card in
+                        NativePreferenceSelectionCard(
+                            card: card,
+                            cardWidth: cardWidth,
+                            isSelected: selectedInterests.contains(card.id)
+                        ) {
+                            toggle(card.id)
+                        }
                     }
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .overlay(alignment: .topLeading) {
+                    if nativePreferenceLayoutDebugMode {
+                        NativePreferenceDebugBadge(
+                            title: "GRID",
+                            value: "\(Int(totalWidth))w • \(Int(cardWidth))x\(Int(gridCardHeight(totalWidth: totalWidth)))"
+                        )
+                        .padding(6)
+                        .allowsHitTesting(false)
+                    }
+                }
+                .overlay {
+                    if nativePreferenceLayoutDebugMode {
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(Color.green.opacity(0.9), style: StrokeStyle(lineWidth: 1.5, dash: [8, 5]))
+                            .allowsHitTesting(false)
+                    }
+                }
+            }
+            .frame(height: gridContentHeight(totalWidth: UIScreen.main.bounds.width - 48))
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if nativePreferenceLayoutDebugMode {
+                NativePreferenceDebugBadge(
+                    title: "SECTION",
+                    value: "\(nativeInterestSwipeCards.count) cards"
+                )
+                .padding(8)
             }
         }
     }
@@ -5001,83 +5399,129 @@ private struct NativePreferenceSelectionSection: View {
 
 private struct NativePreferenceSelectionCard: View {
     let card: NativePreferenceSwipeCard
+    let cardWidth: CGFloat
     let isSelected: Bool
     let onTap: () -> Void
+
+    private var cardHeight: CGFloat { cardWidth * 1.5 }
 
     var body: some View {
         Button(action: onTap) {
             ZStack(alignment: .topTrailing) {
-                VStack(alignment: .leading, spacing: 12) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                            .fill(nativeSurfaceStrong)
-                            .frame(height: 148)
+                ZStack(alignment: .bottomLeading) {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(nativeSurfaceStrong)
 
-                        AsyncImage(url: URL(string: card.imageURL)) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                            case .empty:
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.04))
-                            case .failure:
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.04))
-                            @unknown default:
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.04))
-                            }
+                    AsyncImage(url: URL(string: card.imageURL)) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        case .empty:
+                            Rectangle()
+                                .fill(Color.white.opacity(0.04))
+                        case .failure:
+                            Rectangle()
+                                .fill(Color.white.opacity(0.04))
+                        @unknown default:
+                            Rectangle()
+                                .fill(Color.white.opacity(0.04))
                         }
-                        .frame(height: 148)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                        LinearGradient(
-                            colors: [Color.black.opacity(0.08), Color.black.opacity(0.6)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                        Image(systemName: card.symbol)
-                            .font(.system(size: 24, weight: .black))
-                            .foregroundStyle(.white)
-                            .shadow(color: .black.opacity(0.28), radius: 10, y: 4)
                     }
+                    .frame(width: cardWidth, height: cardHeight)
+                    .clipped()
 
-                    VStack(alignment: .leading, spacing: 6) {
+                    LinearGradient(
+                        colors: [Color.black.opacity(0.08), Color.black.opacity(0.24), Color.black.opacity(0.84)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        HStack {
+                            Image(systemName: card.symbol)
+                                .font(.system(size: 22, weight: .black))
+                                .foregroundStyle(.white)
+                                .shadow(color: .black.opacity(0.28), radius: 10, y: 4)
+                            Spacer()
+                        }
+                        .padding(.top, 16)
+                        .padding(.horizontal, 16)
+
+                        Spacer(minLength: 0)
+
                         Text(card.title)
                             .font(.system(size: 15, weight: .black))
                             .foregroundStyle(.white)
                             .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.bottom, 16)
                     }
+                    .frame(width: cardWidth, height: cardHeight, alignment: .topLeading)
                 }
-                .padding(12)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .fill(isSelected ? nativeAccent.opacity(0.12) : nativeSurface)
-                )
+                .frame(width: cardWidth, height: cardHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                 .overlay(
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
-                        .stroke(isSelected ? nativeAccent : Color.white.opacity(0.08), lineWidth: isSelected ? 1.8 : 1)
+                        .stroke(isSelected ? nativeAccent : Color.white.opacity(0.08), lineWidth: isSelected ? 2 : 1)
                 )
+                .overlay {
+                    if nativePreferenceLayoutDebugMode {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .stroke(Color.red.opacity(0.92), style: StrokeStyle(lineWidth: 1.5, dash: [7, 5]))
+                            .allowsHitTesting(false)
+                    }
+                }
+                .overlay(alignment: .bottomLeading) {
+                    if nativePreferenceLayoutDebugMode {
+                        GeometryReader { proxy in
+                            NativePreferenceDebugBadge(
+                                title: card.id,
+                                value: "\(Int(proxy.size.width))x\(Int(proxy.size.height))"
+                            )
+                            .padding(10)
+                            .allowsHitTesting(false)
+                        }
+                    }
+                }
 
                 ZStack {
                     Circle()
-                        .fill(isSelected ? nativeAccent : Color.white.opacity(0.08))
+                        .fill(isSelected ? nativeAccent : Color.black.opacity(0.42))
                     Image(systemName: isSelected ? "checkmark" : "plus")
                         .font(.system(size: 12, weight: .black))
-                        .foregroundStyle(isSelected ? .black : .white.opacity(0.7))
+                        .foregroundStyle(isSelected ? .black : .white.opacity(0.86))
                 }
-                .frame(width: 28, height: 28)
-                .padding(10)
+                .frame(width: 30, height: 30)
+                .padding(12)
             }
+            .frame(width: cardWidth, height: cardHeight, alignment: .topTrailing)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+}
+
+private struct NativePreferenceDebugBadge: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 9, weight: .black))
+            Text(value)
+                .font(.system(size: 10, weight: .bold))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(Color.red.opacity(0.82))
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .allowsHitTesting(false)
     }
 }
 
@@ -5348,8 +5792,14 @@ private struct NativeDiscoverScreen: View {
     @State private var showTodayRecommendationDebug = false
     @State private var selectedDebugPlace: NativePlace?
     @State private var selectedDiscoveryTabId = "all"
-    @State private var discoverySwipeToastMessage: String?
     @State private var isLocationAccessBannerDismissed = false
+    @State private var discoveryScrollOffsets: [String: CGFloat] = [:]
+
+    private let discoveryChromeTopPadding: CGFloat = 12
+    private let discoveryChromeHeaderHeight: CGFloat = 44
+    private let discoveryChromeSpacing: CGFloat = 20
+    private let discoveryChromeTabsHeight: CGFloat = 34
+    private let discoveryChromeBottomPadding: CGFloat = 0
 
     private var discoveryTabs: [NativeDiscoveryCategoryTab] {
         nativeDiscoveryFilterTabs(for: appState.selectedInterests)
@@ -5385,23 +5835,45 @@ private struct NativeDiscoverScreen: View {
         }
     }
 
+    private var discoveryExpandedChromeHeight: CGFloat {
+        discoveryChromeTopPadding
+            + discoveryChromeHeaderHeight
+            + discoveryChromeSpacing
+            + discoveryChromeTabsHeight
+            + discoveryChromeBottomPadding
+    }
+
+    private var discoveryCollapsedChromeHeight: CGFloat {
+        discoveryChromeTopPadding
+            + discoveryChromeTabsHeight
+            + discoveryChromeBottomPadding
+    }
+
+    private var activeDiscoveryScrollOffset: CGFloat {
+        discoveryScrollOffsets[selectedDiscoveryTabId] ?? 0
+    }
+
+    private var discoveryChromeCollapseDistance: CGFloat {
+        min(activeDiscoveryScrollOffset, discoveryChromeHeaderHeight + discoveryChromeSpacing)
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let contentWidth = proxy.size.width - 32
+
             ZStack(alignment: .top) {
-                ZStack {
+                // Only the content pages swipe horizontally. The shared chrome
+                // above stays in place, so the interaction feels like switching
+                // tab content instead of changing the whole screen.
+                TabView(selection: $selectedDiscoveryTabId) {
                     ForEach(discoveryTabs) { tab in
                         NativeDiscoveryTabPage(
                             tab: tab,
-                            tabs: discoveryTabs,
                             places: discoveryPlaces(for: tab.id),
                             contentWidth: contentWidth,
+                            topInset: discoveryExpandedChromeHeight,
                             shouldShowTodayRecommendationCTA: shouldShowTodayRecommendationCTA,
                             shouldShowLocationAccessCTA: appState.shouldShowLocationAccessCTA && !isLocationAccessBannerDismissed,
-                            selectedTabId: $selectedDiscoveryTabId,
-                            onLocationTap: { showLocationSheet = true },
-                            onSearchTap: { showSearchSheet = true },
-                            onNotificationsTap: { showNotificationsSheet = true },
                             onLocationAccessTap: {
                                 appState.requestLocationAccessOrOpenSettings()
                             },
@@ -5423,18 +5895,27 @@ private struct NativeDiscoverScreen: View {
                                     showTodayRecommendationLocationSheet = true
                                 }
                             },
-                            onDiscoveryToast: { message in
-                                showDiscoverySwipeToast(message)
-                            },
-                            onSwitchTab: switchDiscoveryTab
+                            onScrollOffsetChange: { offset in
+                                discoveryScrollOffsets[tab.id] = offset
+                            }
                         )
                         .environmentObject(appState)
-                        .opacity(selectedDiscoveryTabId == tab.id ? 1 : 0)
-                        .allowsHitTesting(selectedDiscoveryTabId == tab.id)
-                        .zIndex(selectedDiscoveryTabId == tab.id ? 1 : 0)
+                        .tag(tab.id)
                     }
                 }
+                .tabViewStyle(.page(indexDisplayMode: .never))
 
+                NativeDiscoverySharedChrome(
+                    locationLabel: appState.selectedLocation.label,
+                    tabs: discoveryTabs,
+                    selectedTabId: $selectedDiscoveryTabId,
+                    expandedHeight: discoveryExpandedChromeHeight,
+                    collapsedHeight: discoveryCollapsedChromeHeight,
+                    collapsedAmount: discoveryChromeCollapseDistance,
+                    onLocationTap: { showLocationSheet = true },
+                    onSearchTap: { showSearchSheet = true },
+                    onNotificationsTap: { showNotificationsSheet = true }
+                )
             }
         }
         .background(Color.black.ignoresSafeArea())
@@ -5467,14 +5948,6 @@ private struct NativeDiscoverScreen: View {
                 .buttonStyle(.plain)
                 .padding(.trailing, 16)
                 .padding(.bottom, appState.showFloatingTabBar ? (appState.shouldShowUnlockVibeCTA ? 184 : 100) : 22)
-            }
-        }
-        .overlay(alignment: .bottom) {
-            if let discoverySwipeToastMessage {
-                NativeDiscoveryToast(message: discoverySwipeToastMessage)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, appState.showFloatingTabBar ? (appState.shouldShowUnlockVibeCTA ? 176 : 96) : 18)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .safeAreaInset(edge: .bottom) {
@@ -5594,56 +6067,30 @@ private struct NativeDiscoverScreen: View {
         }
     }
 
-    private func switchDiscoveryTab(by delta: Int) {
-        guard let currentIndex = discoveryTabs.firstIndex(where: { $0.id == selectedDiscoveryTabId }) else {
-            selectedDiscoveryTabId = "all"
-            return
-        }
-        let nextIndex = min(max(currentIndex + delta, 0), discoveryTabs.count - 1)
-        guard nextIndex != currentIndex else { return }
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-            selectedDiscoveryTabId = discoveryTabs[nextIndex].id
-        }
-    }
-
     private func discoveryPlaces(for tabId: String) -> [NativePlace] {
         guard tabId != "all" else { return appState.discoveryPlaces }
         return appState.discoveryPlaces.filter { nativePlaceMatchesDiscoveryFilter($0, filterId: tabId) }
-    }
-
-    private func showDiscoverySwipeToast(_ message: String) {
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
-            discoverySwipeToastMessage = message
-        }
-
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
-            guard discoverySwipeToastMessage == message else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                discoverySwipeToastMessage = nil
-            }
-        }
     }
 }
 
 private struct NativeDiscoveryTabPage: View {
     @EnvironmentObject private var appState: NativeAppState
     let tab: NativeDiscoveryCategoryTab
-    let tabs: [NativeDiscoveryCategoryTab]
     let places: [NativePlace]
     let contentWidth: CGFloat
+    let topInset: CGFloat
     let shouldShowTodayRecommendationCTA: Bool
     let shouldShowLocationAccessCTA: Bool
-    @Binding var selectedTabId: String
-    let onLocationTap: () -> Void
-    let onSearchTap: () -> Void
-    let onNotificationsTap: () -> Void
     let onLocationAccessTap: () -> Void
     let onLocationAccessDismiss: () -> Void
     let onPlaceDebugTap: (NativePlace) -> Void
     let onTodayDebugTap: () -> Void
     let onTodayRecommendationTap: () -> Void
-    let onDiscoveryToast: (String) -> Void
-    let onSwitchTab: (Int) -> Void
+    let onScrollOffsetChange: (CGFloat) -> Void
+
+    private var scrollCoordinateSpace: String {
+        "discovery-scroll-\(tab.id)"
+    }
 
     private var balancedColumns: (left: [NativeDiscoveryColumnItem], right: [NativeDiscoveryColumnItem]) {
         buildNativeBalancedDiscoveryColumns(places: places)
@@ -5651,13 +6098,17 @@ private struct NativeDiscoveryTabPage: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 20) {
-                NativeDiscoveryTopHeader(
-                    locationLabel: appState.selectedLocation.label,
-                    onLocationTap: onLocationTap,
-                    onSearchTap: onSearchTap,
-                    onNotificationsTap: onNotificationsTap
-                )
+            LazyVStack(alignment: .leading, spacing: 16) {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: NativeDiscoveryScrollOffsetPreferenceKey.self,
+                        value: [tab.id: max(0, -proxy.frame(in: .named(scrollCoordinateSpace)).minY)]
+                    )
+                }
+                .frame(height: 0)
+
+                Color.clear
+                    .frame(height: max(topInset - 18, 0))
 
                 if let discoveryErrorMessage = appState.discoveryErrorMessage {
                     NativeInlineError(message: discoveryErrorMessage)
@@ -5669,12 +6120,6 @@ private struct NativeDiscoveryTabPage: View {
                         onDismiss: onLocationAccessDismiss
                     )
                 }
-
-                NativeDiscoveryCategoryTabs(
-                    tabs: tabs,
-                    selectedTabId: $selectedTabId
-                )
-                .padding(.bottom, 8)
 
                 if tab.id == "all" && shouldShowTodayRecommendationCTA {
                     Button {
@@ -5777,7 +6222,7 @@ private struct NativeDiscoveryTabPage: View {
                             Text(tab.id == "all" ? "No places yet for \(appState.selectedLocation.label)." : "No \(tab.label.lowercased()) spots yet in \(appState.selectedLocation.label).")
                                 .font(.system(size: 20, weight: .black))
                                 .foregroundStyle(.white)
-                            Text(tab.id == "all" ? "Pull to refresh to try again." : "Swipe or tap another tab to explore a different vibe.")
+                            Text("Tap another tab to explore a different vibe.")
                                 .font(.system(size: 14, weight: .medium))
                                 .foregroundStyle(.white.opacity(0.58))
                         }
@@ -5787,18 +6232,7 @@ private struct NativeDiscoveryTabPage: View {
                         leftItems: balancedColumns.left,
                         rightItems: balancedColumns.right,
                         containerWidth: contentWidth,
-                        onDebugTap: onPlaceDebugTap,
-                        onDiscoveryToast: onDiscoveryToast
-                    )
-                    .contentShape(Rectangle())
-                    .gesture(
-                        DragGesture(minimumDistance: 24)
-                            .onEnded { value in
-                                let horizontal = value.translation.width
-                                let vertical = value.translation.height
-                                guard abs(horizontal) > abs(vertical), abs(horizontal) > 36 else { return }
-                                onSwitchTab(horizontal < 0 ? 1 : -1)
-                            }
+                        onDebugTap: onPlaceDebugTap
                     )
 
                     if appState.isDiscoveryLoadingMore {
@@ -5814,8 +6248,15 @@ private struct NativeDiscoveryTabPage: View {
             }
             .frame(width: contentWidth, alignment: .leading)
             .padding(.horizontal, 16)
-            .padding(.top, 12)
+            .padding(.top, 6)
             .padding(.bottom, 18)
+        }
+        .coordinateSpace(name: scrollCoordinateSpace)
+        .background(Color.black)
+        .onPreferenceChange(NativeDiscoveryScrollOffsetPreferenceKey.self) { offsets in
+            if let offset = offsets[tab.id] {
+                onScrollOffsetChange(offset)
+            }
         }
         .refreshable {
             await appState.refreshDiscovery()
@@ -5830,32 +6271,25 @@ private struct NativeDiscoveryTopHeader: View {
     let onNotificationsTap: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 16) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Your vibe picks in")
-                    .font(.system(size: 26, weight: .black))
-                    .tracking(-1.3)
-                    .foregroundStyle(.white)
-
-                Button(action: onLocationTap) {
-                    HStack(spacing: 6) {
-                        Text(locationLabel)
-                            .font(.system(size: 26, weight: .black))
-                            .tracking(-1.3)
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 16, weight: .black))
-                    }
-                    .foregroundStyle(nativeAccent)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.white.opacity(0.06))
-                    .overlay(
-                        Capsule().stroke(nativeBorder, lineWidth: 1)
-                    )
-                    .clipShape(Capsule())
+        HStack(alignment: .center, spacing: 16) {
+            Button(action: onLocationTap) {
+                HStack(spacing: 6) {
+                    Text(locationLabel)
+                        .font(.system(size: 26, weight: .black))
+                        .tracking(-1.3)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 16, weight: .black))
                 }
-                .buttonStyle(.plain)
+                .foregroundStyle(nativeAccent)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(Color.white.opacity(0.06))
+                .overlay(
+                    Capsule().stroke(nativeBorder, lineWidth: 1)
+                )
+                .clipShape(Capsule())
             }
+            .buttonStyle(.plain)
 
             Spacer(minLength: 0)
 
@@ -6044,40 +6478,144 @@ private struct NativeTodayRecommendationCard: View {
 private struct NativeDiscoveryCategoryTabs: View {
     let tabs: [NativeDiscoveryCategoryTab]
     @Binding var selectedTabId: String
+    @State private var viewportWidth: CGFloat = 0
+    @State private var itemFrames: [String: CGRect] = [:]
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(tabs) { tab in
-                    Button {
-                        withAnimation(.spring(response: 0.28, dampingFraction: 0.88)) {
-                            selectedTabId = tab.id
+        GeometryReader { geometry in
+            ScrollViewReader { scrollProxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 14) {
+                        ForEach(tabs) { tab in
+                            Button {
+                                withAnimation(.easeOut(duration: 0.22)) {
+                                    selectedTabId = tab.id
+                                }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: tab.icon)
+                                            .font(.system(size: 13, weight: .black))
+                                        Text(tab.label)
+                                            .font(.system(size: 14, weight: .black))
+                                            .lineLimit(1)
+                                            .fixedSize(horizontal: true, vertical: false)
+                                    }
+                                    Capsule()
+                                        .fill(selectedTabId == tab.id ? nativeAccent : Color.clear)
+                                        .frame(height: 3)
+                                }
+                                .foregroundStyle(selectedTabId == tab.id ? .white : .white.opacity(0.62))
+                                .padding(.horizontal, 2)
+                                .padding(.vertical, 2)
+                                .background(
+                                    GeometryReader { itemProxy in
+                                        Color.clear.preference(
+                                            key: NativeDiscoveryTabFramePreferenceKey.self,
+                                            value: [
+                                                tab.id: itemProxy.frame(in: .named("discovery-tab-strip"))
+                                            ]
+                                        )
+                                    }
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .id(tab.id)
                         }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: tab.icon)
-                                .font(.system(size: 13, weight: .black))
-                            Text(tab.label)
-                                .font(.system(size: 13, weight: .black))
-                                .lineLimit(1)
-                        }
-                        .foregroundStyle(selectedTabId == tab.id ? .white : .white.opacity(0.62))
-                        .frame(width: 122, height: 44)
-                        .background(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .fill(selectedTabId == tab.id ? nativeAccent.opacity(0.22) : Color.white.opacity(0.04))
-                        )
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                .stroke(selectedTabId == tab.id ? nativeAccent : Color.white.opacity(0.06), lineWidth: 1)
-                        )
                     }
-                    .buttonStyle(.plain)
+                    .padding(.top, 2)
+                    .padding(.horizontal, 8)
+                }
+                .coordinateSpace(name: "discovery-tab-strip")
+                .onAppear {
+                    viewportWidth = geometry.size.width
+                }
+                .onChange(of: geometry.size.width) { width in
+                    viewportWidth = width
+                }
+                .onChange(of: selectedTabId) { selectedId in
+                    guard let frame = itemFrames[selectedId], viewportWidth > 0 else { return }
+                    let leadingThreshold: CGFloat = 8
+                    let trailingThreshold: CGFloat = viewportWidth - 8
+
+                    // Use a minimal-scroll strategy: only scroll the tab strip
+                    // enough to reveal the active tab if it has moved outside
+                    // the visible viewport. We intentionally do not center the
+                    // active tab so the strip feels stable while browsing.
+                    if frame.minX < leadingThreshold {
+                        withAnimation(.easeOut(duration: 0.22)) {
+                            scrollProxy.scrollTo(selectedId, anchor: .leading)
+                        }
+                    } else if frame.maxX > trailingThreshold {
+                        withAnimation(.easeOut(duration: 0.22)) {
+                            scrollProxy.scrollTo(selectedId, anchor: .trailing)
+                        }
+                    }
+                }
+                .onPreferenceChange(NativeDiscoveryTabFramePreferenceKey.self) { frames in
+                    itemFrames.merge(frames) { _, new in new }
                 }
             }
-            .padding(.top, 2)
-            .padding(.horizontal, 1)
         }
+        .frame(height: 34)
+    }
+}
+
+private struct NativeDiscoverySharedChrome: View {
+    let locationLabel: String
+    let tabs: [NativeDiscoveryCategoryTab]
+    @Binding var selectedTabId: String
+    let expandedHeight: CGFloat
+    let collapsedHeight: CGFloat
+    let collapsedAmount: CGFloat
+    let onLocationTap: () -> Void
+    let onSearchTap: () -> Void
+    let onNotificationsTap: () -> Void
+
+    var body: some View {
+        let visibleHeight = max(collapsedHeight, expandedHeight - collapsedAmount)
+
+        ZStack(alignment: .topLeading) {
+            Color.black.opacity(0.985)
+                .ignoresSafeArea(edges: .top)
+
+            VStack(alignment: .leading, spacing: 20) {
+                NativeDiscoveryTopHeader(
+                    locationLabel: locationLabel,
+                    onLocationTap: onLocationTap,
+                    onSearchTap: onSearchTap,
+                    onNotificationsTap: onNotificationsTap
+                )
+
+                NativeDiscoveryCategoryTabs(
+                    tabs: tabs,
+                    selectedTabId: $selectedTabId
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 16)
+            .padding(.top, 12)
+            .padding(.bottom, 0)
+            .offset(y: -collapsedAmount)
+        }
+        .frame(height: visibleHeight, alignment: .top)
+        .clipped()
+    }
+}
+
+private struct NativeDiscoveryScrollOffsetPreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue()) { _, new in new }
+    }
+}
+
+private struct NativeDiscoveryTabFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
 
@@ -7144,8 +7682,6 @@ private struct NativeProfileScreen: View {
     @State private var showEditProfileSheet = false
     @State private var showSettingsSheet = false
     @State private var ownFollowersCount: Int?
-    @State private var blockedUsers: [NativeBlockedUser] = []
-    @State private var isBlockedUsersLoading = false
     @State private var hasLoadedInitialProfileState = false
 
     private var currentTravelerSummary: NativeTravelerSummary? {
@@ -7365,223 +7901,9 @@ private struct NativeProfileScreen: View {
             }
         }
         .sheet(isPresented: $showSettingsSheet) {
-            NavigationView {
-                ZStack {
-                    Color.black.ignoresSafeArea()
-
-                    VStack(alignment: .leading, spacing: 16) {
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("Settings")
-                                    .font(.system(size: 18, weight: .black))
-                                    .foregroundStyle(.white)
-                                Text("Manage your account, notifications, and safety controls.")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.64))
-                            }
-                        }
-
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Text("Account")
-                                    .font(.system(size: 15, weight: .black))
-                                    .foregroundStyle(.white)
-
-                                if let user = appState.currentUser {
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(user.displayName ?? user.username)
-                                            .font(.system(size: 15, weight: .heavy))
-                                            .foregroundStyle(.white)
-                                        Text("@\(user.username)")
-                                            .font(.system(size: 13, weight: .semibold))
-                                            .foregroundStyle(.white.opacity(0.6))
-                                    }
-
-                                    if let email = user.email, !email.isEmpty {
-                                        Text(email)
-                                            .font(.system(size: 13, weight: .medium))
-                                            .foregroundStyle(.white.opacity(0.5))
-                                    }
-
-                                    Text("Signed in on this device.")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.62))
-
-                                    VStack(spacing: 10) {
-                                        Button {
-                                            appState.logout()
-                                            showSettingsSheet = false
-                                        } label: {
-                                            HStack {
-                                                Image(systemName: "rectangle.portrait.and.arrow.right")
-                                                    .font(.system(size: 15, weight: .bold))
-                                                Text("Log out")
-                                                    .font(.system(size: 15, weight: .black))
-                                                Spacer()
-                                            }
-                                            .padding(.horizontal, 16)
-                                            .padding(.vertical, 14)
-                                            .frame(maxWidth: .infinity)
-                                            .background(Color.white.opacity(0.08))
-                                            .foregroundStyle(.white)
-                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                        }
-                                    }
-                                } else {
-                                    Text("You are currently signed out.")
-                                        .font(.system(size: 13, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.62))
-
-                                    Button {
-                                        showSettingsSheet = false
-                                        appState.presentAuthGate(reason: "Log in to personalize your profile.")
-                                    } label: {
-                                        HStack {
-                                            Image(systemName: "person.crop.circle.badge.plus")
-                                                .font(.system(size: 15, weight: .bold))
-                                            Text("Go to login")
-                                                .font(.system(size: 15, weight: .black))
-                                            Spacer()
-                                        }
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 14)
-                                        .frame(maxWidth: .infinity)
-                                        .background(nativeAccent.opacity(0.14))
-                                        .foregroundStyle(nativeAccent)
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                                .stroke(nativeAccent.opacity(0.35), lineWidth: 1)
-                                        )
-                                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                    }
-                                }
-                            }
-                        }
-
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Text("Notifications")
-                                    .font(.system(size: 15, weight: .black))
-                                    .foregroundStyle(.white)
-
-                                Text("Stay up to date on follows, vibin, comments, and recommendations.")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.62))
-
-                                Button {
-                                    Task {
-                                        await appState.requestPushNotifications()
-                                    }
-                                } label: {
-                                    HStack {
-                                        Image(systemName: "bell.badge")
-                                            .font(.system(size: 15, weight: .bold))
-                                        Text("Notification settings")
-                                            .font(.system(size: 15, weight: .black))
-                                        Spacer()
-                                    }
-                                    .padding(.horizontal, 16)
-                                    .padding(.vertical, 14)
-                                    .frame(maxWidth: .infinity)
-                                    .background(nativeAccent.opacity(0.14))
-                                    .foregroundStyle(nativeAccent)
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                            .stroke(nativeAccent.opacity(0.35), lineWidth: 1)
-                                    )
-                                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-
-                        if appState.currentUser != nil {
-                            NativeSurfaceCard {
-                                VStack(alignment: .leading, spacing: 14) {
-                                    Text("Blocked accounts")
-                                        .font(.system(size: 15, weight: .black))
-                                        .foregroundStyle(.white)
-
-                                    if isBlockedUsersLoading {
-                                        HStack(spacing: 10) {
-                                            ProgressView().tint(nativeAccent)
-                                            Text("Loading blocked accounts...")
-                                                .font(.system(size: 13, weight: .medium))
-                                                .foregroundStyle(.white.opacity(0.62))
-                                        }
-                                    } else if blockedUsers.isEmpty {
-                                        Text("No blocked accounts yet.")
-                                            .font(.system(size: 13, weight: .medium))
-                                            .foregroundStyle(.white.opacity(0.62))
-                                    } else {
-                                        VStack(spacing: 10) {
-                                            ForEach(blockedUsers) { blockedUser in
-                                                HStack(spacing: 12) {
-                                                    NativeAvatarCircle(
-                                                        url: blockedUser.avatar,
-                                                        fallbackText: blockedUser.displayName ?? blockedUser.username,
-                                                        size: 42,
-                                                        fontSize: 15
-                                                    )
-
-                                                    VStack(alignment: .leading, spacing: 4) {
-                                                        Text(blockedUser.displayName ?? blockedUser.username)
-                                                            .font(.system(size: 14, weight: .black))
-                                                            .foregroundStyle(.white)
-                                                        Text("@\(blockedUser.username)")
-                                                            .font(.system(size: 12, weight: .bold))
-                                                            .foregroundStyle(.white.opacity(0.46))
-                                                    }
-
-                                                    Spacer(minLength: 0)
-
-                                                    Button {
-                                                        Task {
-                                                            try? await appState.unblockUser(blockedUser.id)
-                                                            blockedUsers.removeAll { $0.id == blockedUser.id }
-                                                        }
-                                                    } label: {
-                                                        Text("Unblock")
-                                                            .font(.system(size: 12, weight: .black))
-                                                            .foregroundStyle(nativeAccent)
-                                                            .padding(.horizontal, 12)
-                                                            .padding(.vertical, 9)
-                                                            .background(nativeAccent.opacity(0.12))
-                                                            .clipShape(Capsule())
-                                                    }
-                                                    .buttonStyle(.plain)
-                                                }
-                                                if blockedUser.id != blockedUsers.last?.id {
-                                                    Divider().background(Color.white.opacity(0.08))
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        Spacer()
-                    }
-                    .padding(20)
-                }
-                .navigationTitle("Settings")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Close") {
-                            showSettingsSheet = false
-                        }
-                    }
-                }
-                .task {
-                    guard appState.currentUser != nil else { return }
-                    isBlockedUsersLoading = true
-                    defer { isBlockedUsersLoading = false }
-                    blockedUsers = (try? await appState.fetchBlockedUsers()) ?? []
-                }
+            NativeProfileSettingsSheet {
+                showSettingsSheet = false
             }
-            .navigationViewStyle(.stack)
         }
         .onAppear {
             if expandedSavedCities.isEmpty {
@@ -7866,6 +8188,363 @@ private struct NativeOwnVisitedMomentCard: View {
             return "No revisit"
         default:
             return value.replacingOccurrences(of: "_", with: " ").capitalized
+        }
+    }
+}
+
+private struct NativeProfileSettingsSheet: View {
+    @EnvironmentObject private var appState: NativeAppState
+    let onClose: () -> Void
+
+    @State private var blockedUsers: [NativeBlockedUser] = []
+    @State private var isBlockedUsersLoading = false
+    @State private var notificationSettings = NativeNotificationSettings(
+        pushEnabled: true,
+        emailEnabled: true,
+        recommendationEnabled: true
+    )
+    @State private var isNotificationsLoading = false
+    @State private var isUpdatingNotifications = false
+    @State private var settingsErrorMessage: String?
+    @State private var showDeleteAccountConfirmation = false
+    @State private var isDeletingAccount = false
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                HStack {
+                    Spacer()
+                    Text("Settings")
+                        .font(.system(size: 18, weight: .black))
+                        .foregroundStyle(.white)
+                    Spacer()
+                }
+                .overlay(alignment: .trailing) {
+                    Button {
+                        onClose()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 12, weight: .black))
+                            .foregroundStyle(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 18)
+
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if let settingsErrorMessage {
+                            NativeInlineError(message: settingsErrorMessage)
+                        }
+
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text("Notifications")
+                                    .font(.system(size: 15, weight: .black))
+                                    .foregroundStyle(.white)
+
+                                Text("Stay up to date on follows, vibin, comments, and recommendations.")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.62))
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                HStack(spacing: 12) {
+                                    Image(systemName: notificationSettings.pushEnabled ? "bell.badge.fill" : "bell.slash")
+                                        .font(.system(size: 15, weight: .bold))
+                                        .foregroundStyle(notificationSettings.pushEnabled ? nativeAccent : .white.opacity(0.58))
+
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text("Push notifications")
+                                            .font(.system(size: 15, weight: .black))
+                                            .foregroundStyle(.white)
+                                        Text(notificationSettings.pushEnabled ? "On" : "Off")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(.white.opacity(0.46))
+                                    }
+
+                                    Spacer(minLength: 0)
+
+                                    if isNotificationsLoading || isUpdatingNotifications {
+                                        ProgressView()
+                                            .tint(nativeAccent)
+                                    } else {
+                                        Toggle("", isOn: notificationToggleBinding)
+                                            .labelsHidden()
+                                            .tint(nativeAccent)
+                                    }
+                                }
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 14)
+                                .frame(maxWidth: .infinity)
+                                .background(nativeSurfaceStrong)
+                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            }
+                        }
+
+                        if appState.currentUser != nil {
+                            NativeSurfaceCard {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    Text("Blocked accounts")
+                                        .font(.system(size: 15, weight: .black))
+                                        .foregroundStyle(.white)
+
+                                    if isBlockedUsersLoading {
+                                        HStack(spacing: 10) {
+                                            ProgressView().tint(nativeAccent)
+                                            Text("Loading blocked accounts...")
+                                                .font(.system(size: 13, weight: .medium))
+                                                .foregroundStyle(.white.opacity(0.62))
+                                        }
+                                    } else if blockedUsers.isEmpty {
+                                        Text("No blocked accounts yet.")
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.62))
+                                    } else {
+                                        VStack(spacing: 10) {
+                                            ForEach(blockedUsers) { blockedUser in
+                                                HStack(spacing: 12) {
+                                                    NativeAvatarCircle(
+                                                        url: blockedUser.avatar,
+                                                        fallbackText: blockedUser.displayName ?? blockedUser.username,
+                                                        size: 42,
+                                                        fontSize: 15
+                                                    )
+
+                                                    VStack(alignment: .leading, spacing: 4) {
+                                                        Text(blockedUser.displayName ?? blockedUser.username)
+                                                            .font(.system(size: 14, weight: .black))
+                                                            .foregroundStyle(.white)
+                                                        Text("@\(blockedUser.username)")
+                                                            .font(.system(size: 12, weight: .bold))
+                                                            .foregroundStyle(.white.opacity(0.46))
+                                                    }
+
+                                                    Spacer(minLength: 0)
+
+                                                    Button {
+                                                        Task {
+                                                            try? await appState.unblockUser(blockedUser.id)
+                                                            blockedUsers.removeAll { $0.id == blockedUser.id }
+                                                        }
+                                                    } label: {
+                                                        Text("Unblock")
+                                                            .font(.system(size: 12, weight: .black))
+                                                            .foregroundStyle(nativeAccent)
+                                                            .padding(.horizontal, 12)
+                                                            .padding(.vertical, 9)
+                                                            .background(nativeAccent.opacity(0.12))
+                                                            .clipShape(Capsule())
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                }
+
+                                                if blockedUser.id != blockedUsers.last?.id {
+                                                    Divider().background(Color.white.opacity(0.08))
+                                                }
+                                            }
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Text("Account")
+                                    .font(.system(size: 15, weight: .black))
+                                    .foregroundStyle(.white)
+
+                                if let user = appState.currentUser {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(user.displayName ?? user.username)
+                                            .font(.system(size: 15, weight: .heavy))
+                                            .foregroundStyle(.white)
+                                        Text("@\(user.username)")
+                                            .font(.system(size: 13, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.6))
+                                    }
+
+                                    if let email = user.email, !email.isEmpty {
+                                        Text(email)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.5))
+                                    }
+
+                                    Text("Signed in on this device.")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.62))
+
+                                    VStack(spacing: 10) {
+                                        Button {
+                                            appState.logout()
+                                            onClose()
+                                        } label: {
+                                            HStack {
+                                                Image(systemName: "rectangle.portrait.and.arrow.right")
+                                                    .font(.system(size: 15, weight: .bold))
+                                                Text("Log out")
+                                                    .font(.system(size: 15, weight: .black))
+                                                Spacer()
+                                            }
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 14)
+                                            .frame(maxWidth: .infinity)
+                                            .background(Color.white.opacity(0.08))
+                                            .foregroundStyle(.white)
+                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                        }
+                                        .buttonStyle(.plain)
+
+                                        Button {
+                                            showDeleteAccountConfirmation = true
+                                        } label: {
+                                            HStack {
+                                                Image(systemName: "trash")
+                                                    .font(.system(size: 15, weight: .bold))
+                                                if isDeletingAccount {
+                                                    ProgressView().tint(.red)
+                                                } else {
+                                                    Text("Delete account")
+                                                        .font(.system(size: 15, weight: .black))
+                                                }
+                                                Spacer()
+                                            }
+                                            .padding(.horizontal, 16)
+                                            .padding(.vertical, 14)
+                                            .frame(maxWidth: .infinity)
+                                            .background(Color.red.opacity(0.12))
+                                            .foregroundStyle(Color.red.opacity(0.92))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                                    .stroke(Color.red.opacity(0.36), lineWidth: 1)
+                                            )
+                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .disabled(isDeletingAccount)
+                                    }
+                                } else {
+                                    Text("You are currently signed out.")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.62))
+
+                                    Button {
+                                        onClose()
+                                        appState.presentAuthGate(reason: "Log in to personalize your profile.")
+                                    } label: {
+                                        HStack {
+                                            Image(systemName: "person.crop.circle.badge.plus")
+                                                .font(.system(size: 15, weight: .bold))
+                                            Text("Go to login")
+                                                .font(.system(size: 15, weight: .black))
+                                            Spacer()
+                                        }
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 14)
+                                        .frame(maxWidth: .infinity)
+                                        .background(nativeAccent.opacity(0.14))
+                                        .foregroundStyle(nativeAccent)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                                .stroke(nativeAccent.opacity(0.35), lineWidth: 1)
+                                        )
+                                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 30)
+                }
+            }
+        }
+        .task {
+            guard appState.currentUser != nil else { return }
+
+            isBlockedUsersLoading = true
+            isNotificationsLoading = true
+            nativeLogger.log("settings sheet load start")
+
+            async let blockedUsersTask = appState.fetchBlockedUsers()
+            async let notificationSettingsTask = appState.fetchNotificationSettings()
+
+            blockedUsers = (try? await blockedUsersTask) ?? []
+            notificationSettings = (try? await notificationSettingsTask) ?? notificationSettings
+            nativeLogger.log("settings sheet load success blocked=\(blockedUsers.count, privacy: .public) pushEnabled=\(notificationSettings.pushEnabled, privacy: .public)")
+
+            isBlockedUsersLoading = false
+            isNotificationsLoading = false
+        }
+        .alert("Delete account?", isPresented: $showDeleteAccountConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                Task {
+                    await deleteAccount()
+                }
+            }
+        } message: {
+            Text("This will remove your account identity and sign you out on this device.")
+        }
+    }
+
+    private var notificationToggleBinding: Binding<Bool> {
+        Binding(
+            get: { notificationSettings.pushEnabled },
+            set: { newValue in
+                nativeLogger.log("settings toggle tapped targetPushEnabled=\(newValue, privacy: .public)")
+                Task {
+                    await updatePushNotifications(newValue)
+                }
+            }
+        )
+    }
+
+    private func updatePushNotifications(_ enabled: Bool) async {
+        guard appState.currentUser != nil else { return }
+        settingsErrorMessage = nil
+        isUpdatingNotifications = true
+        let previousSettings = notificationSettings
+        nativeLogger.log("settings toggle update start current=\(previousSettings.pushEnabled, privacy: .public) target=\(enabled, privacy: .public)")
+        notificationSettings = NativeNotificationSettings(
+            pushEnabled: enabled,
+            emailEnabled: notificationSettings.emailEnabled,
+            recommendationEnabled: notificationSettings.recommendationEnabled
+        )
+
+        do {
+            try await appState.setPushNotificationsEnabled(enabled, currentSettings: previousSettings)
+            nativeLogger.log("settings toggle update success final=\(notificationSettings.pushEnabled, privacy: .public)")
+        } catch {
+            notificationSettings = previousSettings
+            settingsErrorMessage = "Could not update notification settings right now."
+            nativeLogger.error("settings toggle update failed: \(error.localizedDescription, privacy: .public)")
+        }
+
+        isUpdatingNotifications = false
+    }
+
+    private func deleteAccount() async {
+        settingsErrorMessage = nil
+        isDeletingAccount = true
+        defer { isDeletingAccount = false }
+
+        do {
+            try await appState.deleteAccount()
+            onClose()
+        } catch {
+            settingsErrorMessage = "Could not delete your account right now."
         }
     }
 }
@@ -8170,7 +8849,7 @@ private struct NativeFeedScreen: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 18, pinnedViews: [.sectionHeaders]) {
+            LazyVStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .top, spacing: 14) {
                     Text("Feed")
                         .font(.system(size: 32, weight: .black))
@@ -8211,96 +8890,15 @@ private struct NativeFeedScreen: View {
                 }
 
                 if !isSuggestedDismissed && !appState.suggestedTravelers.isEmpty {
-                    Section {
-                        Color.clear
-                            .frame(height: 0)
-                    } header: {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack {
-                                NativeSectionTitle("Suggested people")
-                                Spacer()
-                                Button {
-                                    isSuggestedDismissed = true
-                                } label: {
-                                    Image(systemName: "xmark")
-                                        .font(.system(size: 12, weight: .black))
-                                        .foregroundStyle(.white.opacity(0.55))
-                                        .frame(width: 30, height: 30)
-                                        .background(Color.white.opacity(0.06))
-                                        .clipShape(Circle())
-                                }
-                                .buttonStyle(.plain)
-                            }
-
-                            ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(spacing: 12) {
-                                    ForEach(appState.suggestedTravelers.prefix(6)) { traveler in
-                                        NavigationLink {
-                                            NativeTravelerProfileScreen(initialTraveler: traveler)
-                                        } label: {
-                                            NativeSuggestedTravelerCard(traveler: traveler)
-                                        }
-                                        .buttonStyle(.plain)
-                                    }
-                                }
-                            }
+                    NativeSuggestedPeopleRail(
+                        travelers: Array(appState.suggestedTravelers.prefix(6)),
+                        onDismiss: {
+                            isSuggestedDismissed = true
                         }
-                        .padding(.vertical, 10)
-                        .background(Color.black.opacity(0.98))
-                    }
+                    )
                 }
 
-                if !appState.followedTravelers.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        NativeSectionTitle("People you follow")
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 16) {
-                                ForEach(appState.followedTravelers) { traveler in
-                                    NavigationLink {
-                                        NativeTravelerProfileScreen(initialTraveler: traveler)
-                                    } label: {
-                                        VStack(spacing: 8) {
-                                            NativeAvatarCircle(
-                                                url: traveler.avatar,
-                                                fallbackText: traveler.displayName ?? traveler.username,
-                                                size: 64,
-                                                fontSize: 20
-                                            )
-                                            Text("@\(traveler.username)")
-                                                .font(.system(size: 12, weight: .black))
-                                                .foregroundStyle(.white.opacity(0.72))
-                                                .lineLimit(1)
-                                        }
-                                        .frame(width: 84)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if let feedErrorMessage = appState.feedErrorMessage {
-                    NativeInlineError(message: feedErrorMessage)
-                }
-
-                if appState.currentUser != nil {
-                    NativeSectionTitle("Following activity")
-                }
-
-                if appState.feedItems.isEmpty {
-                    NativeSurfaceCard {
-                        Text("No activity yet.")
-                            .font(.system(size: 15, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.6))
-                    }
-                } else {
-                    LazyVStack(spacing: 14) {
-                        ForEach(appState.feedItems) { item in
-                            NativeFeedCard(item: item)
-                        }
-                    }
-                }
+                feedBodyContent
             }
             .padding(.horizontal, 20)
             .padding(.top, 16)
@@ -8313,6 +8911,98 @@ private struct NativeFeedScreen: View {
         .refreshable {
             await appState.refreshFeed()
         }
+    }
+
+    @ViewBuilder
+    private var feedBodyContent: some View {
+        if !appState.followedTravelers.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                NativeSectionTitle("People you follow")
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 16) {
+                        ForEach(appState.followedTravelers) { traveler in
+                            NavigationLink {
+                                NativeTravelerProfileScreen(initialTraveler: traveler)
+                            } label: {
+                                VStack(spacing: 8) {
+                                    NativeAvatarCircle(
+                                        url: traveler.avatar,
+                                        fallbackText: traveler.displayName ?? traveler.username,
+                                        size: 64,
+                                        fontSize: 20
+                                    )
+                                    Text("@\(traveler.username)")
+                                        .font(.system(size: 12, weight: .black))
+                                        .foregroundStyle(.white.opacity(0.72))
+                                        .lineLimit(1)
+                                }
+                                .frame(width: 84)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+            }
+        }
+
+        if let feedErrorMessage = appState.feedErrorMessage {
+            NativeInlineError(message: feedErrorMessage)
+        }
+
+        if appState.currentUser != nil {
+            NativeSectionTitle("Following activity")
+        }
+
+        if appState.feedItems.isEmpty {
+            NativeSurfaceCard {
+                Text("No activity yet.")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.6))
+            }
+        } else {
+            LazyVStack(spacing: 14) {
+                ForEach(appState.feedItems) { item in
+                    NativeFeedCard(item: item)
+                }
+            }
+        }
+    }
+}
+
+private struct NativeSuggestedPeopleRail: View {
+    let travelers: [NativeTravelerSummary]
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                NativeSectionTitle("Suggested people")
+                Spacer()
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .frame(width: 30, height: 30)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(travelers) { traveler in
+                        NavigationLink {
+                            NativeTravelerProfileScreen(initialTraveler: traveler)
+                        } label: {
+                            NativeSuggestedTravelerCard(traveler: traveler)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -8427,11 +9117,8 @@ private struct NativeDiscoveryPlaceCard: View {
     let height: CGFloat
     let isBookmarked: Bool
     let isVisited: Bool
-    let onSaveSwipe: () -> Void
-    let onSkipSwipe: () -> Void
     let onDebugTap: (() -> Void)?
-    @State private var dragOffset: CGFloat = 0
-    @State private var isHorizontalDrag = false
+    @State private var isBookmarkUpdating = false
 
     init(
         place: NativePlace,
@@ -8439,8 +9126,6 @@ private struct NativeDiscoveryPlaceCard: View {
         height: CGFloat,
         isBookmarked: Bool,
         isVisited: Bool,
-        onSaveSwipe: @escaping () -> Void,
-        onSkipSwipe: @escaping () -> Void,
         onDebugTap: (() -> Void)? = nil
     ) {
         self.place = place
@@ -8448,8 +9133,6 @@ private struct NativeDiscoveryPlaceCard: View {
         self.height = height
         self.isBookmarked = isBookmarked
         self.isVisited = isVisited
-        self.onSaveSwipe = onSaveSwipe
-        self.onSkipSwipe = onSkipSwipe
         self.onDebugTap = onDebugTap
     }
 
@@ -8462,32 +9145,23 @@ private struct NativeDiscoveryPlaceCard: View {
         return nativeCompatibilityBadge(for: place.similarityStat)
     }
 
-    private var bottomLabel: String {
-        if let category = place.category, !category.isEmpty {
-            return category.uppercased()
-        }
-        return moodBadge.label.uppercased()
+    private var discoveryTagLabel: String {
+        let firstTag = place.tags?.first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !firstTag.isEmpty { return firstTag }
+        if let category = place.category?.trimmingCharacters(in: .whitespacesAndNewlines), !category.isEmpty { return category }
+        return moodBadge.label
     }
 
-    private var distanceLabel: String? {
-        guard
-            let origin = appState.currentCoordinate,
-            let latitude = place.latitude,
-            let longitude = place.longitude
-        else {
-            return nil
-        }
+    private var neighborhoodLabel: String? {
+        let trimmed = place.neighborhood?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
 
-        let miles = nativeDistanceBetweenMiles(
-            (latitude: origin.latitude, longitude: origin.longitude),
-            (latitude: latitude, longitude: longitude)
-        )
-
-        if miles < 0.2 {
-            return "Walkable"
-        }
-
-        return String(format: "%.1f mi away", miles)
+    private var priceLabel: String? {
+        let preferred = place.priceRangeLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if preferred?.isEmpty == false { return preferred }
+        let fallback = place.priceRange?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallback?.isEmpty == false ? fallback : nil
     }
 
     private var debugBorderColor: Color {
@@ -8497,6 +9171,10 @@ private struct NativeDiscoveryPlaceCard: View {
         case 288: return .blue
         default: return .orange
         }
+    }
+
+    private var isCurrentlyBookmarked: Bool {
+        appState.isBookmarked(place.id) || isBookmarked
     }
 
     var body: some View {
@@ -8524,13 +9202,22 @@ private struct NativeDiscoveryPlaceCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 Group {
                     if let compatibilityBadge {
-                        Text(compatibilityBadge.label)
-                            .font(.system(size: 11, weight: .black))
-                            .foregroundStyle(compatibilityBadge.foreground)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                            .background(compatibilityBadge.background)
-                            .clipShape(Capsule())
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(compatibilityBadge.label)
+                                .font(.system(size: 11, weight: .black))
+                                .foregroundStyle(compatibilityBadge.foreground)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(compatibilityBadge.background)
+                                .clipShape(Capsule())
+
+                            if let score = place.similarityStat {
+                                Text("\(score)% match")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.74))
+                                    .padding(.leading, 4)
+                            }
+                        }
                     } else {
                         HStack(spacing: 6) {
                             Image(systemName: moodBadge.icon)
@@ -8546,9 +9233,9 @@ private struct NativeDiscoveryPlaceCard: View {
                     }
                 }
 
-                if isBookmarked || isVisited {
+                if isCurrentlyBookmarked || isVisited {
                     HStack(spacing: 8) {
-                        if isBookmarked {
+                        if isCurrentlyBookmarked {
                             Image(systemName: "bookmark.fill")
                                 .font(.system(size: 11, weight: .black))
                                 .foregroundStyle(nativeAccent)
@@ -8566,15 +9253,36 @@ private struct NativeDiscoveryPlaceCard: View {
             .padding(.leading, 12)
         }
         .overlay(alignment: .topTrailing) {
-            Group {
-                if appState.currentUser != nil, let score = place.similarityStat {
-                    Text("\(score)%")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.68))
-                        .padding(.top, 12)
-                        .padding(.trailing, 12)
+            HStack(spacing: 8) {
+                Button {
+                    guard !isBookmarkUpdating else { return }
+                    isBookmarkUpdating = true
+                    Task {
+                        try? await appState.toggleBookmark(for: place)
+                        await MainActor.run {
+                            isBookmarkUpdating = false
+                        }
+                    }
+                } label: {
+                    Image(systemName: isCurrentlyBookmarked ? "heart.fill" : "heart")
+                        .font(.system(size: 15, weight: .black))
+                        .foregroundStyle(isCurrentlyBookmarked ? .black : .white)
+                        .frame(width: 36, height: 36)
+                        .background(isCurrentlyBookmarked ? nativeAccent : Color.black.opacity(0.36))
+                        .clipShape(Circle())
+                        .overlay {
+                            if isBookmarkUpdating {
+                                ProgressView()
+                                    .tint(isCurrentlyBookmarked ? .black : .white)
+                                    .scaleEffect(0.7)
+                            }
+                        }
                 }
+                .buttonStyle(.plain)
+                .disabled(isBookmarkUpdating)
             }
+            .padding(.top, 12)
+            .padding(.trailing, 12)
         }
         .overlay(alignment: .center) {
             if nativeDiscoveryLayoutDebugMode {
@@ -8594,7 +9302,7 @@ private struct NativeDiscoveryPlaceCard: View {
         }
         .overlay(alignment: .bottomLeading) {
             VStack(alignment: .leading, spacing: 6) {
-                Text(bottomLabel)
+                Text(discoveryTagLabel.uppercased())
                     .font(.system(size: 11, weight: .black))
                     .foregroundStyle(.white.opacity(0.88))
                     .padding(.horizontal, 12)
@@ -8602,10 +9310,21 @@ private struct NativeDiscoveryPlaceCard: View {
                     .background(Color.white.opacity(0.12))
                     .clipShape(Capsule())
 
-                if let distanceLabel {
-                    Text(distanceLabel)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.62))
+                if let neighborhoodLabel {
+                    Text(neighborhoodLabel)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.80))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                        .padding(.leading, 2)
+                }
+
+                if let priceLabel {
+                    Text(priceLabel)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.70))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
                         .padding(.leading, 2)
                 }
             }
@@ -8625,62 +9344,6 @@ private struct NativeDiscoveryPlaceCard: View {
                 .padding(16)
             }
         }
-        .overlay(alignment: .trailing) {
-            if !nativeDiscoveryLayoutDebugMode && isHorizontalDrag && dragOffset > 48 {
-                Text("Saved")
-                    .font(.system(size: 11, weight: .black))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(nativeAccent)
-                    .clipShape(Capsule())
-                    .padding(.trailing, 14)
-            }
-        }
-        .overlay(alignment: .leading) {
-            if !nativeDiscoveryLayoutDebugMode && isHorizontalDrag && dragOffset < -48 {
-                Text("Skip")
-                    .font(.system(size: 11, weight: .black))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(.white)
-                    .clipShape(Capsule())
-                    .padding(.leading, 14)
-            }
-        }
-        .offset(x: dragOffset)
-        .rotationEffect(.degrees(isHorizontalDrag ? Double(dragOffset / 26) : 0))
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 28)
-                .onChanged { value in
-                    guard !nativeDiscoveryLayoutDebugMode else { return }
-                    let horizontal = value.translation.width
-                    let vertical = value.translation.height
-                    let shouldSwipe = abs(horizontal) > max(44, abs(vertical) * 1.8)
-                    isHorizontalDrag = shouldSwipe
-                    if shouldSwipe {
-                        dragOffset = horizontal
-                    } else if dragOffset != 0 {
-                        dragOffset = 0
-                    }
-                }
-                .onEnded { value in
-                    guard !nativeDiscoveryLayoutDebugMode else { return }
-                    let horizontal = value.translation.width
-                    let vertical = value.translation.height
-                    let shouldSwipe = abs(horizontal) > max(44, abs(vertical) * 1.8)
-                    if shouldSwipe && horizontal > 118 {
-                        onSaveSwipe()
-                    } else if shouldSwipe && horizontal < -118 {
-                        onSkipSwipe()
-                    }
-                    withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                        dragOffset = 0
-                        isHorizontalDrag = false
-                    }
-                }
-        )
         .shadow(color: .black.opacity(0.28), radius: 18, x: 0, y: 12)
     }
 }
@@ -10629,6 +11292,19 @@ private enum NativePlaceDetailSheetState {
     case expanded
 }
 
+private struct NativePlaceDetailNavigationChromeModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, *) {
+            content
+                .toolbarBackground(.hidden, for: .navigationBar)
+                .toolbarColorScheme(.dark, for: .navigationBar)
+        } else {
+            content
+        }
+    }
+}
+
 private struct NativePlaceDetailScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @Environment(\.openURL) private var openURL
@@ -10674,11 +11350,12 @@ private struct NativePlaceDetailScreen: View {
                 } else {
                     NativePlaceDetailLoadingView(placeName: place.name)
                 }
-            }
-            .background(Color.black.ignoresSafeArea())
+        }
+        .background(Color.black.ignoresSafeArea())
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarHidden(false)
+        .modifier(NativePlaceDetailNavigationChromeModifier())
         .toolbar {
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 0) {
@@ -12244,10 +12921,12 @@ private func mergedPlaceRetainingPresentation(_ current: NativePlace, with next:
 }
 
 private struct NativeCollectionDetailScreen: View {
+    @EnvironmentObject private var appState: NativeAppState
     let collection: NativeCollection
     var ownerDisplayName: String? = nil
     var ownerUsername: String? = nil
     @State private var copiedLink = false
+    @State private var hasHiddenFloatingTabBar = false
 
     var body: some View {
         ScrollView {
@@ -12313,6 +12992,16 @@ private struct NativeCollectionDetailScreen: View {
                 }
                 .buttonStyle(.plain)
             }
+        }
+        .onAppear {
+            guard !hasHiddenFloatingTabBar else { return }
+            appState.pushFloatingTabBarHidden()
+            hasHiddenFloatingTabBar = true
+        }
+        .onDisappear {
+            guard hasHiddenFloatingTabBar else { return }
+            appState.popFloatingTabBarHidden()
+            hasHiddenFloatingTabBar = false
         }
     }
 }
