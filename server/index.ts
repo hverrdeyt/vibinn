@@ -1376,11 +1376,23 @@ async function getDiscoveryPlacesByLocation(
 
   if (relevantPlaces.length > 0) {
     const mappedPlaces = await Promise.all(
-      relevantPlaces.slice(0, 36).map((place) => mapGoogleSearchPlaceToInternalPlace(place)),
+      relevantPlaces.slice(0, 36).map((place) =>
+        mapGoogleSearchPlaceToInternalPlace(place).catch((error) => {
+          console.error('Discovery Google place mapping failed', {
+            googlePlaceId: place.id,
+            displayName: place.displayName?.text ?? null,
+            primaryType: place.primaryType ?? place.types?.[0] ?? null,
+            error,
+          });
+          return null;
+        }),
+      ),
     );
 
-    if (mappedPlaces.length > 0) {
-      return mappedPlaces;
+    const validMappedPlaces = mappedPlaces.filter((place): place is NonNullable<typeof place> => Boolean(place));
+
+    if (validMappedPlaces.length > 0) {
+      return validMappedPlaces;
     }
   }
 
