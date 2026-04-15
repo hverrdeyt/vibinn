@@ -1216,6 +1216,62 @@ function buildDiscoveryDisplayTags(
     .slice(0, 5);
 }
 
+function buildDeterministicDiscoveryTags(input: {
+  category?: string | null;
+  rating?: number | null;
+  priceLevel?: number | null;
+}) {
+  const tags: string[] = [];
+
+  const rawCategory = (input.category ?? '').trim().toLowerCase();
+  const category = rawCategory.replace(/[_-]+/g, ' ');
+
+  const push = (value?: string | null) => {
+    const normalized = (value ?? '').trim();
+    if (!normalized) return;
+    if (tags.some((existing) => existing.toLowerCase() === normalized.toLowerCase())) return;
+    tags.push(normalized);
+  };
+
+  // 1) Primary type/category tag (most specific we have without AI).
+  if (category) {
+    const categoryTag = (() => {
+      if (category.includes('coffee')) return 'coffee';
+      if (category.includes('cafe')) return 'cafe';
+      if (category.includes('bakery')) return 'bakery';
+      if (category.includes('dessert') || category.includes('ice cream')) return 'dessert';
+      if (category.includes('sushi')) return 'sushi';
+      if (category.includes('ramen')) return 'ramen';
+      if (category.includes('noodle')) return 'noodles';
+      if (category.includes('korean')) return 'korean';
+      if (category.includes('japanese')) return 'japanese';
+      if (category.includes('thai')) return 'thai';
+      if (category.includes('vietnamese')) return 'vietnamese';
+      if (category.includes('chinese')) return 'chinese';
+      if (category.includes('bar') || category.includes('cocktail')) return 'drinks';
+      if (category.includes('museum') || category.includes('art gallery') || category.includes('gallery')) return 'culture';
+      if (category.includes('book store') || category.includes('bookstore')) return 'bookstore';
+      if (category.includes('park') || category.includes('garden') || category.includes('state park')) return 'outdoors';
+      if (category.includes('restaurant')) return 'restaurant';
+      return input.category?.trim() ?? '';
+    })();
+
+    push(categoryTag);
+  }
+
+  // 2) Meta tags from normalized Place fields.
+  const rating = typeof input.rating === 'number' ? input.rating : null;
+  if (rating != null) {
+    if (rating >= 4.7) push("top rated");
+    else if (rating >= 4.5) push("highly rated");
+  }
+
+  const priceRange = mapPriceLevel(input.priceLevel);
+  if (priceRange && priceRange !== 'Free') push(priceRange);
+
+  return tags.slice(0, 5);
+}
+
 function dedupeQueries(queries: string[]) {
   return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean)));
 }
@@ -1506,11 +1562,11 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
   };
 }>) {
   const image = place.primaryImageUrl ?? place.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place';
-  const tags = buildDiscoveryDisplayTags(
-    place.aiEnrichment?.attitudeLabel,
-    place.aiEnrichment?.vibeTags ?? [],
-    place.category,
-  );
+  const tags = buildDeterministicDiscoveryTags({
+    category: place.category,
+    rating: place.rating ?? null,
+    priceLevel: place.priceLevel ?? null,
+  });
   const category = normalizePlaceCategory(place.category, tags);
   return {
     id: place.id,
@@ -1608,7 +1664,11 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     hook: '',
     image: place.image,
     images: place.images?.length ? place.images : [place.image],
-    tags: place.tags ?? [],
+    tags: buildDeterministicDiscoveryTags({
+      category,
+      rating: typeof place.rating === 'number' ? place.rating : null,
+      priceLevel: undefined,
+    }),
     attitudeLabel: '',
     bestTime: '',
     similarityStat: place.similarityStat ?? 0,
