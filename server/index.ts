@@ -1513,7 +1513,19 @@ async function getCachedDiscoveryPlacesByLocation(locationLabel: string, locatio
     ],
   });
 
-  return places.map(mapCachedPlaceForDiscovery);
+  return places.flatMap((place) => {
+    try {
+      return [mapCachedPlaceForDiscovery(place)];
+    } catch (error) {
+      console.error('Cached discovery place mapping failed', {
+        placeId: place.id,
+        name: place.name,
+        category: place.category,
+        error,
+      });
+      return [];
+    }
+  });
 }
 
 function normalizeDiscoverySearchQuery(input?: string | null) {
@@ -1894,105 +1906,153 @@ async function getDiscoveryPlacesForUser(options: {
       })
     : emptyContext;
 
-  const persistedScores = options.userId
-    ? await prisma.userPlaceScore.findMany({
-        where: {
-          userId: options.userId,
-          placeId: { in: places.map((place) => place.id) },
-        },
-      }).catch((error) => {
-        console.error('Discovery persisted score load failed', error);
-        return [];
+  let persistedScores: Array<{
+    placeId: string;
+    similarityPercentage: number | null;
+    matchScore: number | null;
+    sourceVersion?: string | null;
+  }> = [];
+  let rankedPlaces: Array<(ReturnType<typeof mapCachedPlaceForDiscovery> & {
+    _preferenceAffinity: ReturnType<typeof getPlacePreferenceAffinity>;
+  })> = [];
+
+  try {
+    persistedScores = options.userId
+      ? await prisma.userPlaceScore.findMany({
+          where: {
+            userId: options.userId,
+            placeId: { in: places.map((place) => place.id) },
+          },
+        }).catch((error) => {
+          console.error('Discovery persisted score load failed', error);
+          return [];
+        })
+      : [];
+
+    const persistedScoreMap = new Map(
+      persistedScores.map((item) => [item.placeId, item.similarityPercentage ?? item.matchScore ?? null]),
+    );
+    const shouldUsePersistedScores = !options.forceRefresh;
+
+    rankedPlaces = places
+      .filter((place) => !context.dismissedPlaceIds.has(place.id))
+      .filter((place) => !isServiceLikePlace({
+        name: place.name,
+        tags: place.tags,
+        category: place.category,
+        hook: place.hook,
+        description: place.description,
+        whyYoullLikeIt: place.whyYoullLikeIt,
+      }))
+      .filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery))
+      .flatMap((place) => {
+        try {
+          return [{
+            ...place,
+            _preferenceAffinity: getPlacePreferenceAffinity(
+              {
+                tags: place.tags,
+                category: place.category,
+                hook: place.hook,
+                description: place.description,
+                whyYoullLikeIt: place.whyYoullLikeIt,
+              },
+              {
+                selectedInterests,
+                selectedVibe,
+              },
+            ),
+            similarityStat: shouldUsePersistedScores
+              ? (persistedScoreMap.get(place.id) ?? computeRecommendationScore(
+                  {
+                    id: place.id,
+                    tags: place.tags,
+                    category: place.category,
+                    similarityStat: place.similarityStat,
+                    rating: typeof place.rating === 'number' ? place.rating : null,
+                    hook: place.hook,
+                    description: place.description,
+                    whyYoullLikeIt: place.whyYoullLikeIt,
+                  },
+                  {
+                    selectedInterests,
+                    selectedVibe,
+                    bookmarkKeywords: context.bookmarkKeywords,
+                    momentKeywords: context.momentKeywords,
+                    socialKeywords: context.socialKeywords,
+                    isBookmarked: context.bookmarkedPlaceIds.has(place.id),
+                    isVisited: context.visitedPlaceIds.has(place.id),
+                    isVibed: context.vibedPlaceIds.has(place.id),
+                    isCommented: context.commentedPlaceIds.has(place.id),
+                    isRecent: context.recentPlaceIds.has(place.id),
+                    followedPlaceMatch: context.followedPlaceIds.has(place.id),
+                    momentRating: context.momentRatingsByPlaceId.get(place.id) ?? null,
+                  },
+                ))
+              : computeRecommendationScore(
+                  {
+                    id: place.id,
+                    tags: place.tags,
+                    category: place.category,
+                    similarityStat: place.similarityStat,
+                    rating: typeof place.rating === 'number' ? place.rating : null,
+                    hook: place.hook,
+                    description: place.description,
+                    whyYoullLikeIt: place.whyYoullLikeIt,
+                  },
+                  {
+                    selectedInterests,
+                    selectedVibe,
+                    bookmarkKeywords: context.bookmarkKeywords,
+                    momentKeywords: context.momentKeywords,
+                    socialKeywords: context.socialKeywords,
+                    isBookmarked: context.bookmarkedPlaceIds.has(place.id),
+                    isVisited: context.visitedPlaceIds.has(place.id),
+                    isVibed: context.vibedPlaceIds.has(place.id),
+                    isCommented: context.commentedPlaceIds.has(place.id),
+                    isRecent: context.recentPlaceIds.has(place.id),
+                    followedPlaceMatch: context.followedPlaceIds.has(place.id),
+                    momentRating: context.momentRatingsByPlaceId.get(place.id) ?? null,
+                  },
+                ),
+          }];
+        } catch (error) {
+          console.error('Discovery ranking candidate failed', {
+            placeId: place.id,
+            name: place.name,
+            category: place.category,
+            error,
+          });
+          return [];
+        }
       })
-    : [];
-  const persistedScoreMap = new Map(persistedScores.map((item) => [item.placeId, item.similarityPercentage ?? item.matchScore ?? null]));
-  const shouldUsePersistedScores = !options.forceRefresh;
-  let rankedPlaces = places
-    .filter((place) => !context.dismissedPlaceIds.has(place.id))
-    .filter((place) => !isServiceLikePlace({
-      name: place.name,
-      tags: place.tags,
-      category: place.category,
-      hook: place.hook,
-      description: place.description,
-      whyYoullLikeIt: place.whyYoullLikeIt,
-    }))
-    .filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery))
-    .map((place) => ({
-      ...place,
-      _preferenceAffinity: getPlacePreferenceAffinity(
-        {
-          tags: place.tags,
-          category: place.category,
-          hook: place.hook,
-          description: place.description,
-          whyYoullLikeIt: place.whyYoullLikeIt,
-        },
-        {
-          selectedInterests,
-          selectedVibe,
-        },
-      ),
-      similarityStat: shouldUsePersistedScores
-        ? (persistedScoreMap.get(place.id) ?? computeRecommendationScore(
-            {
-              id: place.id,
-              tags: place.tags,
-              category: place.category,
-              similarityStat: place.similarityStat,
-              rating: typeof place.rating === 'number' ? place.rating : null,
-              hook: place.hook,
-              description: place.description,
-              whyYoullLikeIt: place.whyYoullLikeIt,
-            },
-            {
-              selectedInterests,
-              selectedVibe,
-              bookmarkKeywords: context.bookmarkKeywords,
-              momentKeywords: context.momentKeywords,
-              socialKeywords: context.socialKeywords,
-              isBookmarked: context.bookmarkedPlaceIds.has(place.id),
-              isVisited: context.visitedPlaceIds.has(place.id),
-              isVibed: context.vibedPlaceIds.has(place.id),
-              isCommented: context.commentedPlaceIds.has(place.id),
-              isRecent: context.recentPlaceIds.has(place.id),
-              followedPlaceMatch: context.followedPlaceIds.has(place.id),
-              momentRating: context.momentRatingsByPlaceId.get(place.id) ?? null,
-            },
-          ))
-        : computeRecommendationScore(
-            {
-              id: place.id,
-              tags: place.tags,
-              category: place.category,
-              similarityStat: place.similarityStat,
-              rating: typeof place.rating === 'number' ? place.rating : null,
-              hook: place.hook,
-              description: place.description,
-              whyYoullLikeIt: place.whyYoullLikeIt,
-            },
-            {
-              selectedInterests,
-              selectedVibe,
-              bookmarkKeywords: context.bookmarkKeywords,
-              momentKeywords: context.momentKeywords,
-              socialKeywords: context.socialKeywords,
-              isBookmarked: context.bookmarkedPlaceIds.has(place.id),
-              isVisited: context.visitedPlaceIds.has(place.id),
-              isVibed: context.vibedPlaceIds.has(place.id),
-              isCommented: context.commentedPlaceIds.has(place.id),
-              isRecent: context.recentPlaceIds.has(place.id),
-              followedPlaceMatch: context.followedPlaceIds.has(place.id),
-              momentRating: context.momentRatingsByPlaceId.get(place.id) ?? null,
-            },
-          ),
-    }))
-    .sort((a, b) => {
-      const affinityA = a._preferenceAffinity.matchedInterestCount + (a._preferenceAffinity.matchedVibe ? 1 : 0);
-      const affinityB = b._preferenceAffinity.matchedInterestCount + (b._preferenceAffinity.matchedVibe ? 1 : 0);
-      if (affinityB !== affinityA) return affinityB - affinityA;
-      return (b.similarityStat ?? 0) - (a.similarityStat ?? 0);
-    });
+      .sort((a, b) => {
+        const affinityA = a._preferenceAffinity.matchedInterestCount + (a._preferenceAffinity.matchedVibe ? 1 : 0);
+        const affinityB = b._preferenceAffinity.matchedInterestCount + (b._preferenceAffinity.matchedVibe ? 1 : 0);
+        if (affinityB !== affinityA) return affinityB - affinityA;
+        return (b.similarityStat ?? 0) - (a.similarityStat ?? 0);
+      });
+  } catch (error) {
+    console.error('Discovery ranking fallback activated', error);
+    rankedPlaces = places
+      .filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery))
+      .map((place) => ({
+        ...place,
+        _preferenceAffinity: getPlacePreferenceAffinity(
+          {
+            tags: place.tags,
+            category: place.category,
+            hook: place.hook,
+            description: place.description,
+            whyYoullLikeIt: place.whyYoullLikeIt,
+          },
+          {
+            selectedInterests,
+            selectedVibe,
+          },
+        ),
+      }));
+  }
 
   if (selectedInterests.length > 0 || selectedVibe) {
     const matchedPlaces = rankedPlaces.filter((place) =>
