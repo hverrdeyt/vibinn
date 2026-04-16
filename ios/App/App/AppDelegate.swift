@@ -10340,18 +10340,11 @@ private struct NativeFeedPlaceAttachment: View {
 
     private var visitedUploadedUrls: [String] {
         guard activityType == .visited else { return [] }
-        // First-class path: use explicit uploads from the moment payload.
+        // For visited, ONLY render user-uploaded moment media.
+        // Do not infer from place media, because place photos may also be hosted under `/uploads`
+        // (for example, cached Google photos) and would incorrectly appear as "user uploads".
         let explicit = uploadedMediaUrls.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        if !explicit.isEmpty {
-            return Array(NSOrderedSet(array: explicit)) as? [String] ?? explicit
-        }
-
-        // Back-compat path: infer uploads from the place media list when the backend merged them.
-        // Only show a media scroller if we can identify assets that likely came from user uploads.
-        // This avoids accidentally showing Google place photos for visited posts that did not include uploads.
-        let all = ([place.image].compactMap { $0 } + (place.images ?? [])).filter { !$0.isEmpty }
-        let uploads = all.filter { looksLikeUserUploadedMedia($0) }
-        return Array(NSOrderedSet(array: uploads)) as? [String] ?? uploads
+        return Array(NSOrderedSet(array: explicit)) as? [String] ?? explicit
     }
 
     private var hasVisitedUploadedMedia: Bool {
