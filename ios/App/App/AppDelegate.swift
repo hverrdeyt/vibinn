@@ -4522,7 +4522,6 @@ private struct NativeAuthScreen: View {
     @State private var isSubmitting = false
     @State private var errorMessage: String?
     @State private var showEmailSheet = false
-    @State private var actionsSize: CGSize = .zero
 
     init(allowsDismissal: Bool = false, promptReason: String? = nil) {
         self.allowsDismissal = allowsDismissal
@@ -4531,22 +4530,18 @@ private struct NativeAuthScreen: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let safeTop = proxy.safeAreaInsets.top
             let safeBottom = proxy.safeAreaInsets.bottom
             let heroHeight = max(proxy.size.height * (5.0 / 8.0), 380)
+            let copyHeight = max(proxy.size.height * (2.0 / 8.0), 170)
 
             ZStack(alignment: .topTrailing) {
-                Color.black.ignoresSafeArea()
+                // Match Vibinn's primary accent background (Pinterest-like full-bleed feel).
+                nativeAccent.ignoresSafeArea()
 
                 VStack(spacing: 0) {
                     NativeAuthHeroPinWall()
                         .frame(height: heroHeight)
                         .clipped()
-                    Spacer(minLength: 0)
-                }
-
-                VStack(spacing: 0) {
-                    Spacer(minLength: 0)
 
                     VStack(alignment: .center, spacing: 14) {
                         ZStack {
@@ -4573,10 +4568,11 @@ private struct NativeAuthScreen: View {
                         }
                     }
                     .padding(.horizontal, 22)
-                    // Keep copy visible above the sticky action area.
-                    .padding(.bottom, actionsSize.height + 18)
+                    .frame(maxWidth: .infinity, minHeight: copyHeight, alignment: .center)
+                    .padding(.top, 18)
+
+                    Spacer(minLength: 0)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 
                 VStack(spacing: 10) {
                     NativeAuthLandingButton(
@@ -4613,10 +4609,6 @@ private struct NativeAuthScreen: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, safeBottom)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .nativeMeasureSize { size in
-                    // Used to reserve space so the center copy doesn't slide under the action buttons.
-                    actionsSize = size
-                }
 
                 if allowsDismissal {
                     Button {
@@ -4631,7 +4623,8 @@ private struct NativeAuthScreen: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .padding(.top, safeTop + 12)
+                    // Intentionally not offset by safe-area inset: allow the hero to overlap the status area.
+                    .padding(.top, 12)
                     .padding(.trailing, 20)
                 }
 
@@ -4720,14 +4713,15 @@ private struct NativeAuthHeroPinWall: View {
                 .offset(y: drift * 0.25)
             }
             .padding(.horizontal, 16)
-            .padding(.top, proxy.safeAreaInsets.top + 14)
+            // No safe-area offset: we want a full-bleed Pinterest-like hero that can overlap the status area.
+            .padding(.top, 14)
             .padding(.bottom, 18)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(
                 LinearGradient(
                     colors: [
-                        Color(red: 16 / 255, green: 16 / 255, blue: 20 / 255),
-                        Color.black
+                        nativeAccent.opacity(0.92),
+                        Color.black.opacity(0.72)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -4768,25 +4762,6 @@ private struct NativeAuthHeroTile: View {
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             )
-    }
-}
-
-private struct NativeSizePreferenceKey: PreferenceKey {
-    static var defaultValue: CGSize = .zero
-    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
-        value = nextValue()
-    }
-}
-
-private extension View {
-    func nativeMeasureSize(_ onChange: @escaping (CGSize) -> Void) -> some View {
-        background(
-            GeometryReader { proxy in
-                Color.clear
-                    .preference(key: NativeSizePreferenceKey.self, value: proxy.size)
-            }
-        )
-        .onPreferenceChange(NativeSizePreferenceKey.self, perform: onChange)
     }
 }
 
