@@ -4541,8 +4541,11 @@ private struct NativeAuthScreen: View {
 
                 VStack(spacing: 0) {
                     NativeAuthHeroPinWall()
-                        .ignoresSafeArea(.container, edges: .top)
-                        .frame(height: heroHeight)
+                        // Extend the hero behind the status bar by "borrowing" the safe-area height
+                        // and then pulling it upward. This avoids the common "clipped at status bar"
+                        // behavior when using frame+clipped inside a safe-area respecting container.
+                        .frame(height: heroHeight + safeTop)
+                        .padding(.top, -safeTop)
                         .clipped()
 
                     VStack(alignment: .center, spacing: 14) {
