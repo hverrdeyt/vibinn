@@ -1050,6 +1050,13 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
     }
 
+    /// Only triggers the native permission dialog when the user hasn't decided yet.
+    /// (Used in onboarding so we don't bounce users to Settings.)
+    func requestLocationAuthorizationIfNeeded() {
+        guard locationPermissionState == .notDetermined else { return }
+        locationManager.requestWhenInUseAuthorization()
+    }
+
     func pushFloatingTabBarHidden() {
         floatingTabBarHideDepth += 1
         showFloatingTabBar = floatingTabBarHideDepth <= 0
@@ -5096,6 +5103,15 @@ private struct NativeOnboardingScreen: View {
     @State private var selectedInterests: [String] = []
     @State private var showLocationPicker = false
     @State private var step: NativeOnboardingStep = .location
+    @State private var awaitingLocationPermission = false
+    @State private var isContinuing = false
+
+    private enum PendingLocationContinueAction {
+        case goToPreferences
+        case finishOnboarding
+    }
+
+    @State private var pendingLocationContinueAction: PendingLocationContinueAction = .goToPreferences
 
     private enum NativeOnboardingStep: Hashable {
         case location
@@ -5127,6 +5143,13 @@ private struct NativeOnboardingScreen: View {
             selectedLocation = appState.selectedLocation
             selectedInterests = appState.selectedInterests
             step = .location
+        }
+        .onChange(of: appState.locationPermissionState) { newValue in
+            guard awaitingLocationPermission else { return }
+            // The system dialog resolves to either authorized or denied/restricted.
+            guard newValue != .notDetermined else { return }
+            awaitingLocationPermission = false
+            proceedAfterLocationPermission()
         }
         .sheet(isPresented: $showLocationPicker) {
             NativeLocationPickerSheet(
@@ -5162,7 +5185,36 @@ private struct NativeOnboardingScreen: View {
                     }
                 }
                 .padding(.horizontal, 24)
-                .padding(.bottom, step == .preferences ? 132 : 24)
+                // Leave room for floating bottom actions.
+                .padding(.bottom, (step == .preferences || step == .location) ? 132 : 24)
+            }
+
+            if step == .location {
+                VStack(spacing: 12) {
+                    Button {
+                        handleContinueFromLocation()
+                    } label: {
+                        HStack {
+                            Spacer()
+                            if isContinuing {
+                                ProgressView()
+                                    .tint(.black)
+                            } else {
+                                Text("Continue")
+                                    .font(.system(size: 17, weight: .black))
+                            }
+                            Spacer()
+                        }
+                        .padding(.vertical, 18)
+                        .background(nativeAccent)
+                        .foregroundStyle(.black)
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isContinuing)
+                }
+                .padding(.horizontal, 24)
+                .padding(.bottom, 24)
             }
 
             if step == .preferences {
@@ -5261,23 +5313,46 @@ private struct NativeOnboardingScreen: View {
                 }
             }
 
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
-                    step = .preferences
-                }
-            } label: {
-                HStack {
-                    Spacer()
-                    Text("Continue")
-                        .font(.system(size: 17, weight: .black))
-                    Spacer()
-                }
-                .padding(.vertical, 18)
-                .background(nativeAccent)
-                .foregroundStyle(.black)
-                .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        }
+    }
+
+    private func handleContinueFromLocation() {
+        guard !isContinuing else { return }
+        isContinuing = true
+
+        // Persist the location choice right away (onboarding completion still happens later).
+        Task { await appState.updateLocation(to: selectedLocation) }
+
+        let shouldFinish = canSkipPreferences
+        pendingLocationContinueAction = shouldFinish ? .finishOnboarding : .goToPreferences
+
+        if appState.locationPermissionState == .notDetermined {
+            awaitingLocationPermission = true
+            appState.requestLocationAuthorizationIfNeeded()
+            // Wait for the permission dialog resolution (handled in .onChange).
+            return
+        }
+
+        proceedAfterLocationPermission()
+    }
+
+    private func proceedAfterLocationPermission() {
+        defer { isContinuing = false }
+
+        switch pendingLocationContinueAction {
+        case .goToPreferences:
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.88)) {
+                step = .preferences
             }
-            .buttonStyle(.plain)
+        case .finishOnboarding:
+            Task {
+                await appState.completeOnboarding(
+                    with: selectedLocation,
+                    selectedInterests: appState.selectedInterests,
+                    selectedVibe: appState.selectedVibe,
+                    preserveExistingPreferences: true
+                )
+            }
         }
     }
 
