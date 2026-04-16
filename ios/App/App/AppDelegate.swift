@@ -4576,12 +4576,6 @@ private struct NativeAuthScreen: View {
                                 .font(.system(size: 36, weight: .black))
                                 .multilineTextAlignment(.center)
                                 .foregroundStyle(.white)
-
-                            Text(promptReason ?? "Log in to save places, unlock your vibes, and keep your picks synced.")
-                                .font(.system(size: 15, weight: .regular))
-                                .multilineTextAlignment(.center)
-                                .foregroundStyle(.white.opacity(0.7))
-                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .padding(.horizontal, 22)
@@ -4628,6 +4622,7 @@ private struct NativeAuthScreen: View {
                     NativeAuthLegalText()
                 }
                 .padding(.horizontal, 20)
+                // Keep actions as low as possible while respecting the home indicator safe area.
                 .padding(.bottom, safeBottom)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
 
