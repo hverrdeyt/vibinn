@@ -329,6 +329,9 @@ private struct NativePlace: Decodable, Identifiable {
     let hook: String?
     let image: String?
     let images: [String]?
+    // For visited posts (moments), user-uploaded media comes from `momentMedia`.
+    // Place media (Google) remains in `image` / `images`.
+    let momentMedia: [NativeMomentMediaItem]?
     let tags: [String]?
     let attitudeLabel: String?
     let bestTime: String?
@@ -350,6 +353,11 @@ private struct NativePlace: Decodable, Identifiable {
     let momentCaption: String?
     let momentWouldRevisit: String?
     let momentRating: Int?
+}
+
+private struct NativeMomentMediaItem: Decodable {
+    let url: String
+    let mediaType: String
 }
 
 private struct NativePlaceDetailResponse: Decodable {
@@ -784,6 +792,34 @@ private struct NativeFeedItem: Identifiable {
     let place: NativePlace?
     let collection: NativeCollection?
     let caption: String?
+    // For visited items that come from a moment/check-in, keep user uploads separate from place media.
+    // This allows the UI to render a horizontal scroller of user media without affecting place thumbnails.
+    let uploadedMediaUrls: [String]?
+
+    // Explicit initializer to avoid any ambiguity with memberwise init across Swift versions.
+    init(
+        id: String,
+        type: NativeFeedActivityType,
+        traveler: NativeTravelerSummary,
+        title: String,
+        timestampLabel: String,
+        sortTimestamp: Date,
+        place: NativePlace?,
+        collection: NativeCollection?,
+        caption: String?,
+        uploadedMediaUrls: [String]? = nil
+    ) {
+        self.id = id
+        self.type = type
+        self.traveler = traveler
+        self.title = title
+        self.timestampLabel = timestampLabel
+        self.sortTimestamp = sortTimestamp
+        self.place = place
+        self.collection = collection
+        self.caption = caption
+        self.uploadedMediaUrls = uploadedMediaUrls
+    }
 }
 
 private struct NativeProfileResponse: Decodable {
@@ -1820,21 +1856,22 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
         let resolvedPlaceBase = createdMoment.place ?? place
         let resolvedUploadedMedia = (createdMoment.uploadedMedia ?? uploadedMedia).filter { !$0.isEmpty }
-        let resolvedPlace = NativePlace(
-            id: resolvedPlaceBase.id,
-            name: resolvedPlaceBase.name,
-            location: resolvedPlaceBase.location,
-            address: resolvedPlaceBase.address,
-            neighborhood: resolvedPlaceBase.neighborhood,
-            category: resolvedPlaceBase.category,
-            description: resolvedPlaceBase.description,
-            hook: resolvedPlaceBase.hook,
-            image: resolvedUploadedMedia.first ?? resolvedPlaceBase.image,
-            images: resolvedUploadedMedia.isEmpty ? resolvedPlaceBase.images : resolvedUploadedMedia,
-            tags: resolvedPlaceBase.tags,
-            attitudeLabel: resolvedPlaceBase.attitudeLabel,
-            bestTime: resolvedPlaceBase.bestTime,
-            similarityStat: resolvedPlaceBase.similarityStat,
+	        let resolvedPlace = NativePlace(
+	            id: resolvedPlaceBase.id,
+	            name: resolvedPlaceBase.name,
+	            location: resolvedPlaceBase.location,
+	            address: resolvedPlaceBase.address,
+	            neighborhood: resolvedPlaceBase.neighborhood,
+	            category: resolvedPlaceBase.category,
+	            description: resolvedPlaceBase.description,
+	            hook: resolvedPlaceBase.hook,
+	            image: resolvedUploadedMedia.first ?? resolvedPlaceBase.image,
+	            images: resolvedUploadedMedia.isEmpty ? resolvedPlaceBase.images : resolvedUploadedMedia,
+	            momentMedia: nil,
+	            tags: resolvedPlaceBase.tags,
+	            attitudeLabel: resolvedPlaceBase.attitudeLabel,
+	            bestTime: resolvedPlaceBase.bestTime,
+	            similarityStat: resolvedPlaceBase.similarityStat,
             whyYoullLikeIt: resolvedPlaceBase.whyYoullLikeIt,
             recommendationReason: resolvedPlaceBase.recommendationReason,
             rating: resolvedPlaceBase.rating,
@@ -2207,51 +2244,58 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         return formatter.date(from: raw)
     }
 
-    static func relativeLabel(from raw: String?) -> String {
-        guard let date = date(from: raw) else { return "Recently" }
-        let now = Date()
-        let diff = Int(now.timeIntervalSince(date))
-        if diff < 60 { return "just now" }
-        let hour = 60 * 60
-        let day = 24 * hour
-        let week = 7 * day
-        let month = 30 * day
-        let year = 365 * day
+	    static func relativeLabel(from raw: String?) -> String {
+	        guard let date = date(from: raw) else { return "Recently" }
+	        let now = Date()
+	        let diff = Int(now.timeIntervalSince(date))
+	        if diff < 60 { return "just now" }
+	        let hour = 60 * 60
+	        let day = 24 * hour
+	        let week = 7 * day
+	        _ = 30 * day
+	        _ = 365 * day
 
-        if diff < day {
-            let hours = max(1, diff / hour)
-            return "\(hours)h ago"
-        }
-        if diff < week {
-            let days = max(1, diff / day)
-            return "\(days)d ago"
-        }
-        if diff < month {
-            let weeks = max(1, diff / week)
-            return "\(weeks)wk ago"
-        }
-        if diff < year {
-            let months = max(1, diff / month)
-            return "\(months)mo ago"
-        }
-        let years = max(1, diff / year)
-        return "\(years)y ago"
-    }
+	        if diff < day {
+	            let hours = max(1, diff / hour)
+	            return "\(hours)h ago"
+	        }
+	        if diff < week {
+	            let days = max(1, diff / day)
+	            return "\(days)d ago"
+	        }
+	        // Older than 7 days: show a concrete date.
+	        let formatter = DateFormatter()
+	        formatter.locale = Locale(identifier: "en_US_POSIX")
+	        formatter.timeZone = .current
+	        formatter.dateFormat = "MMM dd, yyyy"
+	        return formatter.string(from: date)
+	    }
 
-    static func feedSortDate(iso: String?, label: String?) -> Date? {
-        if let direct = date(from: iso) {
-            return direct
-        }
-        guard let label else { return nil }
-        let normalized = label
-            .lowercased()
-            .replacingOccurrences(of: ".", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        if normalized == "just now" { return Date() }
-        if normalized == "recently" { return Date().addingTimeInterval(-60) }
-        let match = normalized.range(of: #"^(\d+)\s*(h|d|wk|w|mo|y)\s*ago$"#, options: .regularExpression)
-        guard let match else { return nil }
-        let token = String(normalized[match])
+	    static func feedSortDate(iso: String?, label: String?) -> Date? {
+	        if let direct = date(from: iso) {
+	            return direct
+	        }
+	        guard let label else { return nil }
+	        let normalized = label
+	            .lowercased()
+	            .replacingOccurrences(of: ".", with: "")
+	            .trimmingCharacters(in: .whitespacesAndNewlines)
+	
+	        // Supports concrete date labels (MMM dd, yyyy) produced by `relativeLabel`.
+	        do {
+	            let formatter = DateFormatter()
+	            formatter.locale = Locale(identifier: "en_US_POSIX")
+	            formatter.timeZone = .current
+	            formatter.dateFormat = "MMM dd, yyyy"
+	            if let parsed = formatter.date(from: label.trimmingCharacters(in: .whitespacesAndNewlines)) {
+	                return parsed
+	            }
+	        }
+	        if normalized == "just now" { return Date() }
+	        if normalized == "recently" { return Date().addingTimeInterval(-60) }
+	        let match = normalized.range(of: #"^(\d+)\s*(h|d|wk|w|mo|y)\s*ago$"#, options: .regularExpression)
+	        guard let match else { return nil }
+	        let token = String(normalized[match])
         let parts = token.split(separator: " ")
         guard let first = parts.first, let value = Int(first) else { return nil }
         if token.contains("wk") || token.contains(" w") {
@@ -2402,21 +2446,22 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 title: "",
                 timestampLabel: Self.relativeLabel(from: moment.visitedDate),
                 sortTimestamp: Self.feedSortDate(iso: moment.visitedAtIso ?? moment.visitedDate, label: Self.relativeLabel(from: moment.visitedDate)) ?? .distantPast,
-                place: NativePlace(
-                    id: moment.place.id,
-                    name: moment.place.name,
-                    location: moment.place.location,
-                    address: moment.place.address,
-                    neighborhood: moment.place.neighborhood,
-                    category: moment.place.category,
-                    description: moment.place.description,
-                    hook: moment.place.hook,
-                    image: momentMedia.first ?? moment.place.image,
-                    images: momentMedia.isEmpty ? moment.place.images : momentMedia,
-                    tags: moment.place.tags,
-                    attitudeLabel: moment.place.attitudeLabel,
-                    bestTime: moment.place.bestTime,
-                    similarityStat: moment.place.similarityStat,
+	                place: NativePlace(
+	                    id: moment.place.id,
+	                    name: moment.place.name,
+	                    location: moment.place.location,
+	                    address: moment.place.address,
+	                    neighborhood: moment.place.neighborhood,
+	                    category: moment.place.category,
+	                    description: moment.place.description,
+	                    hook: moment.place.hook,
+	                    image: moment.place.image,
+	                    images: moment.place.images,
+	                    momentMedia: nil,
+	                    tags: moment.place.tags,
+	                    attitudeLabel: moment.place.attitudeLabel,
+	                    bestTime: moment.place.bestTime,
+	                    similarityStat: moment.place.similarityStat,
                     whyYoullLikeIt: moment.place.whyYoullLikeIt,
                     recommendationReason: moment.place.recommendationReason,
                     rating: moment.place.rating,
@@ -2436,7 +2481,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     momentRating: moment.rating
                 ),
                 collection: nil,
-                caption: moment.caption
+                caption: moment.caption,
+                uploadedMediaUrls: momentMedia.isEmpty ? nil : momentMedia
             )
         })
 
@@ -3783,27 +3829,144 @@ private struct NativeProfileTabs: View {
     }
 }
 
+private func nativePrimaryCity(from location: String) -> String? {
+    let city = location
+        .split(separator: ",")
+        .first
+        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+    guard let city, !city.isEmpty else { return nil }
+    return city
+}
+
+private func nativeCityKey(for place: NativePlace) -> String? {
+    nativePrimaryCity(from: place.location)
+}
+
+private func nativeCityKey(for moment: NativeMoment) -> String? {
+    nativeCityKey(for: moment.place)
+}
+
+private func nativeCityKey(for feedItem: NativeFeedItem) -> String? {
+    if let place = feedItem.place {
+        return nativeCityKey(for: place)
+    }
+    if let collection = feedItem.collection {
+        let cities = Set(collection.places.compactMap(nativeCityKey(for:)))
+        if cities.count == 1 {
+            return cities.first
+        }
+    }
+    return nil
+}
+
+private struct NativeCityFilterPills: View {
+    @Binding var selectedCity: String? // nil means "All"
+    let cities: [String]
+
+    private struct PillItem: Identifiable {
+        let id: String
+        let label: String
+        let icon: String?
+        let cityValue: String? // nil means "All"
+    }
+
+    private var items: [PillItem] {
+        var result: [PillItem] = [
+            PillItem(id: "__all__", label: "All", icon: "globe", cityValue: nil)
+        ]
+        result.append(contentsOf: cities.map { city in
+            PillItem(id: city, label: city, icon: nil, cityValue: city)
+        })
+        return result
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(items) { item in
+                        let isActive = selectedCity == item.cityValue
+                        Button {
+                            selectedCity = item.cityValue
+                        } label: {
+                            HStack(spacing: 8) {
+                                if let icon = item.icon {
+                                    Image(systemName: icon)
+                                        .font(.system(size: 12, weight: .black))
+                                        .foregroundStyle(isActive ? .black : .white.opacity(0.84))
+                                }
+                                Text(item.label)
+                                    .font(.system(size: 13, weight: .black))
+                                    .foregroundStyle(isActive ? .black : .white.opacity(0.84))
+                                    .lineLimit(1)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(isActive ? nativeAccent : Color.white.opacity(0.06))
+                            .overlay(
+                                Capsule()
+                                    .stroke(Color.white.opacity(isActive ? 0.0 : 0.12), lineWidth: 1)
+                            )
+                            .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .id(item.id)
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+            // Helps avoid taps "falling through" into the content below when embedded in a vertical ScrollView.
+            .contentShape(Rectangle())
+            .background(Color.black.opacity(0.001))
+            .onChange(of: selectedCity) { newValue in
+                withAnimation(.easeInOut(duration: 0.22)) {
+                    proxy.scrollTo(newValue ?? "__all__", anchor: .center)
+                }
+            }
+        }
+    }
+}
+
 private struct NativeSavedTabs: View {
     @Binding var activeSection: NativeSavedSection
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(NativeSavedSection.allCases) { section in
-                    Button {
+        HStack(spacing: 0) {
+            ForEach(NativeSavedSection.allCases) { section in
+                let isActive = activeSection == section
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) {
                         activeSection = section
-                    } label: {
+                    }
+                } label: {
+                    VStack(spacing: 10) {
                         Text(section.rawValue)
                             .font(.system(size: 14, weight: .black))
-                            .foregroundStyle(activeSection == section ? .black : .white.opacity(0.72))
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 11)
-                            .background(activeSection == section ? nativeAccent : nativeSurface)
-                            .clipShape(Capsule())
+                            .foregroundStyle(isActive ? .white : .white.opacity(0.5))
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 8)
+
+                        Rectangle()
+                            .fill(isActive ? nativeAccent : Color.clear)
+                            .frame(height: 2)
                     }
-                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
                 }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+                .background(Color.black.opacity(0.001))
             }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 6)
+        .padding(.top, 4)
+        .padding(.bottom, 2)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.white.opacity(0.06))
+                .frame(height: 1)
+                .allowsHitTesting(false)
         }
     }
 }
@@ -5774,7 +5937,7 @@ private struct NativeMainTabView: View {
                 NativeSavedScreen()
             }
             .navigationViewStyle(.stack)
-            .tabItem { Label("Saved", systemImage: "bookmark.fill") }
+            .tabItem { Label("Saved", systemImage: "heart.fill") }
             .tag(NativeTab.saved)
 
             NavigationView {
@@ -5913,7 +6076,7 @@ private struct NativeFloatingTabBar: View {
     private let sideTabs: [(tab: NativeTab, icon: String)] = [
         (.discover, "safari"),
         (.feed, "person.2"),
-        (.saved, "bookmark"),
+        (.saved, "heart"),
         (.profile, "person"),
     ]
 
@@ -7565,7 +7728,7 @@ private struct NativeConfettiBurstView: View {
 private struct NativeSavedScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @State private var activeSection: NativeSavedSection = .places
-    @State private var expandedSavedCities: Set<String> = []
+    @State private var selectedCity: String?
     @State private var showCreateCollectionSheet = false
     @State private var newCollectionName = ""
     @State private var selectedCollectionPlaceIds: Set<String> = []
@@ -7577,11 +7740,6 @@ private struct NativeSavedScreen: View {
 
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
-                    NativeScreenHeader(
-                        title: "Saved places",
-                        subtitle: "Your shortlist and collections."
-                    )
-
                     NativeSavedTabs(activeSection: $activeSection)
 
                     if appState.currentUser == nil {
@@ -7598,11 +7756,11 @@ private struct NativeSavedScreen: View {
                     savedSectionContent
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 16)
+                .padding(.top, 10)
                 .padding(.bottom, 132)
             }
         }
-        .navigationTitle("Saved places")
+        .navigationTitle("Saved")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showCreateCollectionSheet) {
             NavigationView {
@@ -7722,23 +7880,12 @@ private struct NativeSavedScreen: View {
             .navigationViewStyle(.stack)
         }
         .onAppear {
-            if expandedSavedCities.isEmpty {
-                expandedSavedCities = Set(savedCityGroups.map(\.city))
-            }
             if appState.savedPlaces.isEmpty && appState.collections.isEmpty && appState.currentUser != nil {
-                Task {
-                    await appState.refreshSavedContent()
-                    if expandedSavedCities.isEmpty {
-                        expandedSavedCities = Set(savedCityGroups.map(\.city))
-                    }
-                }
+                Task { await appState.refreshSavedContent() }
             }
         }
         .refreshable {
             await appState.refreshSavedContent()
-            if expandedSavedCities.isEmpty {
-                expandedSavedCities = Set(savedCityGroups.map(\.city))
-            }
         }
     }
 
@@ -7755,49 +7902,20 @@ private struct NativeSavedScreen: View {
                         .foregroundStyle(.white.opacity(0.6))
                 }
             } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(savedCityGroups, id: \.city) { group in
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Button {
-                                    toggleSavedCity(group.city)
-                                } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(group.city)
-                                                .font(.system(size: 18, weight: .black))
-                                                .foregroundStyle(.white)
-                                            Text("\(group.places.count) places")
-                                                .font(.system(size: 12, weight: .bold))
-                                                .foregroundStyle(.white.opacity(0.45))
-                                        }
-                                        Spacer()
-                                        Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
-                                            .font(.system(size: 14, weight: .black))
-                                            .foregroundStyle(.white.opacity(0.7))
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.plain)
-                                .zIndex(2)
-
-                                if expandedSavedCities.contains(group.city) {
-                                    VStack(spacing: 12) {
-                                        ForEach(group.places) { place in
-                                            NavigationLink {
-                                                NativePlaceDetailScreen(initialPlace: place)
-                                            } label: {
-                                                NativePlaceCard(place: place)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                    .zIndex(1)
-                                }
+                VStack(alignment: .leading, spacing: 14) {
+                    NativeCityFilterPills(selectedCity: effectiveSelectedCityBinding, cities: savedCities)
+                        .zIndex(2)
+                    LazyVStack(spacing: 12) {
+                        ForEach(filteredSavedPlaces) { place in
+                            NavigationLink {
+                                NativePlaceDetailScreen(initialPlace: place)
+                            } label: {
+                                NativePlaceCard(place: place)
                             }
+                            .buttonStyle(.plain)
                         }
                     }
+                    .zIndex(1)
                 }
             }
         case .collections:
@@ -7847,33 +7965,30 @@ private struct NativeSavedScreen: View {
         }
     }
 
-    private var savedCityGroups: [(city: String, places: [NativePlace])] {
-        let grouped = Dictionary(grouping: Array(appState.savedPlaces.prefix(60))) { place in
-            place.location
-                .split(separator: ",")
-                .first
-                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                .flatMap { $0.isEmpty ? nil : $0 } ?? "Unknown city"
-        }
-
-        return grouped
-            .map { key, value in
-                (
-                    city: key,
-                    places: value.sorted {
-                        $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-                    }
-                )
-            }
-            .sorted { $0.city.localizedCaseInsensitiveCompare($1.city) == .orderedAscending }
+    private var savedCities: [String] {
+        let cities = Set(appState.savedPlaces.compactMap(nativeCityKey(for:)))
+        return cities.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 
-    private func toggleSavedCity(_ city: String) {
-        if expandedSavedCities.contains(city) {
-            expandedSavedCities.remove(city)
+    private var effectiveSelectedCity: String? {
+        selectedCity.flatMap { savedCities.contains($0) ? $0 : nil }
+    }
+
+    private var effectiveSelectedCityBinding: Binding<String?> {
+        Binding(
+            get: { effectiveSelectedCity },
+            set: { selectedCity = $0 }
+        )
+    }
+
+    private var filteredSavedPlaces: [NativePlace] {
+        let places: [NativePlace]
+        if let city = effectiveSelectedCity {
+            places = appState.savedPlaces.filter { nativeCityKey(for: $0) == city }
         } else {
-            expandedSavedCities.insert(city)
+            places = appState.savedPlaces
         }
+        return places.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
     private func toggleCollectionPlace(_ placeId: String) {
@@ -7909,7 +8024,9 @@ private struct NativeSavedScreen: View {
 private struct NativeProfileScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @State private var activeSection: NativeProfileSection = .feed
-    @State private var expandedSavedCities: Set<String> = []
+    @State private var selectedFeedCity: String?
+    @State private var selectedSavedCity: String?
+    @State private var selectedVisitedCity: String?
     @State private var showEditProfileSheet = false
     @State private var showSettingsSheet = false
     @State private var ownFollowersCount: Int?
@@ -8137,9 +8254,6 @@ private struct NativeProfileScreen: View {
             }
         }
         .onAppear {
-            if expandedSavedCities.isEmpty {
-                expandedSavedCities = Set(savedCityGroups.map(\.city))
-            }
             nativeLogger.log("NativeProfileScreen appear saved=\(appState.savedPlaces.count, privacy: .public) collections=\(appState.collections.count, privacy: .public) moments=\(appState.myMoments.count, privacy: .public)")
             guard !hasLoadedInitialProfileState else { return }
             hasLoadedInitialProfileState = true
@@ -8183,67 +8297,46 @@ private struct NativeProfileScreen: View {
         } else {
             switch activeSection {
             case .feed:
-                if appState.ownFeedItemsCache.isEmpty {
+                if filteredOwnFeedItems.isEmpty {
                     emptyOwnProfileBlock("Your latest activity will show up here.")
                 } else {
-                    LazyVStack(spacing: 14) {
-                        ForEach(appState.ownFeedItemsCache) { item in
-                            NativeFeedCard(item: item)
+                    VStack(alignment: .leading, spacing: 14) {
+                        NativeCityFilterPills(selectedCity: effectiveFeedCityBinding, cities: ownFeedCities)
+                        LazyVStack(spacing: 14) {
+                            ForEach(filteredOwnFeedItems) { item in
+                                NativeFeedCard(item: item)
+                            }
                         }
                     }
                 }
             case .saved:
-                if appState.savedPlaces.isEmpty {
+                if filteredSavedPlaces.isEmpty {
                     emptyOwnProfileBlock("No saved places yet.")
                 } else {
-                    LazyVStack(spacing: 14) {
-                        ForEach(savedCityGroups, id: \.city) { group in
-                            NativeSurfaceCard {
-                                VStack(alignment: .leading, spacing: 14) {
-                                    Button {
-                                        toggleSavedCity(group.city)
-                                    } label: {
-                                        HStack {
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                Text(group.city)
-                                                    .font(.system(size: 18, weight: .black))
-                                                    .foregroundStyle(.white)
-                                                Text("\(group.places.count) places")
-                                                    .font(.system(size: 12, weight: .bold))
-                                                    .foregroundStyle(.white.opacity(0.45))
-                                            }
-                                            Spacer()
-                                            Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
-                                                .font(.system(size: 14, weight: .black))
-                                                .foregroundStyle(.white.opacity(0.7))
-                                        }
-                                    }
-                                    .buttonStyle(.plain)
-
-                                    if expandedSavedCities.contains(group.city) {
-                                        VStack(spacing: 12) {
-                                            ForEach(group.places) { place in
-                                                NavigationLink {
-                                                    NativePlaceDetailScreen(initialPlace: place)
-                                                } label: {
-                                                    NativePlaceCard(place: place)
-                                                }
-                                                .buttonStyle(.plain)
-                                            }
-                                        }
-                                    }
+                    VStack(alignment: .leading, spacing: 14) {
+                        NativeCityFilterPills(selectedCity: effectiveSavedCityBinding, cities: ownSavedCities)
+                        LazyVStack(spacing: 12) {
+                            ForEach(filteredSavedPlaces) { place in
+                                NavigationLink {
+                                    NativePlaceDetailScreen(initialPlace: place)
+                                } label: {
+                                    NativePlaceCard(place: place)
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
                     }
                 }
             case .visited:
-                if appState.myMoments.isEmpty {
+                if filteredVisitedMoments.isEmpty {
                     emptyOwnProfileBlock("No visited places yet.")
                 } else {
-                    LazyVStack(spacing: 14) {
-                        ForEach(appState.myMoments) { moment in
-                            NativeOwnVisitedMomentCard(moment: moment)
+                    VStack(alignment: .leading, spacing: 14) {
+                        NativeCityFilterPills(selectedCity: effectiveVisitedCityBinding, cities: ownVisitedCities)
+                        LazyVStack(spacing: 14) {
+                            ForEach(filteredVisitedMoments) { moment in
+                                NativeOwnVisitedMomentCard(moment: moment)
+                            }
                         }
                     }
                 }
@@ -8275,42 +8368,80 @@ private struct NativeProfileScreen: View {
         }
     }
 
-    private var savedCityGroups: [(city: String, places: [NativePlace])] {
-        let grouped = Dictionary(grouping: appState.savedPlaces) { place in
-            place.location
-                .split(separator: ",")
-                .first
-                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                .flatMap { $0.isEmpty ? nil : $0 } ?? "Unknown city"
-        }
+    private var ownFeedCities: [String] {
+        let cities = Set(appState.ownFeedItemsCache.compactMap(nativeCityKey(for:)))
+        return cities.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
 
-        return grouped
-            .map { key, value in
-                (
-                    city: key,
-                    places: value.sorted {
-                        ($0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending)
-                    }
-                )
-            }
-            .sorted { $0.city.localizedCaseInsensitiveCompare($1.city) == .orderedAscending }
+    private var ownSavedCities: [String] {
+        let cities = Set(appState.savedPlaces.compactMap(nativeCityKey(for:)))
+        return cities.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private var ownVisitedCities: [String] {
+        let cities = Set(appState.myMoments.compactMap(nativeCityKey(for:)))
+        return cities.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    private var effectiveSelectedFeedCity: String? {
+        selectedFeedCity.flatMap { ownFeedCities.contains($0) ? $0 : nil }
+    }
+
+    private var effectiveSelectedSavedCity: String? {
+        selectedSavedCity.flatMap { ownSavedCities.contains($0) ? $0 : nil }
+    }
+
+    private var effectiveSelectedVisitedCity: String? {
+        selectedVisitedCity.flatMap { ownVisitedCities.contains($0) ? $0 : nil }
+    }
+
+    private var effectiveFeedCityBinding: Binding<String?> {
+        Binding(
+            get: { effectiveSelectedFeedCity },
+            set: { selectedFeedCity = $0 }
+        )
+    }
+
+    private var effectiveSavedCityBinding: Binding<String?> {
+        Binding(
+            get: { effectiveSelectedSavedCity },
+            set: { selectedSavedCity = $0 }
+        )
+    }
+
+    private var effectiveVisitedCityBinding: Binding<String?> {
+        Binding(
+            get: { effectiveSelectedVisitedCity },
+            set: { selectedVisitedCity = $0 }
+        )
+    }
+
+    private var filteredOwnFeedItems: [NativeFeedItem] {
+        guard let city = effectiveSelectedFeedCity else { return appState.ownFeedItemsCache }
+        return appState.ownFeedItemsCache.filter { nativeCityKey(for: $0) == city }
+    }
+
+    private var filteredSavedPlaces: [NativePlace] {
+        guard let city = effectiveSelectedSavedCity else { return appState.savedPlaces }
+        return appState.savedPlaces.filter { nativeCityKey(for: $0) == city }
+    }
+
+    private var filteredVisitedMoments: [NativeMoment] {
+        guard let city = effectiveSelectedVisitedCity else { return appState.myMoments }
+        return appState.myMoments.filter { nativeCityKey(for: $0) == city }
     }
 
     private var ownVisitedFeedItems: [NativeFeedItem] {
         appState.ownFeedItemsCache.filter { $0.type == .visited }
     }
-
-    private func toggleSavedCity(_ city: String) {
-        if expandedSavedCities.contains(city) {
-            expandedSavedCities.remove(city)
-        } else {
-            expandedSavedCities.insert(city)
-        }
-    }
 }
 
 private struct NativeOwnVisitedMomentCard: View {
     let moment: NativeMoment
+
+    private var momentUploadedMediaUrls: [String] {
+        (moment.uploadedMedia ?? []).filter { !$0.isEmpty }
+    }
 
     var body: some View {
         NativeSurfaceCard {
@@ -8367,30 +8498,31 @@ private struct NativeOwnVisitedMomentCard: View {
                     Spacer(minLength: 0)
                 }
 
-                NativeFeedPlaceAttachment(place: enrichedPlace, activityType: .visited) {
+                NativeFeedPlaceAttachment(place: enrichedPlace, activityType: .visited, uploadedMediaUrls: momentUploadedMediaUrls) {
                     NativePlaceDetailScreen(initialPlace: enrichedPlace)
                 }
             }
         }
     }
 
-    private var enrichedPlace: NativePlace {
-        let momentMedia = (moment.uploadedMedia ?? []).filter { !$0.isEmpty }
-        return NativePlace(
-            id: moment.place.id,
-            name: moment.place.name,
-            location: moment.place.location,
-            address: moment.place.address,
-            neighborhood: moment.place.neighborhood,
-            category: moment.place.category,
-            description: moment.place.description,
-            hook: moment.place.hook,
-            image: momentMedia.first ?? moment.place.image,
-            images: momentMedia.isEmpty ? moment.place.images : momentMedia,
-            tags: moment.place.tags,
-            attitudeLabel: moment.place.attitudeLabel,
-            bestTime: moment.place.bestTime,
-            similarityStat: moment.place.similarityStat,
+	    private var enrichedPlace: NativePlace {
+	        return NativePlace(
+	            id: moment.place.id,
+	            name: moment.place.name,
+	            location: moment.place.location,
+	            address: moment.place.address,
+	            neighborhood: moment.place.neighborhood,
+	            category: moment.place.category,
+	            description: moment.place.description,
+	            hook: moment.place.hook,
+	            // Keep place media for the place card thumbnail. User uploads are rendered separately above.
+	            image: moment.place.image,
+	            images: moment.place.images,
+	            momentMedia: nil,
+	            tags: moment.place.tags,
+	            attitudeLabel: moment.place.attitudeLabel,
+	            bestTime: moment.place.bestTime,
+	            similarityStat: moment.place.similarityStat,
             whyYoullLikeIt: moment.place.whyYoullLikeIt,
             recommendationReason: moment.place.recommendationReason,
             rating: moment.place.rating,
@@ -9615,12 +9747,12 @@ private struct NativeFeedCard: View {
     @State private var vibinCount = 0
     @State private var vibinScale: CGFloat = 1
     @State private var vibinRotation: Double = 0
-    @State private var vibinFlash = false
+	    @State private var vibinFlash = false
     @State private var comments: [NativeComment] = []
     @State private var showCommentSheet = false
     @State private var commentDraft = ""
     @State private var isCommentsLoading = false
-    @State private var commentsErrorMessage: String?
+	    @State private var commentsErrorMessage: String?
     @State private var showReportPostDialog = false
     @State private var showReportAccountDialog = false
     @State private var showBlockAccountDialog = false
@@ -9730,7 +9862,11 @@ private struct NativeFeedCard: View {
                 }
 
                 if let place = item.place {
-                    NativeFeedPlaceAttachment(place: place, activityType: item.type) {
+                    NativeFeedPlaceAttachment(
+                        place: place,
+                        activityType: item.type,
+                        uploadedMediaUrls: item.uploadedMediaUrls ?? (place.momentMedia?.map { $0.url } ?? [])
+                    ) {
                         NativePlaceDetailScreen(initialPlace: place)
                     }
                 }
@@ -9748,7 +9884,7 @@ private struct NativeFeedCard: View {
                     .buttonStyle(.plain)
                 }
 
-                HStack(spacing: 22) {
+	                HStack(spacing: 22) {
                     Button {
                         guard appState.currentUser != nil else {
                             appState.presentAuthGate(reason: "Log in to vibin with posts.")
@@ -9778,43 +9914,43 @@ private struct NativeFeedCard: View {
                                 vibinFlash = false
                             }
                         }
-                    } label: {
-                        HStack(spacing: 8) {
-                            ZStack {
-                                if vibinFlash {
-                                    Image(systemName: "bolt.fill")
-                                        .font(.system(size: 14, weight: .bold))
-                                        .foregroundStyle(nativeAccent.opacity(0.28))
-                                        .scaleEffect(1.9)
-                                        .blur(radius: 1.5)
-                                }
-
-                                Image(systemName: vibed ? "bolt.fill" : "bolt")
-                                    .font(.system(size: 14, weight: .bold))
-                            }
-                            Text("\(vibinCount)")
-                                .font(.system(size: 13, weight: .black))
-                        }
-                        .foregroundStyle(vibed ? nativeAccent : .white.opacity(0.72))
-                        .scaleEffect(vibinScale)
-                        .rotationEffect(.degrees(vibinRotation))
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
+	                    } label: {
+	                        HStack(spacing: 8) {
+	                            ZStack {
+	                                if vibinFlash {
+	                                    Image(systemName: "bolt.fill")
+	                                        .font(.system(size: 18, weight: .bold))
+	                                        .foregroundStyle(nativeAccent.opacity(0.28))
+	                                        .scaleEffect(2.1)
+	                                        .blur(radius: 1.5)
+	                                }
+	
+	                                Image(systemName: vibed ? "bolt.fill" : "bolt")
+	                                    .font(.system(size: 18, weight: .bold))
+	                            }
+	                            Text("\(vibinCount)")
+	                                .font(.system(size: 16, weight: .black))
+	                        }
+	                        .foregroundStyle(vibed ? nativeAccent : .white.opacity(0.72))
+	                        .scaleEffect(vibinScale)
+	                        .rotationEffect(.degrees(vibinRotation))
+	                    }
+	                    .buttonStyle(.plain)
+	
+	                    Button {
                         showCommentSheet = true
                         Task {
                             await loadComments()
                         }
-                    } label: {
-                        HStack(spacing: 8) {
-                            Image(systemName: "bubble.right")
-                                .font(.system(size: 14, weight: .bold))
-                            Text("\(comments.count)")
-                                .font(.system(size: 13, weight: .black))
-                        }
-                        .foregroundStyle(.white.opacity(0.72))
-                    }
+	                    } label: {
+	                        HStack(spacing: 8) {
+	                            Image(systemName: "bubble.right")
+	                                .font(.system(size: 18, weight: .bold))
+	                            Text("\(comments.count)")
+	                                .font(.system(size: 16, weight: .black))
+	                        }
+	                        .foregroundStyle(.white.opacity(0.72))
+	                    }
                     .buttonStyle(.plain)
 
                     Spacer()
@@ -10164,7 +10300,26 @@ private struct NativeCommentSheet: View {
 private struct NativeFeedPlaceAttachment: View {
     let place: NativePlace
     let activityType: NativeFeedActivityType
+    // Explicit visited uploads (from moments). This keeps user media separate from place media (Google).
+    // When provided, it becomes the single source of truth for the visited horizontal scroller.
+    let uploadedMediaUrls: [String]
     let destination: () -> NativePlaceDetailScreen
+    @State private var showFullscreenGallery = false
+    @State private var fullscreenGalleryStartIndex = 0
+
+    // Explicit initializer to ensure the `uploadedMediaUrls` label is always available and the trailing
+    // closure is unambiguously `destination`.
+    init(
+        place: NativePlace,
+        activityType: NativeFeedActivityType,
+        uploadedMediaUrls: [String] = [],
+        destination: @escaping () -> NativePlaceDetailScreen
+    ) {
+        self.place = place
+        self.activityType = activityType
+        self.uploadedMediaUrls = uploadedMediaUrls
+        self.destination = destination
+    }
 
     private var mediaUrls: [String] {
         let urls = (place.images ?? []).filter { !$0.isEmpty }
@@ -10173,53 +10328,297 @@ private struct NativeFeedPlaceAttachment: View {
         return []
     }
 
-    var body: some View {
-        NavigationLink {
-            destination()
-        } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                if activityType == .visited {
-                    NativeFeedMediaScroller(urls: mediaUrls)
-                } else {
-                    NativeFeedSingleMedia(url: mediaUrls.first)
+    private var thumbnailURL: String? {
+        // Prefer a place photo (usually Google) for the place card thumbnail so we don't "steal" user uploads.
+        let candidates = [place.image].compactMap { $0 } + (place.images ?? [])
+        if let googleish = candidates.first(where: looksLikeGooglePlaceMedia) {
+            return googleish
+        }
+        if let image = place.image, !image.isEmpty { return image }
+        return (place.images ?? []).first
+    }
+
+    private var visitedUploadedUrls: [String] {
+        guard activityType == .visited else { return [] }
+        // First-class path: use explicit uploads from the moment payload.
+        let explicit = uploadedMediaUrls.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        if !explicit.isEmpty {
+            return Array(NSOrderedSet(array: explicit)) as? [String] ?? explicit
+        }
+
+        // Back-compat path: infer uploads from the place media list when the backend merged them.
+        // Only show a media scroller if we can identify assets that likely came from user uploads.
+        // This avoids accidentally showing Google place photos for visited posts that did not include uploads.
+        let all = ([place.image].compactMap { $0 } + (place.images ?? [])).filter { !$0.isEmpty }
+        let uploads = all.filter { looksLikeUserUploadedMedia($0) }
+        return Array(NSOrderedSet(array: uploads)) as? [String] ?? uploads
+    }
+
+    private var hasVisitedUploadedMedia: Bool {
+        !visitedUploadedUrls.isEmpty
+    }
+
+    private var locationLine: String {
+        let city = nativePrimaryCity(from: place.location)
+        if let neighborhood = place.neighborhood, !neighborhood.isEmpty, let city {
+            return "\(neighborhood) · \(city)"
+        }
+        if let neighborhood = place.neighborhood, !neighborhood.isEmpty {
+            return neighborhood
+        }
+        return city ?? place.location
+    }
+
+    private var primaryTag: String? {
+        if let tags = place.tags, let first = tags.first, !first.isEmpty {
+            return first
+        }
+        if let category = place.category, !category.isEmpty {
+            return category
+        }
+        return nil
+    }
+
+    private var locationPartText: Text {
+        Text(locationLine)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.white.opacity(0.55))
+    }
+
+    private var tagPartText: Text? {
+        guard let tag = primaryTag else { return nil }
+        return Text(nativeTitleCase(tag))
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.white.opacity(0.55))
+    }
+
+	var body: some View {
+		Group {
+            switch activityType {
+            case .saved:
+                NavigationLink {
+                    destination()
+                } label: {
+                    placeInfoCard(showThumbnail: true, thumbnailURL: thumbnailURL)
+                }
+                .buttonStyle(.plain)
+
+            case .visited:
+                VStack(alignment: .leading, spacing: 12) {
+                    if hasVisitedUploadedMedia {
+                        visitedMediaScroller(urls: visitedUploadedUrls)
+                    }
+
+                    NavigationLink {
+                        destination()
+                    } label: {
+                        placeInfoCard(showThumbnail: !hasVisitedUploadedMedia, thumbnailURL: thumbnailURL)
+                    }
+                    .buttonStyle(.plain)
+                }
+                .fullScreenCover(isPresented: $showFullscreenGallery) {
+                    NativeFullscreenMediaGallery(
+                        urls: visitedUploadedUrls,
+                        startIndex: fullscreenGalleryStartIndex
+                    )
                 }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .top, spacing: 12) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(place.name)
-                                .font(.system(size: 18, weight: .black))
-                                .foregroundStyle(.white)
-                                .fixedSize(horizontal: false, vertical: true)
-                            if let category = place.category, !category.isEmpty {
-                                Text(category.uppercased())
-                                    .font(.system(size: 10, weight: .black))
-                                    .foregroundStyle(.white.opacity(0.55))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 6)
-                                    .background(Color.white.opacity(0.08))
-                                    .clipShape(Capsule())
+            case .collection:
+                NavigationLink {
+                    destination()
+                } label: {
+                    VStack(alignment: .leading, spacing: 0) {
+                        NativeFeedSingleMedia(url: thumbnailURL)
+                        VStack(alignment: .leading, spacing: 10) {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .leading, spacing: 8) {
+									Text(place.name)
+                                        .font(.system(size: 18, weight: .black))
+                                        .foregroundStyle(.white)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                    if let category = place.category, !category.isEmpty {
+                                        Text(category.uppercased())
+                                            .font(.system(size: 10, weight: .black))
+                                            .foregroundStyle(.white.opacity(0.55))
+                                            .padding(.horizontal, 10)
+                                            .padding(.vertical, 6)
+                                            .background(Color.white.opacity(0.08))
+                                            .clipShape(Capsule())
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                                if let score = place.similarityStat {
+                                    Text("\(score)%")
+                                        .font(.system(size: 11, weight: .black))
+                                        .foregroundStyle(nativeAccent)
+                                }
+                            }
+
+                            if let hook = place.hook, !hook.isEmpty {
+                                Text(hook)
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.72))
+                                    .fixedSize(horizontal: false, vertical: true)
                             }
                         }
-                        Spacer(minLength: 0)
-                        if let score = place.similarityStat {
-                            Text("\(score)%")
-                                .font(.system(size: 11, weight: .black))
-                                .foregroundStyle(nativeAccent)
-                        }
-                    }
-
-                    if let hook = place.hook, !hook.isEmpty {
-                        Text(hook)
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.72))
-                            .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 12)
                     }
                 }
-                .padding(.top, 12)
+                .buttonStyle(.plain)
             }
         }
-        .buttonStyle(.plain)
+    }
+
+    private func nativeTitleCase(_ raw: String) -> String {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return trimmed }
+        // Simple title casing: match the request "awal kata capital" without forcing ALLCAPS.
+        return trimmed.lowercased().localizedCapitalized
+    }
+
+    private func looksLikeGooglePlaceMedia(_ url: String) -> Bool {
+        let raw = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if raw.isEmpty { return false }
+        let lower = raw.lowercased()
+        if lower.contains("googleusercontent.com") { return true }
+        if lower.contains("streetviewpixels-pa.googleapis.com") { return true }
+        if lower.contains("maps.googleapis.com") && lower.contains("/maps/api/place/photo") { return true }
+        if lower.contains("maps.googleapis.com") && lower.contains("place/photo") { return true }
+        return false
+    }
+
+    private func looksLikeUserUploadedMedia(_ url: String) -> Bool {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty { return false }
+        let lower = trimmed.lowercased()
+        // Our backend-relative uploads.
+        if trimmed.hasPrefix("/") { return true }
+        if lower.hasPrefix("uploads/") { return true }
+        if lower.contains("/uploads/") { return true }
+        if lower.contains("api.vibinn.club") && lower.contains("uploads") { return true }
+        // Common hosted-upload providers we use / may use.
+        if lower.contains("firebasestorage.googleapis.com") { return true }
+        if lower.contains("storage.googleapis.com") { return true }
+        if lower.contains("cloudfront.net") { return true }
+        if lower.contains("amazonaws.com") { return true }
+        if lower.contains("supabase.co") && lower.contains("/storage/") { return true }
+        // Explicitly exclude Google Place photo sources.
+        if looksLikeGooglePlaceMedia(trimmed) { return false }
+        return false
+    }
+
+    private func placeInfoCard(showThumbnail: Bool, thumbnailURL: String?) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            if showThumbnail {
+                NativeRemoteImage(url: thumbnailURL)
+                    .frame(width: 72, height: 96) // 3:4 thumbnail
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(place.name)
+                    .font(.system(size: 14, weight: .black))
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(2)
+
+                Group {
+                    if let tagText = tagPartText {
+                        (
+                            locationPartText
+                            + Text(" · ").font(.system(size: 11, weight: .semibold)).foregroundColor(.white.opacity(0.55))
+                            + tagText
+                        )
+                            .lineLimit(2)
+                    } else {
+                        locationPartText
+                            .lineLimit(2)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                if let score = place.similarityStat {
+                    Text("\(score)% match")
+                        .font(.system(size: 10, weight: .black))
+                        .foregroundStyle(nativeAccent)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(nativeSurfaceStrong)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(nativeBorder, lineWidth: 1)
+        )
+    }
+
+    private func visitedMediaScroller(urls: [String]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 10) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
+                    Button {
+                        fullscreenGalleryStartIndex = index
+                        showFullscreenGallery = true
+                    } label: {
+                        NativeRemoteImage(url: url)
+                            .frame(width: 240, height: 320) // 3:4 (2x larger)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(nativeBorder, lineWidth: 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+private struct NativeFullscreenMediaGallery: View {
+    @Environment(\.dismiss) private var dismiss
+    let urls: [String]
+    let startIndex: Int
+    @State private var selection: Int
+
+    init(urls: [String], startIndex: Int) {
+        self.urls = urls
+        self.startIndex = startIndex
+        _selection = State(initialValue: startIndex)
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+
+            TabView(selection: $selection) {
+                ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
+                    NativeFlexibleRemoteImage(url: url)
+                        .tag(index)
+                        .ignoresSafeArea()
+                }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .always))
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 14, weight: .black))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .frame(width: 40, height: 40)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(Circle())
+                    .padding(.top, 16)
+                    .padding(.trailing, 16)
+            }
+            .buttonStyle(.plain)
+        }
     }
 }
 
@@ -10949,13 +11348,15 @@ private struct NativeFollowerRow: View {
 private struct NativeTravelerProfileScreen: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var appState: NativeAppState
-    @State private var traveler: NativeTravelerSummary
-    @State private var bookmarks: [NativePlace] = []
-    @State private var collections: [NativeCollection] = []
-    @State private var activeSection: NativeProfileSection = .feed
-    @State private var expandedSavedCities: Set<String> = []
-    @State private var isLoading = false
-    @State private var isTogglingFollow = false
+	@State private var traveler: NativeTravelerSummary
+	@State private var bookmarks: [NativePlace] = []
+	@State private var collections: [NativeCollection] = []
+	@State private var activeSection: NativeProfileSection = .feed
+	@State private var selectedFeedCity: String?
+	@State private var selectedSavedCity: String?
+	@State private var selectedVisitedCity: String?
+	@State private var isLoading = false
+	@State private var isTogglingFollow = false
     @State private var showShareSheet = false
     @State private var showTravelerScoreDebug = false
     @State private var showReportAccountDialog = false
@@ -11224,78 +11625,57 @@ private struct NativeTravelerProfileScreen: View {
         }
     }
 
-    @ViewBuilder
-    private var travelerSectionContent: some View {
-        switch activeSection {
-        case .feed:
-            if travelerFeedItems.isEmpty {
-                emptyTravelerBlock("Their latest activity will show up here.")
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(travelerFeedItems) { item in
-                        NativeFeedCard(item: item)
-                    }
-                }
-            }
-        case .saved:
-            if bookmarks.isEmpty {
-                emptyTravelerBlock("No saved places are visible right now.")
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(savedCityGroups, id: \.city) { group in
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 14) {
-                                Button {
-                                    toggleSavedCity(group.city)
-                                } label: {
-                                    HStack {
-                                        VStack(alignment: .leading, spacing: 4) {
-                                            Text(group.city)
-                                                .font(.system(size: 18, weight: .black))
-                                                .foregroundStyle(.white)
-                                            Text("\(group.places.count) places")
-                                                .font(.system(size: 12, weight: .bold))
-                                                .foregroundStyle(.white.opacity(0.45))
-                                        }
-                                        Spacer()
-                                        Image(systemName: expandedSavedCities.contains(group.city) ? "chevron.up" : "chevron.down")
-                                            .font(.system(size: 14, weight: .black))
-                                            .foregroundStyle(.white.opacity(0.7))
-                                    }
-                                }
-                                .buttonStyle(.plain)
-
-                                if expandedSavedCities.contains(group.city) {
-                                    VStack(spacing: 12) {
-                                        ForEach(group.places) { place in
-                                            NavigationLink {
-                                                NativePlaceDetailScreen(initialPlace: place)
-                                            } label: {
-                                                NativePlaceCard(place: place)
-                                            }
-                                            .buttonStyle(.plain)
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        case .visited:
-            if travelerVisitedFeedItems.isEmpty {
-                emptyTravelerBlock("No visited places are visible right now.")
-            } else {
-                LazyVStack(spacing: 14) {
-                    ForEach(travelerVisitedFeedItems) { item in
-                        NativeFeedCard(item: item)
-                    }
-                }
-            }
-        case .collections:
-            if collections.isEmpty {
-                emptyTravelerBlock("No public collections yet.")
-            } else {
+	@ViewBuilder
+	private var travelerSectionContent: some View {
+		switch activeSection {
+		case .feed:
+			if filteredTravelerFeedItems.isEmpty {
+				emptyTravelerBlock("Their latest activity will show up here.")
+			} else {
+				VStack(alignment: .leading, spacing: 14) {
+					NativeCityFilterPills(selectedCity: effectiveTravelerFeedCityBinding, cities: travelerFeedCities)
+					LazyVStack(spacing: 14) {
+						ForEach(filteredTravelerFeedItems) { item in
+							NativeFeedCard(item: item)
+						}
+					}
+				}
+			}
+		case .saved:
+			if filteredTravelerSavedPlaces.isEmpty {
+				emptyTravelerBlock("No saved places are visible right now.")
+			} else {
+				VStack(alignment: .leading, spacing: 14) {
+					NativeCityFilterPills(selectedCity: effectiveTravelerSavedCityBinding, cities: travelerSavedCities)
+					LazyVStack(spacing: 12) {
+						ForEach(filteredTravelerSavedPlaces) { place in
+							NavigationLink {
+								NativePlaceDetailScreen(initialPlace: place)
+							} label: {
+								NativePlaceCard(place: place)
+							}
+							.buttonStyle(.plain)
+						}
+					}
+				}
+			}
+		case .visited:
+			if filteredTravelerVisitedFeedItems.isEmpty {
+				emptyTravelerBlock("No visited places are visible right now.")
+			} else {
+				VStack(alignment: .leading, spacing: 14) {
+					NativeCityFilterPills(selectedCity: effectiveTravelerVisitedCityBinding, cities: travelerVisitedCities)
+					LazyVStack(spacing: 14) {
+						ForEach(filteredTravelerVisitedFeedItems) { item in
+							NativeFeedCard(item: item)
+						}
+					}
+				}
+			}
+		case .collections:
+			if collections.isEmpty {
+				emptyTravelerBlock("No public collections yet.")
+			} else {
                 LazyVStack(spacing: 14) {
                     ForEach(collections) { collection in
                         NavigationLink {
@@ -11379,30 +11759,72 @@ private struct NativeTravelerProfileScreen: View {
         return items.sorted { $0.sortTimestamp > $1.sortTimestamp }
     }
 
-    private var travelerVisitedFeedItems: [NativeFeedItem] {
-        travelerFeedItems.filter { $0.type == .visited }
-    }
+	private var travelerVisitedFeedItems: [NativeFeedItem] {
+		travelerFeedItems.filter { $0.type == .visited }
+	}
 
-    private var savedCityGroups: [(city: String, places: [NativePlace])] {
-        let grouped = Dictionary(grouping: bookmarks) { place in
-            place.location
-                .split(separator: ",")
-                .first
-                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-                .flatMap { $0.isEmpty ? nil : $0 } ?? "Unknown city"
-        }
+	private var travelerFeedCities: [String] {
+		let cities = Set(travelerFeedItems.compactMap(nativeCityKey(for:)))
+		return cities.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+	}
 
-        return grouped
-            .map { key, value in
-                (
-                    city: key,
-                    places: value.sorted {
-                        ($0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending)
-                    }
-                )
-            }
-            .sorted { $0.city.localizedCaseInsensitiveCompare($1.city) == .orderedAscending }
-    }
+	private var travelerSavedCities: [String] {
+		let cities = Set(bookmarks.compactMap(nativeCityKey(for:)))
+		return cities.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+	}
+
+	private var travelerVisitedCities: [String] {
+		let cities = Set(travelerVisitedFeedItems.compactMap(nativeCityKey(for:)))
+		return cities.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+	}
+
+	private var effectiveTravelerFeedCity: String? {
+		selectedFeedCity.flatMap { travelerFeedCities.contains($0) ? $0 : nil }
+	}
+
+	private var effectiveTravelerSavedCity: String? {
+		selectedSavedCity.flatMap { travelerSavedCities.contains($0) ? $0 : nil }
+	}
+
+	private var effectiveTravelerVisitedCity: String? {
+		selectedVisitedCity.flatMap { travelerVisitedCities.contains($0) ? $0 : nil }
+	}
+
+	private var effectiveTravelerFeedCityBinding: Binding<String?> {
+		Binding(
+			get: { effectiveTravelerFeedCity },
+			set: { selectedFeedCity = $0 }
+		)
+	}
+
+	private var effectiveTravelerSavedCityBinding: Binding<String?> {
+		Binding(
+			get: { effectiveTravelerSavedCity },
+			set: { selectedSavedCity = $0 }
+		)
+	}
+
+	private var effectiveTravelerVisitedCityBinding: Binding<String?> {
+		Binding(
+			get: { effectiveTravelerVisitedCity },
+			set: { selectedVisitedCity = $0 }
+		)
+	}
+
+	private var filteredTravelerFeedItems: [NativeFeedItem] {
+		guard let city = effectiveTravelerFeedCity else { return travelerFeedItems }
+		return travelerFeedItems.filter { nativeCityKey(for: $0) == city }
+	}
+
+	private var filteredTravelerSavedPlaces: [NativePlace] {
+		guard let city = effectiveTravelerSavedCity else { return bookmarks }
+		return bookmarks.filter { nativeCityKey(for: $0) == city }
+	}
+
+	private var filteredTravelerVisitedFeedItems: [NativeFeedItem] {
+		guard let city = effectiveTravelerVisitedCity else { return travelerVisitedFeedItems }
+		return travelerVisitedFeedItems.filter { nativeCityKey(for: $0) == city }
+	}
 
     private func loadTravelerProfile() async {
         guard !isLoading else { return }
@@ -11419,18 +11841,10 @@ private struct NativeTravelerProfileScreen: View {
         }
     }
 
-    private func toggleSavedCity(_ city: String) {
-        if expandedSavedCities.contains(city) {
-            expandedSavedCities.remove(city)
-        } else {
-            expandedSavedCities.insert(city)
-        }
-    }
-
-    private func toggleFollow() async {
-        errorMessage = nil
-        isTogglingFollow = true
-        defer { isTogglingFollow = false }
+	    private func toggleFollow() async {
+	        errorMessage = nil
+	        isTogglingFollow = true
+	        defer { isTogglingFollow = false }
 
         do {
             let result = try await appState.toggleFollowQuietly(for: traveler)
@@ -13128,6 +13542,7 @@ private func mergedPlaceRetainingPresentation(_ current: NativePlace, with next:
         hook: next.hook,
         image: next.image,
         images: next.images,
+        momentMedia: next.momentMedia,
         tags: next.tags,
         attitudeLabel: next.attitudeLabel,
         bestTime: next.bestTime,
@@ -13161,7 +13576,7 @@ private struct NativeCollectionDetailScreen: View {
     let collection: NativeCollection
     var ownerDisplayName: String? = nil
     var ownerUsername: String? = nil
-    @State private var copiedLink = false
+    @State private var showShareSheet = false
     @State private var hasHiddenFloatingTabBar = false
     @State private var activeCollection: NativeCollection
     @State private var showEditSheet = false
@@ -13180,6 +13595,10 @@ private struct NativeCollectionDetailScreen: View {
             return ownerUsername == currentUser.username
         }
         return true
+    }
+
+    private var shareURL: String {
+        "https://vibinn.club/lists/\(activeCollection.id)"
     }
 
     var body: some View {
@@ -13224,42 +13643,48 @@ private struct NativeCollectionDetailScreen: View {
                 ForEach(Array(activeCollection.places.enumerated()), id: \.offset) { _, place in
                     NativePlaceCard(place: place)
                 }
-
-                if copiedLink {
-                    NativeSuccessMessage(message: "Collection link copied.")
-                }
             }
             .padding(20)
         }
         .background(Color.black.ignoresSafeArea())
         .navigationTitle("Collection")
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                HStack(spacing: 14) {
-                    if canEditCollection {
-                        Button {
-                            showEditSheet = true
-                        } label: {
-                            Image(systemName: "pencil")
-                                .font(.system(size: 16, weight: .bold))
-                                .foregroundStyle(.white)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(isDeletingCollection)
-                    }
+	        .navigationBarTitleDisplayMode(.inline)
+	        .toolbar {
+	            ToolbarItem(placement: .topBarTrailing) {
+	                HStack(spacing: 14) {
+	                    if canEditCollection {
+	                        Button {
+	                            showEditSheet = true
+	                        } label: {
+	                            Image(systemName: "pencil")
+	                                .font(.system(size: 15, weight: .black))
+	                                .foregroundStyle(.white.opacity(0.88))
+	                                .frame(width: 38, height: 38)
+	                                .background(nativeSurface)
+	                                .overlay(Circle().stroke(nativeBorder, lineWidth: 1))
+	                                .clipShape(Circle())
+	                        }
+	                        .buttonStyle(.plain)
+	                        .disabled(isDeletingCollection)
+	                    }
 
                     Button {
-                        UIPasteboard.general.string = "https://vibinn.club/lists/\(activeCollection.id)"
-                        copiedLink = true
+                        showShareSheet = true
                     } label: {
                         Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(.white)
+                            .font(.system(size: 15, weight: .black))
+                            .foregroundStyle(.white.opacity(0.88))
+                            .frame(width: 38, height: 38)
+                            .background(nativeSurface)
+                            .overlay(Circle().stroke(nativeBorder, lineWidth: 1))
+                            .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
                 }
             }
+        }
+        .sheet(isPresented: $showShareSheet) {
+            NativeShareSheet(items: [shareURL])
         }
         .sheet(isPresented: $showEditSheet) {
             NativeEditCollectionSheet(
@@ -13336,12 +13761,12 @@ private struct NativeEditCollectionSheet: View {
         !trimmedName.isEmpty && !selectedPlaceIds.isEmpty && !isSaving
     }
 
-    var body: some View {
-        NavigationView {
-            ZStack {
-                Color.black.ignoresSafeArea()
-
-                ScrollView(showsIndicators: false) {
+	    var body: some View {
+	        NavigationView {
+	            ZStack {
+	                Color.black.ignoresSafeArea()
+	
+	                ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
                         Text("Edit collection")
                             .font(.system(size: 24, weight: .black))
@@ -13428,12 +13853,14 @@ private struct NativeEditCollectionSheet: View {
                         .buttonStyle(.plain)
                         .disabled(!canSave)
 
-                        Button(role: .destructive) {
-                            showDeleteConfirm = true
-                        } label: {
-                            HStack {
-                                Spacer()
-                                Text("Delete collection")
+	                        Button(role: .destructive) {
+	                            withAnimation(.easeInOut(duration: 0.18)) {
+	                                showDeleteConfirm = true
+	                            }
+	                        } label: {
+	                            HStack {
+	                                Spacer()
+	                                Text("Delete collection")
                                     .font(.system(size: 15, weight: .black))
                                 Spacer()
                             }
@@ -13464,25 +13891,89 @@ private struct NativeEditCollectionSheet: View {
                             .background(nativeSurface)
                             .overlay(Circle().stroke(nativeBorder, lineWidth: 1))
                             .clipShape(Circle())
-                    }
-                }
-            }
-        }
-        .navigationViewStyle(.stack)
-        .confirmationDialog(
-            "Delete this collection?",
-            isPresented: $showDeleteConfirm,
-            titleVisibility: .visible
-        ) {
-            Button("Delete collection", role: .destructive) {
-                dismiss()
-                onDelete()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("This cannot be undone.")
-        }
-    }
+	                    }
+	                }
+	            }
+	            .overlay {
+	                if showDeleteConfirm {
+	                    ZStack(alignment: .bottom) {
+	                        Color.black.opacity(0.58)
+	                            .ignoresSafeArea()
+	                            .onTapGesture {
+	                                withAnimation(.easeInOut(duration: 0.18)) {
+	                                    showDeleteConfirm = false
+	                                }
+	                            }
+	
+	                        VStack(alignment: .leading, spacing: 12) {
+	                            Text("Delete this collection?")
+	                                .font(.system(size: 18, weight: .black))
+	                                .foregroundStyle(.white)
+	
+	                            Text("This cannot be undone.")
+	                                .font(.system(size: 13, weight: .medium))
+	                                .foregroundStyle(.white.opacity(0.6))
+	
+	                            HStack(spacing: 10) {
+	                                Button {
+	                                    withAnimation(.easeInOut(duration: 0.18)) {
+	                                        showDeleteConfirm = false
+	                                    }
+	                                } label: {
+	                                    HStack {
+	                                        Spacer()
+	                                        Text("Cancel")
+	                                            .font(.system(size: 14, weight: .black))
+	                                        Spacer()
+	                                    }
+	                                    .padding(.vertical, 12)
+	                                    .background(Color.white.opacity(0.08))
+	                                    .foregroundStyle(.white.opacity(0.86))
+	                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+	                                }
+	                                .buttonStyle(.plain)
+	
+	                                Button(role: .destructive) {
+	                                    withAnimation(.easeInOut(duration: 0.18)) {
+	                                        showDeleteConfirm = false
+	                                    }
+	                                    dismiss()
+	                                    onDelete()
+	                                } label: {
+	                                    HStack {
+	                                        Spacer()
+	                                        Text("Delete")
+	                                            .font(.system(size: 14, weight: .black))
+	                                        Spacer()
+	                                    }
+	                                    .padding(.vertical, 12)
+	                                    .background(Color.red.opacity(0.18))
+	                                    .foregroundStyle(Color.red.opacity(0.95))
+	                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+	                                }
+	                                .buttonStyle(.plain)
+	                            }
+	                        }
+	                        .padding(16)
+	                        .frame(maxWidth: .infinity, alignment: .leading)
+	                        .background(
+	                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+	                                .fill(Color(red: 18 / 255, green: 18 / 255, blue: 21 / 255).opacity(0.98))
+	                        )
+	                        .overlay(
+	                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+	                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+	                        )
+	                        .padding(.horizontal, 16)
+	                        .padding(.bottom, 14)
+	                        .transition(.move(edge: .bottom).combined(with: .opacity))
+	                    }
+	                    .animation(.easeInOut(duration: 0.22), value: showDeleteConfirm)
+	                }
+	            }
+	        }
+	        .navigationViewStyle(.stack)
+	    }
 
     private func toggle(_ placeId: String) {
         if selectedPlaceIds.contains(placeId) {

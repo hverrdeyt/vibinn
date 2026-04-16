@@ -243,14 +243,11 @@ function buildTravelHistory(
     if (!existing.places.some((item) => item.id === moment.place.id && item.momentId === moment.id)) {
       const usableUploadedMedia = moment.uploadedMedia.filter((url) => isRenderableMediaUrl(url));
       const usableUploadedMediaItems = moment.uploadedMediaItems.filter((item) => isRenderableMediaUrl(item.url));
-      const mediaImages = usableUploadedMedia.length > 0 ? usableUploadedMedia : moment.place.images;
       existing.places.push({
         ...moment.place,
-        image: mediaImages[0] ?? moment.place.image,
-        images: mediaImages.length > 0 ? mediaImages : moment.place.images,
-        momentMedia: usableUploadedMediaItems.length > 0
-          ? usableUploadedMediaItems
-          : (moment.place.images ?? []).map((url) => ({ url, mediaType: 'image' as const })),
+        // Keep place media (Google / place details) on the place fields.
+        // Moment uploads are sent separately so clients can render them without stealing the place thumbnail.
+        momentMedia: usableUploadedMediaItems.length > 0 ? usableUploadedMediaItems : undefined,
         momentId: moment.id,
         ownerUserId,
         visitedDate: moment.visitedDate,
