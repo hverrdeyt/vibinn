@@ -4531,6 +4531,7 @@ private struct NativeAuthScreen: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let safeTop = proxy.safeAreaInsets.top
             let safeBottom = proxy.safeAreaInsets.bottom
             let heroHeight = max(proxy.size.height * (5.0 / 8.0), 380)
 
