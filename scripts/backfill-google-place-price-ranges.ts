@@ -95,22 +95,28 @@ async function main() {
       const details = await fetchGooglePlaceDetails(place.googlePlaceId);
       const priceRange = normalizeGooglePriceRange(details.priceRange);
 
-      await prisma.place.update({
+      await prisma.place.updateMany({
         where: { id: place.id },
         data: {
           googlePriceRangeStart: priceRange?.startAmount ?? null,
           googlePriceRangeEnd: priceRange?.endAmount ?? null,
           googlePriceRangeCurrency: priceRange?.currencyCode ?? null,
-          googleSnapshots: {
-            create: {
-              googlePlaceId: place.googlePlaceId,
-              source: 'PLACE_DETAILS',
-              queryContext: 'price-range-backfill',
-              payloadJson: JSON.parse(JSON.stringify(details)),
-            },
-          },
         },
       });
+
+      await prisma.placeGoogleSnapshot
+        .create({
+          data: {
+            placeId: place.id,
+            googlePlaceId: place.googlePlaceId,
+            source: 'PLACE_DETAILS',
+            queryContext: 'price-range-backfill',
+            payloadJson: JSON.parse(JSON.stringify(details)),
+          },
+        })
+        .catch((error) => {
+          console.warn(`Snapshot skipped: ${place.name}`, error);
+        });
 
       if (priceRange) {
         updatedCount += 1;
