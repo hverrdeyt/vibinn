@@ -21,6 +21,7 @@ private let nativeScoreDebugToolsEnabled = false
 private let nativePlaceDetailLayoutDebugMode = false
 private let nativePreferenceLayoutDebugMode = false
 private let nativeAuthLayoutDebugMode = true
+private let nativeAuthActionsBottomPadding: CGFloat = 17
 private let nativeDiscoveryScoreDebugMode = nativeScoreDebugToolsEnabled
 private let nativeTodayRecommendationScoreDebugMode = nativeScoreDebugToolsEnabled
 private let nativeTravelerScoreDebugMode = nativeScoreDebugToolsEnabled
@@ -4622,14 +4623,14 @@ private struct NativeAuthScreen: View {
                     NativeAuthLegalText()
                 }
                 .padding(.horizontal, 20)
-                // Keep actions as low as possible while respecting the home indicator safe area.
-                .padding(.bottom, safeBottom)
+                // Per request: pull actions closer to the bottom than the system safe-area inset.
+                .padding(.bottom, nativeAuthActionsBottomPadding)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
 
                 if nativeAuthLayoutDebugMode {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("AUTH DEBUG")
-                        Text("safeTop=\(Int(safeTop)) safeBottom=\(Int(safeBottom))")
+                        Text("safeTop=\(Int(safeTop)) safeBottom=\(Int(safeBottom)) usedBottom=\(Int(nativeAuthActionsBottomPadding))")
                         Text("heroHeight=\(Int(heroHeight)) copyHeight=\(Int(copyHeight))")
                     }
                     .font(.system(size: 11, weight: .black))
