@@ -4530,13 +4530,14 @@ private struct NativeAuthScreen: View {
 
     var body: some View {
         GeometryReader { proxy in
+            let safeTop = proxy.safeAreaInsets.top
             let safeBottom = proxy.safeAreaInsets.bottom
             let heroHeight = max(proxy.size.height * (5.0 / 8.0), 380)
             let copyHeight = max(proxy.size.height * (2.0 / 8.0), 170)
 
             ZStack(alignment: .topTrailing) {
-                // Match Vibinn's primary accent background (Pinterest-like full-bleed feel).
-                nativeAccent.ignoresSafeArea()
+                // Revert to the original auth background.
+                Color.black.ignoresSafeArea()
 
                 VStack(spacing: 0) {
                     NativeAuthHeroPinWall()
@@ -4623,8 +4624,7 @@ private struct NativeAuthScreen: View {
                             .clipShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    // Intentionally not offset by safe-area inset: allow the hero to overlap the status area.
-                    .padding(.top, 12)
+                    .padding(.top, safeTop + 12)
                     .padding(.trailing, 20)
                 }
 
@@ -4676,9 +4676,6 @@ private struct NativeAuthScreen: View {
 }
 
 private struct NativeAuthHeroPinWall: View {
-    private let heroImages: [String] = Array(nativeInterestSwipeCards.prefix(12).map { $0.imageURL })
-    @State private var drift: CGFloat = 0
-
     var body: some View {
         GeometryReader { proxy in
             let spacing: CGFloat = 10
@@ -4687,41 +4684,37 @@ private struct NativeAuthHeroPinWall: View {
             HStack(alignment: .top, spacing: spacing) {
                 // Column 1
                 VStack(spacing: spacing) {
-                    NativeAuthHeroTile(url: heroImages[safe: 0] ?? heroImages.first ?? "", height: proxy.size.height * 0.44)
-                    NativeAuthHeroTile(url: heroImages[safe: 1] ?? heroImages.first ?? "", height: proxy.size.height * 0.28)
-                    NativeAuthHeroTile(url: heroImages[safe: 2] ?? heroImages.first ?? "", height: proxy.size.height * 0.34)
+                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.44)
+                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.28)
+                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.34)
                 }
                 .frame(width: columnWidth)
-                .offset(y: drift * 0.35)
 
                 // Column 2 (slightly different rhythm)
                 VStack(spacing: spacing) {
-                    NativeAuthHeroTile(url: heroImages[safe: 3] ?? heroImages.first ?? "", height: proxy.size.height * 0.30)
-                    NativeAuthHeroTile(url: heroImages[safe: 4] ?? heroImages.first ?? "", height: proxy.size.height * 0.46)
-                    NativeAuthHeroTile(url: heroImages[safe: 5] ?? heroImages.first ?? "", height: proxy.size.height * 0.26)
+                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.30)
+                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.46)
+                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.26)
                 }
                 .frame(width: columnWidth)
-                .offset(y: drift * 0.55)
 
                 // Column 3
                 VStack(spacing: spacing) {
-                    NativeAuthHeroTile(url: heroImages[safe: 6] ?? heroImages.first ?? "", height: proxy.size.height * 0.40)
-                    NativeAuthHeroTile(url: heroImages[safe: 7] ?? heroImages.first ?? "", height: proxy.size.height * 0.30)
-                    NativeAuthHeroTile(url: heroImages[safe: 8] ?? heroImages.first ?? "", height: proxy.size.height * 0.36)
+                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.40)
+                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.30)
+                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.36)
                 }
                 .frame(width: columnWidth)
-                .offset(y: drift * 0.25)
             }
             .padding(.horizontal, 16)
-            // No safe-area offset: we want a full-bleed Pinterest-like hero that can overlap the status area.
             .padding(.top, 14)
             .padding(.bottom, 18)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(
                 LinearGradient(
                     colors: [
-                        nativeAccent.opacity(0.92),
-                        Color.black.opacity(0.72)
+                        Color(red: 16 / 255, green: 16 / 255, blue: 20 / 255),
+                        Color.black
                     ],
                     startPoint: .top,
                     endPoint: .bottom
@@ -4739,29 +4732,38 @@ private struct NativeAuthHeroPinWall: View {
                     endPoint: .bottom
                 )
             )
-            .onAppear {
-                drift = -22
-                withAnimation(.linear(duration: 18).repeatForever(autoreverses: true)) {
-                    drift = 22
-                }
-            }
         }
     }
 }
 
 private struct NativeAuthHeroTile: View {
-    let url: String
+    let url: String?
     let height: CGFloat
 
     var body: some View {
-        NativeRemoteImage(url: url)
-            .frame(maxWidth: .infinity)
-            .frame(height: height)
-            .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
-            .overlay(
+        ZStack {
+            if let url, !url.isEmpty {
+                NativeRemoteImage(url: url)
+                    .scaledToFill()
+            } else {
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-            )
+                    .fill(Color.white.opacity(0.06))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 26, style: .continuous)
+                            .stroke(Color.white.opacity(0.16), lineWidth: 1)
+                    )
+                    .overlay(alignment: .bottomLeading) {
+                        Text("IMAGE")
+                            .font(.system(size: 10, weight: .black))
+                            .foregroundStyle(.white.opacity(0.28))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 8)
+                    }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: height)
+        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
     }
 }
 
