@@ -106,6 +106,8 @@ export interface EventItem {
 
 export type Screen =
   | 'landing'
+  | 'terms'
+  | 'privacy'
   | 'onboarding'
   | 'post-preferences-intro'
   | 'login'

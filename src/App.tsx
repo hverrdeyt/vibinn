@@ -57,6 +57,8 @@ const AccountSettingsScreen = lazy(() => import('./screens/SettingsScreens').the
 const NotificationSettingsScreen = lazy(() => import('./screens/SettingsScreens').then((module) => ({ default: module.NotificationSettingsScreen })));
 const PrivacySettingsScreen = lazy(() => import('./screens/SettingsScreens').then((module) => ({ default: module.PrivacySettingsScreen })));
 const SupportScreen = lazy(() => import('./screens/SettingsScreens').then((module) => ({ default: module.SupportScreen })));
+const TermsOfServiceScreen = lazy(() => import('./screens/LegalPages').then((module) => ({ default: module.TermsOfServiceScreen })));
+const PrivacyPolicyScreen = lazy(() => import('./screens/LegalPages').then((module) => ({ default: module.PrivacyPolicyScreen })));
 const PublicProfileScreen = lazy(() => import('./screens/PublicProfileScreen'));
 const TravelerProfileScreen = lazy(() => import('./screens/TravelerProfileScreen'));
 const ProfileScreen = lazy(() => import('./screens/ProfileScreen'));
@@ -150,6 +152,8 @@ const RESERVED_TOP_LEVEL_PATHS = new Set([
   'app',
   'api',
   'lists',
+  'terms',
+  'privacy',
   'assets',
   'favicon.ico',
   'robots.txt',
@@ -477,6 +481,10 @@ function screenToAppPath(screen: Screen) {
   switch (screen) {
     case 'discover-places':
       return APP_BASE_PATH;
+    case 'terms':
+      return '/terms';
+    case 'privacy':
+      return '/privacy';
     case 'post-preferences-intro':
       return APP_BASE_PATH;
     case 'discover-travelers':
@@ -513,6 +521,14 @@ function parseAppRoute(pathname: string): AppRouteState {
 
   if (normalizedPath === '/') {
     return { screen: 'landing' };
+  }
+
+  if (normalizedPath === '/terms') {
+    return { screen: 'terms' };
+  }
+
+  if (normalizedPath === '/privacy') {
+    return { screen: 'privacy' };
   }
 
   if (normalizedPath === APP_BASE_PATH) {
@@ -4450,6 +4466,18 @@ export default function App() {
                 openApp();
               }}
             />
+          </Suspense>
+        );
+      case 'terms':
+        return (
+          <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
+            <TermsOfServiceScreen />
+          </Suspense>
+        );
+      case 'privacy':
+        return (
+          <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
+            <PrivacyPolicyScreen />
           </Suspense>
         );
       case 'onboarding':

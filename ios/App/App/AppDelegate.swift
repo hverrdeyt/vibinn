@@ -4894,8 +4894,8 @@ private struct NativeAuthLandingButton: View {
 }
 
 private struct NativeAuthLegalText: View {
-    private let termsURL = URL(string: "https://www.google.com")!
-    private let privacyURL = URL(string: "https://www.google.com")!
+    private let termsURL = URL(string: "https://vibinn.club/terms")!
+    private let privacyURL = URL(string: "https://vibinn.club/privacy")!
 
     var body: some View {
         VStack(spacing: 2) {
