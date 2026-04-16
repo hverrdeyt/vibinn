@@ -81,6 +81,19 @@ function isRenderableMediaUrl(url?: string | null) {
   return /^(https?:)?\/\//i.test(url) || url.startsWith('/') || url.startsWith('data:') || url.startsWith('blob:');
 }
 
+function looksLikeGooglePlaceMediaUrl(url: string) {
+  const lower = url.trim().toLowerCase();
+  if (!lower) return false;
+  // Google Place photo + Street View sources commonly used for place media.
+  if (lower.includes('googleusercontent.com')) return true;
+  if (lower.includes('streetviewpixels-pa.googleapis.com')) return true;
+  if (lower.includes('maps.googleapis.com') && lower.includes('place/photo')) return true;
+  if (lower.includes('places.googleapis.com')) return true;
+  // Common placeholder fallbacks should never be treated as user uploads.
+  if (lower.includes('placehold.co')) return true;
+  return false;
+}
+
 function mapPlaceForClient(
   place: PlaceWithRelations,
   overrides?: {
@@ -241,8 +254,10 @@ function buildTravelHistory(
     const existing = grouped.get(country) ?? { country, cities: new Set<string>(), places: [] };
     existing.cities.add(city);
     if (!existing.places.some((item) => item.id === moment.place.id && item.momentId === moment.id)) {
-      const usableUploadedMedia = moment.uploadedMedia.filter((url) => isRenderableMediaUrl(url));
-      const usableUploadedMediaItems = moment.uploadedMediaItems.filter((item) => isRenderableMediaUrl(item.url));
+      // Only treat non-Google-place URLs as moment uploads. This prevents older/buggy moments
+      // that accidentally stored place photo URLs in `moment.media` from rendering as user uploads.
+      const usableUploadedMedia = moment.uploadedMedia.filter((url) => isRenderableMediaUrl(url) && !looksLikeGooglePlaceMediaUrl(url));
+      const usableUploadedMediaItems = moment.uploadedMediaItems.filter((item) => isRenderableMediaUrl(item.url) && !looksLikeGooglePlaceMediaUrl(item.url));
       existing.places.push({
         ...moment.place,
         // Keep place media (Google / place details) on the place fields.
