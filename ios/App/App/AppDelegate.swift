@@ -804,6 +804,10 @@ private struct NativeCreateCollectionResponse: Decodable {
     let collection: NativeCollection
 }
 
+private struct NativeUpdateCollectionResponse: Decodable {
+    let collection: NativeCollection
+}
+
 private struct NativeLocationOption: Decodable, Identifiable, Hashable {
     let id: String
     let label: String
@@ -1675,6 +1679,29 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
         let collection = try await api.createCollection(token: token, label: label, placeIds: placeIds)
         collections.insert(collection, at: 0)
+        rebuildOwnFeedItems()
+    }
+
+    func updateCollection(id: String, label: String, placeIds: [String]) async throws -> NativeCollection {
+        guard let token = authToken else {
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        let updated = try await api.updateCollection(token: token, id: id, label: label, placeIds: placeIds)
+        if let index = collections.firstIndex(where: { $0.id == id }) {
+            collections[index] = updated
+        }
+        rebuildOwnFeedItems()
+        return updated
+    }
+
+    func deleteCollection(id: String) async throws {
+        guard let token = authToken else {
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        try await api.deleteCollection(token: token, id: id)
+        collections.removeAll(where: { $0.id == id })
         rebuildOwnFeedItems()
     }
 
@@ -2766,6 +2793,24 @@ private struct NativeAPIClient {
             body: CreateCollectionBody(label: label, placeIds: placeIds)
         )
         return response.collection
+    }
+
+    func updateCollection(token: String, id: String, label: String, placeIds: [String]) async throws -> NativeCollection {
+        let response: NativeUpdateCollectionResponse = try await request(
+            path: "/api/collections/\(id)",
+            method: "PATCH",
+            token: token,
+            body: CreateCollectionBody(label: label, placeIds: placeIds)
+        )
+        return response.collection
+    }
+
+    func deleteCollection(token: String, id: String) async throws {
+        let _: NativeEmptyResponse = try await request(
+            path: "/api/collections/\(id)",
+            method: "DELETE",
+            token: token
+        )
     }
 
     func getMoments(token: String) async throws -> [NativeMoment] {
@@ -6270,6 +6315,15 @@ private struct NativeDiscoveryTabPage: View {
         buildNativeBalancedDiscoveryColumns(places: places)
     }
 
+    private var bottomContentSpacer: CGFloat {
+        // The floating home tab bar is rendered via `safeAreaInset` at the TabView level, but SwiftUI
+        // doesn't always inset nested ScrollViews the way we expect. Add an explicit spacer so the
+        // last discovery tile never gets covered.
+        guard appState.showFloatingTabBar else { return 28 }
+        // When the Unlock Vibe CTA is present, it sits above the floating tab bar and needs extra room.
+        return appState.shouldShowUnlockVibeCTA ? 220 : 120
+    }
+
     var body: some View {
         ScrollView(showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: 16) {
@@ -6419,6 +6473,9 @@ private struct NativeDiscoveryTabPage: View {
                         .padding(.top, 8)
                     }
                 }
+
+                Color.clear
+                    .frame(height: bottomContentSpacer)
             }
             .frame(width: contentWidth, alignment: .leading)
             .padding(.horizontal, 16)
@@ -13100,17 +13157,36 @@ private func mergedPlaceRetainingPresentation(_ current: NativePlace, with next:
 
 private struct NativeCollectionDetailScreen: View {
     @EnvironmentObject private var appState: NativeAppState
+    @Environment(\.dismiss) private var dismiss
     let collection: NativeCollection
     var ownerDisplayName: String? = nil
     var ownerUsername: String? = nil
     @State private var copiedLink = false
     @State private var hasHiddenFloatingTabBar = false
+    @State private var activeCollection: NativeCollection
+    @State private var showEditSheet = false
+    @State private var isDeletingCollection = false
+
+    init(collection: NativeCollection, ownerDisplayName: String? = nil, ownerUsername: String? = nil) {
+        self.collection = collection
+        self.ownerDisplayName = ownerDisplayName
+        self.ownerUsername = ownerUsername
+        _activeCollection = State(initialValue: collection)
+    }
+
+    private var canEditCollection: Bool {
+        guard let currentUser = appState.currentUser else { return false }
+        if let ownerUsername {
+            return ownerUsername == currentUser.username
+        }
+        return true
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 10) {
-                    Text(collection.label)
+                    Text(activeCollection.label)
                         .font(.system(size: 30, weight: .black))
                         .foregroundStyle(.white)
 
@@ -13121,11 +13197,11 @@ private struct NativeCollectionDetailScreen: View {
                     }
 
                     HStack(spacing: 10) {
-                        Text("\(collection.places.count) places")
+                        Text("\(activeCollection.places.count) places")
                             .font(.system(size: 14, weight: .bold))
                             .foregroundStyle(.white.opacity(0.55))
 
-                        if let createdAt = collection.createdAt {
+                        if let createdAt = activeCollection.createdAt {
                             Text(NativeAppState.relativeLabel(from: createdAt))
                                 .font(.system(size: 14, weight: .bold))
                                 .foregroundStyle(.white.opacity(0.4))
@@ -13133,10 +13209,10 @@ private struct NativeCollectionDetailScreen: View {
                     }
                 }
 
-                if !collection.places.isEmpty {
+                if !activeCollection.places.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 12) {
-                            ForEach(Array(collection.places.prefix(4).enumerated()), id: \.offset) { _, place in
+                            ForEach(Array(activeCollection.places.prefix(4).enumerated()), id: \.offset) { _, place in
                                 NativeRemoteImage(url: place.image)
                                     .frame(width: 220, height: 140)
                                     .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
@@ -13145,7 +13221,7 @@ private struct NativeCollectionDetailScreen: View {
                     }
                 }
 
-                ForEach(Array(collection.places.enumerated()), id: \.offset) { _, place in
+                ForEach(Array(activeCollection.places.enumerated()), id: \.offset) { _, place in
                     NativePlaceCard(place: place)
                 }
 
@@ -13160,16 +13236,55 @@ private struct NativeCollectionDetailScreen: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button {
-                    UIPasteboard.general.string = "https://vibinn.club/lists/\(collection.id)"
-                    copiedLink = true
-                } label: {
-                    Image(systemName: "square.and.arrow.up")
-                        .font(.system(size: 16, weight: .bold))
-                        .foregroundStyle(.white)
+                HStack(spacing: 14) {
+                    if canEditCollection {
+                        Button {
+                            showEditSheet = true
+                        } label: {
+                            Image(systemName: "pencil")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isDeletingCollection)
+                    }
+
+                    Button {
+                        UIPasteboard.general.string = "https://vibinn.club/lists/\(activeCollection.id)"
+                        copiedLink = true
+                    } label: {
+                        Image(systemName: "square.and.arrow.up")
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundStyle(.white)
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
+        }
+        .sheet(isPresented: $showEditSheet) {
+            NativeEditCollectionSheet(
+                collection: activeCollection,
+                candidatePlaces: appState.savedPlaces.isEmpty ? activeCollection.places : appState.savedPlaces
+            ) { updated in
+                activeCollection = updated
+            } onDelete: {
+                isDeletingCollection = true
+                Task {
+                    do {
+                        try await appState.deleteCollection(id: activeCollection.id)
+                        await MainActor.run {
+                            isDeletingCollection = false
+                            showEditSheet = false
+                            dismiss()
+                        }
+                    } catch {
+                        await MainActor.run {
+                            isDeletingCollection = false
+                        }
+                    }
+                }
+            }
+            .environmentObject(appState)
         }
         .onAppear {
             guard !hasHiddenFloatingTabBar else { return }
@@ -13180,6 +13295,219 @@ private struct NativeCollectionDetailScreen: View {
             guard hasHiddenFloatingTabBar else { return }
             appState.popFloatingTabBarHidden()
             hasHiddenFloatingTabBar = false
+        }
+    }
+}
+
+private struct NativeEditCollectionSheet: View {
+    @EnvironmentObject private var appState: NativeAppState
+    @Environment(\.dismiss) private var dismiss
+
+    let collection: NativeCollection
+    let candidatePlaces: [NativePlace]
+    let onSaved: (NativeCollection) -> Void
+    let onDelete: () -> Void
+
+    @State private var name: String
+    @State private var selectedPlaceIds: Set<String>
+    @State private var isSaving = false
+    @State private var showDeleteConfirm = false
+    @State private var errorMessage: String?
+
+    init(
+        collection: NativeCollection,
+        candidatePlaces: [NativePlace],
+        onSaved: @escaping (NativeCollection) -> Void,
+        onDelete: @escaping () -> Void
+    ) {
+        self.collection = collection
+        self.candidatePlaces = candidatePlaces
+        self.onSaved = onSaved
+        self.onDelete = onDelete
+        _name = State(initialValue: collection.label)
+        _selectedPlaceIds = State(initialValue: Set(collection.places.map(\.id)))
+    }
+
+    private var trimmedName: String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var canSave: Bool {
+        !trimmedName.isEmpty && !selectedPlaceIds.isEmpty && !isSaving
+    }
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("Edit collection")
+                            .font(.system(size: 24, weight: .black))
+                            .foregroundStyle(.white)
+
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("Name")
+                                    .font(.system(size: 11, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.42))
+                                    .textCase(.uppercase)
+
+                                TextField("Collection name", text: $name)
+                                    .textInputAutocapitalization(.words)
+                                    .disableAutocorrection(true)
+                                    .font(.system(size: 18, weight: .black))
+                                    .foregroundStyle(.white)
+                            }
+                        }
+
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Places")
+                                    .font(.system(size: 11, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.42))
+                                    .textCase(.uppercase)
+
+                                VStack(spacing: 10) {
+                                    ForEach(Array(candidatePlaces.prefix(60))) { place in
+                                        Button {
+                                            toggle(place.id)
+                                        } label: {
+                                            HStack(spacing: 12) {
+                                                NativeRemoteImage(url: place.image)
+                                                    .frame(width: 54, height: 54)
+                                                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                                                VStack(alignment: .leading, spacing: 4) {
+                                                    Text(place.name)
+                                                        .font(.system(size: 15, weight: .black))
+                                                        .foregroundStyle(.white)
+                                                        .lineLimit(1)
+                                                    Text(place.location)
+                                                        .font(.system(size: 12, weight: .semibold))
+                                                        .foregroundStyle(.white.opacity(0.5))
+                                                        .lineLimit(1)
+                                                }
+
+                                                Spacer(minLength: 0)
+
+                                                Image(systemName: selectedPlaceIds.contains(place.id) ? "checkmark.circle.fill" : "circle")
+                                                    .font(.system(size: 18, weight: .black))
+                                                    .foregroundStyle(selectedPlaceIds.contains(place.id) ? nativeAccent : .white.opacity(0.28))
+                                            }
+                                        }
+                                        .buttonStyle(.plain)
+                                    }
+                                }
+                            }
+                        }
+
+                        if let errorMessage {
+                            NativeInlineError(message: errorMessage)
+                        }
+
+                        Button {
+                            Task { await save() }
+                        } label: {
+                            HStack {
+                                Spacer()
+                                if isSaving {
+                                    ProgressView().tint(.black)
+                                } else {
+                                    Text("Save changes")
+                                        .font(.system(size: 16, weight: .black))
+                                }
+                                Spacer()
+                            }
+                            .padding(.vertical, 16)
+                            .background(canSave ? nativeAccent : Color.white.opacity(0.08))
+                            .foregroundStyle(canSave ? .black : .white.opacity(0.42))
+                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!canSave)
+
+                        Button(role: .destructive) {
+                            showDeleteConfirm = true
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Text("Delete collection")
+                                    .font(.system(size: 15, weight: .black))
+                                Spacer()
+                            }
+                            .padding(.vertical, 16)
+                            .background(Color.red.opacity(0.18))
+                            .foregroundStyle(Color.red.opacity(0.95))
+                            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+                        .padding(.top, 6)
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 18)
+                    .padding(.bottom, 24)
+                }
+            }
+            .navigationTitle("Edit")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.84))
+                            .frame(width: 34, height: 34)
+                            .background(nativeSurface)
+                            .overlay(Circle().stroke(nativeBorder, lineWidth: 1))
+                            .clipShape(Circle())
+                    }
+                }
+            }
+        }
+        .navigationViewStyle(.stack)
+        .confirmationDialog(
+            "Delete this collection?",
+            isPresented: $showDeleteConfirm,
+            titleVisibility: .visible
+        ) {
+            Button("Delete collection", role: .destructive) {
+                dismiss()
+                onDelete()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This cannot be undone.")
+        }
+    }
+
+    private func toggle(_ placeId: String) {
+        if selectedPlaceIds.contains(placeId) {
+            selectedPlaceIds.remove(placeId)
+        } else {
+            selectedPlaceIds.insert(placeId)
+        }
+    }
+
+    private func save() async {
+        guard canSave else { return }
+        errorMessage = nil
+        isSaving = true
+        defer { isSaving = false }
+
+        do {
+            let updated = try await appState.updateCollection(
+                id: collection.id,
+                label: trimmedName,
+                placeIds: Array(selectedPlaceIds)
+            )
+            onSaved(updated)
+            dismiss()
+        } catch {
+            errorMessage = "Could not update collection right now."
         }
     }
 }

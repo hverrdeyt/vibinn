@@ -13,6 +13,7 @@ import { generateAiCompatibilityAssessment, generatePlaceAiEnrichment } from './
 import { generateTravelerProfileDescriptor, queueTravelerProfileDescriptorRefresh } from './travelerProfileEnrichment';
 import {
   createCollection,
+  deleteCollection,
   getBookmarks,
   createMoment,
   getFollowingFeed,
@@ -33,6 +34,7 @@ import {
   getProfileMe,
   getPublicProfileByUsername,
   getSupport,
+  updateCollection,
   updateMoment,
   updateNotificationSettings,
   updatePrivacySettings,
@@ -5844,6 +5846,30 @@ app.post('/api/collections', requireAuth, (req: AuthenticatedRequest, res) => {
   void createCollection(req.authUserId, req.body)
     .then((collection) => res.status(201).json({ collection }))
     .catch((error) => handleError(res, error));
+});
+
+app.patch('/api/collections/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  void updateCollection(req.authUserId, req.params.id, req.body)
+    .then((collection) => res.json({ collection }))
+    .catch((error) => {
+      if (error instanceof Error && error.message === 'Collection not found') {
+        res.status(404).json({ error: error.message });
+        return;
+      }
+      handleError(res, error);
+    });
+});
+
+app.delete('/api/collections/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+  void deleteCollection(req.authUserId, req.params.id)
+    .then((payload) => res.json(payload))
+    .catch((error) => {
+      if (error instanceof Error && error.message === 'Collection not found') {
+        res.status(404).json({ error: error.message });
+        return;
+      }
+      handleError(res, error);
+    });
 });
 
 app.get('/api/moments', requireAuth, (req: AuthenticatedRequest, res) => {

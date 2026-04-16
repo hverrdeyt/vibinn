@@ -2347,6 +2347,102 @@ export async function createCollection(userId: string | undefined, payload: { la
   };
 }
 
+export async function updateCollection(
+  userId: string | undefined,
+  collectionId: string,
+  payload: { label?: string; placeIds?: string[] },
+) {
+  const currentUser = await getCurrentUser(prisma, userId);
+  const normalizedTitle = typeof payload.label === 'string' ? payload.label.trim() : undefined;
+  const normalizedPlaceIds = Array.isArray(payload.placeIds)
+    ? Array.from(new Set(payload.placeIds.filter(Boolean)))
+    : undefined;
+
+  if (normalizedTitle !== undefined && normalizedTitle.length === 0) {
+    throw new Error('Collection title required');
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const existing = await tx.collection.findFirst({
+      where: { id: collectionId, userId: currentUser.id },
+      select: { id: true },
+    });
+    if (!existing) {
+      throw new Error('Collection not found');
+    }
+
+    await tx.collection.update({
+      where: { id: collectionId },
+      data: {
+        ...(normalizedTitle !== undefined ? { title: normalizedTitle } : {}),
+      },
+    });
+
+    if (normalizedPlaceIds !== undefined) {
+      await tx.collectionPlace.deleteMany({ where: { collectionId } });
+      if (normalizedPlaceIds.length > 0) {
+        await tx.collectionPlace.createMany({
+          data: normalizedPlaceIds.map((placeId, index) => ({
+            collectionId,
+            placeId,
+            sortOrder: index,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    return tx.collection.findUnique({
+      where: { id: collectionId },
+      include: {
+        places: {
+          orderBy: { sortOrder: 'asc' },
+          include: {
+            place: {
+              include: {
+                aiEnrichment: true,
+                media: { orderBy: { sortOrder: 'asc' } },
+              },
+            },
+          },
+        },
+      },
+    });
+  });
+
+  if (!updated) {
+    throw new Error('Collection not found');
+  }
+
+  const userPlaceScoreOverrideMap = await getUserPlaceScoreOverrideMap(
+    currentUser.id,
+    updated.places.map((item) => item.placeId),
+  );
+
+  return {
+    id: updated.id,
+    label: updated.title,
+    createdAt: updated.createdAt.toISOString(),
+    places: updated.places.map((item) => mapPlaceForClient(
+      item.place,
+      getPlaceScoreOverride(userPlaceScoreOverrideMap, item.placeId),
+    )),
+  };
+}
+
+export async function deleteCollection(userId: string | undefined, collectionId: string) {
+  const currentUser = await getCurrentUser(prisma, userId);
+  const existing = await prisma.collection.findFirst({
+    where: { id: collectionId, userId: currentUser.id },
+    select: { id: true },
+  });
+  if (!existing) {
+    throw new Error('Collection not found');
+  }
+  await prisma.collection.delete({ where: { id: collectionId } });
+  return { ok: true };
+}
+
 export async function getBookmarks(userId?: string) {
   const currentUser = await getCurrentUser(prisma, userId);
   const bookmarks = await prisma.bookmark.findMany({
