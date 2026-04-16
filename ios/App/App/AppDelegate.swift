@@ -332,6 +332,9 @@ private struct NativePlace: Decodable, Identifiable {
     // For visited posts (moments), user-uploaded media comes from `momentMedia`.
     // Place media (Google) remains in `image` / `images`.
     let momentMedia: [NativeMomentMediaItem]?
+    // Explicit URL lists from the backend so we never infer media ownership from URL shape.
+    let placeMediaUrls: [String]?
+    let userMediaUrls: [String]?
     let tags: [String]?
     let attitudeLabel: String?
     let bestTime: String?
@@ -1868,6 +1871,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 	            image: resolvedUploadedMedia.first ?? resolvedPlaceBase.image,
 	            images: resolvedUploadedMedia.isEmpty ? resolvedPlaceBase.images : resolvedUploadedMedia,
 	            momentMedia: nil,
+	            placeMediaUrls: nil,
+	            userMediaUrls: nil,
 	            tags: resolvedPlaceBase.tags,
 	            attitudeLabel: resolvedPlaceBase.attitudeLabel,
 	            bestTime: resolvedPlaceBase.bestTime,
@@ -2458,6 +2463,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 	                    image: moment.place.image,
 	                    images: moment.place.images,
 	                    momentMedia: nil,
+	                    placeMediaUrls: nil,
+	                    userMediaUrls: nil,
 	                    tags: moment.place.tags,
 	                    attitudeLabel: moment.place.attitudeLabel,
 	                    bestTime: moment.place.bestTime,
@@ -8519,6 +8526,8 @@ private struct NativeOwnVisitedMomentCard: View {
 	            image: moment.place.image,
 	            images: moment.place.images,
 	            momentMedia: nil,
+	            placeMediaUrls: nil,
+	            userMediaUrls: nil,
 	            tags: moment.place.tags,
 	            attitudeLabel: moment.place.attitudeLabel,
 	            bestTime: moment.place.bestTime,
@@ -9865,7 +9874,9 @@ private struct NativeFeedCard: View {
                     NativeFeedPlaceAttachment(
                         place: place,
                         activityType: item.type,
-                        uploadedMediaUrls: item.uploadedMediaUrls ?? (place.momentMedia?.map { $0.url } ?? [])
+                        uploadedMediaUrls: item.uploadedMediaUrls
+                            ?? place.userMediaUrls
+                            ?? (place.momentMedia?.map { $0.url } ?? [])
                     ) {
                         NativePlaceDetailScreen(initialPlace: place)
                     }
@@ -13536,6 +13547,8 @@ private func mergedPlaceRetainingPresentation(_ current: NativePlace, with next:
         image: next.image,
         images: next.images,
         momentMedia: next.momentMedia,
+        placeMediaUrls: next.placeMediaUrls,
+        userMediaUrls: next.userMediaUrls,
         tags: next.tags,
         attitudeLabel: next.attitudeLabel,
         bestTime: next.bestTime,
