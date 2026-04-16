@@ -4541,6 +4541,7 @@ private struct NativeAuthScreen: View {
 
                 VStack(spacing: 0) {
                     NativeAuthHeroPinWall()
+                        .ignoresSafeArea(.container, edges: .top)
                         .frame(height: heroHeight)
                         .clipped()
 
@@ -4707,7 +4708,7 @@ private struct NativeAuthHeroPinWall: View {
                 .frame(width: columnWidth)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 14)
+            .padding(.top, 0)
             .padding(.bottom, 18)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(
