@@ -20,6 +20,7 @@ private let nativeTodayRecommendationDebugMode = false
 private let nativeScoreDebugToolsEnabled = false
 private let nativePlaceDetailLayoutDebugMode = false
 private let nativePreferenceLayoutDebugMode = false
+private let nativeAuthLayoutDebugMode = true
 private let nativeDiscoveryScoreDebugMode = nativeScoreDebugToolsEnabled
 private let nativeTodayRecommendationScoreDebugMode = nativeScoreDebugToolsEnabled
 private let nativeTravelerScoreDebugMode = nativeScoreDebugToolsEnabled
@@ -4539,6 +4540,14 @@ private struct NativeAuthScreen: View {
                 // Revert to the original auth background.
                 Color.black.ignoresSafeArea()
 
+                if nativeAuthLayoutDebugMode {
+                    Rectangle()
+                        .fill(Color.green.opacity(0.22))
+                        .frame(height: safeTop)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .ignoresSafeArea()
+                }
+
                 VStack(spacing: 0) {
                     NativeAuthHeroPinWall()
                         // Extend the hero behind the status bar by "borrowing" the safe-area height
@@ -4547,6 +4556,11 @@ private struct NativeAuthScreen: View {
                         .frame(height: heroHeight + safeTop)
                         .padding(.top, -safeTop)
                         .clipped()
+                        .overlay {
+                            if nativeAuthLayoutDebugMode {
+                                NativeDebugFrame(label: "HERO", color: .red)
+                            }
+                        }
 
                     VStack(alignment: .center, spacing: 14) {
                         ZStack {
@@ -4614,6 +4628,24 @@ private struct NativeAuthScreen: View {
                 .padding(.horizontal, 20)
                 .padding(.bottom, safeBottom)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+
+                if nativeAuthLayoutDebugMode {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("AUTH DEBUG")
+                        Text("safeTop=\(Int(safeTop)) safeBottom=\(Int(safeBottom))")
+                        Text("heroHeight=\(Int(heroHeight)) copyHeight=\(Int(copyHeight))")
+                    }
+                    .font(.system(size: 11, weight: .black))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(nativeAccent)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .padding(.leading, 12)
+                    .padding(.top, 12)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .allowsHitTesting(false)
+                }
 
                 if allowsDismissal {
                     Button {
@@ -4736,6 +4768,11 @@ private struct NativeAuthHeroPinWall: View {
                     endPoint: .bottom
                 )
             )
+            .overlay {
+                if nativeAuthLayoutDebugMode {
+                    NativeDebugFrame(label: "PINWALL", color: .cyan)
+                }
+            }
         }
     }
 }
@@ -4775,6 +4812,34 @@ private extension Array {
     subscript(safe index: Int) -> Element? {
         guard index >= 0 && index < count else { return nil }
         return self[index]
+    }
+}
+
+private struct NativeDebugFrame: View {
+    let label: String
+    let color: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            let frame = proxy.frame(in: .global)
+            ZStack(alignment: .topLeading) {
+                Rectangle()
+                    .stroke(color.opacity(0.9), lineWidth: 2)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                    Text("minY=\(Int(frame.minY)) h=\(Int(frame.height))")
+                }
+                .font(.system(size: 10, weight: .black))
+                .foregroundStyle(color)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.black.opacity(0.62))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .padding(6)
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
