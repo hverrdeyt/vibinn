@@ -4522,6 +4522,7 @@ private struct NativeAuthScreen: View {
     @State private var isSubmitting = false
     @State private var errorMessage: String?
     @State private var showEmailSheet = false
+    @State private var actionsSize: CGSize = .zero
 
     init(allowsDismissal: Bool = false, promptReason: String? = nil) {
         self.allowsDismissal = allowsDismissal
@@ -4530,18 +4531,21 @@ private struct NativeAuthScreen: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let safeTop = proxy.safeAreaInsets.top
             let safeBottom = proxy.safeAreaInsets.bottom
-            let heroHeight = max(proxy.size.height * 0.58, 360)
-            let copyHeight = max(proxy.size.height * 0.22, 170)
+            let heroHeight = max(proxy.size.height * (5.0 / 8.0), 380)
 
             ZStack(alignment: .topTrailing) {
                 Color.black.ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    NativeAuthHeroCollage()
+                    NativeAuthHeroPinWall()
                         .frame(height: heroHeight)
                         .clipped()
+                    Spacer(minLength: 0)
+                }
+
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
 
                     VStack(alignment: .center, spacing: 14) {
                         ZStack {
@@ -4567,12 +4571,11 @@ private struct NativeAuthScreen: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    .frame(maxWidth: .infinity, minHeight: copyHeight, alignment: .center)
                     .padding(.horizontal, 22)
-                    .padding(.top, 18)
-
-                    Spacer(minLength: 0)
+                    // Keep copy visible above the sticky action area.
+                    .padding(.bottom, actionsSize.height + 18)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
 
                 VStack(spacing: 10) {
                     NativeAuthLandingButton(
@@ -4607,9 +4610,12 @@ private struct NativeAuthScreen: View {
                     NativeAuthLegalText()
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, safeTop + 16)
                 .padding(.bottom, safeBottom)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .nativeMeasureSize { size in
+                    // Used to reserve space so the center copy doesn't slide under the action buttons.
+                    actionsSize = size
+                }
 
                 if allowsDismissal {
                     Button {
@@ -4675,57 +4681,75 @@ private struct NativeAuthScreen: View {
 
 }
 
-private struct NativeAuthHeroCollage: View {
-    private let heroImages = [
-        nativeInterestSwipeCards[0].imageURL,
-        nativeInterestSwipeCards[2].imageURL,
-        nativeInterestSwipeCards[4].imageURL,
-        nativeInterestSwipeCards[6].imageURL,
-    ]
+private struct NativeAuthHeroPinWall: View {
+    private let heroImages: [String] = Array(nativeInterestSwipeCards.prefix(12).map { $0.imageURL })
+    @State private var drift: CGFloat = 0
 
     var body: some View {
         GeometryReader { proxy in
             let spacing: CGFloat = 10
-            let columnWidth = (proxy.size.width - spacing * 3) / 2
+            let columnWidth = (proxy.size.width - spacing * 4) / 3
 
-            HStack(spacing: spacing) {
+            HStack(alignment: .top, spacing: spacing) {
+                // Column 1
                 VStack(spacing: spacing) {
-                    NativeAuthHeroTile(url: heroImages[0], height: proxy.size.height * 0.62)
-                    NativeAuthHeroTile(url: heroImages[1], height: proxy.size.height * 0.34)
+                    NativeAuthHeroTile(url: heroImages[safe: 0] ?? heroImages.first ?? "", height: proxy.size.height * 0.44)
+                    NativeAuthHeroTile(url: heroImages[safe: 1] ?? heroImages.first ?? "", height: proxy.size.height * 0.28)
+                    NativeAuthHeroTile(url: heroImages[safe: 2] ?? heroImages.first ?? "", height: proxy.size.height * 0.34)
                 }
                 .frame(width: columnWidth)
+                .offset(y: drift * 0.35)
 
+                // Column 2 (slightly different rhythm)
                 VStack(spacing: spacing) {
-                    NativeAuthHeroTile(url: heroImages[2], height: proxy.size.height * 0.38)
-                    NativeAuthHeroTile(url: heroImages[3], height: proxy.size.height * 0.58)
+                    NativeAuthHeroTile(url: heroImages[safe: 3] ?? heroImages.first ?? "", height: proxy.size.height * 0.30)
+                    NativeAuthHeroTile(url: heroImages[safe: 4] ?? heroImages.first ?? "", height: proxy.size.height * 0.46)
+                    NativeAuthHeroTile(url: heroImages[safe: 5] ?? heroImages.first ?? "", height: proxy.size.height * 0.26)
                 }
                 .frame(width: columnWidth)
+                .offset(y: drift * 0.55)
+
+                // Column 3
+                VStack(spacing: spacing) {
+                    NativeAuthHeroTile(url: heroImages[safe: 6] ?? heroImages.first ?? "", height: proxy.size.height * 0.40)
+                    NativeAuthHeroTile(url: heroImages[safe: 7] ?? heroImages.first ?? "", height: proxy.size.height * 0.30)
+                    NativeAuthHeroTile(url: heroImages[safe: 8] ?? heroImages.first ?? "", height: proxy.size.height * 0.36)
+                }
+                .frame(width: columnWidth)
+                .offset(y: drift * 0.25)
             }
             .padding(.horizontal, 16)
-            .padding(.top, proxy.safeAreaInsets.top + 16)
-            .padding(.bottom, 16)
+            .padding(.top, proxy.safeAreaInsets.top + 14)
+            .padding(.bottom, 18)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .background(
                 LinearGradient(
                     colors: [
-                        Color(red: 14 / 255, green: 14 / 255, blue: 18 / 255),
+                        Color(red: 16 / 255, green: 16 / 255, blue: 20 / 255),
                         Color.black
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
             )
+            // Scrim for readability near the bottom.
             .overlay(
                 LinearGradient(
                     colors: [
                         Color.black.opacity(0.0),
-                        Color.black.opacity(0.16),
-                        Color.black.opacity(0.72)
+                        Color.black.opacity(0.22),
+                        Color.black.opacity(0.76)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
             )
+            .onAppear {
+                drift = -22
+                withAnimation(.linear(duration: 18).repeatForever(autoreverses: true)) {
+                    drift = 22
+                }
+            }
         }
     }
 }
@@ -4743,6 +4767,32 @@ private struct NativeAuthHeroTile: View {
                 RoundedRectangle(cornerRadius: 26, style: .continuous)
                     .stroke(Color.white.opacity(0.08), lineWidth: 1)
             )
+    }
+}
+
+private struct NativeSizePreferenceKey: PreferenceKey {
+    static var defaultValue: CGSize = .zero
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) {
+        value = nextValue()
+    }
+}
+
+private extension View {
+    func nativeMeasureSize(_ onChange: @escaping (CGSize) -> Void) -> some View {
+        background(
+            GeometryReader { proxy in
+                Color.clear
+                    .preference(key: NativeSizePreferenceKey.self, value: proxy.size)
+            }
+        )
+        .onPreferenceChange(NativeSizePreferenceKey.self, perform: onChange)
+    }
+}
+
+private extension Array {
+    subscript(safe index: Int) -> Element? {
+        guard index >= 0 && index < count else { return nil }
+        return self[index]
     }
 }
 
