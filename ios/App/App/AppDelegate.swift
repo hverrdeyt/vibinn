@@ -4550,11 +4550,9 @@ private struct NativeAuthScreen: View {
 
                 VStack(spacing: 0) {
                     NativeAuthHeroPinWall()
-                        // Extend the hero behind the status bar by "borrowing" the safe-area height
-                        // and then pulling it upward. This avoids the common "clipped at status bar"
-                        // behavior when using frame+clipped inside a safe-area respecting container.
-                        .frame(height: heroHeight + safeTop)
-                        .padding(.top, -safeTop)
+                        // Keep the hero height the same, but allow it to render behind the status bar
+                        // by shifting the whole stack upward (see the outer VStack padding).
+                        .frame(height: heroHeight)
                         .clipped()
                         .overlay {
                             if nativeAuthLayoutDebugMode {
@@ -4592,6 +4590,10 @@ private struct NativeAuthScreen: View {
 
                     Spacer(minLength: 0)
                 }
+                // This is the critical piece: shift the hero upward into the status bar area,
+                // and ensure it is not clipped by a safe-area respecting parent.
+                .padding(.top, -safeTop)
+                .ignoresSafeArea(.container, edges: .top)
 
                 VStack(spacing: 10) {
                     NativeAuthLandingButton(
