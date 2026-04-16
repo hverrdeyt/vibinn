@@ -17,6 +17,7 @@
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:seed": "tsx prisma/seed.ts",
     "places:backfill-google-photos": "tsx scripts/backfill-google-place-photos.ts",
+    "places:backfill-google-price-ranges": "tsx scripts/backfill-google-place-price-ranges.ts",
     "ai:regenerate-place-enrichment": "tsx scripts/regenerate-place-enrichment.ts",
     "ai:retry-place-enrichment-failures": "tsx scripts/retry-place-enrichment-failures.ts",
     "preview": "vite preview",

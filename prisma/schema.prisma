@@ -252,6 +252,9 @@ model Place {
   longitude         Float?
   rating            Float?
   priceLevel        Int?
+  googlePriceRangeStart    Float?
+  googlePriceRangeEnd      Float?
+  googlePriceRangeCurrency String?
   primaryImageUrl   String?
   mapsEmbedUrl      String?
   createdAt         DateTime           @default(now())

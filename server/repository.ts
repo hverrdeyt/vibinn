@@ -76,6 +76,29 @@ function mapPriceLevel(value?: number | null) {
   return '$'.repeat(Math.min(value, 4));
 }
 
+function formatStoredGooglePriceRange(input: {
+  startAmount?: number | null;
+  endAmount?: number | null;
+  currencyCode?: string | null;
+}) {
+  const currencyCode = input.currencyCode?.trim();
+  if (!currencyCode) return null;
+
+  const formatter = new Intl.NumberFormat(currencyCode === 'IDR' ? 'id-ID' : 'en-US', {
+    style: 'currency',
+    currency: currencyCode,
+    maximumFractionDigits: 0,
+  });
+
+  const format = (amount: number) => formatter.format(amount).replace(/\s/g, '');
+  if (typeof input.startAmount === 'number' && typeof input.endAmount === 'number') {
+    return `${format(input.startAmount)}-${format(input.endAmount)}`;
+  }
+  if (typeof input.startAmount === 'number') return `${format(input.startAmount)}+`;
+  if (typeof input.endAmount === 'number') return `<${format(input.endAmount)}`;
+  return null;
+}
+
 function isRenderableMediaUrl(url?: string | null) {
   if (!url) return false;
   return /^(https?:)?\/\//i.test(url) || url.startsWith('/') || url.startsWith('data:') || url.startsWith('blob:');
@@ -90,6 +113,11 @@ function mapPlaceForClient(
 ) {
   const hasSimilarityOverride = Boolean(overrides && Object.prototype.hasOwnProperty.call(overrides, 'similarityStat'));
   const hasRecommendationOverride = Boolean(overrides && Object.prototype.hasOwnProperty.call(overrides, 'recommendationReason'));
+  const priceRangeLabel = formatStoredGooglePriceRange({
+    startAmount: place.googlePriceRangeStart,
+    endAmount: place.googlePriceRangeEnd,
+    currencyCode: place.googlePriceRangeCurrency,
+  }) ?? undefined;
   return {
     id: place.id,
     name: place.name,
@@ -113,7 +141,8 @@ function mapPlaceForClient(
       ...(place.aiEnrichment?.bestTime ? [`best at ${place.aiEnrichment.bestTime}`] : []),
     ],
     recommendationReason: hasRecommendationOverride ? (overrides?.recommendationReason ?? '') : (place.aiEnrichment?.description ?? ''),
-    priceRange: mapPriceLevel(place.priceLevel),
+    priceRange: priceRangeLabel,
+    priceRangeLabel,
     category: place.category,
   };
 }

@@ -820,6 +820,57 @@ async function fetchGooglePlaceSuggestions(input: string) {
     .slice(0, 6) ?? [];
 }
 
+type GoogleMoney = {
+  currencyCode?: string;
+  units?: string | number;
+  nanos?: number;
+};
+
+type GooglePriceRange = {
+  startPrice?: GoogleMoney;
+  endPrice?: GoogleMoney;
+};
+
+function googleMoneyToNumber(money?: GoogleMoney | null) {
+  if (!money) return null;
+  const units = typeof money.units === 'number' ? money.units : Number(money.units ?? 0);
+  const nanos = typeof money.nanos === 'number' ? money.nanos : 0;
+  const amount = units + nanos / 1_000_000_000;
+  return Number.isFinite(amount) ? amount : null;
+}
+
+function normalizeGooglePriceRange(priceRange?: GooglePriceRange | null) {
+  if (!priceRange) return null;
+  const startAmount = googleMoneyToNumber(priceRange.startPrice);
+  const endAmount = googleMoneyToNumber(priceRange.endPrice);
+  const currencyCode = priceRange.startPrice?.currencyCode ?? priceRange.endPrice?.currencyCode ?? null;
+  if (!currencyCode || (startAmount == null && endAmount == null)) return null;
+  return { startAmount, endAmount, currencyCode };
+}
+
+function formatStoredGooglePriceRange(input: {
+  startAmount?: number | null;
+  endAmount?: number | null;
+  currencyCode?: string | null;
+}) {
+  const currencyCode = input.currencyCode?.trim();
+  if (!currencyCode) return null;
+
+  const formatter = new Intl.NumberFormat(currencyCode === 'IDR' ? 'id-ID' : 'en-US', {
+    style: 'currency',
+    currency: currencyCode,
+    maximumFractionDigits: 0,
+  });
+
+  const format = (amount: number) => formatter.format(amount).replace(/\s/g, '');
+  if (typeof input.startAmount === 'number' && typeof input.endAmount === 'number') {
+    return `${format(input.startAmount)}-${format(input.endAmount)}`;
+  }
+  if (typeof input.startAmount === 'number') return `${format(input.startAmount)}+`;
+  if (typeof input.endAmount === 'number') return `<${format(input.endAmount)}`;
+  return null;
+}
+
 async function fetchGoogleTextSearch(textQuery: string) {
   if (!GOOGLE_MAPS_API_KEY) return null;
 
@@ -828,7 +879,7 @@ async function fetchGoogleTextSearch(textQuery: string) {
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.primaryType,places.types,places.rating,places.priceLevel,places.photos',
+      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.primaryType,places.types,places.rating,places.priceLevel,places.priceRange,places.photos',
     },
     body: JSON.stringify({
       textQuery,
@@ -848,9 +899,10 @@ async function fetchGoogleTextSearch(textQuery: string) {
       location?: { latitude?: number; longitude?: number };
       primaryType?: string;
       types?: string[];
-      rating?: number;
-      priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
-      photos?: Array<{ name: string }>;
+	      rating?: number;
+	      priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
+	      priceRange?: GooglePriceRange;
+	      photos?: Array<{ name: string }>;
     }>;
   }>;
 }
@@ -897,12 +949,11 @@ async function getPlaceSuggestions(input: string) {
               description: '',
               image: 'https://placehold.co/800x1000/111111/ffffff?text=Place',
               images: ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
-              tags: [category],
-              similarityStat: 82,
-              whyYoullLikeIt: [],
-              priceRange: '$$',
-              category,
-            };
+	              tags: [category],
+	              similarityStat: 82,
+	              whyYoullLikeIt: [],
+	              category,
+	            };
           }),
         );
 
@@ -1067,10 +1118,11 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
   location?: { latitude?: number; longitude?: number };
   primaryType?: string;
   types?: string[];
-  rating?: number;
-  priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
-  photos?: Array<{ name: string }>;
-}, options?: {
+	  rating?: number;
+	  priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
+	  priceRange?: GooglePriceRange;
+	  photos?: Array<{ name: string }>;
+	}, options?: {
   queryContext?: string;
 }) {
   const details = await fetchGooglePlaceDetails(rawPlace.id).catch((error) => {
@@ -1087,9 +1139,10 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
   const effectiveLocation = details?.location ?? rawPlace.location;
   const effectivePrimaryType = details?.primaryType ?? rawPlace.primaryType;
   const effectiveTypes = details?.types ?? rawPlace.types;
-  const effectiveRating = details?.rating ?? rawPlace.rating ?? null;
-  const effectivePriceLevel = mapGooglePriceLevel(details?.priceLevel ?? rawPlace.priceLevel);
-  const effectivePhotoRefs = details?.photos ?? rawPlace.photos ?? [];
+	  const effectiveRating = details?.rating ?? rawPlace.rating ?? null;
+	  const effectivePriceLevel = mapGooglePriceLevel(details?.priceLevel ?? rawPlace.priceLevel);
+	  const effectivePriceRange = normalizeGooglePriceRange(details?.priceRange ?? rawPlace.priceRange);
+	  const effectivePhotoRefs = details?.photos ?? rawPlace.photos ?? [];
   const locationBits = parseLocationBits(effectiveAddress);
   const category = (effectivePrimaryType ?? effectiveTypes?.[0] ?? 'recommended spot').replace(/_/g, ' ');
   const photoUris = effectivePhotoRefs.length
@@ -1113,9 +1166,12 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       latitude: effectiveLocation?.latitude ?? null,
       longitude: effectiveLocation?.longitude ?? null,
       category,
-      rating: effectiveRating,
-      priceLevel: effectivePriceLevel,
-      primaryImageUrl: photoUri ?? undefined,
+	      rating: effectiveRating,
+	      priceLevel: effectivePriceLevel,
+	      googlePriceRangeStart: effectivePriceRange?.startAmount ?? null,
+	      googlePriceRangeEnd: effectivePriceRange?.endAmount ?? null,
+	      googlePriceRangeCurrency: effectivePriceRange?.currencyCode ?? null,
+	      primaryImageUrl: photoUri ?? undefined,
       mapsEmbedUrl: details?.googleMapsUri ?? undefined,
       media: photoUris.length > 0
         ? {
@@ -1140,9 +1196,12 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       latitude: effectiveLocation?.latitude ?? null,
       longitude: effectiveLocation?.longitude ?? null,
       category,
-      rating: effectiveRating,
-      priceLevel: effectivePriceLevel,
-      primaryImageUrl: photoUri ?? undefined,
+	      rating: effectiveRating,
+	      priceLevel: effectivePriceLevel,
+	      googlePriceRangeStart: effectivePriceRange?.startAmount ?? null,
+	      googlePriceRangeEnd: effectivePriceRange?.endAmount ?? null,
+	      googlePriceRangeCurrency: effectivePriceRange?.currencyCode ?? null,
+	      primaryImageUrl: photoUri ?? undefined,
       mapsEmbedUrl: details?.googleMapsUri ?? null,
       media: photoUris.length > 0
         ? {
@@ -1165,7 +1224,7 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
     payload: rawPlace,
   });
 
-  if (details) {
+	  if (details) {
     await persistGooglePlaceSnapshot({
       placeId: place.id,
       googlePlaceId: details.id,
@@ -1182,12 +1241,21 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
     description: '',
     image: photoUri ?? place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
     images: photoUris.length > 0 ? photoUris : [place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place'],
-    tags: (effectiveTypes?.slice(0, 3).map((type) => type.replace(/_/g, ' ')) ?? [category]).slice(0, 3),
-    similarityStat: 82,
-    whyYoullLikeIt: [],
-    priceRange: mapPriceLevel(mapGooglePriceLevel(rawPlace.priceLevel)),
-    category,
-  };
+	    tags: (effectiveTypes?.slice(0, 3).map((type) => type.replace(/_/g, ' ')) ?? [category]).slice(0, 3),
+	    similarityStat: 82,
+	    whyYoullLikeIt: [],
+	    priceRange: formatStoredGooglePriceRange({
+	      startAmount: effectivePriceRange?.startAmount,
+	      endAmount: effectivePriceRange?.endAmount,
+	      currencyCode: effectivePriceRange?.currencyCode,
+	    }) ?? undefined,
+	    priceRangeLabel: formatStoredGooglePriceRange({
+	      startAmount: effectivePriceRange?.startAmount,
+	      endAmount: effectivePriceRange?.endAmount,
+	      currencyCode: effectivePriceRange?.currencyCode,
+	    }) ?? undefined,
+	    category,
+	  };
 }
 
 function normalizePlaceCategory(category?: string | null, tags: string[] = []) {
@@ -1576,7 +1644,11 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
   });
   const category = normalizePlaceCategory(place.category, tags);
   const neighborhoodLabel = place.neighborhood ?? place.adminAreaLevel4 ?? undefined;
-  const priceRangeLabel = formatPriceRangeLabel({ priceLevel: place.priceLevel ?? null, country: place.country ?? null }) ?? undefined;
+  const priceRangeLabel = formatStoredGooglePriceRange({
+    startAmount: place.googlePriceRangeStart,
+    endAmount: place.googlePriceRangeEnd,
+    currencyCode: place.googlePriceRangeCurrency,
+  }) ?? undefined;
   return {
     id: place.id,
     name: place.name,
@@ -1596,7 +1668,7 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
       ...(place.aiEnrichment?.bestTime ? [`best at ${place.aiEnrichment.bestTime}`] : []),
     ],
     rating: place.rating ?? undefined,
-    priceRange: mapPriceLevel(place.priceLevel),
+    priceRange: priceRangeLabel,
     priceRangeLabel,
     category,
     latitude: place.latitude ?? undefined,
@@ -1684,10 +1756,10 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     attitudeLabel: '',
     bestTime: '',
     similarityStat: place.similarityStat ?? 0,
-    whyYoullLikeIt: place.whyYoullLikeIt ?? [],
-    rating: 0,
-    priceRange: place.priceRange ?? '',
-    priceRangeLabel: undefined,
+	    whyYoullLikeIt: place.whyYoullLikeIt ?? [],
+	    rating: 0,
+	    priceRange: undefined,
+	    priceRangeLabel: undefined,
     category,
     latitude: place.latitude ?? undefined,
     longitude: place.longitude ?? undefined,
@@ -2341,7 +2413,7 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,primaryType,types,rating,priceLevel,googleMapsUri,regularOpeningHours.weekdayDescriptions,photos,addressComponents',
+      'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,primaryType,types,rating,priceLevel,priceRange,googleMapsUri,regularOpeningHours.weekdayDescriptions,photos,addressComponents',
     },
   });
 
@@ -2362,13 +2434,14 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
     location?: { latitude?: number; longitude?: number };
     primaryType?: string;
     types?: string[];
-    rating?: number;
-    googleMapsUri?: string;
+	    rating?: number;
+	    googleMapsUri?: string;
     regularOpeningHours?: {
       weekdayDescriptions?: string[];
     };
-    priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
-    photos?: Array<{
+	    priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
+	    priceRange?: GooglePriceRange;
+	    photos?: Array<{
       name: string;
     }>;
   }>;
@@ -2391,28 +2464,6 @@ function extractNeighborhoodFromAddressComponents(components: Array<{
 
   const adminAreaLevel4 = pick('administrative_area_level_4')?.longText ?? null;
   return { neighborhood, adminAreaLevel4 };
-}
-
-function formatPriceRangeLabel(input: { priceLevel?: number | null; country?: string | null }) {
-  const level = input.priceLevel ?? null;
-  if (!level || level <= 0) return null;
-
-  // Best-effort currency symbol derived from country string. We can refine once we have postal/currency fields.
-  const country = (input.country ?? '').toLowerCase();
-  const symbol = country.includes('indonesia') ? 'Rp' : '$';
-
-  switch (level) {
-    case 1:
-      return `${symbol}10-20`;
-    case 2:
-      return `${symbol}20-40`;
-    case 3:
-      return `${symbol}40-70`;
-    case 4:
-      return `${symbol}70+`;
-    default:
-      return null;
-  }
 }
 
 async function fetchGooglePhotoUri(photoName: string) {
@@ -4901,11 +4952,20 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
         : place.address
           ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.address)}`
           : undefined,
-      latitude: place.latitude ?? undefined,
-      longitude: place.longitude ?? undefined,
-      priceRange: mapPriceLevel(place.priceLevel),
-      category: place.category,
-    };
+	      latitude: place.latitude ?? undefined,
+	      longitude: place.longitude ?? undefined,
+	      priceRange: formatStoredGooglePriceRange({
+	        startAmount: place.googlePriceRangeStart,
+	        endAmount: place.googlePriceRangeEnd,
+	        currencyCode: place.googlePriceRangeCurrency,
+	      }) ?? undefined,
+	      priceRangeLabel: formatStoredGooglePriceRange({
+	        startAmount: place.googlePriceRangeStart,
+	        endAmount: place.googlePriceRangeEnd,
+	        currencyCode: place.googlePriceRangeCurrency,
+	      }) ?? undefined,
+	      category: place.category,
+	    };
   }
 
   const details = await fetchGooglePlaceDetails(place.googlePlaceId).catch((error) => {
@@ -4920,10 +4980,11 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
           return [];
         })
       : [];
-    const photoUri = photoUris[0] ?? null;
-    const locationBits = parseLocationBits(details.formattedAddress);
-    const neighborhoodBits = extractNeighborhoodFromAddressComponents(details.addressComponents);
-    const updated = await prisma.place.update({
+	    const photoUri = photoUris[0] ?? null;
+	    const locationBits = parseLocationBits(details.formattedAddress);
+	    const neighborhoodBits = extractNeighborhoodFromAddressComponents(details.addressComponents);
+	    const googlePriceRange = normalizeGooglePriceRange(details.priceRange);
+	    const updated = await prisma.place.update({
       where: { id: place.id },
       data: {
         name: details.displayName?.text ?? place.name,
@@ -4935,9 +4996,12 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
         latitude: details.location?.latitude ?? place.latitude,
         longitude: details.location?.longitude ?? place.longitude,
         category: details.primaryType?.replace(/_/g, ' ') ?? place.category,
-        rating: details.rating ?? place.rating,
-        priceLevel: mapGooglePriceLevel(details.priceLevel) ?? place.priceLevel,
-        primaryImageUrl: photoUri ?? place.primaryImageUrl,
+	        rating: details.rating ?? place.rating,
+	        priceLevel: mapGooglePriceLevel(details.priceLevel) ?? place.priceLevel,
+	        googlePriceRangeStart: googlePriceRange?.startAmount ?? null,
+	        googlePriceRangeEnd: googlePriceRange?.endAmount ?? null,
+	        googlePriceRangeCurrency: googlePriceRange?.currencyCode ?? null,
+	        primaryImageUrl: photoUri ?? place.primaryImageUrl,
         media: photoUris.length > 0
           ? {
               deleteMany: {},
@@ -5014,8 +5078,17 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
           : undefined),
       latitude: finalPlace.latitude ?? undefined,
       longitude: finalPlace.longitude ?? undefined,
-      priceRange: mapPriceLevel(finalPlace.priceLevel),
-      category: finalPlace.category,
+	      priceRange: formatStoredGooglePriceRange({
+	        startAmount: finalPlace.googlePriceRangeStart,
+	        endAmount: finalPlace.googlePriceRangeEnd,
+	        currencyCode: finalPlace.googlePriceRangeCurrency,
+	      }) ?? undefined,
+	      priceRangeLabel: formatStoredGooglePriceRange({
+	        startAmount: finalPlace.googlePriceRangeStart,
+	        endAmount: finalPlace.googlePriceRangeEnd,
+	        currencyCode: finalPlace.googlePriceRangeCurrency,
+	      }) ?? undefined,
+	      category: finalPlace.category,
     };
   }
 
@@ -5048,9 +5121,18 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
         : undefined,
     latitude: place.latitude ?? undefined,
     longitude: place.longitude ?? undefined,
-    priceRange: mapPriceLevel(place.priceLevel),
-    category: place.category,
-  };
+	    priceRange: formatStoredGooglePriceRange({
+	      startAmount: place.googlePriceRangeStart,
+	      endAmount: place.googlePriceRangeEnd,
+	      currencyCode: place.googlePriceRangeCurrency,
+	    }) ?? undefined,
+	    priceRangeLabel: formatStoredGooglePriceRange({
+	      startAmount: place.googlePriceRangeStart,
+	      endAmount: place.googlePriceRangeEnd,
+	      currencyCode: place.googlePriceRangeCurrency,
+	    }) ?? undefined,
+	    category: place.category,
+	  };
 }
 
 async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
