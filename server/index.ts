@@ -925,7 +925,10 @@ type PlaceDiscoverySignalInput = PreferenceDrivenQueryDescriptor & {
   resultRank?: number;
   locationLabel?: string;
   locationType?: string;
+  payload?: GoogleTextSearchPlace;
 };
+
+type GoogleTextSearchPlace = GooglePlaceDetailsResponse;
 
 function googleMoneyToNumber(money?: GoogleMoney | null) {
   if (!money) return null;
@@ -1041,12 +1044,70 @@ function formatStoredGooglePriceRange(input: {
 async function fetchGoogleTextSearch(textQuery: string) {
   if (!GOOGLE_MAPS_API_KEY) return null;
 
+  const placeFieldMask = [
+    'places.id',
+    'places.displayName',
+    'places.formattedAddress',
+    'places.shortFormattedAddress',
+    'places.location',
+    'places.primaryType',
+    'places.primaryTypeDisplayName',
+    'places.googleMapsTypeLabel',
+    'places.types',
+    'places.businessStatus',
+    'places.openingDate',
+    'places.rating',
+    'places.userRatingCount',
+    'places.priceLevel',
+    'places.priceRange',
+    'places.googleMapsUri',
+    'places.googleMapsLinks',
+    'places.websiteUri',
+    'places.regularOpeningHours.weekdayDescriptions',
+    'places.currentOpeningHours.weekdayDescriptions',
+    'places.photos',
+    'places.addressComponents',
+    'places.servesBreakfast',
+    'places.servesLunch',
+    'places.servesDinner',
+    'places.servesBeer',
+    'places.servesWine',
+    'places.servesBrunch',
+    'places.servesDessert',
+    'places.servesCoffee',
+    'places.servesCocktails',
+    'places.servesVegetarianFood',
+    'places.takeout',
+    'places.delivery',
+    'places.dineIn',
+    'places.curbsidePickup',
+    'places.reservable',
+    'places.liveMusic',
+    'places.menuForChildren',
+    'places.goodForChildren',
+    'places.allowsDogs',
+    'places.restroom',
+    'places.goodForGroups',
+    'places.goodForWatchingSports',
+    'places.timeZone',
+    'places.utcOffsetMinutes',
+    'places.outdoorSeating',
+    'places.paymentOptions',
+    'places.parkingOptions',
+    'places.accessibilityOptions',
+    'places.editorialSummary',
+    'places.reviewSummary',
+    'places.generativeSummary',
+    'places.containingPlaces',
+    'places.reviews',
+  ];
+
   const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.shortFormattedAddress,places.location,places.primaryType,places.primaryTypeDisplayName,places.googleMapsTypeLabel,places.types,places.businessStatus,places.rating,places.userRatingCount,places.priceLevel,places.priceRange,places.photos',
+      'X-Goog-FieldMask': placeFieldMask.join(','),
     },
     body: JSON.stringify({
       textQuery,
@@ -1059,23 +1120,7 @@ async function fetchGoogleTextSearch(textQuery: string) {
   }
 
   return response.json() as Promise<{
-    places?: Array<{
-      id: string;
-      displayName?: { text?: string };
-      formattedAddress?: string;
-      shortFormattedAddress?: string;
-      location?: { latitude?: number; longitude?: number };
-      primaryType?: string;
-      primaryTypeDisplayName?: GoogleLocalizedText;
-      googleMapsTypeLabel?: GoogleLocalizedText;
-      types?: string[];
-      businessStatus?: string;
-	      rating?: number;
-	      userRatingCount?: number;
-	      priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
-	      priceRange?: GooglePriceRange;
-	      photos?: Array<{ name: string }>;
-    }>;
+    places?: GoogleTextSearchPlace[];
   }>;
 }
 
@@ -1283,68 +1328,51 @@ async function getLocationSuggestions(input: string) {
   return getFallbackLocationSuggestions(normalizedInput);
 }
 
-async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
-  id: string;
-  displayName?: { text?: string };
-  formattedAddress?: string;
-  shortFormattedAddress?: string;
-  location?: { latitude?: number; longitude?: number };
-  primaryType?: string;
-  primaryTypeDisplayName?: GoogleLocalizedText;
-  googleMapsTypeLabel?: GoogleLocalizedText;
-  types?: string[];
-  businessStatus?: string;
-	  rating?: number;
-	  userRatingCount?: number;
-	  priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
-	  priceRange?: GooglePriceRange;
-	  photos?: Array<{ name: string }>;
-	}, options?: {
+async function mapGoogleSearchPlaceToInternalPlace(rawPlace: GoogleTextSearchPlace, options?: {
   queryContext?: string;
   discoverySignals?: PlaceDiscoverySignalInput[];
 }) {
-  const details = await fetchGooglePlaceDetails(rawPlace.id).catch((error) => {
-    console.error('Google Place Details enrichment failed during place import', {
-      googlePlaceId: rawPlace.id,
-      queryContext: options?.queryContext ?? null,
-      error,
-    });
-    return null;
-  });
-
-  const effectiveDisplayName = details?.displayName?.text ?? rawPlace.displayName?.text ?? 'Unnamed place';
-  const effectiveAddress = details?.formattedAddress ?? rawPlace.formattedAddress;
-  const effectiveLocation = details?.location ?? rawPlace.location;
-  const effectivePrimaryType = details?.primaryType ?? rawPlace.primaryType;
-  const effectiveTypes = details?.types ?? rawPlace.types;
-  const effectiveRating = details?.rating ?? rawPlace.rating ?? null;
-  const effectiveUserRatingCount = details?.userRatingCount ?? rawPlace.userRatingCount ?? null;
-  const effectivePriceLevel = mapGooglePriceLevel(details?.priceLevel ?? rawPlace.priceLevel);
-  const effectivePriceRange = normalizeGooglePriceRange(details?.priceRange ?? rawPlace.priceRange);
-  const effectivePhotoRefs = details?.photos ?? rawPlace.photos ?? [];
-  const googleDetailColumns = mapGooglePlaceDetailColumns(details);
+  const effectiveDisplayName = rawPlace.displayName?.text ?? 'Unnamed place';
+  const effectiveAddress = rawPlace.formattedAddress;
+  const effectiveLocation = rawPlace.location;
+  const effectivePrimaryType = rawPlace.primaryType;
+  const effectiveTypes = rawPlace.types;
+  const effectiveRating = rawPlace.rating ?? null;
+  const effectiveUserRatingCount = rawPlace.userRatingCount ?? null;
+  const effectivePriceLevel = mapGooglePriceLevel(rawPlace.priceLevel);
+  const effectivePriceRange = normalizeGooglePriceRange(rawPlace.priceRange);
+  const effectivePhotoRefs = rawPlace.photos ?? [];
+  const googleDetailColumns = mapGooglePlaceDetailColumns(rawPlace);
   const googlePlaceColumns = {
     googleDisplayName: effectiveDisplayName,
-    shortFormattedAddress: details?.shortFormattedAddress ?? rawPlace.shortFormattedAddress ?? null,
+    shortFormattedAddress: rawPlace.shortFormattedAddress ?? null,
     googleTypes: effectiveTypes ?? [],
     googlePrimaryType: effectivePrimaryType ?? null,
-    googlePrimaryTypeDisplayName: details?.primaryTypeDisplayName?.text ?? rawPlace.primaryTypeDisplayName?.text ?? null,
-    googleMapsTypeLabel: details?.googleMapsTypeLabel?.text ?? rawPlace.googleMapsTypeLabel?.text ?? null,
-    businessStatus: details?.businessStatus ?? rawPlace.businessStatus ?? null,
+    googlePrimaryTypeDisplayName: rawPlace.primaryTypeDisplayName?.text ?? null,
+    googleMapsTypeLabel: rawPlace.googleMapsTypeLabel?.text ?? null,
+    businessStatus: rawPlace.businessStatus ?? null,
     userRatingCount: effectiveUserRatingCount,
     photosJson: jsonOrDbNull(effectivePhotoRefs),
     ...googleDetailColumns,
   };
   const locationBits = parseLocationBits(effectiveAddress);
   const category = (effectivePrimaryType ?? effectiveTypes?.[0] ?? 'recommended spot').replace(/_/g, ' ');
-  const photoUris = effectivePhotoRefs.length
-    ? await fetchGooglePhotoUris(effectivePhotoRefs.map((photo) => photo.name), 5).catch((error) => {
+  const existingPlace = await prisma.place.findUnique({
+    where: { googlePlaceId: rawPlace.id },
+    select: { id: true },
+  });
+  const isNewPlace = !existingPlace;
+  // Resolve a small number of renderable photo URLs only when the place is first
+  // acquired. Existing places keep their current media to avoid recurring photo
+  // requests on later query runs.
+  const photoUris = isNewPlace && effectivePhotoRefs.length
+    ? await fetchGooglePhotoUris(effectivePhotoRefs.map((photo) => photo.name), 3).catch((error) => {
         console.error(error);
         return [];
       })
     : [];
   const photoUri = photoUris[0] ?? null;
-  const neighborhoodBits = extractNeighborhoodFromAddressComponents(details?.addressComponents);
+  const neighborhoodBits = extractNeighborhoodFromAddressComponents(rawPlace.addressComponents);
 
   const place = await prisma.place.upsert({
     where: { googlePlaceId: rawPlace.id },
@@ -1365,7 +1393,7 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
 	      googlePriceRangeEnd: effectivePriceRange?.endAmount ?? null,
 	      googlePriceRangeCurrency: effectivePriceRange?.currencyCode ?? null,
 	      primaryImageUrl: photoUri ?? undefined,
-      mapsEmbedUrl: details?.googleMapsUri ?? undefined,
+      mapsEmbedUrl: rawPlace.googleMapsUri ?? undefined,
       media: photoUris.length > 0
         ? {
             deleteMany: {},
@@ -1396,7 +1424,7 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
 	      googlePriceRangeEnd: effectivePriceRange?.endAmount ?? null,
 	      googlePriceRangeCurrency: effectivePriceRange?.currencyCode ?? null,
 	      primaryImageUrl: photoUri ?? undefined,
-      mapsEmbedUrl: details?.googleMapsUri ?? null,
+      mapsEmbedUrl: rawPlace.googleMapsUri ?? null,
       media: photoUris.length > 0
         ? {
             create: photoUris.map((uri, index) => ({
@@ -1410,29 +1438,29 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
     },
   });
 
-  await persistGooglePlaceSnapshot({
-    placeId: place.id,
-    googlePlaceId: rawPlace.id,
-    source: 'TEXT_SEARCH',
-    queryContext: options?.queryContext ?? null,
-    payload: rawPlace,
-  });
-
-	  if (details) {
-    await persistGooglePlaceSnapshot({
-      placeId: place.id,
-      googlePlaceId: details.id,
-      source: 'PLACE_DETAILS',
-      payload: details,
-      queryContext: options?.queryContext ?? null,
-    });
-  }
-
   if (options?.discoverySignals?.length) {
+    for (const signal of options.discoverySignals) {
+      await persistGooglePlaceSnapshot({
+        placeId: place.id,
+        googlePlaceId: rawPlace.id,
+        source: 'TEXT_SEARCH',
+        queryContext: signal.queryText,
+        payload: signal.payload ?? rawPlace,
+      });
+    }
+
     await persistPlaceDiscoverySignals({
       placeId: place.id,
       googlePlaceId: rawPlace.id,
       signals: options.discoverySignals,
+    });
+  } else {
+    await persistGooglePlaceSnapshot({
+      placeId: place.id,
+      googlePlaceId: rawPlace.id,
+      source: 'TEXT_SEARCH',
+      queryContext: options?.queryContext ?? null,
+      payload: rawPlace,
     });
   }
 
@@ -1795,6 +1823,7 @@ async function getDiscoveryPlacesByLocation(
         resultRank: index + 1,
         locationLabel,
         locationType: locationType ?? 'city',
+        payload: place,
       },
     })) ?? [],
   );
@@ -2231,6 +2260,20 @@ async function ensureLocationCandidatePool(
     where: buildLocationWhere(locationLabel, locationType),
   });
 
+  // Google acquisition is intentionally manual-only. User-facing discovery must
+  // read from our database so API cost and data changes are controlled.
+  if (location.discoveryCandidateCount !== cachedCount) {
+    await prisma.location.update({
+      where: { id: location.id },
+      data: {
+        discoveryCandidateCount: cachedCount,
+        discoverySeedVersion: 'manual-google-acquisition-v1',
+      },
+    });
+  }
+  return;
+
+  /*
   const seededRecently = location.discoveryLastGoogleSyncAt
     ? (Date.now() - location.discoveryLastGoogleSyncAt.getTime()) < DISCOVERY_RESEED_INTERVAL_MS
     : false;
@@ -2296,6 +2339,7 @@ async function ensureLocationCandidatePool(
       discoverySeedVersion: 'city-pool-v2',
     },
   });
+  */
 }
 
 async function getDiscoveryPlacesForUser(options: {
@@ -5373,10 +5417,10 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
 	    };
   }
 
-  const details = await fetchGooglePlaceDetails(place.googlePlaceId).catch((error) => {
-    console.error(error);
-    return null;
-  });
+  // Place acquisition now stores the full Google payload from Text Search. Avoid
+  // per-place Place Details calls here so opening a detail page does not create
+  // an extra Google request for data we already persist.
+  const details = null as Awaited<ReturnType<typeof fetchGooglePlaceDetails>>;
 
   if (details) {
     const photoUris = details.photos?.length

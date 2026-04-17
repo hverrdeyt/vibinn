@@ -19,6 +19,7 @@
     "places:backfill-google-photos": "tsx scripts/backfill-google-place-photos.ts",
     "places:backfill-google-price-ranges": "tsx scripts/backfill-google-place-price-ranges.ts",
     "places:backfill-google-detail-fields": "tsx scripts/backfill-google-place-detail-fields.ts",
+    "places:acquire-google-text-search": "tsx scripts/acquire-google-text-search-places.ts",
     "ai:regenerate-place-enrichment": "tsx scripts/regenerate-place-enrichment.ts",
     "ai:retry-place-enrichment-failures": "tsx scripts/retry-place-enrichment-failures.ts",
     "preview": "vite preview",
