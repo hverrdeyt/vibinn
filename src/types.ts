@@ -21,6 +21,20 @@ export interface Place {
   category?: string;
   images?: string[]; // for carousel
   openingHours?: string[];
+  servesBreakfast?: boolean;
+  servesLunch?: boolean;
+  servesDinner?: boolean;
+  servesBeer?: boolean;
+  servesWine?: boolean;
+  servesBrunch?: boolean;
+  servesDessert?: boolean;
+  servesCoffee?: boolean;
+  goodForGroups?: boolean;
+  goodForWatchingSports?: boolean;
+  timeZone?: string;
+  utcOffsetMinutes?: number;
+  outdoors?: boolean;
+  outdoorSeating?: boolean;
   mapsUrl?: string;
   latitude?: number;
   longitude?: number;

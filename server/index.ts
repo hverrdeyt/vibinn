@@ -831,6 +831,47 @@ type GooglePriceRange = {
   endPrice?: GoogleMoney;
 };
 
+type GooglePlaceDetailsResponse = {
+  id: string;
+  displayName?: { text?: string };
+  formattedAddress?: string;
+  addressComponents?: Array<{
+    longText?: string;
+    shortText?: string;
+    types?: string[];
+    languageCode?: string;
+  }>;
+  location?: { latitude?: number; longitude?: number };
+  primaryType?: string;
+  types?: string[];
+  rating?: number;
+  googleMapsUri?: string;
+  regularOpeningHours?: {
+    weekdayDescriptions?: string[];
+  };
+  timeZone?: {
+    id?: string;
+    version?: string;
+  };
+  utcOffsetMinutes?: number;
+  servesBreakfast?: boolean;
+  servesLunch?: boolean;
+  servesDinner?: boolean;
+  servesBeer?: boolean;
+  servesWine?: boolean;
+  servesBrunch?: boolean;
+  servesDessert?: boolean;
+  servesCoffee?: boolean;
+  goodForGroups?: boolean;
+  goodForWatchingSports?: boolean;
+  outdoorSeating?: boolean;
+  priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
+  priceRange?: GooglePriceRange;
+  photos?: Array<{
+    name: string;
+  }>;
+};
+
 function googleMoneyToNumber(money?: GoogleMoney | null) {
   if (!money) return null;
   const units = typeof money.units === 'number' ? money.units : Number(money.units ?? 0);
@@ -846,6 +887,33 @@ function normalizeGooglePriceRange(priceRange?: GooglePriceRange | null) {
   const currencyCode = priceRange.startPrice?.currencyCode ?? priceRange.endPrice?.currencyCode ?? null;
   if (!currencyCode || (startAmount == null && endAmount == null)) return null;
   return { startAmount, endAmount, currencyCode };
+}
+
+function normalizeGoogleOpeningHours(details?: GooglePlaceDetailsResponse | null) {
+  return details?.regularOpeningHours?.weekdayDescriptions?.filter(Boolean) ?? [];
+}
+
+function mapGooglePlaceDetailColumns(details?: GooglePlaceDetailsResponse | null) {
+  if (!details) {
+    return {};
+  }
+
+  return {
+    openingHours: normalizeGoogleOpeningHours(details),
+    servesBreakfast: details.servesBreakfast ?? null,
+    servesLunch: details.servesLunch ?? null,
+    servesDinner: details.servesDinner ?? null,
+    servesBeer: details.servesBeer ?? null,
+    servesWine: details.servesWine ?? null,
+    servesBrunch: details.servesBrunch ?? null,
+    servesDessert: details.servesDessert ?? null,
+    servesCoffee: details.servesCoffee ?? null,
+    goodForGroups: details.goodForGroups ?? null,
+    goodForWatchingSports: details.goodForWatchingSports ?? null,
+    timeZoneId: details.timeZone?.id ?? null,
+    utcOffsetMinutes: typeof details.utcOffsetMinutes === 'number' ? details.utcOffsetMinutes : null,
+    outdoorSeating: details.outdoorSeating ?? null,
+  };
 }
 
 function formatStoredGooglePriceRange(input: {
@@ -1139,10 +1207,11 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
   const effectiveLocation = details?.location ?? rawPlace.location;
   const effectivePrimaryType = details?.primaryType ?? rawPlace.primaryType;
   const effectiveTypes = details?.types ?? rawPlace.types;
-	  const effectiveRating = details?.rating ?? rawPlace.rating ?? null;
-	  const effectivePriceLevel = mapGooglePriceLevel(details?.priceLevel ?? rawPlace.priceLevel);
-	  const effectivePriceRange = normalizeGooglePriceRange(details?.priceRange ?? rawPlace.priceRange);
-	  const effectivePhotoRefs = details?.photos ?? rawPlace.photos ?? [];
+  const effectiveRating = details?.rating ?? rawPlace.rating ?? null;
+  const effectivePriceLevel = mapGooglePriceLevel(details?.priceLevel ?? rawPlace.priceLevel);
+  const effectivePriceRange = normalizeGooglePriceRange(details?.priceRange ?? rawPlace.priceRange);
+  const effectivePhotoRefs = details?.photos ?? rawPlace.photos ?? [];
+  const googleDetailColumns = mapGooglePlaceDetailColumns(details);
   const locationBits = parseLocationBits(effectiveAddress);
   const category = (effectivePrimaryType ?? effectiveTypes?.[0] ?? 'recommended spot').replace(/_/g, ' ');
   const photoUris = effectivePhotoRefs.length
@@ -1166,6 +1235,7 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       latitude: effectiveLocation?.latitude ?? null,
       longitude: effectiveLocation?.longitude ?? null,
       category,
+      ...googleDetailColumns,
 	      rating: effectiveRating,
 	      priceLevel: effectivePriceLevel,
 	      googlePriceRangeStart: effectivePriceRange?.startAmount ?? null,
@@ -1196,6 +1266,7 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       latitude: effectiveLocation?.latitude ?? null,
       longitude: effectiveLocation?.longitude ?? null,
       category,
+      ...googleDetailColumns,
 	      rating: effectiveRating,
 	      priceLevel: effectivePriceLevel,
 	      googlePriceRangeStart: effectivePriceRange?.startAmount ?? null,
@@ -1254,6 +1325,21 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
 	      endAmount: effectivePriceRange?.endAmount,
 	      currencyCode: effectivePriceRange?.currencyCode,
 	    }) ?? undefined,
+	    openingHours: place.openingHours.length > 0 ? place.openingHours : undefined,
+	    servesBreakfast: place.servesBreakfast ?? undefined,
+	    servesLunch: place.servesLunch ?? undefined,
+	    servesDinner: place.servesDinner ?? undefined,
+	    servesBeer: place.servesBeer ?? undefined,
+	    servesWine: place.servesWine ?? undefined,
+	    servesBrunch: place.servesBrunch ?? undefined,
+	    servesDessert: place.servesDessert ?? undefined,
+	    servesCoffee: place.servesCoffee ?? undefined,
+	    goodForGroups: place.goodForGroups ?? undefined,
+	    goodForWatchingSports: place.goodForWatchingSports ?? undefined,
+	    timeZone: place.timeZoneId ?? undefined,
+	    utcOffsetMinutes: place.utcOffsetMinutes ?? undefined,
+	    outdoors: place.outdoorSeating ?? undefined,
+	    outdoorSeating: place.outdoorSeating ?? undefined,
 	    category,
 	  };
 }
@@ -1662,6 +1748,21 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     tags,
     attitudeLabel: place.aiEnrichment?.attitudeLabel ?? undefined,
     bestTime: place.aiEnrichment?.bestTime ?? undefined,
+    openingHours: place.openingHours.length > 0 ? place.openingHours : undefined,
+    servesBreakfast: place.servesBreakfast ?? undefined,
+    servesLunch: place.servesLunch ?? undefined,
+    servesDinner: place.servesDinner ?? undefined,
+    servesBeer: place.servesBeer ?? undefined,
+    servesWine: place.servesWine ?? undefined,
+    servesBrunch: place.servesBrunch ?? undefined,
+    servesDessert: place.servesDessert ?? undefined,
+    servesCoffee: place.servesCoffee ?? undefined,
+    goodForGroups: place.goodForGroups ?? undefined,
+    goodForWatchingSports: place.goodForWatchingSports ?? undefined,
+    timeZone: place.timeZoneId ?? undefined,
+    utcOffsetMinutes: place.utcOffsetMinutes ?? undefined,
+    outdoors: place.outdoorSeating ?? undefined,
+    outdoorSeating: place.outdoorSeating ?? undefined,
     similarityStat: 82,
     whyYoullLikeIt: [
       ...(place.aiEnrichment?.description ? [place.aiEnrichment.description] : []),
@@ -1755,6 +1856,21 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     }),
     attitudeLabel: '',
     bestTime: '',
+    openingHours: undefined,
+    servesBreakfast: undefined,
+    servesLunch: undefined,
+    servesDinner: undefined,
+    servesBeer: undefined,
+    servesWine: undefined,
+    servesBrunch: undefined,
+    servesDessert: undefined,
+    servesCoffee: undefined,
+    goodForGroups: undefined,
+    goodForWatchingSports: undefined,
+    timeZone: undefined,
+    utcOffsetMinutes: undefined,
+    outdoors: undefined,
+    outdoorSeating: undefined,
     similarityStat: place.similarityStat ?? 0,
 	    whyYoullLikeIt: place.whyYoullLikeIt ?? [],
 	    rating: 0,
@@ -2413,7 +2529,34 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'id,displayName,formattedAddress,location,primaryType,types,rating,priceLevel,priceRange,googleMapsUri,regularOpeningHours.weekdayDescriptions,photos,addressComponents',
+      'X-Goog-FieldMask': [
+        'id',
+        'displayName',
+        'formattedAddress',
+        'location',
+        'primaryType',
+        'types',
+        'rating',
+        'priceLevel',
+        'priceRange',
+        'googleMapsUri',
+        'regularOpeningHours.weekdayDescriptions',
+        'photos',
+        'addressComponents',
+        'servesBreakfast',
+        'servesLunch',
+        'servesDinner',
+        'servesBeer',
+        'servesWine',
+        'servesBrunch',
+        'servesDessert',
+        'servesCoffee',
+        'goodForGroups',
+        'goodForWatchingSports',
+        'timeZone',
+        'utcOffsetMinutes',
+        'outdoorSeating',
+      ].join(','),
     },
   });
 
@@ -2421,30 +2564,7 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
     throw new Error(`Google Place Details failed with ${response.status}`);
   }
 
-  return response.json() as Promise<{
-    id: string;
-    displayName?: { text?: string };
-    formattedAddress?: string;
-    addressComponents?: Array<{
-      longText?: string;
-      shortText?: string;
-      types?: string[];
-      languageCode?: string;
-    }>;
-    location?: { latitude?: number; longitude?: number };
-    primaryType?: string;
-    types?: string[];
-	    rating?: number;
-	    googleMapsUri?: string;
-    regularOpeningHours?: {
-      weekdayDescriptions?: string[];
-    };
-	    priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
-	    priceRange?: GooglePriceRange;
-	    photos?: Array<{
-      name: string;
-    }>;
-  }>;
+  return response.json() as Promise<GooglePlaceDetailsResponse>;
 }
 
 function extractNeighborhoodFromAddressComponents(components: Array<{
@@ -4946,7 +5066,21 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       recommendationReason,
       rating: place.rating ?? undefined,
       priceLevel: place.priceLevel ?? undefined,
-      openingHours: undefined,
+      openingHours: place.openingHours.length > 0 ? place.openingHours : undefined,
+      servesBreakfast: place.servesBreakfast ?? undefined,
+      servesLunch: place.servesLunch ?? undefined,
+      servesDinner: place.servesDinner ?? undefined,
+      servesBeer: place.servesBeer ?? undefined,
+      servesWine: place.servesWine ?? undefined,
+      servesBrunch: place.servesBrunch ?? undefined,
+      servesDessert: place.servesDessert ?? undefined,
+      servesCoffee: place.servesCoffee ?? undefined,
+      goodForGroups: place.goodForGroups ?? undefined,
+      goodForWatchingSports: place.goodForWatchingSports ?? undefined,
+      timeZone: place.timeZoneId ?? undefined,
+      utcOffsetMinutes: place.utcOffsetMinutes ?? undefined,
+      outdoors: place.outdoorSeating ?? undefined,
+      outdoorSeating: place.outdoorSeating ?? undefined,
       mapsUrl: place.latitude && place.longitude
         ? `https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}`
         : place.address
@@ -4984,6 +5118,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
 	    const locationBits = parseLocationBits(details.formattedAddress);
 	    const neighborhoodBits = extractNeighborhoodFromAddressComponents(details.addressComponents);
 	    const googlePriceRange = normalizeGooglePriceRange(details.priceRange);
+	    const googleDetailColumns = mapGooglePlaceDetailColumns(details);
 	    const updated = await prisma.place.update({
       where: { id: place.id },
       data: {
@@ -4996,6 +5131,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
         latitude: details.location?.latitude ?? place.latitude,
         longitude: details.location?.longitude ?? place.longitude,
         category: details.primaryType?.replace(/_/g, ' ') ?? place.category,
+        ...googleDetailColumns,
 	        rating: details.rating ?? place.rating,
 	        priceLevel: mapGooglePriceLevel(details.priceLevel) ?? place.priceLevel,
 	        googlePriceRangeStart: googlePriceRange?.startAmount ?? null,
@@ -5070,7 +5206,21 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       }),
       rating: finalPlace.rating ?? undefined,
       priceLevel: finalPlace.priceLevel ?? undefined,
-      openingHours: details.regularOpeningHours?.weekdayDescriptions ?? undefined,
+      openingHours: finalPlace.openingHours.length > 0 ? finalPlace.openingHours : undefined,
+      servesBreakfast: finalPlace.servesBreakfast ?? undefined,
+      servesLunch: finalPlace.servesLunch ?? undefined,
+      servesDinner: finalPlace.servesDinner ?? undefined,
+      servesBeer: finalPlace.servesBeer ?? undefined,
+      servesWine: finalPlace.servesWine ?? undefined,
+      servesBrunch: finalPlace.servesBrunch ?? undefined,
+      servesDessert: finalPlace.servesDessert ?? undefined,
+      servesCoffee: finalPlace.servesCoffee ?? undefined,
+      goodForGroups: finalPlace.goodForGroups ?? undefined,
+      goodForWatchingSports: finalPlace.goodForWatchingSports ?? undefined,
+      timeZone: finalPlace.timeZoneId ?? undefined,
+      utcOffsetMinutes: finalPlace.utcOffsetMinutes ?? undefined,
+      outdoors: finalPlace.outdoorSeating ?? undefined,
+      outdoorSeating: finalPlace.outdoorSeating ?? undefined,
       mapsUrl: details.googleMapsUri ?? (finalPlace.latitude && finalPlace.longitude
         ? `https://www.google.com/maps/search/?api=1&query=${finalPlace.latitude},${finalPlace.longitude}`
         : finalPlace.address
@@ -5113,7 +5263,21 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
     recommendationReason,
     rating: place.rating ?? undefined,
     priceLevel: place.priceLevel ?? undefined,
-    openingHours: undefined,
+    openingHours: place.openingHours.length > 0 ? place.openingHours : undefined,
+    servesBreakfast: place.servesBreakfast ?? undefined,
+    servesLunch: place.servesLunch ?? undefined,
+    servesDinner: place.servesDinner ?? undefined,
+    servesBeer: place.servesBeer ?? undefined,
+    servesWine: place.servesWine ?? undefined,
+    servesBrunch: place.servesBrunch ?? undefined,
+    servesDessert: place.servesDessert ?? undefined,
+    servesCoffee: place.servesCoffee ?? undefined,
+    goodForGroups: place.goodForGroups ?? undefined,
+    goodForWatchingSports: place.goodForWatchingSports ?? undefined,
+    timeZone: place.timeZoneId ?? undefined,
+    utcOffsetMinutes: place.utcOffsetMinutes ?? undefined,
+    outdoors: place.outdoorSeating ?? undefined,
+    outdoorSeating: place.outdoorSeating ?? undefined,
     mapsUrl: place.latitude && place.longitude
       ? `https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}`
       : place.address

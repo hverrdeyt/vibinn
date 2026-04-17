@@ -259,6 +259,20 @@ model Place {
   longitude         Float?
   rating            Float?
   priceLevel        Int?
+  openingHours      String[]           @default([])
+  servesBreakfast   Boolean?
+  servesLunch       Boolean?
+  servesDinner      Boolean?
+  servesBeer        Boolean?
+  servesWine        Boolean?
+  servesBrunch      Boolean?
+  servesDessert     Boolean?
+  servesCoffee      Boolean?
+  goodForGroups     Boolean?
+  goodForWatchingSports Boolean?
+  timeZoneId        String?
+  utcOffsetMinutes  Int?
+  outdoorSeating    Boolean?
   googlePriceRangeStart    Float?
   googlePriceRangeEnd      Float?
   googlePriceRangeCurrency String?

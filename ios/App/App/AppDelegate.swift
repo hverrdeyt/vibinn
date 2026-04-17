@@ -344,6 +344,20 @@ private struct NativePlace: Decodable, Identifiable {
     let rating: Double?
     let priceLevel: Int?
     let openingHours: [String]?
+    var servesBreakfast: Bool? = nil
+    var servesLunch: Bool? = nil
+    var servesDinner: Bool? = nil
+    var servesBeer: Bool? = nil
+    var servesWine: Bool? = nil
+    var servesBrunch: Bool? = nil
+    var servesDessert: Bool? = nil
+    var servesCoffee: Bool? = nil
+    var goodForGroups: Bool? = nil
+    var goodForWatchingSports: Bool? = nil
+    var timeZone: String? = nil
+    var utcOffsetMinutes: Int? = nil
+    var outdoors: Bool? = nil
+    var outdoorSeating: Bool? = nil
     let mapsUrl: String?
     let latitude: Double?
     let longitude: Double?
