@@ -37,6 +37,8 @@ import {
   Mail,
   KeyRound,
   Download,
+  Smile,
+  ThumbsDown,
 } from 'lucide-react';
 import { Screen, User, Place, PlaceCollection, Interest, Vibe, EventItem } from './types';
 import { MOCK_USER, MOCK_PLACES, SIMILAR_TRAVELERS } from './mockData';
@@ -63,6 +65,53 @@ const PublicProfileScreen = lazy(() => import('./screens/PublicProfileScreen'));
 const TravelerProfileScreen = lazy(() => import('./screens/TravelerProfileScreen'));
 const ProfileScreen = lazy(() => import('./screens/ProfileScreen'));
 const PlaceDiscoveryScreen = lazy(() => import('./screens/PlaceDiscoveryScreen'));
+
+type MomentRatingLabel = 'disliked' | 'not_bad' | 'liked' | 'recommended';
+
+const MOMENT_RATING_OPTIONS = [
+  { value: 'disliked' as const, label: 'Disliked', score: 1, Icon: ThumbsDown },
+  { value: 'not_bad' as const, label: 'Not bad', score: 3, Icon: Smile },
+  { value: 'liked' as const, label: 'Liked', score: 4, Icon: Heart },
+  { value: 'recommended' as const, label: 'Recommended', score: 5, Icon: Sparkles },
+];
+
+function normalizeMomentRatingLabel(value?: string | null): MomentRatingLabel {
+  if (value === 'disliked' || value === 'DISLIKED') return 'disliked';
+  if (value === 'not_bad' || value === 'NOT_BAD' || value === 'notBad') return 'not_bad';
+  if (value === 'recommended' || value === 'RECOMMENDED') return 'recommended';
+  return 'liked';
+}
+
+function momentRatingScore(value: MomentRatingLabel) {
+  return MOMENT_RATING_OPTIONS.find((option) => option.value === value)?.score ?? 4;
+}
+
+function checkInCaptionTone(value: MomentRatingLabel) {
+  switch (value) {
+    case 'disliked':
+      return 'like a miss';
+    case 'not_bad':
+      return 'pretty okay';
+    case 'recommended':
+      return 'easy to recommend';
+    case 'liked':
+    default:
+      return 'like a strong call';
+  }
+}
+
+function momentRatingMeta(label?: string | null, fallbackRating?: number) {
+  if (label) {
+    return MOMENT_RATING_OPTIONS.find((option) => option.value === normalizeMomentRatingLabel(label)) ?? MOMENT_RATING_OPTIONS[2];
+  }
+  if (typeof fallbackRating === 'number') {
+    if (fallbackRating >= 5) return MOMENT_RATING_OPTIONS[3];
+    if (fallbackRating >= 4) return MOMENT_RATING_OPTIONS[2];
+    if (fallbackRating >= 3) return MOMENT_RATING_OPTIONS[1];
+    return MOMENT_RATING_OPTIONS[0];
+  }
+  return null;
+}
 
 declare global {
   interface Navigator {
@@ -3167,6 +3216,7 @@ export default function App() {
     caption: string;
     uploadedMedia: string[];
     rating: number;
+    ratingLabel: MomentRatingLabel;
     budgetLevel: '$' | '$$' | '$$$';
     visitType: 'solo' | 'couple' | 'friends' | 'family';
     timeOfDay: 'morning' | 'afternoon' | 'sunset' | 'night';
@@ -3184,6 +3234,7 @@ export default function App() {
       visitedDate: payload.visitedDate,
       momentCaption: payload.caption,
       momentRating: payload.rating,
+      momentRatingLabel: payload.ratingLabel,
       momentWouldRevisit: payload.wouldRevisit,
       momentVisitType: payload.visitType,
       momentTimeOfDay: payload.timeOfDay,
@@ -3251,6 +3302,7 @@ export default function App() {
     visitedDate: string;
     caption?: string;
     rating?: number;
+    ratingLabel?: MomentRatingLabel;
     wouldRevisit?: 'yes' | 'not_sure' | 'not_interested';
     visitType?: 'solo' | 'couple' | 'friends' | 'family';
     timeOfDay?: 'morning' | 'afternoon' | 'sunset' | 'night';
@@ -3267,6 +3319,7 @@ export default function App() {
       visitedDate: moment.visitedDate,
       momentCaption: moment.caption ?? '',
       momentRating: moment.rating,
+      momentRatingLabel: moment.ratingLabel ?? 'liked',
       momentWouldRevisit: moment.wouldRevisit,
       momentVisitType: moment.visitType,
       momentTimeOfDay: moment.timeOfDay,
@@ -4762,6 +4815,7 @@ export default function App() {
                   caption: payload.caption ?? '',
                   uploadedMedia: payload.uploadedMedia ?? [],
                   rating: payload.rating ?? 4,
+                  ratingLabel: payload.ratingLabel ?? 'liked',
                   budgetLevel: payload.budgetLevel ?? '$$',
                   visitType: payload.visitType ?? 'solo',
                   timeOfDay: payload.timeOfDay ?? 'afternoon',
@@ -5971,6 +6025,7 @@ function EditMomentScreen({
     caption: string;
     uploadedMedia: string[];
     rating: number;
+    ratingLabel: MomentRatingLabel;
     budgetLevel: '$' | '$$' | '$$$';
     visitType: 'solo' | 'couple' | 'friends' | 'family';
     timeOfDay: 'morning' | 'afternoon' | 'sunset' | 'night';
@@ -6511,10 +6566,10 @@ function MomentEntryCard({
   const normalizedMedia = (validMomentMedia.length > 0
     ? validMomentMedia
     : media.map((url) => ({ url, mediaType: isVideoUrl(url) ? 'video' as const : 'image' as const })));
+  const ratingMeta = momentRatingMeta(place.momentRatingLabel, place.momentRating);
   const primaryMeta = [
     place.momentTimeOfDay,
     place.momentVisitType,
-    typeof place.momentRating === 'number' ? `${place.momentRating}/5` : null,
     place.momentWouldRevisit === 'yes'
       ? 'would revisit'
       : place.momentWouldRevisit === 'not_sure'
@@ -6601,8 +6656,14 @@ function MomentEntryCard({
           <p className="text-sm font-medium leading-relaxed text-white/82">{place.momentCaption}</p>
         ) : null}
 
-        {primaryMeta.length > 0 || vibeTags.length > 0 ? (
+        {ratingMeta || primaryMeta.length > 0 || vibeTags.length > 0 ? (
           <div className="space-y-1 text-xs font-medium text-white/42">
+            {ratingMeta ? (
+              <div className="inline-flex items-center gap-1.5 rounded-full bg-white/8 px-2.5 py-1 font-black text-white/78">
+                <ratingMeta.Icon size={12} />
+                {ratingMeta.label}
+              </div>
+            ) : null}
             {primaryMeta.length > 0 ? (
               <div>{primaryMeta.join(' • ')}</div>
             ) : null}
@@ -7043,6 +7104,7 @@ function MomentFormScreen({
     caption: string;
     uploadedMedia: string[];
     rating: number;
+    ratingLabel: MomentRatingLabel;
     budgetLevel: '$' | '$$' | '$$$';
     visitType: 'solo' | 'couple' | 'friends' | 'family';
     timeOfDay: 'morning' | 'afternoon' | 'sunset' | 'night';
@@ -7073,7 +7135,7 @@ function MomentFormScreen({
   const [selectedPlace, setSelectedPlace] = useState<Place | null>(initialPlace);
   const [visitedDate, setVisitedDate] = useState(defaultVisitedDate);
   const [caption, setCaption] = useState(initialCaption);
-  const [rating, setRating] = useState<number>(initialRating);
+  const [ratingLabel, setRatingLabel] = useState<MomentRatingLabel>('liked');
   const [budgetLevel] = useState<'$' | '$$' | '$$$'>(initialBudgetLevel);
   const [uploadedMedia, setUploadedMedia] = useState<DraftMediaItem[]>(
     initialUploadedMedia.map(createMediaItem),
@@ -7113,7 +7175,7 @@ function MomentFormScreen({
 
   const submitCaption = caption.trim()
     || (selectedPlace
-      ? `${selectedPlace.name} felt like a ${rating >= 4 ? 'strong' : rating === 3 ? 'solid' : 'mixed'} call. ${wouldRevisit === 'yes' ? 'I would come back.' : wouldRevisit === 'not_sure' ? 'Maybe again.' : 'Probably one and done.'}`
+      ? `${selectedPlace.name} felt ${checkInCaptionTone(ratingLabel)}. ${wouldRevisit === 'yes' ? 'I would come back.' : wouldRevisit === 'not_sure' ? 'Maybe again.' : 'Probably one and done.'}`
       : '');
 
   const readFileAsDataUrl = (file: Blob) => new Promise<string>((resolve, reject) => {
@@ -7568,22 +7630,26 @@ function MomentFormScreen({
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <section className="rounded-[28px] border border-white/10 bg-white/6 p-5">
             <div className="flex items-center gap-2 text-sm font-black text-white">
-              <Star size={16} className="text-accent" />
-              <span>Rating</span>
+              <Sparkles size={16} className="text-accent" />
+              <span>How was it?</span>
             </div>
-            <div className="mt-4 flex gap-2">
-              {[1, 2, 3, 4, 5].map((value) => (
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              {MOMENT_RATING_OPTIONS.map((option) => {
+                const Icon = option.Icon;
+                return (
                 <button
-                  key={value}
+                  key={option.value}
                   type="button"
-                  onClick={() => setRating(value)}
-                  className={`flex h-10 w-10 items-center justify-center rounded-full border text-sm font-black transition ${
-                    rating === value ? 'border-accent bg-accent text-dark' : 'border-white/10 bg-zinc-900 text-white/70'
+                  onClick={() => setRatingLabel(option.value)}
+                  className={`flex items-center justify-center gap-2 rounded-2xl border px-3 py-3 text-xs font-black transition ${
+                    ratingLabel === option.value ? 'border-accent bg-accent text-dark' : 'border-white/10 bg-zinc-900 text-white/70'
                   }`}
                 >
-                  {value}
+                  <Icon size={14} />
+                  {option.label}
                 </button>
-              ))}
+                );
+              })}
             </div>
           </section>
 
@@ -7626,7 +7692,8 @@ function MomentFormScreen({
                   visitedDate,
                   caption: submitCaption,
                   uploadedMedia: uploadedMedia.filter((media) => media.url).map((media) => media.url),
-                  rating,
+                  rating: momentRatingScore(ratingLabel),
+                  ratingLabel,
                   budgetLevel,
                   visitType,
                   timeOfDay,
@@ -7665,6 +7732,7 @@ function CreateMomentScreen({
     caption: string;
     uploadedMedia: string[];
     rating: number;
+    ratingLabel: MomentRatingLabel;
     budgetLevel: '$' | '$$' | '$$$';
     visitType: 'solo' | 'couple' | 'friends' | 'family';
     timeOfDay: 'morning' | 'afternoon' | 'sunset' | 'night';

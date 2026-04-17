@@ -356,6 +356,7 @@ private struct NativePlace: Decodable, Identifiable {
     let momentCaption: String?
     let momentWouldRevisit: String?
     let momentRating: Int?
+    var momentRatingLabel: String? = nil
 }
 
 private struct NativeMomentMediaItem: Decodable {
@@ -754,6 +755,8 @@ private struct NativeCreatedMoment: Decodable {
     let visitedAtIso: String?
     let caption: String?
     let uploadedMedia: [String]?
+    let rating: Int?
+    let ratingLabel: String?
     let place: NativePlace?
 }
 
@@ -764,6 +767,7 @@ private struct NativeMoment: Decodable, Identifiable {
     let caption: String?
     let uploadedMedia: [String]?
     let rating: Int?
+    let ratingLabel: String?
     let wouldRevisit: String?
     let place: NativePlace
 }
@@ -1833,7 +1837,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     func submitCheckIn(
         place: NativePlace,
         visitedDate: String,
-        rating: Int,
+        ratingLabel: String,
         wouldRevisit: String,
         note: String,
         uploadedMedia: [String]
@@ -1850,7 +1854,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             placeId: place.id,
             visitedDate: visitedDate,
             caption: note,
-            rating: rating,
+            ratingLabel: ratingLabel,
             wouldRevisit: wouldRevisit,
             uploadedMedia: uploadedMedia
         )
@@ -1893,7 +1897,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             visitedAtIso: createdMoment.visitedAtIso,
             momentCaption: createdMoment.caption,
             momentWouldRevisit: wouldRevisit,
-            momentRating: rating
+            momentRating: createdMoment.rating ?? nativeMomentRatingScore(for: ratingLabel),
+            momentRatingLabel: createdMoment.ratingLabel ?? ratingLabel
         )
         myMoments.insert(
             NativeMoment(
@@ -1902,7 +1907,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 visitedAtIso: createdMoment.visitedAtIso,
                 caption: createdMoment.caption,
                 uploadedMedia: resolvedUploadedMedia,
-                rating: rating,
+                rating: createdMoment.rating ?? nativeMomentRatingScore(for: ratingLabel),
+                ratingLabel: createdMoment.ratingLabel ?? ratingLabel,
                 wouldRevisit: wouldRevisit,
                 place: resolvedPlace
             ),
@@ -2485,7 +2491,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     visitedAtIso: moment.visitedAtIso,
                     momentCaption: moment.caption,
                     momentWouldRevisit: moment.wouldRevisit,
-                    momentRating: moment.rating
+                    momentRating: moment.rating,
+                    momentRatingLabel: moment.ratingLabel
                 ),
                 collection: nil,
                 caption: moment.caption,
@@ -3113,6 +3120,7 @@ private struct NativeAPIClient {
         let caption: String
         let uploadedMedia: [String]
         let rating: Int
+        let ratingLabel: String
         let budgetLevel: String
         let visitType: String
         let timeOfDay: String
@@ -3130,10 +3138,11 @@ private struct NativeAPIClient {
         placeId: String,
         visitedDate: String,
         caption: String,
-        rating: Int,
+        ratingLabel: String,
         wouldRevisit: String,
         uploadedMedia: [String]
     ) async throws -> NativeCreatedMoment {
+        let normalizedRatingLabel = nativeNormalizedMomentRatingLabel(ratingLabel)
         let response: NativeMomentResponse = try await request(
             path: "/api/moments",
             method: "POST",
@@ -3143,7 +3152,8 @@ private struct NativeAPIClient {
                 visitedDate: visitedDate,
                 caption: caption,
                 uploadedMedia: uploadedMedia,
-                rating: rating,
+                rating: nativeMomentRatingScore(for: normalizedRatingLabel),
+                ratingLabel: normalizedRatingLabel,
                 budgetLevel: "$$",
                 visitType: "solo",
                 timeOfDay: "afternoon",
@@ -4617,14 +4627,14 @@ private struct NativeNotificationRow: View {
                         fontSize: 14
                     )
                 } else {
-                    ZStack {
-                        Circle()
-                            .fill(nativeAccent.opacity(0.16))
-                        Text("V")
-                            .font(.system(size: 16, weight: .black))
-                            .foregroundStyle(nativeAccent)
-                    }
-                    .frame(width: 40, height: 40)
+                    NativeAvatarPlaceholderSquare(
+                        fallbackText: "Vibinn",
+                        size: 40,
+                        fontSize: 16,
+                        foreground: nativeAccent,
+                        background: nativeAccent.opacity(0.16),
+                        stroke: nativeAccent.opacity(0.18)
+                    )
                 }
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -8490,11 +8500,14 @@ private struct NativeOwnVisitedMomentCard: View {
                 }
 
                 HStack(spacing: 8) {
-                    NativeFeedMetaPill(
-                        label: "Rating \(moment.rating)/5",
-                        foreground: .white.opacity(0.88),
-                        background: Color.white.opacity(0.08)
-                    )
+                    if let ratingMeta = nativeMomentRatingMeta(label: moment.ratingLabel, fallbackRating: moment.rating) {
+                        NativeFeedMetaPill(
+                            label: ratingMeta.label,
+                            icon: ratingMeta.icon,
+                            foreground: .white.opacity(0.88),
+                            background: Color.white.opacity(0.08)
+                        )
+                    }
                     if let wouldRevisit = moment.wouldRevisit {
                         NativeFeedMetaPill(
                             label: nativeRevisitLabel(wouldRevisit),
@@ -8548,7 +8561,8 @@ private struct NativeOwnVisitedMomentCard: View {
             visitedAtIso: moment.visitedAtIso,
             momentCaption: moment.caption,
             momentWouldRevisit: moment.wouldRevisit,
-            momentRating: moment.rating
+            momentRating: moment.rating,
+            momentRatingLabel: moment.ratingLabel
         )
     }
 
@@ -9156,9 +9170,10 @@ private struct NativeEditProfileSheet: View {
                 .resizable()
                 .scaledToFill()
                 .frame(width: 68, height: 68)
-                .clipShape(Circle())
+                .clipShape(RoundedRectangle(cornerRadius: nativeAvatarCornerRadius(for: 68), style: .continuous))
                 .overlay(
-                    Circle().stroke(nativeBorder, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: nativeAvatarCornerRadius(for: 68), style: .continuous)
+                        .stroke(nativeBorder, lineWidth: 1)
                 )
         } else {
             NativeAvatarCircle(
@@ -9392,42 +9407,87 @@ private struct NativeAvatarCircle: View {
         return joined.isEmpty ? "V" : joined.uppercased()
     }
 
-    var body: some View {
-        ZStack {
-            Circle()
-                .fill(Color.white.opacity(0.08))
+    private var cornerRadius: CGFloat {
+        nativeAvatarCornerRadius(for: size)
+    }
 
-            let resolvedUrl = nativeResolvedImageURL(url) ?? nativeAvatarFallbackURL(for: fallbackText)
-            if let imageURL = URL(string: resolvedUrl) {
+    var body: some View {
+        let resolvedUrl = nativeResolvedImageURL(url)
+
+        Group {
+            if let resolvedUrl, let imageURL = URL(string: resolvedUrl) {
                 AsyncImage(url: imageURL) { phase in
                     switch phase {
                     case .success(let image):
                         image
                             .resizable()
                             .scaledToFill()
+                            .frame(width: size, height: size)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                                    .stroke(nativeBorder, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
                     case .failure(_), .empty:
-                        Text(initials)
-                            .font(.system(size: fontSize, weight: .black))
-                            .foregroundStyle(.white)
+                        placeholderAvatar
                     @unknown default:
-                        Text(initials)
-                            .font(.system(size: fontSize, weight: .black))
-                            .foregroundStyle(.white)
+                        placeholderAvatar
                     }
                 }
-                .frame(width: size, height: size)
-                .clipShape(Circle())
             } else {
-                Text(initials)
-                    .font(.system(size: fontSize, weight: .black))
-                    .foregroundStyle(.white)
+                placeholderAvatar
             }
         }
         .frame(width: size, height: size)
-        .overlay(
-            Circle().stroke(nativeBorder, lineWidth: 1)
-        )
-        .clipShape(Circle())
+    }
+
+    private var placeholderAvatar: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(Color.white.opacity(0.08))
+            .overlay(
+                Text(initials)
+                    .font(.system(size: fontSize, weight: .black))
+                    .foregroundStyle(.white)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(nativeBorder, lineWidth: 1)
+            )
+            .frame(width: size, height: size)
+    }
+}
+
+private struct NativeAvatarPlaceholderSquare: View {
+    let fallbackText: String
+    let size: CGFloat
+    let fontSize: CGFloat
+    var foreground: Color = .white
+    var background: Color = Color.white.opacity(0.08)
+    var stroke: Color = nativeBorder
+
+    private var initials: String {
+        let parts = fallbackText.split(separator: " ").prefix(2)
+        let joined = parts.compactMap { $0.first }.map { String($0) }.joined()
+        return joined.isEmpty ? "V" : joined.uppercased()
+    }
+
+    private var cornerRadius: CGFloat {
+        nativeAvatarCornerRadius(for: size)
+    }
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+            .fill(background)
+            .overlay(
+                Text(initials)
+                    .font(.system(size: fontSize, weight: .black))
+                    .foregroundStyle(foreground)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(stroke, lineWidth: 1)
+            )
+            .frame(width: size, height: size)
     }
 }
 
@@ -9850,11 +9910,12 @@ private struct NativeFeedCard: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
-                if item.type == .visited, item.place?.momentRating != nil || item.place?.momentWouldRevisit != nil {
+                if item.type == .visited, item.place?.momentRatingLabel != nil || item.place?.momentRating != nil || item.place?.momentWouldRevisit != nil {
                     HStack(spacing: 8) {
-                        if let rating = item.place?.momentRating {
+                        if let ratingMeta = nativeMomentRatingMeta(label: item.place?.momentRatingLabel, fallbackRating: item.place?.momentRating) {
                             NativeFeedMetaPill(
-                                label: "Rating \(rating)/5",
+                                label: ratingMeta.label,
+                                icon: ratingMeta.icon,
                                 foreground: .white.opacity(0.88),
                                 background: Color.white.opacity(0.08)
                             )
@@ -10157,17 +10218,24 @@ private struct NativeFeedCard: View {
 
 private struct NativeFeedMetaPill: View {
     let label: String
+    var icon: String? = nil
     let foreground: Color
     let background: Color
 
     var body: some View {
-        Text(label)
-            .font(.system(size: 11, weight: .black))
-            .foregroundStyle(foreground)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
-            .background(background)
-            .clipShape(Capsule())
+        HStack(spacing: 5) {
+            if let icon {
+                Image(systemName: icon)
+                    .font(.system(size: 10, weight: .black))
+            }
+            Text(label)
+                .font(.system(size: 11, weight: .black))
+        }
+        .foregroundStyle(foreground)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(background)
+        .clipShape(Capsule())
     }
 }
 
@@ -11969,6 +12037,7 @@ private struct NativePlaceDetailScreen: View {
     @State private var shareURL: URL?
     @State private var sheetContentAtTop = true
     @State private var hasLoadedCanonicalDetails = false
+    @State private var showDirectionsOptions = false
 
     init(initialPlace: NativePlace) {
         _place = State(initialValue: initialPlace)
@@ -11987,7 +12056,7 @@ private struct NativePlaceDetailScreen: View {
                             .padding(.horizontal, 20)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
                             .zIndex(2)
-                    } else if openDirectionsURL != nil {
+                    } else if hasDirectionsDestination {
                         collapsedDirectionsCTA(bottomInset: geometry.safeAreaInsets.bottom)
                             .padding(.horizontal, 20)
                             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -12467,28 +12536,6 @@ private struct NativePlaceDetailScreen: View {
                     }
                 }
 
-                if let openInMapsURL {
-                    Button {
-                        openURL(openInMapsURL)
-                    } label: {
-                        HStack(spacing: 10) {
-                            Image(systemName: "map")
-                                .font(.system(size: 15, weight: .bold))
-                            Text("Open in Maps")
-                                .font(.system(size: 15, weight: .black))
-                            Spacer()
-                            Image(systemName: "arrow.up.right")
-                                .font(.system(size: 14, weight: .bold))
-                        }
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 16)
-                        .background(nativeAccent)
-                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
-
             }
 
             if includeActions {
@@ -12720,34 +12767,100 @@ private struct NativePlaceDetailScreen: View {
             .disabled(isTogglingBookmark)
             .shadow(color: Color.black.opacity(0.28), radius: 12, y: 8)
         }
+        .padding(.horizontal, 10)
+        .padding(.top, 10)
+        .padding(.bottom, 10)
+        .background(
+            Capsule(style: .continuous)
+                .fill(.ultraThinMaterial.opacity(0.92))
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+        )
         .padding(.bottom, max(bottomInset, 12))
     }
 
     @ViewBuilder
     private func collapsedDirectionsCTA(bottomInset: CGFloat) -> some View {
-        if let openDirectionsURL {
-            Button {
-                openURL(openDirectionsURL)
-            } label: {
-                HStack(spacing: 10) {
-                    Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
-                        .font(.system(size: 15, weight: .bold))
-                    Text("Get directions")
-                        .font(.system(size: 15, weight: .black))
-                    Spacer(minLength: 0)
-                    Image(systemName: "arrow.up.right")
-                        .font(.system(size: 13, weight: .bold))
+        if hasDirectionsDestination {
+            VStack(spacing: 10) {
+                if showDirectionsOptions {
+                    HStack(spacing: 10) {
+                        Button {
+                            openExternalMapURL(googleDirectionsURL)
+                        } label: {
+                            mapChoiceButtonLabel(title: "Google Maps", icon: "g.circle.fill")
+                        }
+                        .buttonStyle(.plain)
+
+                        Button {
+                            openExternalMapURL(appleDirectionsURL)
+                        } label: {
+                            mapChoiceButtonLabel(title: "Apple Maps", icon: "map.fill")
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
-                .foregroundStyle(.black)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 16)
-                .background(nativeAccent)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+
+                Button {
+                    withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                        showDirectionsOptions.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                            .font(.system(size: 15, weight: .bold))
+                        Text("Get directions")
+                            .font(.system(size: 15, weight: .black))
+                        Spacer(minLength: 0)
+                        Image(systemName: showDirectionsOptions ? "chevron.down" : "chevron.up")
+                            .font(.system(size: 13, weight: .bold))
+                    }
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 16)
+                    .background(nativeAccent)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 10)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(.ultraThinMaterial.opacity(0.92))
+                    .overlay(
+                        Capsule(style: .continuous)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    )
+            )
             .shadow(color: Color.black.opacity(0.24), radius: 14, y: 8)
             .padding(.bottom, max(bottomInset + 84, 96))
         }
+    }
+
+    private func mapChoiceButtonLabel(title: String, icon: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 14, weight: .bold))
+            Text(title)
+                .font(.system(size: 13, weight: .black))
+                .lineLimit(1)
+                .minimumScaleFactor(0.86)
+        }
+        .foregroundStyle(.white)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 13)
+        .padding(.horizontal, 10)
+        .background(Color.black.opacity(0.78))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+        )
     }
 
     private func sheetExpandedHeight(containerHeight: CGFloat, topInset: CGFloat, bottomInset: CGFloat) -> CGFloat {
@@ -13049,25 +13162,51 @@ private struct NativePlaceDetailScreen: View {
             .clipShape(Capsule())
     }
 
-    private var openInMapsURL: URL? {
-        if let latitude = place.latitude, let longitude = place.longitude {
-            let name = place.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? place.name
-            return URL(string: "http://maps.apple.com/?ll=\(latitude),\(longitude)&q=\(name)")
-        }
-        if let address = place.address?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            return URL(string: "http://maps.apple.com/?q=\(address)")
-        }
-        return place.mapsUrl.flatMap(URL.init(string:))
+    private var hasDirectionsDestination: Bool {
+        mapCoordinate != nil || !(place.address?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
     }
 
-    private var openDirectionsURL: URL? {
-        guard let latitude = place.latitude, let longitude = place.longitude else { return openInMapsURL }
-        if let origin = appState.currentCoordinate {
-            return URL(string: "http://maps.apple.com/?saddr=\(origin.latitude),\(origin.longitude)&daddr=\(latitude),\(longitude)&dirflg=d")
+    private var appleDirectionsURL: URL? {
+        if let latitude = place.latitude, let longitude = place.longitude {
+            let name = place.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? place.name
+            if let origin = appState.currentCoordinate {
+                return URL(string: "http://maps.apple.com/?saddr=\(origin.latitude),\(origin.longitude)&daddr=\(latitude),\(longitude)&q=\(name)&dirflg=d")
+            }
+            return URL(string: "http://maps.apple.com/?daddr=\(latitude),\(longitude)&q=\(name)&dirflg=d")
         }
-        let name = place.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? place.name
-        return URL(string: "http://maps.apple.com/?daddr=\(latitude),\(longitude)&q=\(name)&dirflg=d")
+        if let address = place.address?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+            return URL(string: "http://maps.apple.com/?daddr=\(address)&dirflg=d")
+        }
+        return nil
     }
+
+    private var googleDirectionsURL: URL? {
+        if let latitude = place.latitude, let longitude = place.longitude {
+            var components = URLComponents(string: "comgooglemaps://")
+            var queryItems = [
+                URLQueryItem(name: "daddr", value: "\(latitude),\(longitude)"),
+                URLQueryItem(name: "directionsmode", value: "driving")
+            ]
+            if let origin = appState.currentCoordinate {
+                queryItems.append(URLQueryItem(name: "saddr", value: "\(origin.latitude),\(origin.longitude)"))
+            }
+            components?.queryItems = queryItems
+            return components?.url
+        }
+        guard let address = place.address?.trimmingCharacters(in: .whitespacesAndNewlines), !address.isEmpty else { return nil }
+        var components = URLComponents(string: "comgooglemaps://")
+        components?.queryItems = [
+            URLQueryItem(name: "daddr", value: address),
+            URLQueryItem(name: "directionsmode", value: "driving")
+        ]
+        return components?.url
+    }
+
+    private func openExternalMapURL(_ url: URL?) {
+        guard let url else { return }
+        UIApplication.shared.open(url)
+    }
+
     private func loadLatestPlace() async {
         guard !isLoading else { return }
         isLoading = true
@@ -14067,10 +14206,85 @@ private func nativeDistanceBetweenMiles(
     return originLocation.distance(from: destinationLocation) / 1609.344
 }
 
-private func nativeAvatarFallbackURL(for text: String) -> String {
-    let initial = String(text.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1)).uppercased()
-    let encoded = initial.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "V"
-    return "https://placehold.co/400x400/111111/D3FF48?text=\(encoded)"
+private func nativeAvatarCornerRadius(for size: CGFloat) -> CGFloat {
+    min(max(size * 0.42, 14), (size / 2) - 2)
+}
+
+private enum NativeMomentRatingChoice: String, CaseIterable, Identifiable {
+    case disliked
+    case notBad = "not_bad"
+    case liked
+    case recommended
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .disliked: return "Disliked"
+        case .notBad: return "Not bad"
+        case .liked: return "Liked"
+        case .recommended: return "Recommended"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .disliked: return "hand.thumbsdown.fill"
+        case .notBad: return "face.smiling"
+        case .liked: return "heart.fill"
+        case .recommended: return "sparkles"
+        }
+    }
+
+    var score: Int {
+        switch self {
+        case .disliked: return 1
+        case .notBad: return 3
+        case .liked: return 4
+        case .recommended: return 5
+        }
+    }
+}
+
+private func nativeNormalizedMomentRatingLabel(_ value: String?) -> String {
+    switch value {
+    case "disliked", "DISLIKED":
+        return NativeMomentRatingChoice.disliked.rawValue
+    case "not_bad", "NOT_BAD", "notBad":
+        return NativeMomentRatingChoice.notBad.rawValue
+    case "recommended", "RECOMMENDED":
+        return NativeMomentRatingChoice.recommended.rawValue
+    default:
+        return NativeMomentRatingChoice.liked.rawValue
+    }
+}
+
+private func nativeMomentRatingChoice(for value: String?) -> NativeMomentRatingChoice {
+    NativeMomentRatingChoice(rawValue: nativeNormalizedMomentRatingLabel(value)) ?? .liked
+}
+
+private func nativeMomentRatingScore(for value: String?) -> Int {
+    nativeMomentRatingChoice(for: value).score
+}
+
+private func nativeMomentRatingMeta(label: String?, fallbackRating: Int?) -> (label: String, icon: String)? {
+    let choice: NativeMomentRatingChoice
+    if let label {
+        choice = nativeMomentRatingChoice(for: label)
+    } else if let fallbackRating {
+        if fallbackRating >= 5 {
+            choice = .recommended
+        } else if fallbackRating >= 4 {
+            choice = .liked
+        } else if fallbackRating >= 3 {
+            choice = .notBad
+        } else {
+            choice = .disliked
+        }
+    } else {
+        return nil
+    }
+    return (choice.label, choice.icon)
 }
 
 private func nativeDebugListLabel(_ values: [String]) -> String {
@@ -14108,7 +14322,7 @@ private struct NativeCheckInScreen: View {
     @State private var results: [NativePlace] = []
     @State private var selectedPlace: NativePlace?
     @State private var caption = ""
-    @State private var rating = 4
+    @State private var ratingLabel = NativeMomentRatingChoice.liked.rawValue
     @State private var wouldRevisit = "yes"
     @State private var datePreset: DatePreset = .today
     @State private var customVisitedDate = Date()
@@ -14403,21 +14617,29 @@ private struct NativeCheckInScreen: View {
 
             NativeSurfaceCard {
                 VStack(alignment: .leading, spacing: 14) {
-                    Text("Rating")
+                    Text("How was it?")
                         .font(.system(size: 12, weight: .black))
                         .foregroundStyle(.white.opacity(0.45))
                         .textCase(.uppercase)
-                    HStack(spacing: 10) {
-                        ForEach(1...5, id: \.self) { value in
+
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
+                        ForEach(NativeMomentRatingChoice.allCases) { option in
                             Button {
-                                rating = value
+                                ratingLabel = option.rawValue
                             } label: {
-                                Text("\(value)")
-                                    .font(.system(size: 16, weight: .black))
+                                HStack(spacing: 8) {
+                                    Image(systemName: option.icon)
+                                        .font(.system(size: 15, weight: .black))
+                                    Text(option.label)
+                                        .font(.system(size: 14, weight: .black))
+                                        .lineLimit(1)
+                                        .minimumScaleFactor(0.82)
+                                }
                                     .frame(maxWidth: .infinity)
                                     .padding(.vertical, 12)
-                                    .background(rating == value ? nativeAccent : nativeSurfaceStrong)
-                                    .foregroundStyle(rating == value ? .black : .white)
+                                    .padding(.horizontal, 8)
+                                    .background(ratingLabel == option.rawValue ? nativeAccent : nativeSurfaceStrong)
+                                    .foregroundStyle(ratingLabel == option.rawValue ? .black : .white)
                                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                             }
                             .buttonStyle(.plain)
@@ -14593,7 +14815,7 @@ private struct NativeCheckInScreen: View {
             try await appState.submitCheckIn(
                 place: currentPlace,
                 visitedDate: resolvedVisitedDate,
-                rating: rating,
+                ratingLabel: ratingLabel,
                 wouldRevisit: wouldRevisit,
                 note: caption,
                 uploadedMedia: uploadedMedia

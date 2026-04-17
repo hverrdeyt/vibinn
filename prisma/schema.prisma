@@ -45,6 +45,13 @@ enum RevisitIntent {
   NOT_INTERESTED
 }
 
+enum MomentRatingLabel {
+  DISLIKED
+  NOT_BAD
+  LIKED
+  RECOMMENDED
+}
+
 enum NotificationType {
   PLACE_MATCH
   TRAVELER_OVERLAP
@@ -415,6 +422,7 @@ model Moment {
   visitedAt      DateTime
   caption        String
   rating         Int
+  ratingLabel    MomentRatingLabel @default(LIKED)
   budgetLevel    String
   visitType      VisitType
   timeOfDay      TimeOfDay

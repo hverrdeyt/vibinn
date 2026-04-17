@@ -7450,6 +7450,7 @@ app.post('/api/been-there', requireAuth, async (req: AuthenticatedRequest, res) 
         visitedAt: visitedAt ? new Date(visitedAt) : new Date(),
         caption: 'Been there',
         rating: 5,
+        ratingLabel: 'LIKED',
         budgetLevel: '$$',
         visitType: 'SOLO',
         timeOfDay: 'AFTERNOON',

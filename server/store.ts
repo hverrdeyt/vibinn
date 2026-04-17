@@ -38,6 +38,7 @@ export interface MomentRecord {
   caption: string;
   uploadedMedia: string[];
   rating: number;
+  ratingLabel: 'disliked' | 'not_bad' | 'liked' | 'recommended';
   budgetLevel: '$' | '$$' | '$$$';
   visitType: 'solo' | 'couple' | 'friends' | 'family';
   timeOfDay: 'morning' | 'afternoon' | 'sunset' | 'night';
@@ -107,6 +108,7 @@ const moments: MomentRecord[] = [
     caption: `Still one of my favorite stops from ${MOCK_PLACES[0].location.split(',')[0]}.`,
     uploadedMedia: ['tokyo-night-walk.jpg', 'table-video.mp4'],
     rating: 4,
+    ratingLabel: 'liked',
     budgetLevel: '$$',
     visitType: 'solo',
     timeOfDay: 'night',

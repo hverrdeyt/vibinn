@@ -71,6 +71,20 @@ function mapRevisit(value: MomentRecord['wouldRevisit']) {
   return 'YES';
 }
 
+function mapMomentRatingLabel(value?: MomentRecord['ratingLabel'] | null) {
+  if (value === 'disliked') return 'DISLIKED';
+  if (value === 'not_bad') return 'NOT_BAD';
+  if (value === 'recommended') return 'RECOMMENDED';
+  return 'LIKED';
+}
+
+function mapMomentRatingLabelForClient(value?: string | null): MomentRecord['ratingLabel'] {
+  if (value === 'DISLIKED') return 'disliked';
+  if (value === 'NOT_BAD') return 'not_bad';
+  if (value === 'RECOMMENDED') return 'recommended';
+  return 'liked';
+}
+
 function mapPriceLevel(value?: number | null) {
   if (!value || value <= 0) return 'Free';
   return '$'.repeat(Math.min(value, 4));
@@ -219,6 +233,7 @@ type ClientPlace = ReturnType<typeof mapPlaceForClient> & {
   momentTimeOfDay?: MomentRecord['timeOfDay'];
   momentWouldRevisit?: MomentRecord['wouldRevisit'];
   momentRating?: number;
+  momentRatingLabel?: MomentRecord['ratingLabel'];
 };
 
 function mapMomentForClient(moment: MomentWithRelations) {
@@ -234,6 +249,7 @@ function mapMomentForClient(moment: MomentWithRelations) {
       mediaType: item.mediaType.toLowerCase().startsWith('video') ? 'video' as const : 'image' as const,
     })),
     rating: moment.rating,
+    ratingLabel: mapMomentRatingLabelForClient(moment.ratingLabel),
     budgetLevel: moment.budgetLevel as '$' | '$$' | '$$$',
     visitType: moment.visitType.toLowerCase() as MomentRecord['visitType'],
     timeOfDay: moment.timeOfDay.toLowerCase() as MomentRecord['timeOfDay'],
@@ -263,6 +279,7 @@ function buildTravelHistory(
     timeOfDay: MomentRecord['timeOfDay'];
     wouldRevisit: MomentRecord['wouldRevisit'];
     rating: number;
+    ratingLabel: MomentRecord['ratingLabel'];
     place: ReturnType<typeof mapPlaceForClient>;
   }>,
   ownerUserId: string,
@@ -293,6 +310,7 @@ function buildTravelHistory(
         momentTimeOfDay: moment.timeOfDay,
         momentWouldRevisit: moment.wouldRevisit,
         momentRating: moment.rating,
+        momentRatingLabel: moment.ratingLabel,
       });
     }
     grouped.set(country, existing);
@@ -2529,6 +2547,7 @@ export async function createMoment(userId: string | undefined, payload: Omit<Mom
       visitedAt: new Date(payload.visitedDate),
       caption: payload.caption,
       rating: payload.rating,
+      ratingLabel: mapMomentRatingLabel(payload.ratingLabel),
       budgetLevel: payload.budgetLevel,
       visitType: mapVisitType(payload.visitType),
       timeOfDay: mapTimeOfDay(payload.timeOfDay),
@@ -2580,6 +2599,7 @@ export async function updateMoment(userId: string | undefined, id: string, paylo
       visitedAt: payload.visitedDate ? new Date(payload.visitedDate) : existing.visitedAt,
       caption: payload.caption ?? existing.caption,
       rating: payload.rating ?? existing.rating,
+      ratingLabel: payload.ratingLabel ? mapMomentRatingLabel(payload.ratingLabel) : existing.ratingLabel,
       budgetLevel: payload.budgetLevel ?? existing.budgetLevel,
       visitType: payload.visitType ? mapVisitType(payload.visitType) : existing.visitType,
       timeOfDay: payload.timeOfDay ? mapTimeOfDay(payload.timeOfDay) : existing.timeOfDay,

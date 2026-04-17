@@ -34,6 +34,7 @@ export interface Place {
   momentTimeOfDay?: 'morning' | 'afternoon' | 'sunset' | 'night';
   momentWouldRevisit?: 'yes' | 'not_sure' | 'not_interested';
   momentRating?: number;
+  momentRatingLabel?: 'disliked' | 'not_bad' | 'liked' | 'recommended';
 }
 
 export interface PlaceCollection {
