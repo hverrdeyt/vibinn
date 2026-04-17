@@ -255,11 +255,21 @@ model Place {
   neighborhood      String?
   adminAreaLevel4   String?
   category          String
+  googleDisplayName String?
+  shortFormattedAddress String?
+  googleTypes       String[]           @default([])
+  googlePrimaryType String?
+  googlePrimaryTypeDisplayName String?
+  googleMapsTypeLabel String?
+  businessStatus    String?
+  openingDateJson   Json?
   latitude          Float?
   longitude         Float?
   rating            Float?
+  userRatingCount   Int?
   priceLevel        Int?
   openingHours      String[]           @default([])
+  currentOpeningHours String[]         @default([])
   servesBreakfast   Boolean?
   servesLunch       Boolean?
   servesDinner      Boolean?
@@ -268,6 +278,18 @@ model Place {
   servesBrunch      Boolean?
   servesDessert     Boolean?
   servesCoffee      Boolean?
+  servesCocktails   Boolean?
+  servesVegetarianFood Boolean?
+  takeout           Boolean?
+  delivery          Boolean?
+  dineIn            Boolean?
+  curbsidePickup    Boolean?
+  reservable        Boolean?
+  liveMusic         Boolean?
+  menuForChildren   Boolean?
+  goodForChildren   Boolean?
+  allowsDogs        Boolean?
+  restroom          Boolean?
   goodForGroups     Boolean?
   goodForWatchingSports Boolean?
   timeZoneId        String?
@@ -278,6 +300,20 @@ model Place {
   googlePriceRangeCurrency String?
   primaryImageUrl   String?
   mapsEmbedUrl      String?
+  websiteUri        String?
+  addressComponentsJson Json?
+  photosJson        Json?
+  reviewsJson       Json?
+  paymentOptionsJson Json?
+  parkingOptionsJson Json?
+  accessibilityOptionsJson Json?
+  editorialSummaryJson Json?
+  reviewSummaryJson Json?
+  generativeSummaryJson Json?
+  googleMapsLinksJson Json?
+  containingPlacesJson Json?
+  firstSeenAt       DateTime           @default(now())
+  lastGoogleFetchedAt DateTime?
   createdAt         DateTime           @default(now())
   updatedAt         DateTime           @updatedAt
 
@@ -285,11 +321,41 @@ model Place {
   media             PlaceMedia[]
   aiEnrichment      PlaceAiEnrichment?
   googleSnapshots   PlaceGoogleSnapshot[]
+  discoverySignals  PlaceDiscoverySignal[]
   userScores        UserPlaceScore[]
   bookmarks         Bookmark[]
   dismissedByUsers  DismissedPlace[]
   moments           Moment[]
   collectionPlaces  CollectionPlace[]
+}
+
+model PlaceDiscoverySignal {
+  id                 String   @id @default(cuid())
+  placeId            String
+  googlePlaceId      String
+  source             String   @default("GOOGLE_TEXT_SEARCH")
+  queryText          String
+  queryType          String?
+  preferenceCategory String?
+  selectedVibe       String?
+  resultRank         Int?
+  bestResultRank     Int?
+  locationLabel      String?
+  locationType       String?
+  seenCount          Int      @default(1)
+  firstSeenAt        DateTime @default(now())
+  lastSeenAt         DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@unique([googlePlaceId, queryText, locationLabel, locationType])
+  @@index([placeId])
+  @@index([preferenceCategory])
+  @@index([queryType])
+  @@index([locationLabel, locationType])
+  @@index([lastSeenAt])
 }
 
 model PlaceGoogleSnapshot {

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { cert, getApps, initializeApp as initializeFirebaseAdminApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import type { Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { MOCK_PLACES, SIMILAR_TRAVELERS } from '../src/mockData';
 import { prisma } from './prisma';
 import { generateAiCompatibilityAssessment, generatePlaceAiEnrichment } from './placeEnrichment';
@@ -831,10 +831,22 @@ type GooglePriceRange = {
   endPrice?: GoogleMoney;
 };
 
+type GoogleLocalizedText = {
+  text?: string;
+  languageCode?: string;
+};
+
+type GoogleDate = {
+  year?: number;
+  month?: number;
+  day?: number;
+};
+
 type GooglePlaceDetailsResponse = {
   id: string;
-  displayName?: { text?: string };
+  displayName?: GoogleLocalizedText;
   formattedAddress?: string;
+  shortFormattedAddress?: string;
   addressComponents?: Array<{
     longText?: string;
     shortText?: string;
@@ -843,10 +855,20 @@ type GooglePlaceDetailsResponse = {
   }>;
   location?: { latitude?: number; longitude?: number };
   primaryType?: string;
+  primaryTypeDisplayName?: GoogleLocalizedText;
+  googleMapsTypeLabel?: GoogleLocalizedText;
   types?: string[];
+  businessStatus?: string;
+  openingDate?: GoogleDate;
   rating?: number;
+  userRatingCount?: number;
   googleMapsUri?: string;
+  googleMapsLinks?: unknown;
+  websiteUri?: string;
   regularOpeningHours?: {
+    weekdayDescriptions?: string[];
+  };
+  currentOpeningHours?: {
     weekdayDescriptions?: string[];
   };
   timeZone?: {
@@ -862,14 +884,47 @@ type GooglePlaceDetailsResponse = {
   servesBrunch?: boolean;
   servesDessert?: boolean;
   servesCoffee?: boolean;
+  servesCocktails?: boolean;
+  servesVegetarianFood?: boolean;
+  takeout?: boolean;
+  delivery?: boolean;
+  dineIn?: boolean;
+  curbsidePickup?: boolean;
+  reservable?: boolean;
+  liveMusic?: boolean;
+  menuForChildren?: boolean;
+  goodForChildren?: boolean;
+  allowsDogs?: boolean;
+  restroom?: boolean;
   goodForGroups?: boolean;
   goodForWatchingSports?: boolean;
   outdoorSeating?: boolean;
+  paymentOptions?: unknown;
+  parkingOptions?: unknown;
+  accessibilityOptions?: unknown;
+  editorialSummary?: GoogleLocalizedText;
+  reviewSummary?: unknown;
+  generativeSummary?: unknown;
+  containingPlaces?: unknown;
+  reviews?: unknown[];
   priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
   priceRange?: GooglePriceRange;
   photos?: Array<{
     name: string;
   }>;
+};
+
+type PreferenceDrivenQueryDescriptor = {
+  queryText: string;
+  queryType: 'interest' | 'vibe' | 'location';
+  preferenceCategory?: string;
+  selectedVibe?: string;
+};
+
+type PlaceDiscoverySignalInput = PreferenceDrivenQueryDescriptor & {
+  resultRank?: number;
+  locationLabel?: string;
+  locationType?: string;
 };
 
 function googleMoneyToNumber(money?: GoogleMoney | null) {
@@ -893,13 +948,31 @@ function normalizeGoogleOpeningHours(details?: GooglePlaceDetailsResponse | null
   return details?.regularOpeningHours?.weekdayDescriptions?.filter(Boolean) ?? [];
 }
 
+function normalizeGoogleCurrentOpeningHours(details?: GooglePlaceDetailsResponse | null) {
+  return details?.currentOpeningHours?.weekdayDescriptions?.filter(Boolean) ?? [];
+}
+
+function jsonOrDbNull(value: unknown): Prisma.InputJsonValue | Prisma.NullTypes.DbNull {
+  if (value === undefined || value === null) return Prisma.DbNull;
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
 function mapGooglePlaceDetailColumns(details?: GooglePlaceDetailsResponse | null) {
   if (!details) {
     return {};
   }
 
   return {
+    googleDisplayName: details.displayName?.text ?? null,
+    shortFormattedAddress: details.shortFormattedAddress ?? null,
+    googleTypes: details.types ?? [],
+    googlePrimaryType: details.primaryType ?? null,
+    googlePrimaryTypeDisplayName: details.primaryTypeDisplayName?.text ?? null,
+    googleMapsTypeLabel: details.googleMapsTypeLabel?.text ?? null,
+    businessStatus: details.businessStatus ?? null,
+    openingDateJson: jsonOrDbNull(details.openingDate),
     openingHours: normalizeGoogleOpeningHours(details),
+    currentOpeningHours: normalizeGoogleCurrentOpeningHours(details),
     servesBreakfast: details.servesBreakfast ?? null,
     servesLunch: details.servesLunch ?? null,
     servesDinner: details.servesDinner ?? null,
@@ -908,11 +981,37 @@ function mapGooglePlaceDetailColumns(details?: GooglePlaceDetailsResponse | null
     servesBrunch: details.servesBrunch ?? null,
     servesDessert: details.servesDessert ?? null,
     servesCoffee: details.servesCoffee ?? null,
+    servesCocktails: details.servesCocktails ?? null,
+    servesVegetarianFood: details.servesVegetarianFood ?? null,
+    takeout: details.takeout ?? null,
+    delivery: details.delivery ?? null,
+    dineIn: details.dineIn ?? null,
+    curbsidePickup: details.curbsidePickup ?? null,
+    reservable: details.reservable ?? null,
+    liveMusic: details.liveMusic ?? null,
+    menuForChildren: details.menuForChildren ?? null,
+    goodForChildren: details.goodForChildren ?? null,
+    allowsDogs: details.allowsDogs ?? null,
+    restroom: details.restroom ?? null,
     goodForGroups: details.goodForGroups ?? null,
     goodForWatchingSports: details.goodForWatchingSports ?? null,
     timeZoneId: details.timeZone?.id ?? null,
     utcOffsetMinutes: typeof details.utcOffsetMinutes === 'number' ? details.utcOffsetMinutes : null,
     outdoorSeating: details.outdoorSeating ?? null,
+    userRatingCount: typeof details.userRatingCount === 'number' ? details.userRatingCount : null,
+    websiteUri: details.websiteUri ?? null,
+    addressComponentsJson: jsonOrDbNull(details.addressComponents),
+    photosJson: jsonOrDbNull(details.photos),
+    reviewsJson: jsonOrDbNull(details.reviews),
+    paymentOptionsJson: jsonOrDbNull(details.paymentOptions),
+    parkingOptionsJson: jsonOrDbNull(details.parkingOptions),
+    accessibilityOptionsJson: jsonOrDbNull(details.accessibilityOptions),
+    editorialSummaryJson: jsonOrDbNull(details.editorialSummary),
+    reviewSummaryJson: jsonOrDbNull(details.reviewSummary),
+    generativeSummaryJson: jsonOrDbNull(details.generativeSummary),
+    googleMapsLinksJson: jsonOrDbNull(details.googleMapsLinks),
+    containingPlacesJson: jsonOrDbNull(details.containingPlaces),
+    lastGoogleFetchedAt: new Date(),
   };
 }
 
@@ -947,7 +1046,7 @@ async function fetchGoogleTextSearch(textQuery: string) {
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.location,places.primaryType,places.types,places.rating,places.priceLevel,places.priceRange,places.photos',
+      'X-Goog-FieldMask': 'places.id,places.displayName,places.formattedAddress,places.shortFormattedAddress,places.location,places.primaryType,places.primaryTypeDisplayName,places.googleMapsTypeLabel,places.types,places.businessStatus,places.rating,places.userRatingCount,places.priceLevel,places.priceRange,places.photos',
     },
     body: JSON.stringify({
       textQuery,
@@ -964,10 +1063,15 @@ async function fetchGoogleTextSearch(textQuery: string) {
       id: string;
       displayName?: { text?: string };
       formattedAddress?: string;
+      shortFormattedAddress?: string;
       location?: { latitude?: number; longitude?: number };
       primaryType?: string;
+      primaryTypeDisplayName?: GoogleLocalizedText;
+      googleMapsTypeLabel?: GoogleLocalizedText;
       types?: string[];
+      businessStatus?: string;
 	      rating?: number;
+	      userRatingCount?: number;
 	      priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
 	      priceRange?: GooglePriceRange;
 	      photos?: Array<{ name: string }>;
@@ -1183,15 +1287,21 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
   id: string;
   displayName?: { text?: string };
   formattedAddress?: string;
+  shortFormattedAddress?: string;
   location?: { latitude?: number; longitude?: number };
   primaryType?: string;
+  primaryTypeDisplayName?: GoogleLocalizedText;
+  googleMapsTypeLabel?: GoogleLocalizedText;
   types?: string[];
+  businessStatus?: string;
 	  rating?: number;
+	  userRatingCount?: number;
 	  priceLevel?: 'PRICE_LEVEL_FREE' | 'PRICE_LEVEL_INEXPENSIVE' | 'PRICE_LEVEL_MODERATE' | 'PRICE_LEVEL_EXPENSIVE' | 'PRICE_LEVEL_VERY_EXPENSIVE';
 	  priceRange?: GooglePriceRange;
 	  photos?: Array<{ name: string }>;
 	}, options?: {
   queryContext?: string;
+  discoverySignals?: PlaceDiscoverySignalInput[];
 }) {
   const details = await fetchGooglePlaceDetails(rawPlace.id).catch((error) => {
     console.error('Google Place Details enrichment failed during place import', {
@@ -1208,10 +1318,23 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
   const effectivePrimaryType = details?.primaryType ?? rawPlace.primaryType;
   const effectiveTypes = details?.types ?? rawPlace.types;
   const effectiveRating = details?.rating ?? rawPlace.rating ?? null;
+  const effectiveUserRatingCount = details?.userRatingCount ?? rawPlace.userRatingCount ?? null;
   const effectivePriceLevel = mapGooglePriceLevel(details?.priceLevel ?? rawPlace.priceLevel);
   const effectivePriceRange = normalizeGooglePriceRange(details?.priceRange ?? rawPlace.priceRange);
   const effectivePhotoRefs = details?.photos ?? rawPlace.photos ?? [];
   const googleDetailColumns = mapGooglePlaceDetailColumns(details);
+  const googlePlaceColumns = {
+    googleDisplayName: effectiveDisplayName,
+    shortFormattedAddress: details?.shortFormattedAddress ?? rawPlace.shortFormattedAddress ?? null,
+    googleTypes: effectiveTypes ?? [],
+    googlePrimaryType: effectivePrimaryType ?? null,
+    googlePrimaryTypeDisplayName: details?.primaryTypeDisplayName?.text ?? rawPlace.primaryTypeDisplayName?.text ?? null,
+    googleMapsTypeLabel: details?.googleMapsTypeLabel?.text ?? rawPlace.googleMapsTypeLabel?.text ?? null,
+    businessStatus: details?.businessStatus ?? rawPlace.businessStatus ?? null,
+    userRatingCount: effectiveUserRatingCount,
+    photosJson: jsonOrDbNull(effectivePhotoRefs),
+    ...googleDetailColumns,
+  };
   const locationBits = parseLocationBits(effectiveAddress);
   const category = (effectivePrimaryType ?? effectiveTypes?.[0] ?? 'recommended spot').replace(/_/g, ' ');
   const photoUris = effectivePhotoRefs.length
@@ -1235,7 +1358,7 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       latitude: effectiveLocation?.latitude ?? null,
       longitude: effectiveLocation?.longitude ?? null,
       category,
-      ...googleDetailColumns,
+      ...googlePlaceColumns,
 	      rating: effectiveRating,
 	      priceLevel: effectivePriceLevel,
 	      googlePriceRangeStart: effectivePriceRange?.startAmount ?? null,
@@ -1266,7 +1389,7 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
       latitude: effectiveLocation?.latitude ?? null,
       longitude: effectiveLocation?.longitude ?? null,
       category,
-      ...googleDetailColumns,
+      ...googlePlaceColumns,
 	      rating: effectiveRating,
 	      priceLevel: effectivePriceLevel,
 	      googlePriceRangeStart: effectivePriceRange?.startAmount ?? null,
@@ -1305,8 +1428,17 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: {
     });
   }
 
+  if (options?.discoverySignals?.length) {
+    await persistPlaceDiscoverySignals({
+      placeId: place.id,
+      googlePlaceId: rawPlace.id,
+      signals: options.discoverySignals,
+    });
+  }
+
   return {
     id: place.id,
+    googlePlaceId: rawPlace.id,
     name: effectiveDisplayName,
     location: [locationBits.city, locationBits.country].filter(Boolean).join(', ') || effectiveAddress || 'Unknown location',
     description: '',
@@ -1437,121 +1569,146 @@ function dedupeQueries(queries: string[]) {
   return Array.from(new Set(queries.map((query) => query.trim()).filter(Boolean)));
 }
 
-function buildPreferenceDrivenQueries(
+function dedupeQueryDescriptors(queries: PreferenceDrivenQueryDescriptor[]) {
+  const seen = new Set<string>();
+  const deduped: PreferenceDrivenQueryDescriptor[] = [];
+
+  for (const query of queries) {
+    const queryText = query.queryText.trim();
+    if (!queryText || seen.has(queryText)) continue;
+    seen.add(queryText);
+    deduped.push({ ...query, queryText });
+  }
+
+  return deduped;
+}
+
+function buildPreferenceDrivenQueryDescriptors(
   locationLabel: string,
   locationType: string | undefined,
   selectedInterests: string[],
   selectedVibe?: string | null,
 ) {
+  const q = (
+    queryText: string,
+    queryType: PreferenceDrivenQueryDescriptor['queryType'],
+    preferenceCategory?: string,
+  ): PreferenceDrivenQueryDescriptor => ({
+    queryText,
+    queryType,
+    preferenceCategory,
+    selectedVibe: queryType === 'vibe' ? selectedVibe ?? undefined : undefined,
+  });
+
   const locationQueries =
     locationType === 'country'
       ? [
-          `top travel spots in ${locationLabel}`,
-          `best cultural places in ${locationLabel}`,
-          `hidden gems in ${locationLabel}`,
+          q(`top travel spots in ${locationLabel}`, 'location'),
+          q(`best cultural places in ${locationLabel}`, 'location'),
+          q(`hidden gems in ${locationLabel}`, 'location'),
         ]
       : locationType === 'province'
         ? [
-            `best places to visit in ${locationLabel}`,
-            `hidden gems in ${locationLabel}`,
-            `best cafes and viewpoints in ${locationLabel}`,
+            q(`best places to visit in ${locationLabel}`, 'location'),
+            q(`hidden gems in ${locationLabel}`, 'location'),
+            q(`best cafes and viewpoints in ${locationLabel}`, 'location'),
           ]
         : [
-            `best places to visit in ${locationLabel}`,
-            `hidden gems in ${locationLabel}`,
+            q(`best places to visit in ${locationLabel}`, 'location'),
+            q(`hidden gems in ${locationLabel}`, 'location'),
           ];
 
   const interestQueries = selectedInterests.flatMap((interest) => {
     switch (interest) {
       case 'good_coffee':
         return [
-          `best coffee in ${locationLabel}`,
-          `specialty coffee in ${locationLabel}`,
-          `good espresso bar in ${locationLabel}`,
+          q(`best coffee in ${locationLabel}`, 'interest', interest),
+          q(`specialty coffee in ${locationLabel}`, 'interest', interest),
+          q(`good espresso bar in ${locationLabel}`, 'interest', interest),
         ];
       case 'aesthetic_cafes':
         return [
-          `aesthetic cafe in ${locationLabel}`,
-          `cute cafe in ${locationLabel}`,
-          `instagrammable cafe in ${locationLabel}`,
+          q(`aesthetic cafe in ${locationLabel}`, 'interest', interest),
+          q(`cute cafe in ${locationLabel}`, 'interest', interest),
+          q(`instagrammable cafe in ${locationLabel}`, 'interest', interest),
         ];
       case 'desserts_sweet_treats':
         return [
-          `best desserts in ${locationLabel}`,
-          `sweet treats in ${locationLabel}`,
-          `dessert cafe in ${locationLabel}`,
+          q(`best desserts in ${locationLabel}`, 'interest', interest),
+          q(`sweet treats in ${locationLabel}`, 'interest', interest),
+          q(`dessert cafe in ${locationLabel}`, 'interest', interest),
         ];
       case 'street_food_casual_eats':
         return [
-          `best casual eats in ${locationLabel}`,
-          `street food in ${locationLabel}`,
-          `cheap eats in ${locationLabel}`,
+          q(`best casual eats in ${locationLabel}`, 'interest', interest),
+          q(`street food in ${locationLabel}`, 'interest', interest),
+          q(`cheap eats in ${locationLabel}`, 'interest', interest),
         ];
       case 'asian_comfort_food':
         return [
-          `best ramen in ${locationLabel}`,
-          `best sushi in ${locationLabel}`,
-          `asian comfort food in ${locationLabel}`,
+          q(`best ramen in ${locationLabel}`, 'interest', interest),
+          q(`best sushi in ${locationLabel}`, 'interest', interest),
+          q(`asian comfort food in ${locationLabel}`, 'interest', interest),
         ];
       case 'drinks_nightlife':
         return [
-          `best bars in ${locationLabel}`,
-          `nightlife in ${locationLabel}`,
-          `cocktail bar in ${locationLabel}`,
+          q(`best bars in ${locationLabel}`, 'interest', interest),
+          q(`nightlife in ${locationLabel}`, 'interest', interest),
+          q(`cocktail bar in ${locationLabel}`, 'interest', interest),
         ];
       case 'shop_stroll':
         return [
-          `best local boutiques in ${locationLabel}`,
-          `shopping streets in ${locationLabel}`,
-          `best area to walk and shop in ${locationLabel}`,
+          q(`best local boutiques in ${locationLabel}`, 'interest', interest),
+          q(`shopping streets in ${locationLabel}`, 'interest', interest),
+          q(`best area to walk and shop in ${locationLabel}`, 'interest', interest),
         ];
       case 'fun_activities':
         return [
-          `fun things to do in ${locationLabel}`,
-          `cool activities in ${locationLabel}`,
-          `unique places to visit in ${locationLabel}`,
+          q(`fun things to do in ${locationLabel}`, 'interest', interest),
+          q(`cool activities in ${locationLabel}`, 'interest', interest),
+          q(`unique places to visit in ${locationLabel}`, 'interest', interest),
         ];
       case 'parks_outdoor':
         return [
-          `best parks in ${locationLabel}`,
-          `best outdoor spots in ${locationLabel}`,
-          `scenic walk in ${locationLabel}`,
+          q(`best parks in ${locationLabel}`, 'interest', interest),
+          q(`best outdoor spots in ${locationLabel}`, 'interest', interest),
+          q(`scenic walk in ${locationLabel}`, 'interest', interest),
         ];
       case 'nature':
         return [
-          `best parks in ${locationLabel}`,
-          `nature spots in ${locationLabel}`,
-          `scenic walks in ${locationLabel}`,
+          q(`best parks in ${locationLabel}`, 'interest', interest),
+          q(`nature spots in ${locationLabel}`, 'interest', interest),
+          q(`scenic walks in ${locationLabel}`, 'interest', interest),
         ];
       case 'cafe':
         return [
-          `best cafes in ${locationLabel}`,
-          `aesthetic cafes in ${locationLabel}`,
-          `specialty coffee in ${locationLabel}`,
+          q(`best cafes in ${locationLabel}`, 'interest', interest),
+          q(`aesthetic cafes in ${locationLabel}`, 'interest', interest),
+          q(`specialty coffee in ${locationLabel}`, 'interest', interest),
         ];
       case 'culture':
         return [
-          `best cultural spots in ${locationLabel}`,
-          `art museums in ${locationLabel}`,
-          `historic districts in ${locationLabel}`,
+          q(`best cultural spots in ${locationLabel}`, 'interest', interest),
+          q(`art museums in ${locationLabel}`, 'interest', interest),
+          q(`historic districts in ${locationLabel}`, 'interest', interest),
         ];
       case 'shopping':
         return [
-          `best concept stores in ${locationLabel}`,
-          `local markets in ${locationLabel}`,
-          `shopping streets in ${locationLabel}`,
+          q(`best concept stores in ${locationLabel}`, 'interest', interest),
+          q(`local markets in ${locationLabel}`, 'interest', interest),
+          q(`shopping streets in ${locationLabel}`, 'interest', interest),
         ];
       case 'party':
         return [
-          `best nightlife in ${locationLabel}`,
-          `live music bars in ${locationLabel}`,
-          `cocktail bars in ${locationLabel}`,
+          q(`best nightlife in ${locationLabel}`, 'interest', interest),
+          q(`live music bars in ${locationLabel}`, 'interest', interest),
+          q(`cocktail bars in ${locationLabel}`, 'interest', interest),
         ];
       case 'adventure':
         return [
-          `outdoor activities in ${locationLabel}`,
-          `hikes near ${locationLabel}`,
-          `adventure spots in ${locationLabel}`,
+          q(`outdoor activities in ${locationLabel}`, 'interest', interest),
+          q(`hikes near ${locationLabel}`, 'interest', interest),
+          q(`adventure spots in ${locationLabel}`, 'interest', interest),
         ];
       default:
         return [];
@@ -1563,28 +1720,28 @@ function buildPreferenceDrivenQueries(
         switch (selectedVibe) {
           case 'aesthetic':
             return [
-              `aesthetic places in ${locationLabel}`,
-              `design spots in ${locationLabel}`,
+              q(`aesthetic places in ${locationLabel}`, 'vibe'),
+              q(`design spots in ${locationLabel}`, 'vibe'),
             ];
           case 'solo':
             return [
-              `quiet places in ${locationLabel}`,
-              `solo friendly spots in ${locationLabel}`,
+              q(`quiet places in ${locationLabel}`, 'vibe'),
+              q(`solo friendly spots in ${locationLabel}`, 'vibe'),
             ];
           case 'luxury':
             return [
-              `luxury experiences in ${locationLabel}`,
-              `high end places in ${locationLabel}`,
+              q(`luxury experiences in ${locationLabel}`, 'vibe'),
+              q(`high end places in ${locationLabel}`, 'vibe'),
             ];
           case 'budget':
             return [
-              `budget friendly places in ${locationLabel}`,
-              `cheap hidden gems in ${locationLabel}`,
+              q(`budget friendly places in ${locationLabel}`, 'vibe'),
+              q(`cheap hidden gems in ${locationLabel}`, 'vibe'),
             ];
           case 'spontaneous':
             return [
-              `walkable spots in ${locationLabel}`,
-              `easy last minute plans in ${locationLabel}`,
+              q(`walkable spots in ${locationLabel}`, 'vibe'),
+              q(`easy last minute plans in ${locationLabel}`, 'vibe'),
             ];
           default:
             return [];
@@ -1592,11 +1749,21 @@ function buildPreferenceDrivenQueries(
       })()
     : [];
 
-  return dedupeQueries([
+  return dedupeQueryDescriptors([
     ...interestQueries,
     ...vibeQueries,
     ...locationQueries,
   ]).slice(0, 12);
+}
+
+function buildPreferenceDrivenQueries(
+  locationLabel: string,
+  locationType: string | undefined,
+  selectedInterests: string[],
+  selectedVibe?: string | null,
+) {
+  return buildPreferenceDrivenQueryDescriptors(locationLabel, locationType, selectedInterests, selectedVibe)
+    .map((query) => query.queryText);
 }
 
 async function getDiscoveryPlacesByLocation(
@@ -1605,20 +1772,35 @@ async function getDiscoveryPlacesByLocation(
   selectedInterests: string[] = [],
   selectedVibe?: string | null,
 ) {
-  const queries = buildPreferenceDrivenQueries(locationLabel, locationType, selectedInterests, selectedVibe);
+  const queryDescriptors = buildPreferenceDrivenQueryDescriptors(locationLabel, locationType, selectedInterests, selectedVibe);
+  const queries = queryDescriptors.map((query) => query.queryText);
 
   const searchResults = await Promise.all(
-    queries.map((query) =>
-      fetchGoogleTextSearch(query).catch((error) => {
+    queryDescriptors.map((query) =>
+      fetchGoogleTextSearch(query.queryText).then((result) => ({
+        query,
+        result,
+      })).catch((error) => {
         console.error(error);
         return null;
       }),
     ),
   );
 
-  const mergedPlaces = searchResults.flatMap((result) => result?.places ?? []);
+  const mergedPlaces = searchResults.flatMap((entry) =>
+    entry?.result?.places?.map((place, index) => ({
+      place,
+      signal: {
+        ...entry.query,
+        resultRank: index + 1,
+        locationLabel,
+        locationType: locationType ?? 'city',
+      },
+    })) ?? [],
+  );
   const seenPlaceIds = new Set<string>();
-  const relevantPlaces = mergedPlaces.filter((place) => {
+  const relevantPlaces = mergedPlaces.filter((entry) => {
+    const place = entry.place;
     if (!isRelevantPredictionType(place.primaryType ?? place.types?.[0])) {
       return false;
     }
@@ -1630,10 +1812,18 @@ async function getDiscoveryPlacesByLocation(
   });
 
   if (relevantPlaces.length > 0) {
+    const signalsByGooglePlaceId = new Map<string, PlaceDiscoverySignalInput[]>();
+    for (const entry of mergedPlaces) {
+      const signals = signalsByGooglePlaceId.get(entry.place.id) ?? [];
+      signals.push(entry.signal);
+      signalsByGooglePlaceId.set(entry.place.id, signals);
+    }
+
     const mappedPlaces = await Promise.all(
-      relevantPlaces.slice(0, 36).map((place) =>
+      relevantPlaces.slice(0, 36).map(({ place }) =>
         mapGoogleSearchPlaceToInternalPlace(place, {
           queryContext: queries.join(' | '),
+          discoverySignals: signalsByGooglePlaceId.get(place.id) ?? [],
         }).catch((error) => {
           console.error('Discovery Google place mapping failed', {
             googlePlaceId: place.id,
@@ -2533,14 +2723,23 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
         'id',
         'displayName',
         'formattedAddress',
+        'shortFormattedAddress',
         'location',
         'primaryType',
+        'primaryTypeDisplayName',
+        'googleMapsTypeLabel',
         'types',
+        'businessStatus',
+        'openingDate',
         'rating',
+        'userRatingCount',
         'priceLevel',
         'priceRange',
         'googleMapsUri',
+        'googleMapsLinks',
+        'websiteUri',
         'regularOpeningHours.weekdayDescriptions',
+        'currentOpeningHours.weekdayDescriptions',
         'photos',
         'addressComponents',
         'servesBreakfast',
@@ -2551,11 +2750,31 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
         'servesBrunch',
         'servesDessert',
         'servesCoffee',
+        'servesCocktails',
+        'servesVegetarianFood',
+        'takeout',
+        'delivery',
+        'dineIn',
+        'curbsidePickup',
+        'reservable',
+        'liveMusic',
+        'menuForChildren',
+        'goodForChildren',
+        'allowsDogs',
+        'restroom',
         'goodForGroups',
         'goodForWatchingSports',
         'timeZone',
         'utcOffsetMinutes',
         'outdoorSeating',
+        'paymentOptions',
+        'parkingOptions',
+        'accessibilityOptions',
+        'editorialSummary',
+        'reviewSummary',
+        'generativeSummary',
+        'containingPlaces',
+        'reviews',
       ].join(','),
     },
   });
@@ -2716,6 +2935,58 @@ async function persistGooglePlaceSnapshot(input: {
       source: input.source,
       error,
     });
+  }
+}
+
+async function persistPlaceDiscoverySignals(input: {
+  placeId: string;
+  googlePlaceId: string;
+  signals: PlaceDiscoverySignalInput[];
+}) {
+  for (const signal of input.signals) {
+    const queryText = signal.queryText.trim();
+    if (!queryText) continue;
+
+    try {
+      await prisma.placeDiscoverySignal.upsert({
+        where: {
+          googlePlaceId_queryText_locationLabel_locationType: {
+            googlePlaceId: input.googlePlaceId,
+            queryText,
+            locationLabel: signal.locationLabel ?? '',
+            locationType: signal.locationType ?? '',
+          },
+        },
+        update: {
+          placeId: input.placeId,
+          queryType: signal.queryType,
+          preferenceCategory: signal.preferenceCategory ?? null,
+          selectedVibe: signal.selectedVibe ?? null,
+          resultRank: signal.resultRank ?? null,
+          seenCount: { increment: 1 },
+          lastSeenAt: new Date(),
+        },
+        create: {
+          placeId: input.placeId,
+          googlePlaceId: input.googlePlaceId,
+          queryText,
+          queryType: signal.queryType,
+          preferenceCategory: signal.preferenceCategory ?? null,
+          selectedVibe: signal.selectedVibe ?? null,
+          resultRank: signal.resultRank ?? null,
+          bestResultRank: signal.resultRank ?? null,
+          locationLabel: signal.locationLabel ?? '',
+          locationType: signal.locationType ?? '',
+        },
+      });
+    } catch (error) {
+      console.error('Persist place discovery signal failed', {
+        placeId: input.placeId,
+        googlePlaceId: input.googlePlaceId,
+        queryText,
+        error,
+      });
+    }
   }
 }
 

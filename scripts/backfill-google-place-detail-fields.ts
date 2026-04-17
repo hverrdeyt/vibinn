@@ -1,4 +1,5 @@
 import dotenv from 'dotenv';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../server/prisma';
 
 dotenv.config();
@@ -21,9 +22,32 @@ type GooglePriceRange = {
   endPrice?: GoogleMoney;
 };
 
+type GoogleLocalizedText = {
+  text?: string;
+  languageCode?: string;
+};
+
 type GooglePlaceDetailsResponse = {
   id: string;
+  displayName?: GoogleLocalizedText;
+  formattedAddress?: string;
+  shortFormattedAddress?: string;
+  addressComponents?: unknown[];
+  primaryType?: string;
+  primaryTypeDisplayName?: GoogleLocalizedText;
+  googleMapsTypeLabel?: GoogleLocalizedText;
+  types?: string[];
+  businessStatus?: string;
+  openingDate?: unknown;
+  rating?: number;
+  userRatingCount?: number;
+  googleMapsUri?: string;
+  googleMapsLinks?: unknown;
+  websiteUri?: string;
   regularOpeningHours?: {
+    weekdayDescriptions?: string[];
+  };
+  currentOpeningHours?: {
     weekdayDescriptions?: string[];
   };
   timeZone?: {
@@ -39,9 +63,30 @@ type GooglePlaceDetailsResponse = {
   servesBrunch?: boolean;
   servesDessert?: boolean;
   servesCoffee?: boolean;
+  servesCocktails?: boolean;
+  servesVegetarianFood?: boolean;
+  takeout?: boolean;
+  delivery?: boolean;
+  dineIn?: boolean;
+  curbsidePickup?: boolean;
+  reservable?: boolean;
+  liveMusic?: boolean;
+  menuForChildren?: boolean;
+  goodForChildren?: boolean;
+  allowsDogs?: boolean;
+  restroom?: boolean;
   goodForGroups?: boolean;
   goodForWatchingSports?: boolean;
   outdoorSeating?: boolean;
+  paymentOptions?: unknown;
+  parkingOptions?: unknown;
+  accessibilityOptions?: unknown;
+  editorialSummary?: unknown;
+  reviewSummary?: unknown;
+  generativeSummary?: unknown;
+  containingPlaces?: unknown;
+  reviews?: unknown[];
+  photos?: unknown[];
   priceRange?: GooglePriceRange;
 };
 
@@ -62,11 +107,28 @@ function normalizeGooglePriceRange(priceRange?: GooglePriceRange | null) {
   return { startAmount, endAmount, currencyCode };
 }
 
+function jsonOrDbNull(value: unknown): Prisma.InputJsonValue | Prisma.NullTypes.DbNull {
+  if (value === undefined || value === null) return Prisma.DbNull;
+  return JSON.parse(JSON.stringify(value)) as Prisma.InputJsonValue;
+}
+
 function mapGooglePlaceDetailColumns(details: GooglePlaceDetailsResponse) {
   const priceRange = normalizeGooglePriceRange(details.priceRange);
 
   return {
+    googleDisplayName: details.displayName?.text ?? null,
+    address: details.formattedAddress ?? undefined,
+    shortFormattedAddress: details.shortFormattedAddress ?? null,
+    googleTypes: details.types ?? [],
+    googlePrimaryType: details.primaryType ?? null,
+    googlePrimaryTypeDisplayName: details.primaryTypeDisplayName?.text ?? null,
+    googleMapsTypeLabel: details.googleMapsTypeLabel?.text ?? null,
+    businessStatus: details.businessStatus ?? null,
+    openingDateJson: jsonOrDbNull(details.openingDate),
+    rating: details.rating ?? null,
+    userRatingCount: typeof details.userRatingCount === 'number' ? details.userRatingCount : null,
     openingHours: details.regularOpeningHours?.weekdayDescriptions?.filter(Boolean) ?? [],
+    currentOpeningHours: details.currentOpeningHours?.weekdayDescriptions?.filter(Boolean) ?? [],
     servesBreakfast: details.servesBreakfast ?? null,
     servesLunch: details.servesLunch ?? null,
     servesDinner: details.servesDinner ?? null,
@@ -75,14 +137,40 @@ function mapGooglePlaceDetailColumns(details: GooglePlaceDetailsResponse) {
     servesBrunch: details.servesBrunch ?? null,
     servesDessert: details.servesDessert ?? null,
     servesCoffee: details.servesCoffee ?? null,
+    servesCocktails: details.servesCocktails ?? null,
+    servesVegetarianFood: details.servesVegetarianFood ?? null,
+    takeout: details.takeout ?? null,
+    delivery: details.delivery ?? null,
+    dineIn: details.dineIn ?? null,
+    curbsidePickup: details.curbsidePickup ?? null,
+    reservable: details.reservable ?? null,
+    liveMusic: details.liveMusic ?? null,
+    menuForChildren: details.menuForChildren ?? null,
+    goodForChildren: details.goodForChildren ?? null,
+    allowsDogs: details.allowsDogs ?? null,
+    restroom: details.restroom ?? null,
     goodForGroups: details.goodForGroups ?? null,
     goodForWatchingSports: details.goodForWatchingSports ?? null,
     timeZoneId: details.timeZone?.id ?? null,
     utcOffsetMinutes: typeof details.utcOffsetMinutes === 'number' ? details.utcOffsetMinutes : null,
     outdoorSeating: details.outdoorSeating ?? null,
+    websiteUri: details.websiteUri ?? null,
+    mapsEmbedUrl: details.googleMapsUri ?? undefined,
+    addressComponentsJson: jsonOrDbNull(details.addressComponents),
+    photosJson: jsonOrDbNull(details.photos),
+    reviewsJson: jsonOrDbNull(details.reviews),
+    paymentOptionsJson: jsonOrDbNull(details.paymentOptions),
+    parkingOptionsJson: jsonOrDbNull(details.parkingOptions),
+    accessibilityOptionsJson: jsonOrDbNull(details.accessibilityOptions),
+    editorialSummaryJson: jsonOrDbNull(details.editorialSummary),
+    reviewSummaryJson: jsonOrDbNull(details.reviewSummary),
+    generativeSummaryJson: jsonOrDbNull(details.generativeSummary),
+    googleMapsLinksJson: jsonOrDbNull(details.googleMapsLinks),
+    containingPlacesJson: jsonOrDbNull(details.containingPlaces),
     googlePriceRangeStart: priceRange?.startAmount ?? null,
     googlePriceRangeEnd: priceRange?.endAmount ?? null,
     googlePriceRangeCurrency: priceRange?.currencyCode ?? null,
+    lastGoogleFetchedAt: new Date(),
   };
 }
 
@@ -97,7 +185,23 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
       'X-Goog-FieldMask': [
         'id',
+        'displayName',
+        'formattedAddress',
+        'shortFormattedAddress',
+        'primaryType',
+        'primaryTypeDisplayName',
+        'googleMapsTypeLabel',
+        'types',
+        'businessStatus',
+        'openingDate',
+        'rating',
+        'userRatingCount',
+        'priceLevel',
+        'googleMapsUri',
+        'googleMapsLinks',
+        'websiteUri',
         'regularOpeningHours.weekdayDescriptions',
+        'currentOpeningHours.weekdayDescriptions',
         'servesBreakfast',
         'servesLunch',
         'servesDinner',
@@ -106,11 +210,33 @@ async function fetchGooglePlaceDetails(googlePlaceId: string) {
         'servesBrunch',
         'servesDessert',
         'servesCoffee',
+        'servesCocktails',
+        'servesVegetarianFood',
+        'takeout',
+        'delivery',
+        'dineIn',
+        'curbsidePickup',
+        'reservable',
+        'liveMusic',
+        'menuForChildren',
+        'goodForChildren',
+        'allowsDogs',
+        'restroom',
         'goodForGroups',
         'goodForWatchingSports',
         'timeZone',
         'utcOffsetMinutes',
         'outdoorSeating',
+        'paymentOptions',
+        'parkingOptions',
+        'accessibilityOptions',
+        'editorialSummary',
+        'reviewSummary',
+        'generativeSummary',
+        'containingPlaces',
+        'reviews',
+        'photos',
+        'addressComponents',
         'priceRange',
       ].join(','),
     },
@@ -145,6 +271,8 @@ async function main() {
               { timeZoneId: null },
               { utcOffsetMinutes: null },
               { outdoorSeating: null },
+              { userRatingCount: null },
+              { generativeSummaryJson: null },
             ],
           }
         : {}),
@@ -204,4 +332,3 @@ main()
   .finally(async () => {
     await prisma.$disconnect();
   });
-
