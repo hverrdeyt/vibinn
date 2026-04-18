@@ -9,7 +9,7 @@ import { getMessaging } from 'firebase-admin/messaging';
 import { Prisma } from '@prisma/client';
 import { MOCK_PLACES, SIMILAR_TRAVELERS } from '../src/mockData';
 import { prisma } from './prisma';
-import { generateAiCompatibilityAssessment, generatePlaceAiEnrichment } from './placeEnrichment';
+import { generateAiCompatibilityAssessment, generateDeterministicPlaceEnrichment, generatePlaceAiEnrichment } from './placeEnrichment';
 import { generateTravelerProfileDescriptor, queueTravelerProfileDescriptorRefresh } from './travelerProfileEnrichment';
 import {
   createCollection,
@@ -55,6 +55,7 @@ const R2_ENDPOINT = process.env.R2_ENDPOINT;
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
 const TICKETMASTER_API_KEY = process.env.TICKETMASTER_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+const ENABLE_RUNTIME_AI = String(process.env.ENABLE_RUNTIME_AI ?? '').toLowerCase() === 'true';
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
 const GOOGLE_IOS_CLIENT_ID = process.env.GOOGLE_IOS_CLIENT_ID;
 const GOOGLE_CLIENT_IDS = process.env.GOOGLE_CLIENT_IDS;
@@ -780,8 +781,54 @@ async function resolveTargetPlaceId(targetType: InteractionTargetType, targetId:
   return null;
 }
 
-async function fetchGooglePlaceSuggestions(input: string) {
+type GooglePlaceSuggestion = {
+  placeId: string;
+  text?: { text?: string };
+  structuredFormat?: {
+    mainText?: { text?: string };
+    secondaryText?: { text?: string };
+  };
+};
+
+const CHECK_IN_AUTOCOMPLETE_CITY_BOUNDS: Record<string, {
+  low: { latitude: number; longitude: number };
+  high: { latitude: number; longitude: number };
+}> = {
+  boston: {
+    low: { latitude: 42.2279, longitude: -71.1912 },
+    high: { latitude: 42.4008, longitude: -70.9860 },
+  },
+  'new york': {
+    low: { latitude: 40.4774, longitude: -74.2591 },
+    high: { latitude: 40.9176, longitude: -73.7004 },
+  },
+  jakarta: {
+    low: { latitude: -6.3700, longitude: 106.6800 },
+    high: { latitude: -6.0900, longitude: 106.9700 },
+  },
+  bandung: {
+    low: { latitude: -6.9950, longitude: 107.5200 },
+    high: { latitude: -6.8200, longitude: 107.7400 },
+  },
+};
+
+function normalizeCheckInAutocompleteCity(value?: string | null) {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === 'nyc') return 'new york';
+  return CHECK_IN_AUTOCOMPLETE_CITY_BOUNDS[normalized] ? normalized : null;
+}
+
+async function fetchGooglePlaceSuggestions(input: string, options?: {
+  sessionToken?: string | null;
+  locationLabel?: string | null;
+}) {
   if (!GOOGLE_MAPS_API_KEY) return null;
+
+  const cityKey = normalizeCheckInAutocompleteCity(options?.locationLabel);
+  const locationRestriction = cityKey
+    ? { rectangle: CHECK_IN_AUTOCOMPLETE_CITY_BOUNDS[cityKey] }
+    : undefined;
 
   const response = await fetch('https://places.googleapis.com/v1/places:autocomplete', {
     method: 'POST',
@@ -793,6 +840,8 @@ async function fetchGooglePlaceSuggestions(input: string) {
     body: JSON.stringify({
       input,
       includeQueryPredictions: false,
+      ...(options?.sessionToken ? { sessionToken: options.sessionToken } : {}),
+      ...(locationRestriction ? { locationRestriction } : {}),
     }),
   });
 
@@ -803,14 +852,7 @@ async function fetchGooglePlaceSuggestions(input: string) {
 
   const data = await response.json() as {
     suggestions?: Array<{
-      placePrediction?: {
-        placeId: string;
-        text?: { text?: string };
-        structuredFormat?: {
-          mainText?: { text?: string };
-          secondaryText?: { text?: string };
-        };
-      };
+      placePrediction?: GooglePlaceSuggestion;
     }>;
   };
 
@@ -928,6 +970,15 @@ type PlaceDiscoverySignalInput = PreferenceDrivenQueryDescriptor & {
   payload?: GoogleTextSearchPlace;
 };
 
+type PlaceDiscoverySignalForScoring = {
+  queryText?: string | null;
+  queryType?: string | null;
+  preferenceCategory?: string | null;
+  resultRank?: number | null;
+  bestResultRank?: number | null;
+  seenCount?: number | null;
+};
+
 type GoogleTextSearchPlace = GooglePlaceDetailsResponse;
 
 function googleMoneyToNumber(money?: GoogleMoney | null) {
@@ -1039,6 +1090,47 @@ function formatStoredGooglePriceRange(input: {
   if (typeof input.startAmount === 'number') return `${format(input.startAmount)}+`;
   if (typeof input.endAmount === 'number') return `<${format(input.endAmount)}`;
   return null;
+}
+
+function extractGoogleSummaryText(summary: unknown): string | null {
+  if (!summary || typeof summary !== 'object') return null;
+
+  const pickText = (value: unknown): string | null => {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    const directText = record.text;
+    if (typeof directText === 'string' && directText.trim()) return directText.trim();
+    return null;
+  };
+
+  const record = summary as Record<string, unknown>;
+  const preferredCandidates = [
+    record.overview,
+    record.text,
+    record.summary,
+    record.description,
+  ];
+
+  for (const candidate of preferredCandidates) {
+    if (typeof candidate === 'string' && candidate.trim()) return candidate.trim();
+    const nestedText = pickText(candidate);
+    if (nestedText) return nestedText;
+  }
+
+  return pickText(summary);
+}
+
+function resolveGoogleSummaryHook(place: {
+  generativeSummaryJson?: unknown;
+  editorialSummaryJson?: unknown;
+  aiEnrichment?: { hook?: string | null } | null;
+}) {
+  return (
+    extractGoogleSummaryText(place.generativeSummaryJson) ??
+    extractGoogleSummaryText(place.editorialSummaryJson) ??
+    place.aiEnrichment?.hook ??
+    ''
+  );
 }
 
 async function fetchGoogleTextSearch(textQuery: string) {
@@ -1203,23 +1295,59 @@ async function getPlaceSuggestions(input: string) {
   }
 }
 
+function mapGoogleAutocompleteSuggestionForClient(
+  prediction: GooglePlaceSuggestion,
+  options: {
+    sessionToken: string;
+    locationLabel?: string | null;
+  },
+) {
+  const mainText = prediction.structuredFormat?.mainText?.text ?? prediction.text?.text ?? 'Unnamed place';
+  const secondaryText = prediction.structuredFormat?.secondaryText?.text ?? '';
+  const locationBits = parseLocationBits(secondaryText);
+  const location = locationBits.location || secondaryText || options.locationLabel || 'Google Places';
+
+  return {
+    id: `google:${prediction.placeId}`,
+    googlePlaceId: prediction.placeId,
+    autocompleteSessionToken: options.sessionToken,
+    name: mainText,
+    location,
+    address: secondaryText || undefined,
+    description: '',
+    hook: '',
+    image: 'https://placehold.co/800x1000/111111/ffffff?text=Place',
+    images: [],
+    tags: [],
+    similarityStat: undefined,
+    whyYoullLikeIt: [],
+    category: 'google place',
+  };
+}
+
+async function getCheckInPlaceSuggestions(input: string, options: {
+  sessionToken: string;
+  locationLabel: string;
+}) {
+  const normalizedInput = input.trim();
+  if (normalizedInput.length < 3) return [];
+
+  const predictions = await fetchGooglePlaceSuggestions(normalizedInput, {
+    sessionToken: options.sessionToken,
+    locationLabel: options.locationLabel,
+  }).catch((error) => {
+    console.error(error);
+    return null;
+  });
+
+  return (predictions ?? []).map((prediction) => mapGoogleAutocompleteSuggestionForClient(prediction, options));
+}
+
 const INITIAL_LOCATION_FALLBACKS = [
-  { id: 'kyoto', label: 'Kyoto', type: 'city' as const },
-  { id: 'paris', label: 'Paris', type: 'city' as const },
-  { id: 'massachusetts', label: 'Massachusetts', type: 'province' as const },
-  { id: 'indonesia', label: 'Indonesia', type: 'country' as const },
-  { id: 'new-york', label: 'New York', type: 'city' as const },
-  { id: 'bali', label: 'Bali', type: 'province' as const },
-  { id: 'bandung', label: 'Bandung', type: 'city' as const },
-  { id: 'jakarta', label: 'Jakarta', type: 'city' as const },
-  { id: 'tokyo', label: 'Tokyo', type: 'city' as const },
   { id: 'boston', label: 'Boston', type: 'city' as const },
-  { id: 'seoul', label: 'Seoul', type: 'city' as const },
-  { id: 'singapore', label: 'Singapore', type: 'country' as const },
-  { id: 'bangkok', label: 'Bangkok', type: 'city' as const },
-  { id: 'barcelona', label: 'Barcelona', type: 'city' as const },
-  { id: 'berlin', label: 'Berlin', type: 'city' as const },
-  { id: 'buenos-aires', label: 'Buenos Aires', type: 'city' as const },
+  { id: 'new-york', label: 'New York', type: 'city' as const },
+  { id: 'jakarta', label: 'Jakarta', type: 'city' as const },
+  { id: 'bandung', label: 'Bandung', type: 'city' as const },
 ];
 
 function scoreLocationKeywordMatch(label: string, query: string) {
@@ -1253,78 +1381,6 @@ function getFallbackLocationSuggestions(query: string) {
 async function getLocationSuggestions(input: string) {
   const normalizedInput = input.trim();
   if (normalizedInput.length < 3) return [];
-
-  const googlePredictions = await fetchGooglePlaceSuggestions(normalizedInput).catch((error) => {
-    console.error(error);
-    return null;
-  });
-
-  if (googlePredictions && googlePredictions.length > 0) {
-    const locations = googlePredictions
-      .filter((prediction) => {
-        const types = [prediction.primaryType, ...(prediction.types ?? [])].filter(Boolean) as string[];
-        return types.some((type) => LOCATION_TYPES.has(type));
-      })
-      .map((prediction) => ({
-        id: prediction.placeId,
-        label: prediction.structuredFormat?.mainText?.text ?? prediction.text?.text ?? 'Unnamed location',
-        type: mapGoogleLocationType(prediction.primaryType ?? prediction.types?.[0]),
-        googlePlaceId: prediction.placeId,
-      }));
-
-    if (locations.length > 0) {
-      const fallbackLocations = getFallbackLocationSuggestions(normalizedInput);
-      const merged = [...locations];
-      const seen = new Set(locations.map((location) => location.label.toLowerCase()));
-
-      for (const location of fallbackLocations) {
-        const key = location.label.toLowerCase();
-        if (!seen.has(key)) {
-          merged.push(location);
-          seen.add(key);
-        }
-      }
-
-      return merged.slice(0, 8);
-    }
-  }
-
-  const searchResults = await fetchGoogleTextSearch(normalizedInput).catch((error) => {
-    console.error(error);
-    return null;
-  });
-
-  if (searchResults?.places?.length) {
-    const locations = searchResults.places
-      .filter((place) => {
-        const types = [place.primaryType, ...(place.types ?? [])].filter(Boolean) as string[];
-        return types.some((type) => LOCATION_TYPES.has(type));
-      })
-      .slice(0, 8)
-      .map((place) => ({
-        id: place.id,
-        label: place.displayName?.text ?? 'Unnamed location',
-        type: mapGoogleLocationType(place.primaryType ?? place.types?.[0]),
-        googlePlaceId: place.id,
-      }));
-
-    if (locations.length > 0) {
-      const fallbackLocations = getFallbackLocationSuggestions(normalizedInput);
-      const merged = [...locations];
-      const seen = new Set(locations.map((location) => location.label.toLowerCase()));
-
-      for (const location of fallbackLocations) {
-        const key = location.label.toLowerCase();
-        if (!seen.has(key)) {
-          merged.push(location);
-          seen.add(key);
-        }
-      }
-
-      return merged.slice(0, 8);
-    }
-  }
-
   return getFallbackLocationSuggestions(normalizedInput);
 }
 
@@ -1464,17 +1520,64 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: GoogleTextSearchPla
     });
   }
 
+  const deterministicEnrichment = generateDeterministicPlaceEnrichment({
+    name: effectiveDisplayName,
+    address: effectiveAddress,
+    city: locationBits.city,
+    country: locationBits.country,
+    neighborhood: neighborhoodBits.neighborhood,
+    adminAreaLevel4: neighborhoodBits.adminAreaLevel4,
+    category,
+    rating: effectiveRating,
+    priceLevel: effectivePriceLevel,
+    userRatingCount: effectiveUserRatingCount,
+    googlePrimaryType: effectivePrimaryType,
+    googlePrimaryTypeDisplayName: rawPlace.primaryTypeDisplayName?.text ?? null,
+    googleMapsTypeLabel: rawPlace.googleMapsTypeLabel?.text ?? null,
+    googleTypes: effectiveTypes ?? [],
+    servesBreakfast: rawPlace.servesBreakfast ?? null,
+    servesLunch: rawPlace.servesLunch ?? null,
+    servesDinner: rawPlace.servesDinner ?? null,
+    servesBeer: rawPlace.servesBeer ?? null,
+    servesWine: rawPlace.servesWine ?? null,
+    servesBrunch: rawPlace.servesBrunch ?? null,
+    servesDessert: rawPlace.servesDessert ?? null,
+    servesCoffee: rawPlace.servesCoffee ?? null,
+    servesCocktails: rawPlace.servesCocktails ?? null,
+    goodForGroups: rawPlace.goodForGroups ?? null,
+    goodForWatchingSports: rawPlace.goodForWatchingSports ?? null,
+    outdoorSeating: rawPlace.outdoorSeating ?? null,
+    discoverySignals: options?.discoverySignals ?? [],
+  });
+
+  if (!ENABLE_RUNTIME_AI) {
+    await prisma.placeAiEnrichment.upsert({
+      where: { placeId: place.id },
+      update: deterministicEnrichment,
+      create: {
+        placeId: place.id,
+        ...deterministicEnrichment,
+      },
+    });
+  }
+
   return {
     id: place.id,
     googlePlaceId: rawPlace.id,
     name: effectiveDisplayName,
     location: [locationBits.city, locationBits.country].filter(Boolean).join(', ') || effectiveAddress || 'Unknown location',
-    description: '',
+    description: deterministicEnrichment.description ?? '',
+    hook: resolveGoogleSummaryHook({ ...place, aiEnrichment: deterministicEnrichment }),
     image: photoUri ?? place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
     images: photoUris.length > 0 ? photoUris : [place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place'],
-	    tags: (effectiveTypes?.slice(0, 3).map((type) => type.replace(/_/g, ' ')) ?? [category]).slice(0, 3),
+	    tags: deterministicEnrichment.vibeTags,
+      attitudeLabel: deterministicEnrichment.attitudeLabel,
+      bestTime: deterministicEnrichment.bestTime,
 	    similarityStat: 82,
-	    whyYoullLikeIt: [],
+	    whyYoullLikeIt: [
+        deterministicEnrichment.description,
+        deterministicEnrichment.bestTime ? `best at ${deterministicEnrichment.bestTime}` : null,
+      ].filter((item): item is string => Boolean(item)),
 	    priceRange: formatStoredGooglePriceRange({
 	      startAmount: effectivePriceRange?.startAmount,
 	      endAmount: effectivePriceRange?.endAmount,
@@ -1494,6 +1597,7 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: GoogleTextSearchPla
 	    servesBrunch: place.servesBrunch ?? undefined,
 	    servesDessert: place.servesDessert ?? undefined,
 	    servesCoffee: place.servesCoffee ?? undefined,
+	    servesCocktails: place.servesCocktails ?? undefined,
 	    goodForGroups: place.goodForGroups ?? undefined,
 	    goodForWatchingSports: place.goodForWatchingSports ?? undefined,
 	    timeZone: place.timeZoneId ?? undefined,
@@ -1502,6 +1606,190 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: GoogleTextSearchPla
 	    outdoorSeating: place.outdoorSeating ?? undefined,
 	    category,
 	  };
+}
+
+async function acquireCheckInPlaceFromGoogleDetails(input: {
+  googlePlaceId: string;
+  sessionToken?: string | null;
+  locationLabel?: string | null;
+}) {
+  const googlePlaceId = input.googlePlaceId.trim();
+  if (!googlePlaceId) throw new Error('googlePlaceId is required');
+
+  const existingPlace = await prisma.place.findUnique({
+    where: { googlePlaceId },
+    select: {
+      id: true,
+      address: true,
+      lastGoogleFetchedAt: true,
+      primaryImageUrl: true,
+      media: {
+        select: { id: true },
+        take: 1,
+      },
+    },
+  });
+
+  const needsDetails = !existingPlace || !existingPlace.lastGoogleFetchedAt || !existingPlace.address;
+  if (existingPlace && !needsDetails) {
+    return existingPlace;
+  }
+
+  const details = await fetchGooglePlaceDetails(googlePlaceId, {
+    sessionToken: input.sessionToken,
+  });
+
+  if (!details) {
+    throw new Error('Google Place Details is unavailable');
+  }
+
+  const effectiveDisplayName = details.displayName?.text ?? 'Unnamed place';
+  const effectiveAddress = details.formattedAddress;
+  const effectiveLocation = details.location;
+  const effectivePrimaryType = details.primaryType;
+  const effectiveTypes = details.types;
+  const effectiveRating = details.rating ?? null;
+  const effectiveUserRatingCount = details.userRatingCount ?? null;
+  const effectivePriceLevel = mapGooglePriceLevel(details.priceLevel);
+  const effectivePriceRange = normalizeGooglePriceRange(details.priceRange);
+  const effectivePhotoRefs = details.photos ?? [];
+  const locationBits = parseLocationBits(effectiveAddress);
+  const neighborhoodBits = extractNeighborhoodFromAddressComponents(details.addressComponents);
+  const category = (effectivePrimaryType ?? effectiveTypes?.[0] ?? 'recommended spot').replace(/_/g, ' ');
+  const googlePlaceColumns = {
+    googleDisplayName: effectiveDisplayName,
+    shortFormattedAddress: details.shortFormattedAddress ?? null,
+    googleTypes: effectiveTypes ?? [],
+    googlePrimaryType: effectivePrimaryType ?? null,
+    googlePrimaryTypeDisplayName: details.primaryTypeDisplayName?.text ?? null,
+    googleMapsTypeLabel: details.googleMapsTypeLabel?.text ?? null,
+    businessStatus: details.businessStatus ?? null,
+    userRatingCount: effectiveUserRatingCount,
+    photosJson: jsonOrDbNull(effectivePhotoRefs),
+    ...mapGooglePlaceDetailColumns(details),
+  };
+
+  const shouldFetchPhotos = !existingPlace || (!existingPlace.primaryImageUrl && existingPlace.media.length === 0);
+  const photoUris = shouldFetchPhotos && effectivePhotoRefs.length > 0
+    ? await fetchGooglePhotoUris(effectivePhotoRefs.map((photo) => photo.name), 3).catch((error) => {
+        console.error(error);
+        return [];
+      })
+    : [];
+  const photoUri = photoUris[0] ?? null;
+
+  const place = await prisma.place.upsert({
+    where: { googlePlaceId },
+    update: {
+      name: effectiveDisplayName,
+      address: effectiveAddress,
+      city: locationBits.city,
+      country: locationBits.country,
+      neighborhood: neighborhoodBits.neighborhood ?? undefined,
+      adminAreaLevel4: neighborhoodBits.adminAreaLevel4 ?? undefined,
+      latitude: effectiveLocation?.latitude ?? null,
+      longitude: effectiveLocation?.longitude ?? null,
+      category,
+      ...googlePlaceColumns,
+      rating: effectiveRating,
+      priceLevel: effectivePriceLevel,
+      googlePriceRangeStart: effectivePriceRange?.startAmount ?? null,
+      googlePriceRangeEnd: effectivePriceRange?.endAmount ?? null,
+      googlePriceRangeCurrency: effectivePriceRange?.currencyCode ?? null,
+      primaryImageUrl: photoUri ?? undefined,
+      mapsEmbedUrl: details.googleMapsUri ?? undefined,
+      media: photoUris.length > 0
+        ? {
+            deleteMany: {},
+            create: photoUris.map((uri, index) => ({
+              mediaType: 'image',
+              url: uri,
+              sortOrder: index,
+              source: 'google-places',
+            })),
+          }
+        : undefined,
+    },
+    create: {
+      googlePlaceId,
+      name: effectiveDisplayName,
+      address: effectiveAddress,
+      city: locationBits.city,
+      country: locationBits.country,
+      neighborhood: neighborhoodBits.neighborhood ?? null,
+      adminAreaLevel4: neighborhoodBits.adminAreaLevel4 ?? null,
+      latitude: effectiveLocation?.latitude ?? null,
+      longitude: effectiveLocation?.longitude ?? null,
+      category,
+      ...googlePlaceColumns,
+      rating: effectiveRating,
+      priceLevel: effectivePriceLevel,
+      googlePriceRangeStart: effectivePriceRange?.startAmount ?? null,
+      googlePriceRangeEnd: effectivePriceRange?.endAmount ?? null,
+      googlePriceRangeCurrency: effectivePriceRange?.currencyCode ?? null,
+      primaryImageUrl: photoUri ?? undefined,
+      mapsEmbedUrl: details.googleMapsUri ?? null,
+      media: photoUris.length > 0
+        ? {
+            create: photoUris.map((uri, index) => ({
+              mediaType: 'image',
+              url: uri,
+              sortOrder: index,
+              source: 'google-places',
+            })),
+          }
+        : undefined,
+    },
+  });
+
+  await persistGooglePlaceSnapshot({
+    placeId: place.id,
+    googlePlaceId,
+    source: 'PLACE_DETAILS',
+    queryContext: ['check_in', input.locationLabel].filter(Boolean).join(':') || 'check_in',
+    payload: details,
+  });
+
+  const deterministicEnrichment = generateDeterministicPlaceEnrichment({
+    name: effectiveDisplayName,
+    address: effectiveAddress,
+    city: locationBits.city,
+    country: locationBits.country,
+    neighborhood: neighborhoodBits.neighborhood,
+    adminAreaLevel4: neighborhoodBits.adminAreaLevel4,
+    category,
+    rating: effectiveRating,
+    priceLevel: effectivePriceLevel,
+    userRatingCount: effectiveUserRatingCount,
+    googlePrimaryType: effectivePrimaryType,
+    googlePrimaryTypeDisplayName: details.primaryTypeDisplayName?.text ?? null,
+    googleMapsTypeLabel: details.googleMapsTypeLabel?.text ?? null,
+    googleTypes: effectiveTypes ?? [],
+    servesBreakfast: details.servesBreakfast ?? null,
+    servesLunch: details.servesLunch ?? null,
+    servesDinner: details.servesDinner ?? null,
+    servesBeer: details.servesBeer ?? null,
+    servesWine: details.servesWine ?? null,
+    servesBrunch: details.servesBrunch ?? null,
+    servesDessert: details.servesDessert ?? null,
+    servesCoffee: details.servesCoffee ?? null,
+    servesCocktails: details.servesCocktails ?? null,
+    goodForGroups: details.goodForGroups ?? null,
+    goodForWatchingSports: details.goodForWatchingSports ?? null,
+    outdoorSeating: details.outdoorSeating ?? null,
+    discoverySignals: [],
+  });
+
+  await prisma.placeAiEnrichment.upsert({
+    where: { placeId: place.id },
+    update: deterministicEnrichment,
+    create: {
+      placeId: place.id,
+      ...deterministicEnrichment,
+    },
+  });
+
+  return place;
 }
 
 function normalizePlaceCategory(category?: string | null, tags: string[] = []) {
@@ -1939,10 +2227,48 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
         sortOrder: 'asc';
       };
     };
+    discoverySignals: {
+      orderBy: [
+        { bestResultRank: 'asc' },
+        { resultRank: 'asc' },
+        { lastSeenAt: 'desc' },
+      ];
+      take: 30;
+    };
   };
 }>) {
   const image = place.primaryImageUrl ?? place.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place';
-  const tags = buildDeterministicDiscoveryTags({
+  const fallbackEnrichment = generateDeterministicPlaceEnrichment({
+    name: place.name,
+    address: place.address,
+    city: place.city,
+    country: place.country,
+    neighborhood: place.neighborhood,
+    adminAreaLevel4: place.adminAreaLevel4,
+    category: place.category,
+    rating: place.rating ?? null,
+    priceLevel: place.priceLevel ?? null,
+    userRatingCount: place.userRatingCount ?? null,
+    googlePrimaryType: place.googlePrimaryType,
+    googlePrimaryTypeDisplayName: place.googlePrimaryTypeDisplayName,
+    googleMapsTypeLabel: place.googleMapsTypeLabel,
+    googleTypes: place.googleTypes,
+    servesBreakfast: place.servesBreakfast,
+    servesLunch: place.servesLunch,
+    servesDinner: place.servesDinner,
+    servesBeer: place.servesBeer,
+    servesWine: place.servesWine,
+    servesBrunch: place.servesBrunch,
+    servesDessert: place.servesDessert,
+    servesCoffee: place.servesCoffee,
+    servesCocktails: place.servesCocktails,
+    goodForGroups: place.goodForGroups,
+    goodForWatchingSports: place.goodForWatchingSports,
+    outdoorSeating: place.outdoorSeating,
+    discoverySignals: place.discoverySignals,
+  });
+  const editorial = place.aiEnrichment ?? fallbackEnrichment;
+  const tags = editorial.vibeTags?.length ? editorial.vibeTags : buildDeterministicDiscoveryTags({
     category: place.category,
     rating: place.rating ?? null,
     priceLevel: place.priceLevel ?? null,
@@ -1960,13 +2286,13 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     location: [place.city, place.country].filter(Boolean).join(', ') || place.address || 'Unknown location',
     address: place.address ?? undefined,
     neighborhood: neighborhoodLabel,
-    description: place.aiEnrichment?.description ?? '',
-    hook: place.aiEnrichment?.hook ?? '',
+    description: editorial.description ?? '',
+    hook: resolveGoogleSummaryHook({ ...place, aiEnrichment: editorial }),
     image,
     images: place.media.length > 0 ? place.media.map((item) => item.url) : [image],
     tags,
-    attitudeLabel: place.aiEnrichment?.attitudeLabel ?? undefined,
-    bestTime: place.aiEnrichment?.bestTime ?? undefined,
+    attitudeLabel: editorial.attitudeLabel ?? undefined,
+    bestTime: editorial.bestTime ?? undefined,
     openingHours: place.openingHours.length > 0 ? place.openingHours : undefined,
     servesBreakfast: place.servesBreakfast ?? undefined,
     servesLunch: place.servesLunch ?? undefined,
@@ -1976,6 +2302,7 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     servesBrunch: place.servesBrunch ?? undefined,
     servesDessert: place.servesDessert ?? undefined,
     servesCoffee: place.servesCoffee ?? undefined,
+    servesCocktails: place.servesCocktails ?? undefined,
     goodForGroups: place.goodForGroups ?? undefined,
     goodForWatchingSports: place.goodForWatchingSports ?? undefined,
     timeZone: place.timeZoneId ?? undefined,
@@ -1984,13 +2311,29 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     outdoorSeating: place.outdoorSeating ?? undefined,
     similarityStat: 82,
     whyYoullLikeIt: [
-      ...(place.aiEnrichment?.description ? [place.aiEnrichment.description] : []),
-      ...(place.aiEnrichment?.bestTime ? [`best at ${place.aiEnrichment.bestTime}`] : []),
+      ...(editorial.description ? [editorial.description] : []),
+      ...(editorial.bestTime ? [`best at ${editorial.bestTime}`] : []),
     ],
     rating: place.rating ?? undefined,
     priceRange: priceRangeLabel,
     priceRangeLabel,
     category,
+    discoverySignals: place.discoverySignals.map((signal) => ({
+      queryText: signal.queryText,
+      queryType: signal.queryType,
+      preferenceCategory: signal.preferenceCategory,
+      resultRank: signal.resultRank,
+      bestResultRank: signal.bestResultRank,
+      seenCount: signal.seenCount,
+    })),
+    tabIds: buildDiscoveryTabIdsForPlace({
+      category,
+      servesCoffee: place.servesCoffee,
+      servesDessert: place.servesDessert,
+      servesBeer: place.servesBeer,
+      servesWine: place.servesWine,
+      discoverySignals: place.discoverySignals,
+    }),
     latitude: place.latitude ?? undefined,
     longitude: place.longitude ?? undefined,
   };
@@ -2003,6 +2346,14 @@ async function getCachedDiscoveryPlacesByLocation(locationLabel: string, locatio
       aiEnrichment: true,
       media: {
         orderBy: { sortOrder: 'asc' },
+      },
+      discoverySignals: {
+        orderBy: [
+          { bestResultRank: 'asc' },
+          { resultRank: 'asc' },
+          { lastSeenAt: 'desc' },
+        ],
+        take: 30,
       },
     },
     take: 120,
@@ -2084,6 +2435,7 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     servesBrunch: undefined,
     servesDessert: undefined,
     servesCoffee: undefined,
+    servesCocktails: undefined,
     goodForGroups: undefined,
     goodForWatchingSports: undefined,
     timeZone: undefined,
@@ -2093,9 +2445,11 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     similarityStat: place.similarityStat ?? 0,
 	    whyYoullLikeIt: place.whyYoullLikeIt ?? [],
 	    rating: 0,
-	    priceRange: undefined,
-	    priceRangeLabel: undefined,
+    priceRange: undefined,
+    priceRangeLabel: undefined,
     category,
+    discoverySignals: [],
+    tabIds: buildDiscoveryTabIdsForPlace({ category, discoverySignals: [] }),
     latitude: place.latitude ?? undefined,
     longitude: place.longitude ?? undefined,
   };
@@ -2484,6 +2838,7 @@ async function getDiscoveryPlacesForUser(options: {
       .filter((place) => placeMatchesDiscoverySearch(place, normalizedSearchQuery))
       .flatMap((place) => {
         try {
+          const persistedSimilarityScore = persistedScoreMap.get(place.id);
           return [{
             ...place,
             _preferenceAffinity: getPlacePreferenceAffinity(
@@ -2493,39 +2848,19 @@ async function getDiscoveryPlacesForUser(options: {
                 hook: place.hook,
                 description: place.description,
                 whyYoullLikeIt: place.whyYoullLikeIt,
+                discoverySignals: place.discoverySignals,
               },
               {
                 selectedInterests,
                 selectedVibe,
               },
             ),
-            similarityStat: shouldUsePersistedScores
-              ? (persistedScoreMap.get(place.id) ?? computeRecommendationScore(
-                  {
-                    id: place.id,
-                    tags: place.tags,
-                    category: place.category,
-                    similarityStat: place.similarityStat,
-                    rating: typeof place.rating === 'number' ? place.rating : null,
-                    hook: place.hook,
-                    description: place.description,
-                    whyYoullLikeIt: place.whyYoullLikeIt,
-                  },
-                  {
-                    selectedInterests,
-                    selectedVibe,
-                    bookmarkKeywords: context.bookmarkKeywords,
-                    momentKeywords: context.momentKeywords,
-                    socialKeywords: context.socialKeywords,
-                    isBookmarked: context.bookmarkedPlaceIds.has(place.id),
-                    isVisited: context.visitedPlaceIds.has(place.id),
-                    isVibed: context.vibedPlaceIds.has(place.id),
-                    isCommented: context.commentedPlaceIds.has(place.id),
-                    isRecent: context.recentPlaceIds.has(place.id),
-                    followedPlaceMatch: context.followedPlaceIds.has(place.id),
-                    momentRating: context.momentRatingsByPlaceId.get(place.id) ?? null,
-                  },
-                ))
+            similarityStat: shouldUsePersistedScores && typeof persistedSimilarityScore === 'number'
+              ? applyDiscoverySignalBoostToScore(
+                  persistedSimilarityScore,
+                  place.discoverySignals,
+                  { selectedInterests },
+                )
               : computeRecommendationScore(
                   {
                     id: place.id,
@@ -2536,6 +2871,7 @@ async function getDiscoveryPlacesForUser(options: {
                     hook: place.hook,
                     description: place.description,
                     whyYoullLikeIt: place.whyYoullLikeIt,
+                    discoverySignals: place.discoverySignals,
                   },
                   {
                     selectedInterests,
@@ -2582,6 +2918,7 @@ async function getDiscoveryPlacesForUser(options: {
             hook: place.hook,
             description: place.description,
             whyYoullLikeIt: place.whyYoullLikeIt,
+            discoverySignals: place.discoverySignals,
           },
           {
             selectedInterests,
@@ -2600,6 +2937,7 @@ async function getDiscoveryPlacesForUser(options: {
           hook: place.hook,
           description: place.description,
           whyYoullLikeIt: place.whyYoullLikeIt,
+          discoverySignals: place.discoverySignals,
         },
         {
           selectedInterests,
@@ -2615,6 +2953,7 @@ async function getDiscoveryPlacesForUser(options: {
           hook: place.hook,
           description: place.description,
           whyYoullLikeIt: place.whyYoullLikeIt,
+          discoverySignals: place.discoverySignals,
         },
         {
           selectedInterests,
@@ -2650,6 +2989,7 @@ async function getDiscoveryPlacesForUser(options: {
             hook: place.hook,
             description: place.description,
             whyYoullLikeIt: place.whyYoullLikeIt,
+            discoverySignals: place.discoverySignals,
           },
           {
             selectedInterests,
@@ -2666,6 +3006,7 @@ async function getDiscoveryPlacesForUser(options: {
             hook: place.hook,
             description: place.description,
             whyYoullLikeIt: place.whyYoullLikeIt,
+            discoverySignals: place.discoverySignals,
           },
           {
             selectedInterests,
@@ -2714,9 +3055,15 @@ async function getDiscoveryPlacesForUser(options: {
   const start = (page - 1) * limit;
   const pagedPlaces = rankedPlaces
     .slice(start, start + limit)
-    .map(({ _preferenceAffinity, ...place }) => place);
+    .map(({ _preferenceAffinity, ...place }) => ({
+      ...place,
+      // List screens only need the primary image. Detail pages fetch the full
+      // place bundle, so trimming list images keeps discovery payloads lighter.
+      images: place.image ? [place.image] : place.images?.slice(0, 1),
+      tabIds: place.tabIds ?? buildDiscoveryTabIdsForPlace(place),
+    }));
 
-  if (OPENAI_API_KEY && page === 1) {
+  if (page === 1) {
     const enrichmentCandidates = pagedPlaces
       .filter((place) => !place.hook && !place.attitudeLabel)
       .slice(0, 3)
@@ -2730,7 +3077,7 @@ async function getDiscoveryPlacesForUser(options: {
     }
   }
 
-  if (options.userId && OPENAI_API_KEY && page === 1) {
+  if (options.userId && ENABLE_RUNTIME_AI && OPENAI_API_KEY && page === 1) {
     void applyAiCompatibilityToPlaces({
       userId: options.userId,
       places: pagedPlaces,
@@ -2756,10 +3103,17 @@ async function getDiscoveryPlacesForUser(options: {
   };
 }
 
-async function fetchGooglePlaceDetails(googlePlaceId: string) {
+async function fetchGooglePlaceDetails(googlePlaceId: string, options?: {
+  sessionToken?: string | null;
+}) {
   if (!GOOGLE_MAPS_API_KEY) return null;
 
-  const response = await fetch(`https://places.googleapis.com/v1/places/${googlePlaceId}`, {
+  const detailsUrl = new URL(`https://places.googleapis.com/v1/places/${googlePlaceId}`);
+  if (options?.sessionToken) {
+    detailsUrl.searchParams.set('sessionToken', options.sessionToken);
+  }
+
+  const response = await fetch(detailsUrl, {
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
@@ -2878,8 +3232,6 @@ async function fetchGooglePhotoUris(photoNames: string[], limit = 5) {
 }
 
 async function ensurePlaceAiEnrichment(placeId: string) {
-  if (!OPENAI_API_KEY) return null;
-
   const existingTask = placeEnrichmentInflight.get(placeId);
   if (existingTask) {
     return existingTask;
@@ -2888,7 +3240,17 @@ async function ensurePlaceAiEnrichment(placeId: string) {
   const task = (async () => {
     const place = await prisma.place.findUnique({
       where: { id: placeId },
-      include: { aiEnrichment: true },
+      include: {
+        aiEnrichment: true,
+        discoverySignals: {
+          orderBy: [
+            { bestResultRank: 'asc' },
+            { resultRank: 'asc' },
+            { lastSeenAt: 'desc' },
+          ],
+          take: 20,
+        },
+      },
     });
 
     if (!place) return null;
@@ -2897,16 +3259,40 @@ async function ensurePlaceAiEnrichment(placeId: string) {
       return place.aiEnrichment;
     }
 
-    const generated = await generatePlaceAiEnrichment({
+    const deterministicInput = {
       id: place.id,
       name: place.name,
       address: place.address,
       city: place.city,
       country: place.country,
+      neighborhood: place.neighborhood,
+      adminAreaLevel4: place.adminAreaLevel4,
       category: place.category,
       rating: place.rating,
       priceLevel: place.priceLevel,
-    });
+      userRatingCount: place.userRatingCount,
+      googlePrimaryType: place.googlePrimaryType,
+      googlePrimaryTypeDisplayName: place.googlePrimaryTypeDisplayName,
+      googleMapsTypeLabel: place.googleMapsTypeLabel,
+      googleTypes: place.googleTypes,
+      servesBreakfast: place.servesBreakfast,
+      servesLunch: place.servesLunch,
+      servesDinner: place.servesDinner,
+      servesBeer: place.servesBeer,
+      servesWine: place.servesWine,
+      servesBrunch: place.servesBrunch,
+      servesDessert: place.servesDessert,
+      servesCoffee: place.servesCoffee,
+      servesCocktails: place.servesCocktails,
+      goodForGroups: place.goodForGroups,
+      goodForWatchingSports: place.goodForWatchingSports,
+      outdoorSeating: place.outdoorSeating,
+      discoverySignals: place.discoverySignals,
+    };
+
+    const generated = ENABLE_RUNTIME_AI && OPENAI_API_KEY
+      ? await generatePlaceAiEnrichment(deterministicInput)
+      : generateDeterministicPlaceEnrichment(deterministicInput);
 
     if (!generated) return null;
 
@@ -3036,6 +3422,184 @@ async function persistPlaceDiscoverySignals(input: {
 
 function normalizeKeyword(value: string) {
   return value.toLowerCase().replace(/[_-]+/g, ' ').trim();
+}
+
+const PLACE_PREFERENCE_CATEGORY_ALIASES: Record<string, string> = {
+  cafe: 'good_coffee',
+  nature: 'parks_outdoor',
+  shopping: 'shop_stroll',
+  party: 'drinks_nightlife',
+  culture: 'fun_activities',
+  adventure: 'fun_activities',
+};
+
+function normalizePreferenceCategoryKey(value?: string | null) {
+  const normalized = normalizeKeyword(value ?? '').replace(/\s+/g, '_');
+  if (!normalized) return '';
+  return PLACE_PREFERENCE_CATEGORY_ALIASES[normalized] ?? normalized;
+}
+
+function placeSignalCategories(discoverySignals?: PlaceDiscoverySignalForScoring[]) {
+  return new Set(
+    (discoverySignals ?? [])
+      .map((signal) => normalizePreferenceCategoryKey(signal.preferenceCategory))
+      .filter(Boolean),
+  );
+}
+
+function bestDiscoverySignalRank(discoverySignals?: PlaceDiscoverySignalForScoring[]) {
+  const ranks = (discoverySignals ?? [])
+    .map((signal) => signal.bestResultRank ?? signal.resultRank ?? null)
+    .filter((rank): rank is number => typeof rank === 'number');
+  return ranks.length > 0 ? Math.min(...ranks) : null;
+}
+
+function buildDiscoveryTabIdsForPlace(place: {
+  category?: string | null;
+  servesCoffee?: boolean | null;
+  servesDessert?: boolean | null;
+  servesBeer?: boolean | null;
+  servesWine?: boolean | null;
+  discoverySignals?: PlaceDiscoverySignalForScoring[];
+}) {
+  const tabs = new Set<string>(['all']);
+  const category = normalizeKeyword(place.category ?? '');
+  const signalCategories = placeSignalCategories(place.discoverySignals);
+  const hasSignal = (categoryKey: string) => signalCategories.has(normalizePreferenceCategoryKey(categoryKey));
+  const bestRank = bestDiscoverySignalRank(place.discoverySignals);
+
+  if (
+    category.includes('restaurant') ||
+    category.includes('food') ||
+    category.includes('eat') ||
+    category.includes('brunch') ||
+    category.includes('ramen') ||
+    category.includes('sushi') ||
+    category.includes('taco') ||
+    category.includes('burger') ||
+    category.includes('noodle') ||
+    category.includes('bakery') ||
+    category.includes('cafe')
+  ) {
+    tabs.add('eat');
+  }
+
+  if (hasSignal('asian_comfort_food')) tabs.add('asian-food');
+
+  if (
+    category.includes('coffee') ||
+    category.includes('espresso') ||
+    category.includes('cafe') ||
+    category.includes('roastery') ||
+    category.includes('matcha') ||
+    place.servesCoffee === true
+  ) {
+    tabs.add('coffee');
+  }
+
+  if (
+    category.includes('dessert') ||
+    category.includes('pastry') ||
+    category.includes('bakery') ||
+    category.includes('ice cream') ||
+    category.includes('sweet') ||
+    place.servesDessert === true
+  ) {
+    tabs.add('dessert');
+  }
+
+  if (place.servesBeer === true || place.servesWine === true || hasSignal('drinks_nightlife')) tabs.add('drinks');
+  if (typeof bestRank === 'number' && bestRank >= 1 && bestRank <= 5) tabs.add('trending');
+  if (hasSignal('fun_activities')) tabs.add('culture');
+  if (hasSignal('shop_stroll')) tabs.add('shop-stroll');
+  if (hasSignal('parks_outdoor')) tabs.add('parks-outdoor');
+  if (hasSignal('aesthetic_cafes') || hasSignal('aesthetic_cafe')) tabs.add('aesthetic');
+
+  return Array.from(tabs);
+}
+
+function getPlaceDiscoverySignalAffinity(
+  discoverySignals: PlaceDiscoverySignalForScoring[] | undefined,
+  input: { selectedInterests: string[] },
+) {
+  const selectedCategories = new Set(
+    input.selectedInterests
+      .map(normalizePreferenceCategoryKey)
+      .filter(Boolean),
+  );
+
+  if (selectedCategories.size === 0 || !discoverySignals?.length) {
+    return {
+      matchedCategories: [] as string[],
+      bestRank: null as number | null,
+      maxSeenCount: 0,
+    };
+  }
+
+  const matchedCategories = new Set<string>();
+  let bestRank: number | null = null;
+  let maxSeenCount = 0;
+
+  for (const signal of discoverySignals) {
+    const category = normalizePreferenceCategoryKey(signal.preferenceCategory);
+    if (!category || !selectedCategories.has(category)) continue;
+
+    matchedCategories.add(category);
+    maxSeenCount = Math.max(maxSeenCount, signal.seenCount ?? 0);
+
+    const rank = signal.bestResultRank ?? signal.resultRank ?? null;
+    if (typeof rank === 'number' && (bestRank == null || rank < bestRank)) {
+      bestRank = rank;
+    }
+  }
+
+  return {
+    matchedCategories: Array.from(matchedCategories),
+    bestRank,
+    maxSeenCount,
+  };
+}
+
+function computePlaceDiscoverySignalBoost(
+  discoverySignals: PlaceDiscoverySignalForScoring[] | undefined,
+  input: { selectedInterests: string[] },
+) {
+  const signalAffinity = getPlaceDiscoverySignalAffinity(discoverySignals, input);
+  if (signalAffinity.matchedCategories.length === 0) {
+    return {
+      delta: 0,
+      matchedCategories: signalAffinity.matchedCategories,
+      bestRank: signalAffinity.bestRank,
+    };
+  }
+
+  const rank = signalAffinity.bestRank;
+  const rankBonus = rank == null
+    ? 2
+    : rank <= 3
+      ? 8
+      : rank <= 10
+        ? 5
+        : rank <= 20
+          ? 3
+          : 1;
+  const categoryBonus = 6 + Math.min(Math.max(signalAffinity.matchedCategories.length - 1, 0) * 4, 8);
+  const repeatBonus = Math.min(Math.max(signalAffinity.maxSeenCount - 1, 0), 4);
+
+  return {
+    delta: Math.min(categoryBonus + rankBonus + repeatBonus, 22),
+    matchedCategories: signalAffinity.matchedCategories,
+    bestRank: rank,
+  };
+}
+
+function applyDiscoverySignalBoostToScore(
+  score: number,
+  discoverySignals: PlaceDiscoverySignalForScoring[] | undefined,
+  input: { selectedInterests: string[] },
+) {
+  const boost = computePlaceDiscoverySignalBoost(discoverySignals, input);
+  return Math.max(28, Math.min(score + boost.delta, 98));
 }
 
 function buildMaxMomentRatingMap(items: Array<{ placeId: string; rating: number }>) {
@@ -3181,6 +3745,7 @@ function getPlacePreferenceAffinity(place: {
   hook?: string | null;
   description?: string | null;
   whyYoullLikeIt?: string[] | null;
+  discoverySignals?: PlaceDiscoverySignalForScoring[];
 }, input: {
   selectedInterests: string[];
   selectedVibe?: string | null;
@@ -3207,9 +3772,15 @@ function getPlacePreferenceAffinity(place: {
     });
 
   let matchedInterestCount = 0;
-  for (const interest of input.selectedInterests) {
+  const signalAffinity = getPlaceDiscoverySignalAffinity(place.discoverySignals, input);
+  const signalMatchedCategories = new Set(signalAffinity.matchedCategories);
+  const selectedInterests = Array.from(new Set(input.selectedInterests.map(normalizePreferenceCategoryKey).filter(Boolean)));
+
+  for (const interest of selectedInterests) {
     const matchers = PLACE_INTEREST_MATCHERS[interest] ?? [normalizeKeyword(interest)];
     if (matchesAnyMatcher(matchers)) {
+      matchedInterestCount += 1;
+    } else if (signalMatchedCategories.has(interest)) {
       matchedInterestCount += 1;
     }
   }
@@ -3282,6 +3853,7 @@ function shouldKeepPlaceForPreferences(place: {
   hook?: string | null;
   description?: string | null;
   whyYoullLikeIt?: string[] | null;
+  discoverySignals?: PlaceDiscoverySignalForScoring[];
 }, input: {
   selectedInterests: string[];
   selectedVibe?: string | null;
@@ -3331,10 +3903,10 @@ function hashScoreSeed(input: string) {
 
 function describeRecommendationClassification(score?: number | null) {
   if (typeof score !== 'number') return 'Unscored';
-  if (score >= 85) return 'Must visit';
-  if (score >= 70) return 'Fits you';
-  if (score >= 55) return 'Worth a look';
-  return 'Maybe';
+  if (score >= 85) return 'Your vibe';
+  if (score >= 70) return 'Strong fit';
+  if (score >= 55) return 'Could hit';
+  return 'Soft maybe';
 }
 
 function collectTasteKeywords(places: Array<{ category?: string | null; aiEnrichment?: { vibeTags: string[] } | null }>) {
@@ -3361,6 +3933,7 @@ function computeRecommendationScore(place: {
   hook?: string | null;
   description?: string | null;
   whyYoullLikeIt?: string[] | null;
+  discoverySignals?: PlaceDiscoverySignalForScoring[];
 }, input: {
   selectedInterests: string[];
   selectedVibe?: string | null;
@@ -3387,6 +3960,7 @@ function computeRecommendationScoreAudit(place: {
   hook?: string | null;
   description?: string | null;
   whyYoullLikeIt?: string[] | null;
+  discoverySignals?: PlaceDiscoverySignalForScoring[];
 }, input: {
   selectedInterests: string[];
   selectedVibe?: string | null;
@@ -3442,6 +4016,20 @@ function computeRecommendationScoreAudit(place: {
       label: 'Matched interests',
       delta: matchedInterestCount * 15,
       note: `${matchedInterestCount} interest match(es)`,
+    });
+  }
+
+  const discoverySignalBoost = computePlaceDiscoverySignalBoost(place.discoverySignals, input);
+  if (discoverySignalBoost.delta > 0) {
+    score += discoverySignalBoost.delta;
+    contributions.push({
+      key: 'discovery_signal',
+      label: 'Matched Google acquisition query',
+      delta: discoverySignalBoost.delta,
+      note: [
+        discoverySignalBoost.matchedCategories.join(', '),
+        discoverySignalBoost.bestRank ? `best rank ${discoverySignalBoost.bestRank}` : null,
+      ].filter(Boolean).join(' · '),
     });
   }
 
@@ -3612,6 +4200,9 @@ function computeRecommendationScoreAudit(place: {
     diversitySeed,
     matchedInterestCount,
     matchedVibe,
+    discoverySignalBoost: discoverySignalBoost.delta,
+    discoverySignalMatchedCategories: discoverySignalBoost.matchedCategories,
+    discoverySignalBestRank: discoverySignalBoost.bestRank,
     noisePenalty,
     momentOverlapCount,
     bookmarkOverlapCount,
@@ -3629,6 +4220,7 @@ function computeDiscoveryAlignedPlaceScore(place: {
   hook?: string | null;
   description?: string | null;
   whyYoullLikeIt?: string[] | null;
+  discoverySignals?: PlaceDiscoverySignalForScoring[];
 }, context: RecommendationContext) {
   return computeRecommendationScore(
     {
@@ -3640,6 +4232,7 @@ function computeDiscoveryAlignedPlaceScore(place: {
       hook: place.hook,
       description: place.description,
       whyYoullLikeIt: place.whyYoullLikeIt,
+      discoverySignals: place.discoverySignals,
     },
     {
       selectedInterests: context.selectedInterests,
@@ -4597,7 +5190,7 @@ async function applyAiCompatibilityToPlaces(input: {
   persistedScores: Array<{ placeId: string; sourceVersion: string | null }>;
   forceRefresh?: boolean;
 }) {
-  if (!OPENAI_API_KEY || input.places.length === 0) {
+  if (!ENABLE_RUNTIME_AI || !OPENAI_API_KEY || input.places.length === 0) {
     return new Map<string, { score: number; reason: string }>();
   }
 
@@ -4952,6 +5545,14 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
       where: { id: { in: uniquePlaceIds } },
       include: {
         aiEnrichment: true,
+        discoverySignals: {
+          orderBy: [
+            { bestResultRank: 'asc' },
+            { resultRank: 'asc' },
+            { lastSeenAt: 'desc' },
+          ],
+          take: 30,
+        },
       },
     }),
     context.followedUserIds.size > 0
@@ -4983,6 +5584,7 @@ async function refreshUserPlaceScores(userId: string, placeIds: string[]) {
             ...(place.aiEnrichment?.description ? [place.aiEnrichment.description] : []),
             ...(place.aiEnrichment?.bestTime ? [`best at ${place.aiEnrichment.bestTime}`] : []),
           ],
+          discoverySignals: place.discoverySignals,
         },
         {
           selectedInterests: context.selectedInterests,
@@ -5303,6 +5905,14 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       media: {
         orderBy: { sortOrder: 'asc' },
       },
+      discoverySignals: {
+        orderBy: [
+          { bestResultRank: 'asc' },
+          { resultRank: 'asc' },
+          { lastSeenAt: 'desc' },
+        ],
+        take: 30,
+      },
     },
   });
 
@@ -5319,9 +5929,14 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       })
     : null;
   const recommendationContext = userId ? await getUserRecommendationContext(userId) : null;
-  const similarityStat = persistedScore?.similarityPercentage
-    ?? persistedScore?.matchScore
-    ?? (
+  const persistedSimilarityStat = persistedScore?.similarityPercentage ?? persistedScore?.matchScore ?? null;
+  const similarityStat = typeof persistedSimilarityStat === 'number' && recommendationContext
+    ? applyDiscoverySignalBoostToScore(
+        persistedSimilarityStat,
+        place.discoverySignals,
+        { selectedInterests: recommendationContext.selectedInterests },
+      )
+    : (
       recommendationContext
         ? computeDiscoveryAlignedPlaceScore(
             {
@@ -5333,6 +5948,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
               hook: place.aiEnrichment?.hook ?? null,
               description: place.aiEnrichment?.description ?? null,
               whyYoullLikeIt: place.aiEnrichment?.description ? [place.aiEnrichment.description] : [],
+              discoverySignals: place.discoverySignals,
             },
             recommendationContext,
           )
@@ -5350,17 +5966,11 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
   });
 
   if (!place.aiEnrichment) {
-    await ensurePlaceAiEnrichment(place.id);
-    place = await prisma.place.findUnique({
-      where: { id: placeId },
-      include: {
-        aiEnrichment: true,
-        media: {
-          orderBy: { sortOrder: 'asc' },
-        },
-      },
+    // Do not block the detail page on enrichment generation. Return the stored
+    // Google/database payload immediately and let enrichment fill in later.
+    void ensurePlaceAiEnrichment(place.id).catch((error) => {
+      console.error('Background place detail enrichment failed', error);
     });
-    if (!place) return null;
   }
 
   if (!place.googlePlaceId) {
@@ -5369,7 +5979,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       name: place.name,
       location: [place.city, place.country].filter(Boolean).join(', ') || place.address || 'Unknown location',
       description: place.aiEnrichment?.description ?? '',
-      hook: place.aiEnrichment?.hook ?? '',
+      hook: resolveGoogleSummaryHook(place),
       address: place.address ?? undefined,
       image: place.primaryImageUrl ?? place.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
       images: place.media.length > 0 ? place.media.map((item) => item.url) : ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
@@ -5390,6 +6000,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       servesBrunch: place.servesBrunch ?? undefined,
       servesDessert: place.servesDessert ?? undefined,
       servesCoffee: place.servesCoffee ?? undefined,
+      servesCocktails: place.servesCocktails ?? undefined,
       goodForGroups: place.goodForGroups ?? undefined,
       goodForWatchingSports: place.goodForWatchingSports ?? undefined,
       timeZone: place.timeZoneId ?? undefined,
@@ -5469,6 +6080,14 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
         media: {
           orderBy: { sortOrder: 'asc' },
         },
+        discoverySignals: {
+          orderBy: [
+            { bestResultRank: 'asc' },
+            { resultRank: 'asc' },
+            { lastSeenAt: 'desc' },
+          ],
+          take: 30,
+        },
       },
     });
 
@@ -5496,7 +6115,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       name: finalPlace.name,
       location: [finalPlace.city, finalPlace.country].filter(Boolean).join(', ') || finalPlace.address || 'Unknown location',
       description: finalPlace.aiEnrichment?.description ?? '',
-      hook: finalPlace.aiEnrichment?.hook ?? '',
+      hook: resolveGoogleSummaryHook(finalPlace),
       address: finalPlace.address ?? undefined,
       image: finalPlace.primaryImageUrl ?? finalPlace.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
       images: finalPlace.media.length > 0 ? finalPlace.media.map((item) => item.url) : ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
@@ -5530,6 +6149,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       servesBrunch: finalPlace.servesBrunch ?? undefined,
       servesDessert: finalPlace.servesDessert ?? undefined,
       servesCoffee: finalPlace.servesCoffee ?? undefined,
+      servesCocktails: finalPlace.servesCocktails ?? undefined,
       goodForGroups: finalPlace.goodForGroups ?? undefined,
       goodForWatchingSports: finalPlace.goodForWatchingSports ?? undefined,
       timeZone: finalPlace.timeZoneId ?? undefined,
@@ -5562,7 +6182,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
     name: place.name,
     location: [place.city, place.country].filter(Boolean).join(', ') || place.address || 'Unknown location',
     description: place.aiEnrichment?.description ?? '',
-    hook: place.aiEnrichment?.hook ?? '',
+    hook: resolveGoogleSummaryHook(place),
     address: place.address ?? undefined,
     image: place.primaryImageUrl ?? place.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
     images: place.media.length > 0 ? place.media.map((item) => item.url) : ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
@@ -5587,6 +6207,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
     servesBrunch: place.servesBrunch ?? undefined,
     servesDessert: place.servesDessert ?? undefined,
     servesCoffee: place.servesCoffee ?? undefined,
+    servesCocktails: place.servesCocktails ?? undefined,
     goodForGroups: place.goodForGroups ?? undefined,
     goodForWatchingSports: place.goodForWatchingSports ?? undefined,
     timeZone: place.timeZoneId ?? undefined,
@@ -5760,7 +6381,13 @@ async function getTodayRecommendationForUser(input: {
         longitude: mappedPlace.longitude,
       });
       const persisted = scoreMap.get(place.id);
-      const score = persisted?.score ?? computeRecommendationScore(
+      const score = typeof persisted?.score === 'number'
+        ? applyDiscoverySignalBoostToScore(
+            persisted.score,
+            mappedPlace.discoverySignals,
+            { selectedInterests: recommendationContext.selectedInterests },
+          )
+        : computeRecommendationScore(
         {
           id: mappedPlace.id,
           tags: mappedPlace.tags,
@@ -5770,6 +6397,7 @@ async function getTodayRecommendationForUser(input: {
           hook: mappedPlace.hook,
           description: mappedPlace.description,
           whyYoullLikeIt: mappedPlace.whyYoullLikeIt,
+          discoverySignals: mappedPlace.discoverySignals,
         },
         {
           selectedInterests: recommendationContext.selectedInterests,
@@ -6441,7 +7069,18 @@ app.get('/api/moments', requireAuth, (req: AuthenticatedRequest, res) => {
 
 app.post('/api/moments', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const moment = await createMoment(req.authUserId, req.body);
+    const payload = { ...req.body };
+    const googlePlaceId = typeof payload.googlePlaceId === 'string' ? payload.googlePlaceId.trim() : '';
+    if (googlePlaceId) {
+      const acquiredPlace = await acquireCheckInPlaceFromGoogleDetails({
+        googlePlaceId,
+        sessionToken: typeof payload.autocompleteSessionToken === 'string' ? payload.autocompleteSessionToken : null,
+        locationLabel: typeof payload.placeSearchLocation === 'string' ? payload.placeSearchLocation : null,
+      });
+      payload.placeId = acquiredPlace.id;
+    }
+
+    const moment = await createMoment(req.authUserId, payload);
     await runRecommendationWriteback({
       userId: req.authUserId!,
       placeIds: [moment.placeId],
@@ -6568,6 +7207,26 @@ app.get('/api/lookups/places', (req, res) => {
 
   void getPlaceSuggestions(q)
     .then((places) => res.json({ places }))
+    .catch((error) => handleError(res, error));
+});
+
+app.get('/api/lookups/places/autocomplete', requireAuth, (req: AuthenticatedRequest, res) => {
+  const q = String(req.query.q || '').trim();
+  const locationLabel = String(req.query.location || '').trim();
+  const sessionToken = String(req.query.sessionToken || crypto.randomUUID()).trim();
+
+  if (q.length < 3) {
+    res.json({ places: [], sessionToken });
+    return;
+  }
+
+  if (!normalizeCheckInAutocompleteCity(locationLabel)) {
+    res.status(400).json({ error: 'Unsupported check-in city' });
+    return;
+  }
+
+  void getCheckInPlaceSuggestions(q, { sessionToken, locationLabel })
+    .then((places) => res.json({ places, sessionToken }))
     .catch((error) => handleError(res, error));
 });
 
@@ -6752,12 +7411,13 @@ app.patch('/api/saved-locations/:locationId/default', requireAuth, async (req: A
 });
 
 app.get('/api/lookups/places/:id', optionalAuth, (req: AuthenticatedRequest, res) => {
-  void (
-    req.authUserId
-      ? refreshUserPlaceScores(req.authUserId, [req.params.id]).catch(() => {})
-      : Promise.resolve()
-  )
-    .then(() => getUnifiedPlaceDetailPayload(req.params.id, req.authUserId))
+  if (req.authUserId) {
+    void refreshUserPlaceScores(req.authUserId, [req.params.id]).catch((error) => {
+      console.error('Background place detail score refresh failed', error);
+    });
+  }
+
+  void getUnifiedPlaceDetailPayload(req.params.id, req.authUserId)
     .then((payload) => {
       if (!payload) {
         res.status(404).json({ error: 'Place not found' });
@@ -6769,12 +7429,13 @@ app.get('/api/lookups/places/:id', optionalAuth, (req: AuthenticatedRequest, res
 });
 
 app.get('/api/lookups/places/:id/bundle', optionalAuth, (req: AuthenticatedRequest, res) => {
-  void (
-    req.authUserId
-      ? refreshUserPlaceScores(req.authUserId, [req.params.id]).catch(() => {})
-      : Promise.resolve()
-  )
-    .then(() => getUnifiedPlaceDetailPayload(req.params.id, req.authUserId))
+  if (req.authUserId) {
+    void refreshUserPlaceScores(req.authUserId, [req.params.id]).catch((error) => {
+      console.error('Background place detail bundle score refresh failed', error);
+    });
+  }
+
+  void getUnifiedPlaceDetailPayload(req.params.id, req.authUserId)
     .then((payload) => {
       if (!payload) {
         res.status(404).json({ error: 'Place not found' });
@@ -6919,6 +7580,14 @@ app.post('/api/debug/place-score', optionalAuth, async (req: AuthenticatedReques
         media: {
           orderBy: { sortOrder: 'asc' },
         },
+        discoverySignals: {
+          orderBy: [
+            { bestResultRank: 'asc' },
+            { resultRank: 'asc' },
+            { lastSeenAt: 'desc' },
+          ],
+          take: 30,
+        },
       },
     });
 
@@ -6987,6 +7656,7 @@ app.post('/api/debug/place-score', optionalAuth, async (req: AuthenticatedReques
         hook: mappedPlace.hook,
         description: mappedPlace.description,
         whyYoullLikeIt: mappedPlace.whyYoullLikeIt,
+        discoverySignals: mappedPlace.discoverySignals,
       },
       {
         selectedInterests,
@@ -7105,7 +7775,7 @@ app.get('/api/debug/today-recommendation', requireAuth, async (req: Authenticate
           minScore: 78,
           preferredDistanceMiles: 1,
           fallbackDistanceMiles: 2,
-          allowedClassifications: ['Must visit', 'Fits you'],
+          allowedClassifications: ['Your vibe', 'Strong fit'],
           excludesVisited: true,
         },
         poolSummary: {
@@ -7175,7 +7845,13 @@ app.get('/api/debug/today-recommendation', requireAuth, async (req: Authenticate
           longitude: mappedPlace.longitude,
         });
         const persisted = scoreMap.get(place.id);
-        const score = persisted?.score ?? computeRecommendationScore(
+        const score = typeof persisted?.score === 'number'
+          ? applyDiscoverySignalBoostToScore(
+              persisted.score,
+              mappedPlace.discoverySignals,
+              { selectedInterests: recommendationContext.selectedInterests },
+            )
+          : computeRecommendationScore(
           {
             id: mappedPlace.id,
             tags: mappedPlace.tags,
@@ -7185,6 +7861,7 @@ app.get('/api/debug/today-recommendation', requireAuth, async (req: Authenticate
             hook: mappedPlace.hook,
             description: mappedPlace.description,
             whyYoullLikeIt: mappedPlace.whyYoullLikeIt,
+            discoverySignals: mappedPlace.discoverySignals,
           },
           {
             selectedInterests: recommendationContext.selectedInterests,
@@ -7252,7 +7929,7 @@ app.get('/api/debug/today-recommendation', requireAuth, async (req: Authenticate
         minScore: 78,
         preferredDistanceMiles: 1,
         fallbackDistanceMiles: 2,
-        allowedClassifications: ['Must visit', 'Fits you'],
+        allowedClassifications: ['Your vibe', 'Strong fit'],
         excludesVisited: true,
       },
       profileContext: {

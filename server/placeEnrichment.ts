@@ -63,13 +63,282 @@ function titleCase(value: string) {
     .join(' ');
 }
 
-function buildHeuristicPlaceAiEnrichment(place: {
+export type DeterministicPlaceEnrichmentInput = {
   name: string;
+  address?: string | null;
   city: string | null;
   country: string | null;
+  neighborhood?: string | null;
+  adminAreaLevel4?: string | null;
   category: string;
   rating: number | null;
-}) {
+  priceLevel?: number | null;
+  userRatingCount?: number | null;
+  googlePrimaryType?: string | null;
+  googlePrimaryTypeDisplayName?: string | null;
+  googleMapsTypeLabel?: string | null;
+  googleTypes?: string[] | null;
+  servesBreakfast?: boolean | null;
+  servesLunch?: boolean | null;
+  servesDinner?: boolean | null;
+  servesBeer?: boolean | null;
+  servesWine?: boolean | null;
+  servesBrunch?: boolean | null;
+  servesDessert?: boolean | null;
+  servesCoffee?: boolean | null;
+  servesCocktails?: boolean | null;
+  goodForGroups?: boolean | null;
+  goodForWatchingSports?: boolean | null;
+  outdoorSeating?: boolean | null;
+  discoverySignals?: Array<{
+    queryText?: string | null;
+    preferenceCategory?: string | null;
+    resultRank?: number | null;
+    bestResultRank?: number | null;
+  }> | null;
+};
+
+type DeterministicTemplate = {
+  id: string;
+  preferenceCategories?: string[];
+  keywords: string[];
+  serviceFlags?: Array<keyof DeterministicPlaceEnrichmentInput>;
+  hook: (context: DeterministicTemplateContext) => string;
+  description: (context: DeterministicTemplateContext) => string;
+  vibeTags: (context: DeterministicTemplateContext) => string[];
+  attitudeLabel: string;
+  bestTime: string | null;
+};
+
+type DeterministicTemplateContext = {
+  placeName: string;
+  category: string;
+  categoryLabel: string;
+  locale: string;
+  area: string | null;
+  hasStrongRating: boolean;
+  bestRank: number | null;
+  signalCategories: Set<string>;
+  queryText: string;
+  place: DeterministicPlaceEnrichmentInput;
+};
+
+function normalizePreferenceCategory(value?: string | null) {
+  return normalizeKeyword(value ?? '').replace(/\s+/g, '_');
+}
+
+function compactTitleCase(value?: string | null) {
+  const normalized = normalizeKeyword(value ?? '');
+  if (!normalized) return '';
+  return titleCase(normalized);
+}
+
+function bestSignalRank(signals?: DeterministicPlaceEnrichmentInput['discoverySignals']) {
+  const ranks = (signals ?? [])
+    .map((signal) => signal.bestResultRank ?? signal.resultRank ?? null)
+    .filter((rank): rank is number => typeof rank === 'number');
+  return ranks.length ? Math.min(...ranks) : null;
+}
+
+function buildDeterministicTemplateContext(place: DeterministicPlaceEnrichmentInput): DeterministicTemplateContext {
+  const categoryParts = [
+    place.category,
+    place.googlePrimaryTypeDisplayName,
+    place.googleMapsTypeLabel,
+    place.googlePrimaryType,
+    ...(place.googleTypes ?? []),
+  ];
+  const category = normalizeKeyword(categoryParts.filter(Boolean).join(' '));
+  const cityLabel = place.city && !/^\w{2,}\d|^\d|^jl\.|^rr|^vr/i.test(place.city) ? place.city : null;
+  const area = place.neighborhood ?? place.adminAreaLevel4 ?? null;
+  const locale = area ?? cityLabel ?? place.country ?? 'the city';
+  const signalCategories = new Set(
+    (place.discoverySignals ?? [])
+      .map((signal) => normalizePreferenceCategory(signal.preferenceCategory))
+      .filter(Boolean),
+  );
+  const queryText = normalizeKeyword((place.discoverySignals ?? []).map((signal) => signal.queryText).filter(Boolean).join(' '));
+  const categoryLabel =
+    compactTitleCase(place.googlePrimaryTypeDisplayName) ||
+    compactTitleCase(place.googleMapsTypeLabel) ||
+    compactTitleCase(place.category) ||
+    'Place';
+
+  return {
+    placeName: titleCase(place.name),
+    category,
+    categoryLabel,
+    locale,
+    area,
+    hasStrongRating: typeof place.rating === 'number' && place.rating >= 4.5,
+    bestRank: bestSignalRank(place.discoverySignals),
+    signalCategories,
+    queryText,
+    place,
+  };
+}
+
+function hasAnyKeyword(context: DeterministicTemplateContext, keywords: string[]) {
+  return keywords.some((keyword) => context.category.includes(keyword) || context.queryText.includes(keyword));
+}
+
+function hasAnyPreference(context: DeterministicTemplateContext, preferenceCategories: string[] = []) {
+  return preferenceCategories.some((category) => context.signalCategories.has(normalizePreferenceCategory(category)));
+}
+
+function hasAnyServiceFlag(context: DeterministicTemplateContext, flags: Array<keyof DeterministicPlaceEnrichmentInput> = []) {
+  return flags.some((flag) => context.place[flag] === true);
+}
+
+const DETERMINISTIC_PLACE_TEMPLATES: DeterministicTemplate[] = [
+  {
+    id: 'coffee',
+    preferenceCategories: ['good_coffee', 'aesthetic_cafes'],
+    keywords: ['coffee', 'cafe', 'espresso', 'roastery', 'matcha'],
+    serviceFlags: ['servesCoffee'],
+    hook: () => 'Coffee stop with enough reason to linger.',
+    description: ({ placeName, locale }) => `${placeName} fits when you want a reliable coffee pause around ${locale}.`,
+    vibeTags: ({ place }) => ['Coffee Stop', place.outdoorSeating ? 'Outdoor Seat' : 'Easy Pause', place.servesDessert ? 'Sweet Pairing' : 'Cafe Break'],
+    attitudeLabel: 'Coffee Run',
+    bestTime: 'Mid-morning',
+  },
+  {
+    id: 'dessert',
+    preferenceCategories: ['desserts_sweet_treats'],
+    keywords: ['dessert', 'bakery', 'pastry', 'ice cream', 'sweet', 'cake', 'donut'],
+    serviceFlags: ['servesDessert'],
+    hook: () => 'Sweet stop built for a little treat detour.',
+    description: ({ placeName, locale }) => `${placeName} works best when the plan needs something sweet around ${locale}.`,
+    vibeTags: () => ['Sweet Stop', 'Dessert Run', 'Little Treat'],
+    attitudeLabel: 'Sweet Stop',
+    bestTime: 'Late afternoon',
+  },
+  {
+    id: 'asian',
+    preferenceCategories: ['asian_comfort_food'],
+    keywords: ['ramen', 'sushi', 'asian', 'japanese', 'korean', 'thai', 'vietnamese', 'chinese', 'noodle'],
+    hook: () => 'Comfort-food energy without making the plan complicated.',
+    description: ({ placeName, locale }) => `${placeName} is an easy pick when you want Asian comfort food around ${locale}.`,
+    vibeTags: ({ category }) => [
+      category.includes('sushi') ? 'Sushi Fix' : category.includes('ramen') ? 'Ramen Mood' : 'Asian Comfort',
+      'Casual Eats',
+      'Food Plan',
+    ],
+    attitudeLabel: 'Comfort Crave',
+    bestTime: 'Dinner',
+  },
+  {
+    id: 'casual-food',
+    preferenceCategories: ['street_food_casual_eats'],
+    keywords: ['restaurant', 'food', 'eat', 'burger', 'taco', 'sandwich', 'pizza', 'street food', 'fast casual'],
+    serviceFlags: ['servesLunch', 'servesDinner'],
+    hook: () => 'Low-friction food stop for an easy plan.',
+    description: ({ placeName, locale }) => `${placeName} makes sense when you want a casual food stop around ${locale}.`,
+    vibeTags: ({ place }) => ['Casual Eats', place.servesLunch ? 'Lunch Move' : 'Food Stop', place.goodForGroups ? 'Group Friendly' : 'Easy Bite'],
+    attitudeLabel: 'Easy Bite',
+    bestTime: 'Lunch',
+  },
+  {
+    id: 'drinks',
+    preferenceCategories: ['drinks_nightlife'],
+    keywords: ['bar', 'wine', 'cocktail', 'pub', 'nightlife', 'beer'],
+    serviceFlags: ['servesBeer', 'servesWine', 'servesCocktails'],
+    hook: () => 'Easy place to turn the night into something.',
+    description: ({ placeName, locale }) => `${placeName} fits when the plan is drinks, dinner momentum, or a social night around ${locale}.`,
+    vibeTags: ({ place }) => [place.servesWine ? 'Wine Bar' : 'Drinks Spot', place.goodForGroups ? 'Group Drinks' : 'Night Out', 'After Dark'],
+    attitudeLabel: 'Night Out',
+    bestTime: 'After dark',
+  },
+  {
+    id: 'shop-stroll',
+    preferenceCategories: ['shop_stroll'],
+    keywords: ['shopping', 'store', 'boutique', 'market', 'bookstore', 'book store', 'mall'],
+    hook: () => 'Worth a little wander instead of a hard plan.',
+    description: ({ placeName, locale }) => `${placeName} fits when you want to browse, stroll, and let the stop shape the plan around ${locale}.`,
+    vibeTags: ({ category }) => [category.includes('book') ? 'Bookish Stop' : 'Shop Around', 'Weekend Roam', 'Little Detour'],
+    attitudeLabel: 'Shop Around',
+    bestTime: 'Midday',
+  },
+  {
+    id: 'culture',
+    preferenceCategories: ['fun_activities'],
+    keywords: ['museum', 'gallery', 'art', 'historic', 'theater', 'cinema', 'landmark', 'tourist attraction'],
+    hook: () => 'Culture stop with a real sense of place.',
+    description: ({ placeName, locale }) => `${placeName} works when you want a thoughtful activity or city highlight around ${locale}.`,
+    vibeTags: () => ['Culture Fix', 'City Highlight', 'Easy Wander'],
+    attitudeLabel: 'Culture Fix',
+    bestTime: 'Late afternoon',
+  },
+  {
+    id: 'parks-outdoor',
+    preferenceCategories: ['parks_outdoor'],
+    keywords: ['park', 'garden', 'outdoor', 'scenic', 'trail', 'walk', 'beach'],
+    serviceFlags: ['outdoorSeating'],
+    hook: () => 'Green reset for when the city needs breathing room.',
+    description: ({ placeName, locale }) => `${placeName} is a simple outdoor reset for a walk, a breather, or slower time around ${locale}.`,
+    vibeTags: () => ['Green Reset', 'Open Air', 'Short Walk'],
+    attitudeLabel: 'Touch Grass',
+    bestTime: 'Early morning',
+  },
+  {
+    id: 'aesthetic',
+    preferenceCategories: ['aesthetic_cafes'],
+    keywords: ['aesthetic', 'instagrammable', 'cute cafe', 'design', 'concept'],
+    hook: () => 'Pretty enough for the camera, easy enough for the plan.',
+    description: ({ placeName, locale }) => `${placeName} fits when you want a visually nice stop that still works as part of a real day around ${locale}.`,
+    vibeTags: () => ['Aesthetic Stop', 'Photo Friendly', 'Cafe Mood'],
+    attitudeLabel: 'Worth A Look',
+    bestTime: 'Late morning',
+  },
+];
+
+function chooseDeterministicTemplate(context: DeterministicTemplateContext) {
+  return DETERMINISTIC_PLACE_TEMPLATES.find((template) => (
+    hasAnyPreference(context, template.preferenceCategories) ||
+    hasAnyServiceFlag(context, template.serviceFlags) ||
+    hasAnyKeyword(context, template.keywords)
+  ));
+}
+
+function cleanDeterministicTags(tags: string[], fallback: string) {
+  const cleaned = dedupeKeywords(tags)
+    .filter((tag) => !GENERIC_VIBE_TAGS.has(tag))
+    .slice(0, 4)
+    .map(titleCase);
+
+  return cleaned.length > 0 ? cleaned : [fallback].filter(Boolean).map(titleCase);
+}
+
+export function generateDeterministicPlaceEnrichment(place: DeterministicPlaceEnrichmentInput) {
+  const context = buildDeterministicTemplateContext(place);
+  const template = chooseDeterministicTemplate(context);
+
+  if (template) {
+    const extraTags = [
+      context.bestRank != null && context.bestRank <= 5 ? 'Trending Pick' : null,
+      context.hasStrongRating ? 'Highly Rated' : null,
+    ].filter((tag): tag is string => Boolean(tag));
+    const rawTags = [...template.vibeTags(context), ...extraTags];
+
+    return {
+      hook: truncateText(template.hook(context), 80),
+      description: truncateText(template.description(context), 180),
+      vibeTags: cleanDeterministicTags(rawTags, context.categoryLabel),
+      attitudeLabel: truncateText(template.attitudeLabel, 28),
+      bestTime: template.bestTime,
+    };
+  }
+
+  return {
+    hook: truncateText(`${context.categoryLabel} worth a closer look in ${context.locale}.`, 80),
+    description: truncateText(`${context.placeName} stands out as a low-friction stop when you want something easy to add around ${context.locale}.`, 180),
+    vibeTags: cleanDeterministicTags([context.categoryLabel, context.hasStrongRating ? 'Highly Rated' : 'Easy Stop'], context.categoryLabel),
+    attitudeLabel: 'Worth A Stop',
+    bestTime: null,
+  };
+}
+
+function buildHeuristicPlaceAiEnrichment(place: DeterministicPlaceEnrichmentInput) {
   const category = normalizeKeyword(place.category);
   const cityLabel = place.city && !/^\w{2,}\d|^\d|^jl\.|^rr|^vr/i.test(place.city) ? place.city : null;
   const locale = cityLabel ?? place.country ?? 'the city';

@@ -3,9 +3,6 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5-mini';
-
 const descriptorCache = new Map<string, { signature: string; summary: string; pendingSignature?: string }>();
 
 type TravelerDescriptorInput = {
@@ -38,164 +35,153 @@ function bumpCount(map: Map<string, number>, key: string, weight: number) {
   map.set(key, (map.get(key) ?? 0) + weight);
 }
 
-function sanitizeSingleSentence(value: string) {
-  const trimmed = value.replace(/\s+/g, ' ').trim();
-  if (!trimmed) return '';
-  const firstSentence = trimmed.match(/[^.!?]+[.!?]?/u)?.[0]?.trim() ?? trimmed;
-  const capped = firstSentence.length > 120 ? `${firstSentence.slice(0, 119).trimEnd()}…` : firstSentence;
-  return /[.!?]$/.test(capped) ? capped : `${capped}.`;
-}
+type TravelerKeywordRule = {
+  label: string;
+  tokens: string[];
+  priority: number;
+};
 
-function pickTravelerArchetype(input: TravelerDescriptorInput) {
-  const haystack = [
-    ...input.moments.flatMap((moment) => [
-      ...(moment.vibeTags ?? []),
-      moment.place.category ?? '',
-      ...(moment.place.tags ?? []),
-      moment.caption ?? '',
-      ...(moment.vibeTags ?? []),
-      moment.place.category ?? '',
-      ...(moment.place.tags ?? []),
-    ]),
-    ...input.bookmarkedPlaces.flatMap((place) => [
-      place.category ?? '',
-      ...(place.tags ?? []),
-    ]),
-  ].map(normalizeKeyword);
+const TRAVELER_KEYWORD_RULES: TravelerKeywordRule[] = [
+  {
+    label: 'Coffee hunter',
+    tokens: ['good coffee', 'coffee', 'cafe', 'espresso', 'roastery', 'matcha', 'coffee stop', 'coffee run'],
+    priority: 95,
+  },
+  {
+    label: 'Sweet tooth',
+    tokens: ['dessert', 'sweet', 'bakery', 'pastry', 'ice cream', 'cake', 'donut', 'sweet stop', 'little treat'],
+    priority: 92,
+  },
+  {
+    label: 'Late-night plans',
+    tokens: ['drinks nightlife', 'nightlife', 'late night', 'bar', 'cocktail', 'speakeasy', 'after dark', 'night out'],
+    priority: 90,
+  },
+  {
+    label: 'Wine night',
+    tokens: ['wine', 'wine bar', 'natural wine', 'date drinks'],
+    priority: 88,
+  },
+  {
+    label: 'Asian comfort',
+    tokens: ['asian comfort food', 'asian comfort', 'asian', 'japanese', 'korean', 'thai', 'vietnamese', 'chinese'],
+    priority: 86,
+  },
+  {
+    label: 'Ramen mood',
+    tokens: ['ramen'],
+    priority: 84,
+  },
+  {
+    label: 'Sushi fix',
+    tokens: ['sushi'],
+    priority: 83,
+  },
+  {
+    label: 'Casual eats',
+    tokens: ['street food casual eats', 'casual eats', 'food', 'restaurant', 'burger', 'taco', 'pizza', 'sandwich', 'easy bite'],
+    priority: 80,
+  },
+  {
+    label: 'Culture strolls',
+    tokens: ['fun activities', 'culture', 'museum', 'gallery', 'art', 'historic', 'landmark', 'theater', 'cinema', 'culture fix'],
+    priority: 78,
+  },
+  {
+    label: 'Gallery hopping',
+    tokens: ['art gallery', 'gallery hopping', 'gallery'],
+    priority: 77,
+  },
+  {
+    label: 'Shop & stroll',
+    tokens: ['shop stroll', 'shopping', 'shop around', 'boutique', 'market', 'store', 'weekend roam'],
+    priority: 74,
+  },
+  {
+    label: 'Bookish stops',
+    tokens: ['bookstore', 'book store', 'bookish', 'library'],
+    priority: 72,
+  },
+  {
+    label: 'Outdoor reset',
+    tokens: ['parks outdoor', 'outdoor', 'park', 'garden', 'trail', 'scenic', 'green reset', 'open air', 'touch grass'],
+    priority: 70,
+  },
+  {
+    label: 'Aesthetic cafes',
+    tokens: ['aesthetic cafes', 'aesthetic', 'photo friendly', 'worth a look', 'instagrammable', 'cute cafe'],
+    priority: 68,
+  },
+  {
+    label: 'Group hangouts',
+    tokens: ['group friendly', 'group hangout', 'group drinks', 'good for groups'],
+    priority: 62,
+  },
+  {
+    label: 'Hidden gems',
+    tokens: ['hidden gem', 'little detour', 'worth a stop', 'easy wander'],
+    priority: 52,
+  },
+];
 
-  const includesAny = (tokens: string[]) => tokens.some((token) => haystack.some((item) => item.includes(token)));
+const GENERIC_DESCRIPTOR_TOKENS = new Set([
+  'place',
+  'point of interest',
+  'establishment',
+  'recommended spot',
+  'easy stop',
+  'highly rated',
+  'trending pick',
+  'city break',
+]);
 
-  if (includesAny(['cocktail', 'late night', 'nightlife', 'dj', 'live music', 'jazz', 'speakeasy'])) {
-    return 'after-dark traveler';
-  }
-  if (includesAny(['coffee', 'cafe', 'espresso', 'bakery', 'bookstore'])) {
-    return 'slow-city traveler';
-  }
-  if (includesAny(['museum', 'gallery', 'historic', 'design', 'arts', 'theatre'])) {
-    return 'culture-first traveler';
-  }
-  if (includesAny(['market', 'boutique', 'retail', 'design shop', 'bazaar', 'showroom'])) {
-    return 'taste-led shopper';
-  }
-  if (includesAny(['park', 'garden', 'waterfront', 'trail', 'outdoor', 'green reset'])) {
-    return 'reset-seeking traveler';
-  }
+function addMatchedTravelerKeywords(counts: Map<string, number>, rawValue: string, weight: number) {
+  const value = normalizeKeyword(rawValue);
+  if (!value || GENERIC_DESCRIPTOR_TOKENS.has(value)) return;
 
-  return 'taste-led traveler';
-}
-
-function parseStructuredSummary(payload: any) {
-  const candidates: string[] = [];
-
-  if (typeof payload?.output_text === 'string' && payload.output_text.trim()) {
-    candidates.push(payload.output_text.trim());
-  }
-
-  for (const item of payload?.output ?? []) {
-    for (const content of item?.content ?? []) {
-      if (typeof content?.text === 'string' && content.text.trim()) {
-        candidates.push(content.text.trim());
-      }
+  for (const rule of TRAVELER_KEYWORD_RULES) {
+    if (rule.tokens.some((token) => value.includes(token))) {
+      bumpCount(counts, rule.label, weight + rule.priority / 100);
     }
   }
-
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate);
-      if (typeof parsed?.summary === 'string' && parsed.summary.trim()) {
-        return sanitizeSingleSentence(parsed.summary);
-      }
-    } catch {
-      const fenced = candidate.match(/```(?:json)?\s*([\s\S]*?)```/i)?.[1];
-      if (!fenced) continue;
-      try {
-        const parsed = JSON.parse(fenced);
-        if (typeof parsed?.summary === 'string' && parsed.summary.trim()) {
-          return sanitizeSingleSentence(parsed.summary);
-        }
-      } catch {
-        // Ignore parse failure and keep looking.
-      }
-    }
-  }
-
-  return '';
 }
 
-function buildHeuristicTravelerDescriptor(input: TravelerDescriptorInput) {
-  const vibeCounts = new Map<string, number>();
-  const categoryCounts = new Map<string, number>();
-  const cityCounts = new Map<string, number>();
+function buildTravelerKeywordDescriptor(input: TravelerDescriptorInput) {
+  const keywordCounts = new Map<string, number>();
 
   for (const moment of input.moments) {
     for (const tag of moment.vibeTags ?? []) {
-      const normalized = normalizeKeyword(tag);
-      if (!normalized) continue;
-      bumpCount(vibeCounts, normalized, 3);
+      addMatchedTravelerKeywords(keywordCounts, tag, 3);
     }
 
-    const normalizedCategory = normalizeKeyword(moment.place.category ?? '');
-    if (normalizedCategory) {
-      bumpCount(categoryCounts, normalizedCategory, 3);
-    }
-
-    const city = moment.place.location?.split(',')[0]?.trim();
-    if (city) {
-      bumpCount(cityCounts, city, 2);
-    }
+    addMatchedTravelerKeywords(keywordCounts, moment.place.category ?? '', 3);
+    addMatchedTravelerKeywords(keywordCounts, moment.caption ?? '', 1.5);
 
     for (const tag of moment.place.tags ?? []) {
-      const normalized = normalizeKeyword(tag);
-      if (!normalized) continue;
-      bumpCount(vibeCounts, normalized, 2);
+      addMatchedTravelerKeywords(keywordCounts, tag, 2.5);
     }
   }
 
   for (const place of input.bookmarkedPlaces) {
-    const normalizedCategory = normalizeKeyword(place.category ?? '');
-    if (normalizedCategory) {
-      bumpCount(categoryCounts, normalizedCategory, 1);
-    }
+    addMatchedTravelerKeywords(keywordCounts, place.category ?? '', 1);
+
     for (const tag of place.tags ?? []) {
-      const normalized = normalizeKeyword(tag);
-      if (!normalized) continue;
-      bumpCount(vibeCounts, normalized, 1);
-    }
-
-    const city = place.location?.split(',')[0]?.trim();
-    if (city) {
-      bumpCount(cityCounts, city, 1);
+      addMatchedTravelerKeywords(keywordCounts, tag, 1);
     }
   }
 
-  const topVibes = Array.from(vibeCounts.entries())
+  const selectedKeywords = Array.from(keywordCounts.entries())
     .sort((a, b) => b[1] - a[1])
-    .map(([value]) => value)
-    .filter((value) => !['recommended stop', 'easy stop', 'city break', 'place'].includes(value))
-    .slice(0, 2);
-  const topCategories = Array.from(categoryCounts.entries())
-    .sort((a, b) => b[1] - a[1])
-    .map(([value]) => value)
-    .filter((value) => !['point of interest', 'establishment', 'tourist attraction'].includes(value))
-    .slice(0, 2);
-  const topCity = Array.from(cityCounts.entries()).sort((a, b) => b[1] - a[1])[0]?.[0];
-  const archetype = pickTravelerArchetype(input);
+    .map(([label]) => label)
+    .slice(0, 4);
 
-  const descriptorParts = [
-    topVibes[0],
-    topVibes[1],
-    topCategories[0],
-  ].filter(Boolean);
-
-  if (descriptorParts.length === 0) {
-    return topCity
-      ? `A ${archetype} building a memorable trail of places around ${topCity}.`
-      : `A ${archetype} with a sharp eye for places that feel personal and worth passing on.`;
+  const fallbacks = ['City explorer', 'Food curious', 'Hidden gems', 'Weekend plans'];
+  for (const fallback of fallbacks) {
+    if (selectedKeywords.length >= 3) break;
+    if (!selectedKeywords.includes(fallback)) selectedKeywords.push(fallback);
   }
 
-  return sanitizeSingleSentence(
-    `A ${archetype} with a thing for ${descriptorParts.join(', ')}${topCity ? ` around ${topCity}` : ''}`,
-  );
+  return selectedKeywords.join(' · ');
 }
 
 function buildDescriptorSignature(input: TravelerDescriptorInput) {
@@ -223,73 +209,7 @@ function buildDescriptorSignature(input: TravelerDescriptorInput) {
 }
 
 async function computeTravelerDescriptorSummary(input: TravelerDescriptorInput) {
-  const heuristicSummary = buildHeuristicTravelerDescriptor(input);
-
-  if (!OPENAI_API_KEY) {
-    return heuristicSummary;
-  }
-
-  const topMoments = input.moments.slice(0, 6).map((moment) => ({
-    caption: moment.caption ?? '',
-    vibeTags: moment.vibeTags ?? [],
-    placeName: moment.place.name,
-    location: moment.place.location ?? '',
-    category: moment.place.category ?? '',
-    tags: moment.place.tags ?? [],
-  }));
-  const topBookmarks = input.bookmarkedPlaces.slice(0, 6).map((place) => ({
-    name: place.name,
-    location: place.location ?? '',
-    category: place.category ?? '',
-    tags: place.tags ?? [],
-  }));
-
-  try {
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: OPENAI_MODEL,
-        input: [
-          {
-            role: 'system',
-            content: [
-              {
-                type: 'input_text',
-                text: 'You write ultra-short traveler taste descriptors. Return strict JSON: {"summary":"..."} only. The summary must be exactly one sentence, compelling, natural, under 120 characters, and position the person as a specific kind of traveler first, then hint at their taste. Use visited places and moments as the primary signal. Use saved places as a secondary signal that can refine the taste, but should not overpower visits. Example shape: "A late-night city traveler with a soft spot for underrated cocktail bars." Avoid generic words like passionate, loves to travel, explorer, wanderlust, or travel lover. No emojis. No hashtags.',
-              },
-            ],
-          },
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'input_text',
-                text: JSON.stringify({
-                  traveler: input.displayName ?? 'Traveler',
-                  recentMoments: topMoments,
-                  savedPlaces: topBookmarks,
-                  fallbackStyle: heuristicSummary,
-                }),
-              },
-            ],
-          },
-        ],
-      }),
-    });
-
-    if (!response.ok) {
-      throw new Error(`OpenAI traveler descriptor failed with ${response.status}`);
-    }
-
-    const payload = await response.json() as any;
-    return parseStructuredSummary(payload) || heuristicSummary;
-  } catch {
-    return heuristicSummary;
-  }
+  return buildTravelerKeywordDescriptor(input);
 }
 
 export function queueTravelerProfileDescriptorRefresh(input: TravelerDescriptorInput) {
@@ -301,7 +221,7 @@ export function queueTravelerProfileDescriptorRefresh(input: TravelerDescriptorI
 
   descriptorCache.set(input.userId, {
     signature: cached?.signature ?? signature,
-    summary: cached?.summary ?? buildHeuristicTravelerDescriptor(input),
+    summary: cached?.summary ?? buildTravelerKeywordDescriptor(input),
     pendingSignature: signature,
   });
 
@@ -310,7 +230,7 @@ export function queueTravelerProfileDescriptorRefresh(input: TravelerDescriptorI
       descriptorCache.set(input.userId, { signature, summary });
     })
     .catch(() => {
-      const fallbackSummary = buildHeuristicTravelerDescriptor(input);
+      const fallbackSummary = buildTravelerKeywordDescriptor(input);
       descriptorCache.set(input.userId, { signature, summary: fallbackSummary });
     });
 }

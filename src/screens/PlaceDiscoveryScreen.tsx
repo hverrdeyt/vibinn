@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type TouchEvent } from 'react';
 import { AnimatePresence, motion } from 'motion/react';
-import { Bell, BookOpen, ChevronDown, Coffee, Footprints, Landmark, MoonStar, Music2, Search, ShoppingBag, Trees, Waves, X, type LucideIcon } from 'lucide-react';
+import { Bell, BookOpen, CheckCheck, ChevronDown, CircleQuestionMark, Coffee, Diamond, Eye, Footprints, Landmark, MoonStar, Music2, Search, ShoppingBag, Trees, Waves, X, type LucideIcon } from 'lucide-react';
 import { type EventItem, type Interest, type Place, type Vibe } from '../types';
 
 interface SavedLocationOption {
@@ -427,7 +427,7 @@ export default function PlaceDiscoveryScreen({
   const LOCATION_PROMO_DISMISSED_KEY = 'vibinn_location_prompt_dismissed';
   const VIBE_PROMO_DISMISSED_KEY = 'vibinn_vibe_prompt_dismissed';
   const [isLocationSheetOpen, setIsLocationSheetOpen] = useState(false);
-  const [isSearchOpen, setIsSearchOpen] = useState(searchInput.trim().length > 0);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [pullDistance, setPullDistance] = useState(0);
   const [isLocationPromptDismissed, setIsLocationPromptDismissed] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
@@ -540,12 +540,6 @@ export default function PlaceDiscoveryScreen({
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
   }, [hasPreferences, isVibePromptDismissed]);
-
-  useEffect(() => {
-    if (searchInput.trim().length > 0) {
-      setIsSearchOpen(true);
-    }
-  }, [searchInput]);
 
   useEffect(() => {
     if (!canLoadMore) return;
@@ -714,18 +708,6 @@ export default function PlaceDiscoveryScreen({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setIsSearchOpen((current) => !current)}
-            className={`flex h-11 w-11 items-center justify-center rounded-full border text-white transition ${
-              isSearchOpen
-                ? 'border-accent/40 bg-accent/12 text-accent hover:bg-accent/18'
-                : 'border-white/10 bg-white/6 hover:bg-white/10'
-            }`}
-            aria-label={isSearchOpen ? 'Hide place search' : 'Open place search'}
-          >
-            <Search size={18} />
-          </button>
-          <button
-            type="button"
             onClick={onOpenNotifications}
             className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/6 text-white transition hover:bg-white/10"
             aria-label="Open notifications"
@@ -823,7 +805,7 @@ export default function PlaceDiscoveryScreen({
         </div>
       ) : null}
 
-      {isSearchOpen || isFilteringBySearch ? (
+      {false && (isSearchOpen || isFilteringBySearch) ? (
         <div className="mb-5 rounded-[24px] border border-white/10 bg-white/6 p-3">
           <div className="relative">
             <Search className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-white/35" size={18} />
@@ -1437,23 +1419,27 @@ function CompatibilityBadge({
   const badgeMeta = hasPreferences
     ? match >= 85
       ? {
-          label: 'Must visit',
+          label: 'Your vibe',
+          Icon: Diamond,
           className:
             'bg-accent px-3.5 py-2 text-[11px] text-black shadow-[0_18px_40px_rgba(211,255,72,0.28)]',
         }
       : match >= 70
         ? {
-            label: 'Fits you',
+            label: 'Strong fit',
+            Icon: CheckCheck,
             className:
               'border border-accent/65 bg-black/58 px-3.5 py-2 text-[11px] text-accent backdrop-blur-md',
           }
         : match >= 55
           ? {
-              label: 'Worth a look',
+              label: 'Could hit',
+              Icon: Eye,
               className: 'bg-black/60 px-3.5 py-2 text-[11px] text-white backdrop-blur-md',
             }
           : {
-              label: 'Maybe',
+              label: 'Soft maybe',
+              Icon: CircleQuestionMark,
               className: 'bg-black/55 px-3.5 py-2 text-[11px] text-white/78 backdrop-blur-md',
             }
     : null;
@@ -1461,8 +1447,9 @@ function CompatibilityBadge({
   return (
     <div className="absolute left-3 right-3 top-3 flex items-center justify-between">
       {hasPreferences && badgeMeta ? (
-        <div className={`rounded-full font-black tracking-[0.12em] ${badgeMeta.className}`}>
-          {badgeMeta.label}
+        <div className={`inline-flex items-center gap-1.5 rounded-full font-black tracking-[0.12em] ${badgeMeta.className}`}>
+          <badgeMeta.Icon size={13} />
+          <span>{badgeMeta.label}</span>
         </div>
       ) : noPreferenceMood ? (
         <div className={`inline-flex items-center gap-1.5 rounded-full px-3.5 py-2 text-[11px] font-black tracking-[0.12em] ${noPreferenceMood.className}`}>
@@ -1555,13 +1542,6 @@ const LocationPickerSheet = memo(function LocationPickerSheet({
           ))}
         </div>
 
-        <button
-          type="button"
-          onClick={onAddLocation}
-          className="mt-5 flex w-full items-center justify-center rounded-[22px] border-2 border-accent bg-transparent px-4 py-4 text-sm font-black text-accent transition hover:bg-accent/10"
-        >
-          Add city / province / country
-        </button>
       </motion.div>
     </>
   );

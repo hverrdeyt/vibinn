@@ -34,8 +34,8 @@ private let nativeLogger = Logger(subsystem: "club.vibinn.app", category: "Nativ
 private let nativeLocationOptions = [
     NativeLocationOption(id: "boston", label: "Boston"),
     NativeLocationOption(id: "new-york", label: "New York"),
-    NativeLocationOption(id: "tokyo", label: "Tokyo"),
     NativeLocationOption(id: "jakarta", label: "Jakarta"),
+    NativeLocationOption(id: "bandung", label: "Bandung"),
 ]
 
 private let nativeTravelerProfileHorizontalPadding: CGFloat = 22
@@ -171,6 +171,33 @@ private func nativeAppVersionString() -> String? {
         return "\(shortVersion) (\(buildNumber))"
     }
     return shortVersion ?? buildNumber
+}
+
+private enum NativeHapticFeedback {
+    case selection
+    case light
+    case medium
+    case success
+    case warning
+    case error
+}
+
+@MainActor
+private func nativeHaptic(_ feedback: NativeHapticFeedback) {
+    switch feedback {
+    case .selection:
+        UISelectionFeedbackGenerator().selectionChanged()
+    case .light:
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    case .medium:
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    case .success:
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    case .warning:
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+    case .error:
+        UINotificationFeedbackGenerator().notificationOccurred(.error)
+    }
 }
 
 private struct NativeAppleSignInPayload {
@@ -320,6 +347,8 @@ private typealias NativeRegisterResponse = NativeLoginResponse
 
 private struct NativePlace: Decodable, Identifiable {
     let id: String
+    var googlePlaceId: String? = nil
+    var autocompleteSessionToken: String? = nil
     let name: String
     let location: String
     let address: String?
@@ -352,6 +381,7 @@ private struct NativePlace: Decodable, Identifiable {
     var servesBrunch: Bool? = nil
     var servesDessert: Bool? = nil
     var servesCoffee: Bool? = nil
+    var servesCocktails: Bool? = nil
     var goodForGroups: Bool? = nil
     var goodForWatchingSports: Bool? = nil
     var timeZone: String? = nil
@@ -363,6 +393,8 @@ private struct NativePlace: Decodable, Identifiable {
     let longitude: Double?
     let priceRange: String?
     let priceRangeLabel: String?
+    let discoverySignals: [NativePlaceDiscoverySignal]?
+    var tabIds: [String]? = nil
     let momentId: String?
     let ownerUserId: String?
     let visitedDate: String?
@@ -371,6 +403,15 @@ private struct NativePlace: Decodable, Identifiable {
     let momentWouldRevisit: String?
     let momentRating: Int?
     var momentRatingLabel: String? = nil
+}
+
+private struct NativePlaceDiscoverySignal: Decodable {
+    let queryText: String?
+    let queryType: String?
+    let preferenceCategory: String?
+    let resultRank: Int?
+    let bestResultRank: Int?
+    let seenCount: Int?
 }
 
 private struct NativeMomentMediaItem: Decodable {
@@ -383,6 +424,11 @@ private struct NativePlaceDetailResponse: Decodable {
     let relatedPlaces: [NativePlace]?
     let travelerMoments: [NativePlaceTravelerMoment]?
     let interactionState: NativePlaceInteractionState?
+}
+
+private struct NativeCachedPlaceDetail {
+    let payload: NativePlaceDetailResponse
+    let expiresAt: Date
 }
 
 private struct NativePlaceTravelerMoment: Decodable, Identifiable {
@@ -914,23 +960,20 @@ private func nativeDiscoveryFilterTabs(for selectedInterests: [String]) -> [Nati
     var tabs: [NativeDiscoveryCategoryTab] = [
         .init(id: "all", label: "All", icon: "square.grid.2x2.fill"),
         .init(id: "eat", label: "Eat", icon: "fork.knife"),
-        .init(id: "new-trending", label: "New & trending", icon: "flame.fill"),
-        .init(id: "date-night", label: "Date night", icon: "heart.fill"),
-        .init(id: "cool-spots", label: "Cool spots", icon: "sparkles"),
-        .init(id: "group-hangout", label: "Group hangout", icon: "person.3.fill"),
-        .init(id: "aesthetic", label: "Aesthetic", icon: "camera.filters"),
-        .init(id: "child-friendly", label: "Child friendly", icon: "figure.and.child.holdinghands"),
-        .init(id: "cheap-food", label: "Cheap food", icon: "tag.fill"),
+        .init(id: "trending", label: "Trending", icon: "flame.fill"),
     ]
 
     if selected.contains("good_coffee") {
         tabs.insert(.init(id: "coffee", label: "Coffee", icon: "cup.and.saucer.fill"), at: 2)
     }
+    if selected.contains("asian_comfort_food") {
+        tabs.insert(.init(id: "asian-food", label: "Asian Food", icon: "takeoutbag.and.cup.and.straw.fill"), at: min(3, tabs.count))
+    }
     if selected.contains("desserts_sweet_treats") {
-        tabs.insert(.init(id: "dessert", label: "Dessert", icon: "birthday.cake.fill"), at: min(3, tabs.count))
+        tabs.insert(.init(id: "dessert", label: "Dessert", icon: "birthday.cake.fill"), at: min(4, tabs.count))
     }
     if selected.contains("drinks_nightlife") {
-        tabs.insert(.init(id: "drinks", label: "Drinks", icon: "wineglass.fill"), at: min(4, tabs.count))
+        tabs.insert(.init(id: "drinks", label: "Drinks", icon: "wineglass.fill"), at: min(5, tabs.count))
     }
     if selected.contains("fun_activities") {
         tabs.append(.init(id: "culture", label: "Culture", icon: "building.columns.fill"))
@@ -940,6 +983,9 @@ private func nativeDiscoveryFilterTabs(for selectedInterests: [String]) -> [Nati
     }
     if selected.contains("parks_outdoor") {
         tabs.append(.init(id: "parks-outdoor", label: "Parks & outdoor", icon: "tree.fill"))
+    }
+    if selected.contains("aesthetic_cafes") {
+        tabs.append(.init(id: "aesthetic", label: "Aesthetic", icon: "camera.filters"))
     }
 
     return tabs
@@ -965,6 +1011,7 @@ private let nativePlaceMoodBadges: [NativeMoodBadgeMeta] = [
 
 private struct NativeCompatibilityBadgeMeta {
     let label: String
+    let icon: String
     let foreground: Color
     let background: Color
 }
@@ -1019,6 +1066,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private var floatingTabBarHideDepth = 0
     private var followStateOverrides: [String: Bool] = [:]
     private var pendingPostAuthAction: NativePostAuthAction?
+    private var placeDetailCache: [String: NativeCachedPlaceDetail] = [:]
+    private let placeDetailCacheTTL: TimeInterval = 120
 
     var shouldShowUnlockVibeCTA: Bool {
         if let currentUser {
@@ -1043,7 +1092,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     override init() {
         super.init()
         let storedLocation = UserDefaults.standard.string(forKey: locationKey) ?? "Boston"
-        self.selectedLocation = NativeLocationOption(id: storedLocation.lowercased(), label: storedLocation)
+        self.selectedLocation = nativeLocationOptions.first {
+            $0.label.caseInsensitiveCompare(storedLocation) == .orderedSame
+                || $0.id.caseInsensitiveCompare(storedLocation) == .orderedSame
+        } ?? nativeLocationOptions[0]
+        UserDefaults.standard.set(self.selectedLocation.label, forKey: locationKey)
         self.hasCompletedOnboarding = UserDefaults.standard.bool(forKey: onboardingKey)
         self.selectedInterests = UserDefaults.standard.stringArray(forKey: selectedInterestsKey) ?? []
         self.selectedVibe = UserDefaults.standard.string(forKey: selectedVibeKey)
@@ -1252,6 +1305,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         discoveryHasMore = false
         todayRecommendation = nil
         isTodayRecommendationLoading = false
+        placeDetailCache.removeAll()
         todayRecommendationErrorMessage = nil
         savedPlaces = []
         collections = []
@@ -1382,12 +1436,14 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     func presentCheckInFlow(prefilledPlace: NativePlace? = nil) {
         guard currentUser != nil else {
+            nativeHaptic(.warning)
             presentAuthGate(
                 reason: "Log in to save your check-ins.",
                 postAuthAction: .openCheckIn(place: prefilledPlace)
             )
             return
         }
+        nativeHaptic(.medium)
         checkInPrefilledPlace = prefilledPlace
         showCheckInSheet = true
     }
@@ -1465,9 +1521,10 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func updateLocation(to location: NativeLocationOption) async {
-        guard selectedLocation != location else { return }
-        selectedLocation = location
-        UserDefaults.standard.set(location.label, forKey: locationKey)
+        let supportedLocation = nativeLocationOptions.first { $0.id == location.id || $0.label == location.label } ?? nativeLocationOptions[0]
+        guard selectedLocation != supportedLocation else { return }
+        selectedLocation = supportedLocation
+        UserDefaults.standard.set(supportedLocation.label, forKey: locationKey)
         discoveryPlaces = []
         discoveryPage = 1
         discoveryHasMore = false
@@ -1840,6 +1897,19 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         try await api.lookupPlaces(query: query, token: authToken)
     }
 
+    func lookupCheckInPlaces(query: String, sessionToken: String) async throws -> [NativePlace] {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to search places.")
+            throw URLError(.userAuthenticationRequired)
+        }
+        return try await api.lookupCheckInPlaces(
+            query: query,
+            location: selectedLocation.label,
+            sessionToken: sessionToken,
+            token: token
+        )
+    }
+
     func lookupLocations(query: String) async throws -> [NativeLocationOption] {
         try await api.lookupLocations(query: query)
     }
@@ -1866,6 +1936,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let createdMoment = try await api.createMoment(
             token: token,
             placeId: place.id,
+            googlePlaceId: place.googlePlaceId,
+            autocompleteSessionToken: place.autocompleteSessionToken,
+            placeSearchLocation: selectedLocation.label,
             visitedDate: visitedDate,
             caption: note,
             ratingLabel: ratingLabel,
@@ -1900,11 +1973,27 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             rating: resolvedPlaceBase.rating,
             priceLevel: resolvedPlaceBase.priceLevel,
             openingHours: resolvedPlaceBase.openingHours,
+            servesBreakfast: resolvedPlaceBase.servesBreakfast,
+            servesLunch: resolvedPlaceBase.servesLunch,
+            servesDinner: resolvedPlaceBase.servesDinner,
+            servesBeer: resolvedPlaceBase.servesBeer,
+            servesWine: resolvedPlaceBase.servesWine,
+            servesBrunch: resolvedPlaceBase.servesBrunch,
+            servesDessert: resolvedPlaceBase.servesDessert,
+            servesCoffee: resolvedPlaceBase.servesCoffee,
+            servesCocktails: resolvedPlaceBase.servesCocktails,
+            goodForGroups: resolvedPlaceBase.goodForGroups,
+            goodForWatchingSports: resolvedPlaceBase.goodForWatchingSports,
+            timeZone: resolvedPlaceBase.timeZone,
+            utcOffsetMinutes: resolvedPlaceBase.utcOffsetMinutes,
+            outdoors: resolvedPlaceBase.outdoors,
+            outdoorSeating: resolvedPlaceBase.outdoorSeating,
             mapsUrl: resolvedPlaceBase.mapsUrl,
             latitude: resolvedPlaceBase.latitude,
             longitude: resolvedPlaceBase.longitude,
             priceRange: resolvedPlaceBase.priceRange,
             priceRangeLabel: resolvedPlaceBase.priceRangeLabel,
+            discoverySignals: nil,
             momentId: createdMoment.id,
             ownerUserId: resolvedPlaceBase.ownerUserId,
             visitedDate: createdMoment.visitedDate,
@@ -1943,8 +2032,27 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         return try await api.uploadCheckInImages(token: token, images: images)
     }
 
-    func fetchPlaceDetail(id: String) async throws -> NativePlaceDetailResponse {
-        try await api.getPlaceDetail(id: id, token: authToken)
+    func cachedPlaceDetail(id: String) -> NativePlaceDetailResponse? {
+        guard let cached = placeDetailCache[id] else { return nil }
+        if cached.expiresAt > Date() {
+            return cached.payload
+        }
+        placeDetailCache[id] = nil
+        return nil
+    }
+
+    func fetchPlaceDetail(id: String, useCache: Bool = true) async throws -> NativePlaceDetailResponse {
+        if useCache, let cached = cachedPlaceDetail(id: id) {
+            nativeLogger.log("place detail cache hit id=\(id, privacy: .public)")
+            return cached
+        }
+
+        let payload = try await api.getPlaceDetail(id: id, token: authToken)
+        placeDetailCache[id] = NativeCachedPlaceDetail(
+            payload: payload,
+            expiresAt: Date().addingTimeInterval(placeDetailCacheTTL)
+        )
+        return payload
     }
 
     func fetchPlaceDetailBundle(id: String) async throws -> NativePlaceDetailBundleResponse {
@@ -2005,6 +2113,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             savedPlaces.insert(place, at: 0)
             await requestPushNotificationsAfterFirstContentActionIfNeeded()
         }
+        nativeHaptic(.success)
         rebuildOwnFeedItems()
     }
 
@@ -2360,6 +2469,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = nil
         currentUser = nil
         lastSyncedPushToken = nil
+        placeDetailCache.removeAll()
     }
 
     @objc
@@ -2494,11 +2604,27 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     rating: moment.place.rating,
                     priceLevel: moment.place.priceLevel,
                     openingHours: moment.place.openingHours,
+                    servesBreakfast: moment.place.servesBreakfast,
+                    servesLunch: moment.place.servesLunch,
+                    servesDinner: moment.place.servesDinner,
+                    servesBeer: moment.place.servesBeer,
+                    servesWine: moment.place.servesWine,
+                    servesBrunch: moment.place.servesBrunch,
+                    servesDessert: moment.place.servesDessert,
+                    servesCoffee: moment.place.servesCoffee,
+                    servesCocktails: moment.place.servesCocktails,
+                    goodForGroups: moment.place.goodForGroups,
+                    goodForWatchingSports: moment.place.goodForWatchingSports,
+                    timeZone: moment.place.timeZone,
+                    utcOffsetMinutes: moment.place.utcOffsetMinutes,
+                    outdoors: moment.place.outdoors,
+                    outdoorSeating: moment.place.outdoorSeating,
                     mapsUrl: moment.place.mapsUrl,
                     latitude: moment.place.latitude,
                     longitude: moment.place.longitude,
                     priceRange: moment.place.priceRange,
                     priceRangeLabel: moment.place.priceRangeLabel,
+                    discoverySignals: moment.place.discoverySignals,
                     momentId: moment.id,
                     ownerUserId: moment.place.ownerUserId,
                     visitedDate: moment.visitedDate,
@@ -2988,6 +3114,23 @@ private struct NativeAPIClient {
         return response.places
     }
 
+    func lookupCheckInPlaces(
+        query: String,
+        location: String,
+        sessionToken: String,
+        token: String
+    ) async throws -> [NativePlace] {
+        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        let encodedLocation = location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? location
+        let encodedSessionToken = sessionToken.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? sessionToken
+        let response: NativePlaceLookupResponse = try await request(
+            path: "/api/lookups/places/autocomplete?q=\(encodedQuery)&location=\(encodedLocation)&sessionToken=\(encodedSessionToken)",
+            method: "GET",
+            token: token
+        )
+        return response.places
+    }
+
     func lookupLocations(query: String) async throws -> [NativeLocationOption] {
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
         let response: NativeLocationLookupResponse = try await request(
@@ -3130,6 +3273,9 @@ private struct NativeAPIClient {
 
     private struct CreateMomentBody: Encodable {
         let placeId: String
+        let googlePlaceId: String?
+        let autocompleteSessionToken: String?
+        let placeSearchLocation: String?
         let visitedDate: String
         let caption: String
         let uploadedMedia: [String]
@@ -3150,6 +3296,9 @@ private struct NativeAPIClient {
     func createMoment(
         token: String,
         placeId: String,
+        googlePlaceId: String?,
+        autocompleteSessionToken: String?,
+        placeSearchLocation: String?,
         visitedDate: String,
         caption: String,
         ratingLabel: String,
@@ -3163,6 +3312,9 @@ private struct NativeAPIClient {
             token: token,
             body: CreateMomentBody(
                 placeId: placeId,
+                googlePlaceId: googlePlaceId,
+                autocompleteSessionToken: autocompleteSessionToken,
+                placeSearchLocation: placeSearchLocation,
                 visitedDate: visitedDate,
                 caption: caption,
                 uploadedMedia: uploadedMedia,
@@ -3580,47 +3732,103 @@ private func nativeDiscoveryCategoryLabel(for place: NativePlace) -> String {
     nativeDiscoveryMoodBadge(for: place).label
 }
 
+private func nativeNormalizedPreferenceCategory(_ value: String?) -> String {
+    guard let value else { return "" }
+    let normalized = value
+        .lowercased()
+        .replacingOccurrences(of: "-", with: "_")
+        .replacingOccurrences(of: " ", with: "_")
+    switch normalized {
+    case "cafe":
+        return "good_coffee"
+    case "nature":
+        return "parks_outdoor"
+    case "shopping":
+        return "shop_stroll"
+    case "party":
+        return "drinks_nightlife"
+    case "culture", "adventure":
+        return "fun_activities"
+    case "aesthetic_cafe":
+        return "aesthetic_cafes"
+    default:
+        return normalized
+    }
+}
+
+private func nativePlaceHasDiscoverySignal(_ place: NativePlace, preferenceCategory: String) -> Bool {
+    let target = nativeNormalizedPreferenceCategory(preferenceCategory)
+    return place.discoverySignals?.contains { signal in
+        nativeNormalizedPreferenceCategory(signal.preferenceCategory) == target
+    } ?? false
+}
+
+private func nativePlaceBestDiscoveryRank(_ place: NativePlace) -> Int? {
+    let ranks = (place.discoverySignals ?? []).compactMap { signal in
+        signal.bestResultRank ?? signal.resultRank
+    }
+    return ranks.min()
+}
+
 private func nativePlaceMatchesDiscoveryFilter(_ place: NativePlace, filterId: String) -> Bool {
-    let haystack = nativeDiscoveryHaystack(for: place)
-    let isFoodPlace = haystack.contains("restaurant") || haystack.contains("food") || haystack.contains("eat") || haystack.contains("brunch") || haystack.contains("ramen") || haystack.contains("sushi") || haystack.contains("taco") || haystack.contains("burger")
-    let isCoffeePlace = haystack.contains("coffee") || haystack.contains("espresso") || haystack.contains("cafe") || haystack.contains("roastery") || haystack.contains("matcha")
-    let isDessertPlace = haystack.contains("dessert") || haystack.contains("pastry") || haystack.contains("bakery") || haystack.contains("ice cream") || haystack.contains("sweet")
-    let isDrinksPlace = haystack.contains("bar") || haystack.contains("cocktail") || haystack.contains("wine") || haystack.contains("beer") || haystack.contains("nightlife") || haystack.contains("speakeasy") || haystack.contains("rooftop")
-    let isOutdoorPlace = haystack.contains("park") || haystack.contains("garden") || haystack.contains("trail") || haystack.contains("outdoor") || haystack.contains("waterfront") || haystack.contains("scenic")
-    let isCulturePlace = haystack.contains("museum") || haystack.contains("gallery") || haystack.contains("bookstore") || haystack.contains("historic") || haystack.contains("library") || haystack.contains("culture")
-    let isShoppingPlace = haystack.contains("shop") || haystack.contains("shopping") || haystack.contains("boutique") || haystack.contains("market") || haystack.contains("vintage")
-    let score = place.similarityStat ?? 0
-    let rating = place.rating ?? 0
+    if filterId == "all" {
+        return true
+    }
+
+    if let tabIds = place.tabIds, !tabIds.isEmpty {
+        let serverFilterId = filterId == "new-trending" ? "trending" : filterId
+        return tabIds.contains(serverFilterId)
+    }
+
+    let category = (place.category ?? "").lowercased()
+    let isFoodPlace = category.contains("restaurant")
+        || category.contains("food")
+        || category.contains("eat")
+        || category.contains("brunch")
+        || category.contains("ramen")
+        || category.contains("sushi")
+        || category.contains("taco")
+        || category.contains("burger")
+        || category.contains("noodle")
+        || category.contains("bakery")
+        || category.contains("cafe")
+    let isCoffeePlace = category.contains("coffee")
+        || category.contains("espresso")
+        || category.contains("cafe")
+        || category.contains("roastery")
+        || category.contains("matcha")
+        || place.servesCoffee == true
+    let isDessertPlace = category.contains("dessert")
+        || category.contains("pastry")
+        || category.contains("bakery")
+        || category.contains("ice cream")
+        || category.contains("sweet")
+        || place.servesDessert == true
 
     switch filterId {
     case "eat":
-        return isFoodPlace || isDessertPlace
+        return isFoodPlace
+    case "asian-food":
+        return nativePlaceHasDiscoverySignal(place, preferenceCategory: "asian_comfort_food")
     case "coffee":
         return isCoffeePlace
     case "dessert":
         return isDessertPlace
     case "drinks":
-        return isDrinksPlace
-    case "new-trending":
-        return haystack.contains("new") || haystack.contains("trending") || haystack.contains("viral") || score >= 85 || rating >= 4.6
-    case "date-night":
-        return haystack.contains("date") || haystack.contains("romantic") || haystack.contains("intimate") || haystack.contains("cocktail") || haystack.contains("wine") || haystack.contains("dessert")
-    case "cool-spots":
-        return haystack.contains("cool") || haystack.contains("unique") || haystack.contains("hidden gem") || haystack.contains("design") || haystack.contains("scenic") || score >= 80
-    case "group-hangout":
-        return haystack.contains("share") || haystack.contains("group") || haystack.contains("hangout") || haystack.contains("nightlife") || haystack.contains("food hall") || haystack.contains("outdoor")
+        return place.servesBeer == true
+            || place.servesWine == true
+            || nativePlaceHasDiscoverySignal(place, preferenceCategory: "drinks_nightlife")
+    case "trending", "new-trending":
+        guard let bestRank = nativePlaceBestDiscoveryRank(place) else { return false }
+        return bestRank >= 1 && bestRank <= 5
     case "culture":
-        return isCulturePlace
+        return nativePlaceHasDiscoverySignal(place, preferenceCategory: "fun_activities")
     case "shop-stroll":
-        return isShoppingPlace || haystack.contains("stroll") || haystack.contains("walkable")
+        return nativePlaceHasDiscoverySignal(place, preferenceCategory: "shop_stroll")
     case "aesthetic":
-        return haystack.contains("aesthetic") || haystack.contains("design") || haystack.contains("stylish") || haystack.contains("beautiful") || haystack.contains("cute") || haystack.contains("visual")
-    case "child-friendly":
-        return haystack.contains("family") || haystack.contains("kid") || haystack.contains("children") || haystack.contains("playground") || haystack.contains("zoo") || haystack.contains("aquarium") || isOutdoorPlace
-    case "cheap-food":
-        return isFoodPlace && (haystack.contains("cheap") || haystack.contains("budget") || haystack.contains("casual") || (place.priceLevel ?? 0) <= 2)
+        return nativePlaceHasDiscoverySignal(place, preferenceCategory: "aesthetic_cafes")
     case "parks-outdoor":
-        return isOutdoorPlace
+        return nativePlaceHasDiscoverySignal(place, preferenceCategory: "parks_outdoor")
     default:
         return true
     }
@@ -3629,15 +3837,15 @@ private func nativePlaceMatchesDiscoveryFilter(_ place: NativePlace, filterId: S
 private func nativeCompatibilityBadge(for match: Int?) -> NativeCompatibilityBadgeMeta? {
     guard let match else { return nil }
     if match >= 85 {
-        return NativeCompatibilityBadgeMeta(label: "Must visit", foreground: .black, background: nativeAccent)
+        return NativeCompatibilityBadgeMeta(label: "Your vibe", icon: "diamond.fill", foreground: .black, background: nativeAccent)
     }
     if match >= 70 {
-        return NativeCompatibilityBadgeMeta(label: "Fits you", foreground: nativeAccent, background: Color.black.opacity(0.58))
+        return NativeCompatibilityBadgeMeta(label: "Strong fit", icon: "checkmark.seal.fill", foreground: nativeAccent, background: Color.black.opacity(0.58))
     }
     if match >= 55 {
-        return NativeCompatibilityBadgeMeta(label: "Worth a look", foreground: .white, background: Color.black.opacity(0.6))
+        return NativeCompatibilityBadgeMeta(label: "Could hit", icon: "eye.fill", foreground: .white, background: Color.black.opacity(0.6))
     }
-    return NativeCompatibilityBadgeMeta(label: "Maybe", foreground: Color.white.opacity(0.78), background: Color.black.opacity(0.55))
+    return NativeCompatibilityBadgeMeta(label: "Soft maybe", icon: "questionmark.circle.fill", foreground: Color.white.opacity(0.78), background: Color.black.opacity(0.55))
 }
 
 private func nativeDiscoveryTileHeight(for index: Int) -> CGFloat {
@@ -4003,26 +4211,17 @@ private struct NativeSavedTabs: View {
 }
 
 private struct NativeLocationPickerSheet: View {
-    @EnvironmentObject private var appState: NativeAppState
     @Environment(\.dismiss) private var dismiss
-    @State private var query = ""
-    @State private var results: [NativeLocationOption] = []
-    @State private var isSearching = false
-    @State private var errorMessage: String?
-    @State private var searchTask: Task<Void, Never>?
-    @FocusState private var isSearchFieldFocused: Bool
     let selectedLocation: NativeLocationOption
     let availableLocations: [NativeLocationOption]
     let suggestedLocations: [NativeLocationOption]
     let onSelect: (NativeLocationOption) -> Void
 
-    private var filteredLocations: [NativeLocationOption] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return suggestedLocations }
-        if trimmed.count < 3 {
-            return []
+    private var fixedLocations: [NativeLocationOption] {
+        let source = suggestedLocations.isEmpty ? availableLocations : suggestedLocations
+        return source.filter { option in
+            nativeLocationOptions.contains { $0.id == option.id || $0.label == option.label }
         }
-        return results
     }
 
     var body: some View {
@@ -4035,7 +4234,7 @@ private struct NativeLocationPickerSheet: View {
                                 .font(.system(size: 30, weight: .black))
                                 .foregroundStyle(.white)
 
-                            Text("Switch the city, then jump back into discovery.")
+                            Text("Pick one of the cities currently available on Vibinn.")
                                 .font(.system(size: 15, weight: .medium))
                                 .foregroundStyle(.white.opacity(0.58))
                         }
@@ -4054,52 +4253,13 @@ private struct NativeLocationPickerSheet: View {
                         .buttonStyle(.plain)
                     }
 
-                    TextField("Type a city", text: $query)
-                        .textInputAutocapitalization(.words)
-                        .autocorrectionDisabled()
-                        .focused($isSearchFieldFocused)
-                        .font(.system(size: 17, weight: .medium))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 15)
-                        .background(nativeSurfaceStrong)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(nativeBorder, lineWidth: 1)
-                        )
-                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                    if let errorMessage {
-                        NativeInlineError(message: errorMessage)
-                    }
-
-                    if query.trimmingCharacters(in: .whitespacesAndNewlines).count > 0 && query.trimmingCharacters(in: .whitespacesAndNewlines).count < 3 {
-                        Text("Type at least 3 letters to search locations.")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.58))
-                    }
-
-                    if isSearching {
-                        HStack {
-                            ProgressView()
-                                .tint(nativeAccent)
-                            Text("Searching areas...")
-                                .font(.system(size: 14, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.6))
-                        }
-                    } else if query.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3 && filteredLocations.isEmpty && errorMessage == nil {
-                        Text("No locations found.")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.58))
-                    } else if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text("Suggested")
-                            .font(.system(size: 11, weight: .black))
-                            .foregroundStyle(.white.opacity(0.35))
-                            .textCase(.uppercase)
-                    }
+                    Text("Available cities")
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundStyle(.white.opacity(0.35))
+                        .textCase(.uppercase)
 
                     VStack(spacing: 12) {
-                        ForEach(filteredLocations) { location in
+                        ForEach(fixedLocations) { location in
                             Button {
                                 onSelect(location)
                             } label: {
@@ -4140,61 +4300,6 @@ private struct NativeLocationPickerSheet: View {
         }
         .navigationViewStyle(.stack)
         .preferredColorScheme(.dark)
-        .onAppear {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                isSearchFieldFocused = true
-            }
-        }
-        .onChange(of: query) { _ in
-            searchTask?.cancel()
-            let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.count >= 3 else {
-                results = []
-                errorMessage = nil
-                return
-            }
-            searchTask = Task {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard !Task.isCancelled else { return }
-                await performSearch()
-            }
-        }
-    }
-
-    private func performSearch() async {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else {
-            results = []
-            errorMessage = nil
-            return
-        }
-        guard trimmed.count >= 3 else {
-            results = []
-            errorMessage = nil
-            return
-        }
-
-        isSearching = true
-        errorMessage = nil
-        defer { isSearching = false }
-
-        do {
-            let lookedUp = try await appState.lookupLocations(query: trimmed)
-            let normalizedPairs: [(String, NativeLocationOption)] = lookedUp.map { option in
-                let matchedLocation = availableLocations.first { candidate in
-                    candidate.label.caseInsensitiveCompare(option.label) == .orderedSame
-                }
-                let normalized = matchedLocation ?? option
-                return (normalized.label.lowercased(), normalized)
-            }
-            let deduped = Dictionary(normalizedPairs, uniquingKeysWith: { first, _ in first })
-            let merged = Array(deduped.values)
-                .sorted { $0.label.localizedCaseInsensitiveCompare($1.label) == .orderedAscending }
-            results = merged
-        } catch {
-            results = []
-            errorMessage = "Could not search locations right now."
-        }
     }
 }
 
@@ -5358,7 +5463,7 @@ private struct NativeOnboardingScreen: View {
     }
 
     private var onboardingSuggestedLocations: [NativeLocationOption] {
-        nativeLocationOptions.filter { $0.id != "boston" }
+        nativeLocationOptions
     }
 
     private var canSkipPreferences: Bool {
@@ -5477,6 +5582,7 @@ private struct NativeOnboardingScreen: View {
                     }
 
                     Button {
+                        nativeHaptic(.medium)
                         Task {
                             await appState.completeOnboarding(
                                 with: selectedLocation,
@@ -5666,6 +5772,7 @@ private struct NativePreferenceSetupScreen: View {
                 Button {
                     Task {
                         await appState.updateTastePreferences(selectedInterests: selectedInterests, selectedVibe: nil)
+                        nativeHaptic(.success)
                         dismiss()
                         appState.dismissPreferenceSetup()
                         await appState.refreshDiscovery()
@@ -5795,6 +5902,7 @@ private struct NativePreferenceSelectionSection: View {
     }
 
     private func toggle(_ interestId: String) {
+        nativeHaptic(.selection)
         if let existingIndex = selectedInterests.firstIndex(of: interestId) {
             selectedInterests.remove(at: existingIndex)
             return
@@ -6173,8 +6281,13 @@ private struct NativeFloatingTabBar: View {
     }
 
     private func select(tab: NativeTab) {
+        guard activeTab != tab else {
+            nativeHaptic(.light)
+            return
+        }
         let requiresAuthTabs: Set<NativeTab> = [.feed, .saved, .profile, .checkIn]
         if appState.currentUser == nil && requiresAuthTabs.contains(tab) {
+            nativeHaptic(.warning)
             let reason: String
             switch tab {
             case .feed:
@@ -6191,6 +6304,7 @@ private struct NativeFloatingTabBar: View {
             appState.presentAuthGate(reason: reason)
             return
         }
+        nativeHaptic(.selection)
         activeTab = tab
     }
 }
@@ -6198,7 +6312,6 @@ private struct NativeFloatingTabBar: View {
 private struct NativeDiscoverScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @State private var showLocationSheet = false
-    @State private var showSearchSheet = false
     @State private var showNotificationsSheet = false
     @State private var showTodayRecommendationLocationSheet = false
     @State private var showDiscoveryScoreDebug = nativeDiscoveryScoreDebugMode
@@ -6229,18 +6342,18 @@ private struct NativeDiscoverScreen: View {
         }
     }
 
-    private var discoveryScoreCounts: (mustVisit: Int, fitsYou: Int, worthALook: Int, maybe: Int, unscored: Int) {
+    private var discoveryScoreCounts: (yourVibe: Int, strongFit: Int, couldHit: Int, softMaybe: Int, unscored: Int) {
         selectedDiscoveryPlaces.reduce(into: (0, 0, 0, 0, 0)) { result, place in
             guard let badge = nativeCompatibilityBadge(for: place.similarityStat) else {
                 result.4 += 1
                 return
             }
             switch badge.label {
-            case "Must visit":
+            case "Your vibe":
                 result.0 += 1
-            case "Fits you":
+            case "Strong fit":
                 result.1 += 1
-            case "Worth a look":
+            case "Could hit":
                 result.2 += 1
             default:
                 result.3 += 1
@@ -6326,7 +6439,6 @@ private struct NativeDiscoverScreen: View {
                     collapsedHeight: discoveryCollapsedChromeHeight,
                     collapsedAmount: discoveryChromeCollapseDistance,
                     onLocationTap: { showLocationSheet = true },
-                    onSearchTap: { showSearchSheet = true },
                     onNotificationsTap: { showNotificationsSheet = true }
                 )
             }
@@ -6336,10 +6448,10 @@ private struct NativeDiscoverScreen: View {
             if showDiscoveryScoreDebug {
                 NativeDiscoveryScoreDebugPanel(
                     totalLoaded: appState.discoveryPlaces.count,
-                    mustVisitCount: discoveryScoreCounts.mustVisit,
-                    fitsYouCount: discoveryScoreCounts.fitsYou,
-                    worthALookCount: discoveryScoreCounts.worthALook,
-                    maybeCount: discoveryScoreCounts.maybe,
+                    mustVisitCount: discoveryScoreCounts.yourVibe,
+                    fitsYouCount: discoveryScoreCounts.strongFit,
+                    worthALookCount: discoveryScoreCounts.couldHit,
+                    maybeCount: discoveryScoreCounts.softMaybe,
                     unscoredCount: discoveryScoreCounts.unscored,
                     onToggle: {
                         showDiscoveryScoreDebug.toggle()
@@ -6424,12 +6536,6 @@ private struct NativeDiscoverScreen: View {
                     Task { await appState.updateLocation(to: location) }
                 }
             )
-        }
-        .sheet(isPresented: $showSearchSheet) {
-            NavigationView {
-                NativeDiscoverySearchSheet()
-            }
-            .navigationViewStyle(.stack)
         }
         .sheet(isPresented: $showNotificationsSheet) {
             NavigationView {
@@ -6545,6 +6651,7 @@ private struct NativeDiscoveryTabPage: View {
 
                 if tab.id == "all" && shouldShowTodayRecommendationCTA {
                     Button {
+                        nativeHaptic(.light)
                         onTodayRecommendationTap()
                     } label: {
                         HStack(spacing: 14) {
@@ -6620,6 +6727,9 @@ private struct NativeDiscoveryTabPage: View {
                             }
                         )
                         .buttonStyle(.plain)
+                        .simultaneousGesture(TapGesture().onEnded {
+                            nativeHaptic(.light)
+                        })
                     }
                 }
 
@@ -6692,7 +6802,6 @@ private struct NativeDiscoveryTabPage: View {
 private struct NativeDiscoveryTopHeader: View {
     let locationLabel: String
     let onLocationTap: () -> Void
-    let onSearchTap: () -> Void
     let onNotificationsTap: () -> Void
 
     var body: some View {
@@ -6719,19 +6828,6 @@ private struct NativeDiscoveryTopHeader: View {
             Spacer(minLength: 0)
 
             HStack(spacing: 8) {
-                Button(action: onSearchTap) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundStyle(.white)
-                        .frame(width: 44, height: 44)
-                        .background(nativeSurface)
-                        .overlay(
-                            Circle().stroke(nativeBorder, lineWidth: 1)
-                        )
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-
                 Button(action: onNotificationsTap) {
                     Image(systemName: "bell")
                         .font(.system(size: 17, weight: .bold))
@@ -6797,13 +6893,17 @@ private struct NativeTodayRecommendationCard: View {
                         .clipShape(Capsule())
                     Spacer()
                     if let badge {
-                        Text(badge.label)
-                            .font(.system(size: 12, weight: .black))
-                            .foregroundStyle(badge.foreground)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 7)
-                            .background(badge.background)
-                            .clipShape(Capsule())
+                        HStack(spacing: 6) {
+                            Image(systemName: badge.icon)
+                                .font(.system(size: 11, weight: .black))
+                            Text(badge.label)
+                                .font(.system(size: 12, weight: .black))
+                        }
+                        .foregroundStyle(badge.foreground)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(badge.background)
+                        .clipShape(Capsule())
                     }
                 }
                 .frame(width: contentWidth, alignment: .leading)
@@ -6913,6 +7013,11 @@ private struct NativeDiscoveryCategoryTabs: View {
                     HStack(spacing: 14) {
                         ForEach(tabs) { tab in
                             Button {
+                                guard selectedTabId != tab.id else {
+                                    nativeHaptic(.light)
+                                    return
+                                }
+                                nativeHaptic(.selection)
                                 withAnimation(.easeOut(duration: 0.22)) {
                                     selectedTabId = tab.id
                                 }
@@ -6994,7 +7099,6 @@ private struct NativeDiscoverySharedChrome: View {
     let collapsedHeight: CGFloat
     let collapsedAmount: CGFloat
     let onLocationTap: () -> Void
-    let onSearchTap: () -> Void
     let onNotificationsTap: () -> Void
 
     var body: some View {
@@ -7008,7 +7112,6 @@ private struct NativeDiscoverySharedChrome: View {
                 NativeDiscoveryTopHeader(
                     locationLabel: locationLabel,
                     onLocationTap: onLocationTap,
-                    onSearchTap: onSearchTap,
                     onNotificationsTap: onNotificationsTap
                 )
 
@@ -7207,10 +7310,10 @@ private struct NativeDiscoveryScoreDebugPanel: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text("Loaded \(totalLoaded)")
-                Text("Must visit \(mustVisitCount)")
-                Text("Fits you \(fitsYouCount)")
-                Text("Worth a look \(worthALookCount)")
-                Text("Maybe \(maybeCount)")
+                Text("Your vibe \(mustVisitCount)")
+                Text("Strong fit \(fitsYouCount)")
+                Text("Could hit \(worthALookCount)")
+                Text("Soft maybe \(maybeCount)")
                 if unscoredCount > 0 {
                     Text("Unscored \(unscoredCount)")
                 }
@@ -8564,11 +8667,27 @@ private struct NativeOwnVisitedMomentCard: View {
             rating: moment.place.rating,
             priceLevel: moment.place.priceLevel,
             openingHours: moment.place.openingHours,
+            servesBreakfast: moment.place.servesBreakfast,
+            servesLunch: moment.place.servesLunch,
+            servesDinner: moment.place.servesDinner,
+            servesBeer: moment.place.servesBeer,
+            servesWine: moment.place.servesWine,
+            servesBrunch: moment.place.servesBrunch,
+            servesDessert: moment.place.servesDessert,
+            servesCoffee: moment.place.servesCoffee,
+            servesCocktails: moment.place.servesCocktails,
+            goodForGroups: moment.place.goodForGroups,
+            goodForWatchingSports: moment.place.goodForWatchingSports,
+            timeZone: moment.place.timeZone,
+            utcOffsetMinutes: moment.place.utcOffsetMinutes,
+            outdoors: moment.place.outdoors,
+            outdoorSeating: moment.place.outdoorSeating,
             mapsUrl: moment.place.mapsUrl,
             latitude: moment.place.latitude,
             longitude: moment.place.longitude,
             priceRange: moment.place.priceRange,
             priceRangeLabel: moment.place.priceRangeLabel,
+            discoverySignals: moment.place.discoverySignals,
             momentId: moment.id,
             ownerUserId: moment.place.ownerUserId,
             visitedDate: moment.visitedDate,
@@ -8908,10 +9027,10 @@ private struct NativeProfileSettingsSheet: View {
                 nativeLogger.log("settings toggle tapped targetPushEnabled=\(newValue, privacy: .public)")
                 Task {
                     await updatePushNotifications(newValue)
-                }
-            }
-        )
-    }
+                                }
+                            }
+                        )
+                    }
 
     private func updatePushNotifications(_ enabled: Bool) async {
         guard appState.currentUser != nil else { return }
@@ -9651,13 +9770,17 @@ private struct NativeDiscoveryPlaceCard: View {
                 Group {
                     if let compatibilityBadge {
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(compatibilityBadge.label)
-                                .font(.system(size: 11, weight: .black))
-                                .foregroundStyle(compatibilityBadge.foreground)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 8)
-                                .background(compatibilityBadge.background)
-                                .clipShape(Capsule())
+                            HStack(spacing: 6) {
+                                Image(systemName: compatibilityBadge.icon)
+                                    .font(.system(size: 10, weight: .black))
+                                Text(compatibilityBadge.label)
+                                    .font(.system(size: 11, weight: .black))
+                            }
+                            .foregroundStyle(compatibilityBadge.foreground)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(compatibilityBadge.background)
+                            .clipShape(Capsule())
 
                             if let score = place.similarityStat {
                                 Text("\(score)% match")
@@ -12050,7 +12173,7 @@ private struct NativePlaceDetailScreen: View {
     @State private var errorMessage: String?
     @State private var shareURL: URL?
     @State private var sheetContentAtTop = true
-    @State private var hasLoadedCanonicalDetails = false
+    @State private var hasLoadedCanonicalDetails = true
     @State private var showDirectionsOptions = false
 
     init(initialPlace: NativePlace) {
@@ -12426,12 +12549,6 @@ private struct NativePlaceDetailScreen: View {
                                     .fixedSize(horizontal: false, vertical: true)
                             }
                         }
-                        if let description = place.description, !description.isEmpty {
-                            Text(description)
-                                .font(.system(size: 15, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.68))
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
                     }
                 }
 
@@ -12541,11 +12658,14 @@ private struct NativePlaceDetailScreen: View {
                         if let budget = place.priceRange ?? (place.priceLevel.map { String(repeating: "$", count: $0) }), !budget.isEmpty {
                             NativePlaceDetailRow(label: "Budget", value: budget)
                         }
-                        if let bestTime = place.bestTime, !bestTime.isEmpty {
-                            NativePlaceDetailRow(label: "Best time", value: bestTime)
+                        if let timeToVisitLabel {
+                            NativePlaceDetailRow(label: "Time to visit", value: timeToVisitLabel)
                         }
                         if let address = place.address, !address.isEmpty {
                             NativePlaceDetailRow(label: "Full address", value: address)
+                        }
+                        if let openingHours = place.openingHours, !openingHours.isEmpty {
+                            NativePlaceOpeningHoursRows(hours: openingHours)
                         }
                     }
                 }
@@ -12587,6 +12707,9 @@ private struct NativePlaceDetailScreen: View {
     }
 
     private var topTagLabel: String? {
+        if let topSignal = topDiscoverySignal {
+            return "Top \(topSignal.rank) \(topSignal.queryText)"
+        }
         if let first = place.tags?.first, !first.isEmpty { return first }
         if let attitudeLabel = place.attitudeLabel, !attitudeLabel.isEmpty { return attitudeLabel }
         if let category = place.category, !category.isEmpty { return category }
@@ -12594,18 +12717,38 @@ private struct NativePlaceDetailScreen: View {
     }
 
     private var secondaryTags: [String] {
-        var seen = Set<String>()
-        return (place.tags ?? [])
-            .filter { !$0.isEmpty }
-            .filter { tag in
-                let normalized = tag.lowercased()
-                if seen.contains(normalized) { return false }
-                seen.insert(normalized)
-                return normalized != topTagLabel?.lowercased()
-                    && normalized != compatibilityBadge?.label.lowercased()
+        [
+            place.servesDessert == true ? "Serves dessert" : nil,
+            place.servesCoffee == true ? "Serves coffee" : nil,
+            place.servesBeer == true ? "Serves beer" : nil,
+            place.servesWine == true ? "Serves wine" : nil,
+            place.servesCocktails == true ? "Serves cocktails" : nil
+        ].compactMap { $0 }
+    }
+
+    private var topDiscoverySignal: (rank: Int, queryText: String)? {
+        place.discoverySignals?
+            .compactMap { signal -> (rank: Int, queryText: String)? in
+                guard
+                    let rank = signal.resultRank,
+                    let queryText = signal.queryText?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    !queryText.isEmpty
+                else { return nil }
+                return (rank, queryText)
             }
-            .prefix(5)
-            .map { $0 }
+            .sorted { lhs, rhs in lhs.rank < rhs.rank }
+            .first
+    }
+
+    private var timeToVisitLabel: String? {
+        let values = [
+            place.servesBreakfast == true ? "Breakfast" : nil,
+            place.servesBrunch == true ? "Brunch" : nil,
+            place.servesLunch == true ? "Lunch" : nil,
+            place.servesDinner == true ? "Dinner" : nil
+        ].compactMap { $0 }
+        guard !values.isEmpty else { return nil }
+        return values.joined(separator: ", ")
     }
 
     private var whyThisShowsUpText: String? {
@@ -12675,8 +12818,7 @@ private struct NativePlaceDetailScreen: View {
 
     private var highlightAboutExists: Bool {
         let hasHook = !(place.hook?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-        let hasDescription = !(place.description?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-        return hasHook || hasDescription
+        return hasHook
     }
 
     private var compatibilityHeaderPrimary: String {
@@ -12941,6 +13083,7 @@ private struct NativePlaceDetailScreen: View {
 
         let nextState = nextSheetState(from: sheetState, translation: resolvedTranslation)
         guard nextState != sheetState else { return }
+        nativeHaptic(.light)
         withAnimation(placeSheetTransitionAnimation) {
             sheetState = nextState
         }
@@ -12992,15 +13135,18 @@ private struct NativePlaceDetailScreen: View {
                 switch sheetState {
                 case .collapsed:
                     guard value.translation.height < -116 else { return }
+                    nativeHaptic(.light)
                     withAnimation(placeSheetTransitionAnimation) {
                         sheetState = .expanded
                     }
                 case .default:
                     if value.translation.height < -116 {
+                        nativeHaptic(.light)
                         withAnimation(placeSheetTransitionAnimation) {
                             sheetState = .expanded
                         }
                     } else if value.translation.height > 116 {
+                        nativeHaptic(.light)
                         withAnimation(placeSheetTransitionAnimation) {
                             sheetState = .collapsed
                         }
@@ -13018,6 +13164,7 @@ private struct NativePlaceDetailScreen: View {
                 let resolvedPull = max(value.translation.height, value.predictedEndTranslation.height)
                 guard resolvedPull > 28 else { return }
                 guard sheetContentAtTop || resolvedPull > 72 else { return }
+                nativeHaptic(.light)
                 withAnimation(placeSheetTransitionAnimation) {
                     sheetState = .collapsed
                 }
@@ -13223,6 +13370,11 @@ private struct NativePlaceDetailScreen: View {
 
     private func loadLatestPlace() async {
         guard !isLoading else { return }
+        if let cachedPayload = appState.cachedPlaceDetail(id: place.id) {
+            applyDetailPayload(cachedPayload)
+            return
+        }
+
         isLoading = true
         defer { isLoading = false }
         nativeLogger.log(
@@ -13236,7 +13388,9 @@ private struct NativePlaceDetailScreen: View {
                 "place detail load failed id=\(self.place.id, privacy: .public) error=No detail payload available"
             )
             hasLoadedCanonicalDetails = true
-            errorMessage = "Could not refresh place details right now."
+            if place.description?.isEmpty != false && place.hook?.isEmpty != false {
+                errorMessage = "Could not refresh place details right now."
+            }
             return
         }
 
@@ -13244,6 +13398,10 @@ private struct NativePlaceDetailScreen: View {
             "place detail loaded id=\(self.place.id, privacy: .public) score=\(String(describing: resolvedPayload.place.similarityStat), privacy: .public)"
         )
 
+        applyDetailPayload(resolvedPayload)
+    }
+
+    private func applyDetailPayload(_ resolvedPayload: NativePlaceDetailResponse) {
         let nextPlace = mergedPlaceRetainingPresentation(place, with: resolvedPayload.place)
         travelerMoments = resolvedPayload.travelerMoments ?? []
         place = nextPlace
@@ -13326,6 +13484,28 @@ private struct NativePlaceDetailRow: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.white.opacity(0.86))
                 .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct NativePlaceOpeningHoursRows: View {
+    let hours: [String]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text("Opening hours")
+                .font(.system(size: 12, weight: .black))
+                .foregroundStyle(.white.opacity(0.42))
+                .frame(width: 96, alignment: .leading)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(hours, id: \.self) { item in
+                    Text(item)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.86))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             Spacer(minLength: 0)
         }
     }
@@ -13714,11 +13894,27 @@ private func mergedPlaceRetainingPresentation(_ current: NativePlace, with next:
         rating: next.rating,
         priceLevel: next.priceLevel,
         openingHours: next.openingHours,
+        servesBreakfast: next.servesBreakfast,
+        servesLunch: next.servesLunch,
+        servesDinner: next.servesDinner,
+        servesBeer: next.servesBeer,
+        servesWine: next.servesWine,
+        servesBrunch: next.servesBrunch,
+        servesDessert: next.servesDessert,
+        servesCoffee: next.servesCoffee,
+        servesCocktails: next.servesCocktails,
+        goodForGroups: next.goodForGroups,
+        goodForWatchingSports: next.goodForWatchingSports,
+        timeZone: next.timeZone,
+        utcOffsetMinutes: next.utcOffsetMinutes,
+        outdoors: next.outdoors,
+        outdoorSeating: next.outdoorSeating,
         mapsUrl: next.mapsUrl,
         latitude: next.latitude,
         longitude: next.longitude,
         priceRange: next.priceRange,
         priceRangeLabel: next.priceRangeLabel,
+        discoverySignals: next.discoverySignals,
         momentId: next.momentId,
         ownerUserId: next.ownerUserId,
         visitedDate: next.visitedDate,
@@ -14346,6 +14542,7 @@ private struct NativeCheckInScreen: View {
     @State private var isSubmitting = false
     @State private var errorMessage: String?
     @State private var searchTask: Task<Void, Never>?
+    @State private var autocompleteSessionToken = UUID().uuidString
 
     init(prefilledPlace: NativePlace? = nil) {
         self.prefilledPlace = prefilledPlace
@@ -14447,6 +14644,7 @@ private struct NativeCheckInScreen: View {
                 step = .details
             } else {
                 step = .place
+                autocompleteSessionToken = UUID().uuidString
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                     isSearchFieldFocused = true
                 }
@@ -14459,10 +14657,11 @@ private struct NativeCheckInScreen: View {
             guard trimmed.count >= 3 else {
                 results = []
                 errorMessage = nil
+                autocompleteSessionToken = UUID().uuidString
                 return
             }
             searchTask = Task {
-                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                try? await Task.sleep(nanoseconds: 450_000_000)
                 guard !Task.isCancelled else { return }
                 await performSearch()
             }
@@ -14793,26 +14992,14 @@ private struct NativeCheckInScreen: View {
         defer { isSearching = false }
 
         do {
-            let places = try await appState.lookupPlaces(query: trimmed)
-            let priorityLabel = appState.selectedLocation.label.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            results = places.sorted { left, right in
-                let leftPriority = placeMatchesActiveArea(left, activeAreaLabel: priorityLabel)
-                let rightPriority = placeMatchesActiveArea(right, activeAreaLabel: priorityLabel)
-                if leftPriority != rightPriority { return leftPriority && !rightPriority }
-                return left.name.localizedCaseInsensitiveCompare(right.name) == .orderedAscending
-            }
+            results = try await appState.lookupCheckInPlaces(
+                query: trimmed,
+                sessionToken: autocompleteSessionToken
+            )
         } catch {
             results = []
             errorMessage = "Could not search places right now."
         }
-    }
-
-    private func placeMatchesActiveArea(_ place: NativePlace, activeAreaLabel: String) -> Bool {
-        guard !activeAreaLabel.isEmpty else { return false }
-        let haystack = [place.location, place.address ?? ""]
-            .joined(separator: " ")
-            .lowercased()
-        return haystack.contains(activeAreaLabel)
     }
 
     private func submitCheckIn() async {
@@ -14834,6 +15021,7 @@ private struct NativeCheckInScreen: View {
                 note: caption,
                 uploadedMedia: uploadedMedia
             )
+            nativeHaptic(.success)
             nativeLogger.log("submitCheckIn sheet appState success")
             closeSheet()
             nativeLogger.log("submitCheckIn sheet closed")

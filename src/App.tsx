@@ -213,9 +213,12 @@ function mergeSavedLocations(
   currentLocations: SavedLocationOption[],
   incomingLocations: SavedLocationOption[],
 ) {
+  const supportedLocationIds = new Set(INITIAL_SAVED_LOCATIONS.map((location) => location.id));
   const merged = [...currentLocations];
 
-  incomingLocations.forEach((incoming) => {
+  incomingLocations
+    .filter((incoming) => supportedLocationIds.has(incoming.id))
+    .forEach((incoming) => {
     const existingIndex = merged.findIndex((location) =>
       location.id === incoming.id ||
       (
@@ -657,6 +660,9 @@ function parseAppRoute(pathname: string): AppRouteState {
 
 const INITIAL_SAVED_LOCATIONS: SavedLocationOption[] = [
   { id: 'boston', label: 'Boston', type: 'city' },
+  { id: 'new-york', label: 'New York', type: 'city' },
+  { id: 'jakarta', label: 'Jakarta', type: 'city' },
+  { id: 'bandung', label: 'Bandung', type: 'city' },
 ];
 
 const DISCOVERY_PLACE_FEED: Place[] = [
