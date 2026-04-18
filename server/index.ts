@@ -2318,14 +2318,8 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     priceRange: priceRangeLabel,
     priceRangeLabel,
     category,
-    discoverySignals: place.discoverySignals.map((signal) => ({
-      queryText: signal.queryText,
-      queryType: signal.queryType,
-      preferenceCategory: signal.preferenceCategory,
-      resultRank: signal.resultRank,
-      bestResultRank: signal.bestResultRank,
-      seenCount: signal.seenCount,
-    })),
+    topBadgeLabel: buildDiscoveryTopBadgeLabel(place.discoverySignals),
+    discoverySignals: mapDiscoverySignalsForClient(place.discoverySignals),
     tabIds: buildDiscoveryTabIdsForPlace({
       category,
       servesCoffee: place.servesCoffee,
@@ -2337,6 +2331,31 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     latitude: place.latitude ?? undefined,
     longitude: place.longitude ?? undefined,
   };
+}
+
+function mapDiscoverySignalsForClient(signals: PlaceDiscoverySignalForScoring[] = []) {
+  return signals.map((signal) => ({
+    queryText: signal.queryText ?? undefined,
+    queryType: signal.queryType ?? undefined,
+    preferenceCategory: signal.preferenceCategory ?? undefined,
+    resultRank: signal.resultRank ?? undefined,
+    bestResultRank: signal.bestResultRank ?? undefined,
+    seenCount: signal.seenCount ?? undefined,
+  }));
+}
+
+function buildDiscoveryTopBadgeLabel(signals: PlaceDiscoverySignalForScoring[] = []) {
+  const topSignal = signals
+    .map((signal) => {
+      const queryText = signal.queryText?.trim();
+      const rank = signal.bestResultRank ?? signal.resultRank ?? null;
+      if (!queryText || typeof rank !== 'number') return null;
+      return { queryText, rank };
+    })
+    .filter((signal): signal is { queryText: string; rank: number } => Boolean(signal))
+    .sort((left, right) => left.rank - right.rank)[0];
+
+  return topSignal ? `Top ${topSignal.rank} ${topSignal.queryText}` : undefined;
 }
 
 async function getCachedDiscoveryPlacesByLocation(locationLabel: string, locationType?: string) {
@@ -2448,6 +2467,7 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     priceRange: undefined,
     priceRangeLabel: undefined,
     category,
+    topBadgeLabel: undefined,
     discoverySignals: [],
     tabIds: buildDiscoveryTabIdsForPlace({ category, discoverySignals: [] }),
     latitude: place.latitude ?? undefined,
@@ -6087,13 +6107,15 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
 	        endAmount: place.googlePriceRangeEnd,
 	        currencyCode: place.googlePriceRangeCurrency,
 	      }) ?? undefined,
-	      priceRangeLabel: formatStoredGooglePriceRange({
-	        startAmount: place.googlePriceRangeStart,
-	        endAmount: place.googlePriceRangeEnd,
-	        currencyCode: place.googlePriceRangeCurrency,
-	      }) ?? undefined,
-	      category: place.category,
-	    };
+      priceRangeLabel: formatStoredGooglePriceRange({
+        startAmount: place.googlePriceRangeStart,
+        endAmount: place.googlePriceRangeEnd,
+        currencyCode: place.googlePriceRangeCurrency,
+      }) ?? undefined,
+      category: place.category,
+      topBadgeLabel: buildDiscoveryTopBadgeLabel(place.discoverySignals),
+      discoverySignals: mapDiscoverySignalsForClient(place.discoverySignals),
+    };
   }
 
   // Place acquisition now stores the full Google payload from Text Search. Avoid
@@ -6174,6 +6196,14 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
         media: {
           orderBy: { sortOrder: 'asc' },
         },
+        discoverySignals: {
+          orderBy: [
+            { bestResultRank: 'asc' },
+            { resultRank: 'asc' },
+            { lastSeenAt: 'desc' },
+          ],
+          take: 30,
+        },
       },
     });
     const finalPlace = enriched ?? updated;
@@ -6236,12 +6266,14 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
 	        endAmount: finalPlace.googlePriceRangeEnd,
 	        currencyCode: finalPlace.googlePriceRangeCurrency,
 	      }) ?? undefined,
-	      priceRangeLabel: formatStoredGooglePriceRange({
-	        startAmount: finalPlace.googlePriceRangeStart,
-	        endAmount: finalPlace.googlePriceRangeEnd,
-	        currencyCode: finalPlace.googlePriceRangeCurrency,
-	      }) ?? undefined,
-	      category: finalPlace.category,
+      priceRangeLabel: formatStoredGooglePriceRange({
+        startAmount: finalPlace.googlePriceRangeStart,
+        endAmount: finalPlace.googlePriceRangeEnd,
+        currencyCode: finalPlace.googlePriceRangeCurrency,
+      }) ?? undefined,
+      category: finalPlace.category,
+      topBadgeLabel: buildDiscoveryTopBadgeLabel(finalPlace.discoverySignals),
+      discoverySignals: mapDiscoverySignalsForClient(finalPlace.discoverySignals),
     };
   }
 
@@ -6294,12 +6326,14 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
 	      endAmount: place.googlePriceRangeEnd,
 	      currencyCode: place.googlePriceRangeCurrency,
 	    }) ?? undefined,
-	    priceRangeLabel: formatStoredGooglePriceRange({
-	      startAmount: place.googlePriceRangeStart,
-	      endAmount: place.googlePriceRangeEnd,
-	      currencyCode: place.googlePriceRangeCurrency,
-	    }) ?? undefined,
-	    category: place.category,
+    priceRangeLabel: formatStoredGooglePriceRange({
+      startAmount: place.googlePriceRangeStart,
+      endAmount: place.googlePriceRangeEnd,
+      currencyCode: place.googlePriceRangeCurrency,
+    }) ?? undefined,
+    category: place.category,
+    topBadgeLabel: buildDiscoveryTopBadgeLabel(place.discoverySignals),
+    discoverySignals: mapDiscoverySignalsForClient(place.discoverySignals),
 	  };
 }
 

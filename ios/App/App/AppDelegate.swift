@@ -394,6 +394,7 @@ private struct NativePlace: Decodable, Identifiable {
     let priceRange: String?
     let priceRangeLabel: String?
     let discoverySignals: [NativePlaceDiscoverySignal]?
+    var topBadgeLabel: String? = nil
     var tabIds: [String]? = nil
     let momentId: String?
     let ownerUserId: String?
@@ -3853,7 +3854,7 @@ private func nativePlaceMatchesDiscoveryFilter(_ place: NativePlace, filterId: S
 private func nativeCompatibilityBadge(for match: Int?) -> NativeCompatibilityBadgeMeta? {
     guard let match else { return nil }
     if match >= 85 {
-        return NativeCompatibilityBadgeMeta(label: "Your vibe", icon: "diamond.fill", foreground: .black, background: nativeAccent)
+        return NativeCompatibilityBadgeMeta(label: "Your vibe", icon: "diamond", foreground: .black, background: nativeAccent)
     }
     if match >= 70 {
         return NativeCompatibilityBadgeMeta(label: "Strong fit", icon: "checkmark.seal.fill", foreground: nativeAccent, background: Color.black.opacity(0.58))
@@ -12939,6 +12940,9 @@ private struct NativePlaceDetailScreen: View {
     }
 
     private var topTagLabel: String? {
+        if let topBadgeLabel = place.topBadgeLabel?.trimmingCharacters(in: .whitespacesAndNewlines), !topBadgeLabel.isEmpty {
+            return topBadgeLabel
+        }
         if let topSignal = topDiscoverySignal {
             return "Top \(topSignal.rank) \(topSignal.queryText)"
         }
@@ -12962,7 +12966,7 @@ private struct NativePlaceDetailScreen: View {
         place.discoverySignals?
             .compactMap { signal -> (rank: Int, queryText: String)? in
                 guard
-                    let rank = signal.resultRank,
+                    let rank = signal.bestResultRank ?? signal.resultRank,
                     let queryText = signal.queryText?.trimmingCharacters(in: .whitespacesAndNewlines),
                     !queryText.isEmpty
                 else { return nil }
