@@ -2630,3 +2630,47 @@ export async function updateMoment(userId: string | undefined, id: string, paylo
 
   return mapMomentForClient(moment);
 }
+
+export async function deleteMoment(userId: string | undefined, id: string) {
+  const currentUser = await getCurrentUser(prisma, userId);
+  const existing = await prisma.moment.findFirst({
+    where: {
+      id,
+      userId: currentUser.id,
+    },
+    select: {
+      id: true,
+      placeId: true,
+    },
+  });
+
+  if (!existing) {
+    return null;
+  }
+
+  await prisma.$transaction([
+    prisma.comment.deleteMany({
+      where: {
+        OR: [
+          { momentId: existing.id },
+          { targetType: 'MOMENT', targetId: existing.id },
+        ],
+      },
+    }),
+    prisma.vibin.deleteMany({
+      where: {
+        OR: [
+          { momentId: existing.id },
+          { targetType: 'MOMENT', targetId: existing.id },
+        ],
+      },
+    }),
+    prisma.moment.delete({
+      where: { id: existing.id },
+    }),
+  ]);
+
+  return {
+    placeId: existing.placeId,
+  };
+}

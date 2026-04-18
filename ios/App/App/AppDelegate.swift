@@ -1846,6 +1846,22 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         rebuildOwnFeedItems()
     }
 
+    func deleteMoment(id: String) async throws {
+        guard let token = authToken else {
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        try await api.deleteMoment(token: token, id: id)
+        myMoments.removeAll(where: { $0.id == id })
+        ownFeedItemsCache.removeAll { item in
+            item.place?.momentId == id || item.id == "own-visited-\(id)"
+        }
+        feedItems.removeAll { item in
+            item.place?.momentId == id
+        }
+        rebuildOwnFeedItems()
+    }
+
     func refreshFeed() async {
         nativeLogger.log("refreshFeed start")
         feedErrorMessage = nil
@@ -3045,6 +3061,14 @@ private struct NativeAPIClient {
     func getMoments(token: String) async throws -> [NativeMoment] {
         let response: NativeMomentsResponse = try await request(path: "/api/moments", method: "GET", token: token)
         return response.moments
+    }
+
+    func deleteMoment(token: String, id: String) async throws {
+        let _: NativeEmptyResponse = try await request(
+            path: "/api/moments/\(id)",
+            method: "DELETE",
+            token: token
+        )
     }
 
     func getPlaceDetail(id: String, token: String?) async throws -> NativePlaceDetailResponse {
@@ -8427,8 +8451,10 @@ private struct NativeProfileScreen: View {
     @State private var selectedVisitedCity: String?
     @State private var showEditProfileSheet = false
     @State private var showSettingsSheet = false
+    @State private var showShareSheet = false
     @State private var ownFollowersCount: Int?
     @State private var hasLoadedInitialProfileState = false
+    @State private var postDeleteErrorMessage: String?
 
     private var currentTravelerSummary: NativeTravelerSummary? {
         guard let user = appState.currentUser else { return nil }
@@ -8567,7 +8593,7 @@ private struct NativeProfileScreen: View {
                                 .buttonStyle(.plain)
 
                                 Button {
-                                    UIPasteboard.general.string = "https://vibinn.club/u/\(user.username)"
+                                    showShareSheet = true
                                 } label: {
                                     Image(systemName: "square.and.arrow.up")
                                         .font(.system(size: 15, weight: .black))
@@ -8651,6 +8677,17 @@ private struct NativeProfileScreen: View {
                 showSettingsSheet = false
             }
         }
+        .sheet(isPresented: $showShareSheet) {
+            NativeShareSheet(items: ["https://vibinn.club/u/\(appState.currentUser?.username ?? "")"])
+        }
+        .alert("Could not delete post", isPresented: Binding(
+            get: { postDeleteErrorMessage != nil },
+            set: { if !$0 { postDeleteErrorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(postDeleteErrorMessage ?? "Please try again.")
+        }
         .onAppear {
             nativeLogger.log("NativeProfileScreen appear saved=\(appState.savedPlaces.count, privacy: .public) collections=\(appState.collections.count, privacy: .public) moments=\(appState.myMoments.count, privacy: .public)")
             guard !hasLoadedInitialProfileState else { return }
@@ -8702,7 +8739,11 @@ private struct NativeProfileScreen: View {
                         NativeCityFilterPills(selectedCity: effectiveFeedCityBinding, cities: ownFeedCities)
                         LazyVStack(spacing: 14) {
                             ForEach(filteredOwnFeedItems) { item in
-                                NativeFeedCard(item: item)
+                                NativeFeedCard(item: item) { item in
+                                    Task {
+                                        await deleteOwnPost(item)
+                                    }
+                                }
                             }
                         }
                     }
@@ -8733,7 +8774,11 @@ private struct NativeProfileScreen: View {
                         NativeCityFilterPills(selectedCity: effectiveVisitedCityBinding, cities: ownVisitedCities)
                         LazyVStack(spacing: 14) {
                             ForEach(filteredVisitedMoments) { moment in
-                                NativeOwnVisitedMomentCard(moment: moment)
+                                NativeOwnVisitedMomentCard(moment: moment) { moment in
+                                    Task {
+                                        await deleteOwnMoment(moment)
+                                    }
+                                }
                             }
                         }
                     }
@@ -8832,10 +8877,29 @@ private struct NativeProfileScreen: View {
     private var ownVisitedFeedItems: [NativeFeedItem] {
         appState.ownFeedItemsCache.filter { $0.type == .visited }
     }
+
+    private func deleteOwnPost(_ item: NativeFeedItem) async {
+        guard let momentId = item.place?.momentId else { return }
+        do {
+            try await appState.deleteMoment(id: momentId)
+        } catch {
+            postDeleteErrorMessage = "Could not delete this post right now."
+        }
+    }
+
+    private func deleteOwnMoment(_ moment: NativeMoment) async {
+        do {
+            try await appState.deleteMoment(id: moment.id)
+        } catch {
+            postDeleteErrorMessage = "Could not delete this post right now."
+        }
+    }
 }
 
 private struct NativeOwnVisitedMomentCard: View {
     let moment: NativeMoment
+    var onDelete: ((NativeMoment) -> Void)? = nil
+    @State private var showDeletePostDialog = false
 
     private var momentUploadedMediaUrls: [String] {
         (moment.uploadedMedia ?? []).filter { !$0.isEmpty }
@@ -8865,12 +8929,32 @@ private struct NativeOwnVisitedMomentCard: View {
 
                     Spacer(minLength: 0)
 
-                    Image(systemName: "mappin.and.ellipse")
-                        .font(.system(size: 14, weight: .black))
-                        .foregroundStyle(.white.opacity(0.65))
-                        .frame(width: 28, height: 28)
-                        .background(Color.white.opacity(0.06))
-                        .clipShape(Circle())
+                    HStack(spacing: 8) {
+                        Image(systemName: "mappin.and.ellipse")
+                            .font(.system(size: 14, weight: .black))
+                            .foregroundStyle(.white.opacity(0.65))
+                            .frame(width: 28, height: 28)
+                            .background(Color.white.opacity(0.06))
+                            .clipShape(Circle())
+
+                        if onDelete != nil {
+                            Menu {
+                                Button(role: .destructive) {
+                                    showDeletePostDialog = true
+                                } label: {
+                                    Text("Delete post")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis")
+                                    .font(.system(size: 14, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.72))
+                                    .frame(width: 28, height: 28)
+                                    .background(Color.white.opacity(0.06))
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
                 }
 
                 if let caption = moment.caption, !caption.isEmpty {
@@ -8903,6 +8987,14 @@ private struct NativeOwnVisitedMomentCard: View {
                     NativePlaceDetailScreen(initialPlace: enrichedPlace)
                 }
             }
+        }
+        .confirmationDialog("Delete post?", isPresented: $showDeletePostDialog, titleVisibility: .visible) {
+            Button("Delete post", role: .destructive) {
+                onDelete?(moment)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove this check-in from your profile.")
         }
     }
 
@@ -10193,6 +10285,7 @@ private struct NativeCollectionCard: View {
 private struct NativeFeedCard: View {
     @EnvironmentObject private var appState: NativeAppState
     let item: NativeFeedItem
+    var onDeletePost: ((NativeFeedItem) -> Void)? = nil
     @State private var vibed = false
     @State private var vibinCount = 0
     @State private var vibinScale: CGFloat = 1
@@ -10206,6 +10299,7 @@ private struct NativeFeedCard: View {
     @State private var showReportPostDialog = false
     @State private var showReportAccountDialog = false
     @State private var showBlockAccountDialog = false
+    @State private var showDeletePostDialog = false
     @State private var moderationAlertMessage = ""
     @State private var showModerationAlert = false
 
@@ -10258,18 +10352,26 @@ private struct NativeFeedCard: View {
                             .background(Color.white.opacity(0.06))
                             .clipShape(Circle())
 
-                        if appState.currentUser?.id != item.traveler.id {
+                        if shouldShowPostMenu {
                             Menu {
-                                Button("Report post") {
-                                    showReportPostDialog = true
-                                }
-                                Button("Report account") {
-                                    showReportAccountDialog = true
-                                }
-                                Button(role: .destructive) {
-                                    showBlockAccountDialog = true
-                                } label: {
-                                    Text("Block account")
+                                if isOwnDeletablePost {
+                                    Button(role: .destructive) {
+                                        showDeletePostDialog = true
+                                    } label: {
+                                        Text("Delete post")
+                                    }
+                                } else {
+                                    Button("Report post") {
+                                        showReportPostDialog = true
+                                    }
+                                    Button("Report account") {
+                                        showReportAccountDialog = true
+                                    }
+                                    Button(role: .destructive) {
+                                        showBlockAccountDialog = true
+                                    } label: {
+                                        Text("Block account")
+                                    }
                                 }
                             } label: {
                                 Image(systemName: "ellipsis")
@@ -10433,6 +10535,14 @@ private struct NativeFeedCard: View {
         } message: {
             Text("Choose the reason that best describes this content.")
         }
+        .confirmationDialog("Delete post?", isPresented: $showDeletePostDialog, titleVisibility: .visible) {
+            Button("Delete post", role: .destructive) {
+                onDeletePost?(item)
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This will remove this check-in from your profile.")
+        }
         .confirmationDialog("Report account", isPresented: $showReportAccountDialog, titleVisibility: .visible) {
             ForEach(NativeReportReason.allCases) { reason in
                 Button(reason.rawValue) {
@@ -10478,6 +10588,14 @@ private struct NativeFeedCard: View {
         case .collection:
             return "square.stack.3d.up"
         }
+    }
+
+    private var isOwnDeletablePost: Bool {
+        appState.currentUser?.id == item.traveler.id && item.place?.momentId != nil && onDeletePost != nil
+    }
+
+    private var shouldShowPostMenu: Bool {
+        isOwnDeletablePost || appState.currentUser?.id != item.traveler.id
     }
 
     private var displayTimestampLabel: String {

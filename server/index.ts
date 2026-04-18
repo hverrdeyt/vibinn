@@ -14,6 +14,7 @@ import { generateTravelerProfileDescriptor, queueTravelerProfileDescriptorRefres
 import {
   createCollection,
   deleteCollection,
+  deleteMoment,
   getBookmarks,
   createMoment,
   getFollowingFeed,
@@ -7218,6 +7219,23 @@ app.patch('/api/moments/:id', requireAuth, async (req: AuthenticatedRequest, res
       placeIds: [moment.placeId],
     });
     res.json({ moment });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.delete('/api/moments/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const result = await deleteMoment(req.authUserId, req.params.id);
+    if (!result) {
+      res.status(404).json({ error: 'Moment not found' });
+      return;
+    }
+    await runRecommendationWriteback({
+      userId: req.authUserId!,
+      placeIds: [result.placeId],
+    });
+    res.json({});
   } catch (error) {
     handleError(res, error);
   }
