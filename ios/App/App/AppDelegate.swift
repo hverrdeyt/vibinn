@@ -20,7 +20,8 @@ private let nativeTodayRecommendationDebugMode = false
 private let nativeScoreDebugToolsEnabled = false
 private let nativePlaceDetailLayoutDebugMode = false
 private let nativePreferenceLayoutDebugMode = false
-private let nativeAuthLayoutDebugMode = true
+private let nativeAuthLayoutDebugMode = false
+private let nativeAuthHeroImageDebugMode = false
 private let nativeAuthActionsBottomPadding: CGFloat = 17
 private let nativeDiscoveryScoreDebugMode = nativeScoreDebugToolsEnabled
 private let nativeTodayRecommendationScoreDebugMode = nativeScoreDebugToolsEnabled
@@ -54,19 +55,19 @@ private struct NativePreferenceSwipeCard: Identifiable, Hashable {
     let title: String
     let description: String
     let symbol: String
-    let imageURL: String
+    let imageAssetName: String
 }
 
 private let nativeInterestSwipeCards: [NativePreferenceSwipeCard] = [
-    NativePreferenceSwipeCard(id: "aesthetic_cafes", title: "Aesthetic cafes", description: "visual cafes with strong mood, light, and camera-roll payoff.", symbol: "sparkles", imageURL: "https://images.unsplash.com/photo-1501339847302-ac426a4a7cbb?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "desserts_sweet_treats", title: "Desserts & sweet treats", description: "pastries, bakeries, ice cream, and spots worth saving for sugar runs.", symbol: "birthday.cake.fill", imageURL: "https://images.unsplash.com/photo-1488477181946-6428a0291777?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "street_food_casual_eats", title: "Street food & casual eats", description: "cheap eats, quick comfort, and no-fuss local favorites.", symbol: "fork.knife", imageURL: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "asian_comfort_food", title: "Ramen, sushi & Asian comfort", description: "ramen, sushi, noodles, and comfort spots that feel like an easy yes.", symbol: "takeoutbag.and.cup.and.straw.fill", imageURL: "https://images.unsplash.com/photo-1579871494447-9811cf80d66c?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "drinks_nightlife", title: "Drinks & nightlife", description: "cocktail bars, wine spots, rooftops, and plans that start after dark.", symbol: "wineglass.fill", imageURL: "https://images.unsplash.com/photo-1514933651103-005eec06c04b?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "shop_stroll", title: "Shop & stroll", description: "boutiques, markets, vintage finds, and neighborhoods worth wandering.", symbol: "bag.fill", imageURL: "https://images.unsplash.com/photo-1483985988355-763728e1935b?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "good_coffee", title: "Good coffee", description: "specialty coffee, espresso bars, and places that nail the cup.", symbol: "cup.and.saucer.fill", imageURL: "https://images.unsplash.com/photo-1447933601403-0c6688de566e?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "fun_activities", title: "Fun activities", description: "things to do when you want more than a meal and a stronger story.", symbol: "figure.2.and.child.holdinghands", imageURL: "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?auto=format&fit=crop&w=800&q=80"),
-    NativePreferenceSwipeCard(id: "parks_outdoor", title: "Parks & outdoor", description: "green resets, scenic walks, and places that feel good outside.", symbol: "tree.fill", imageURL: "https://images.unsplash.com/photo-1464822759023-fed622ff2c3b?auto=format&fit=crop&w=800&q=80"),
+    NativePreferenceSwipeCard(id: "aesthetic_cafes", title: "Aesthetic cafes", description: "visual cafes with strong mood, light, and camera-roll payoff.", symbol: "sparkles", imageAssetName: "aesthetic_cafes"),
+    NativePreferenceSwipeCard(id: "desserts_sweet_treats", title: "Desserts & sweet treats", description: "pastries, bakeries, ice cream, and spots worth saving for sugar runs.", symbol: "birthday.cake.fill", imageAssetName: "desserts_sweet_treats"),
+    NativePreferenceSwipeCard(id: "street_food_casual_eats", title: "Street food & casual eats", description: "cheap eats, quick comfort, and no-fuss local favorites.", symbol: "fork.knife", imageAssetName: "street_food_casual_eats"),
+    NativePreferenceSwipeCard(id: "asian_comfort_food", title: "Ramen, sushi & Asian comfort", description: "ramen, sushi, noodles, and comfort spots that feel like an easy yes.", symbol: "takeoutbag.and.cup.and.straw.fill", imageAssetName: "asian_comfort_food"),
+    NativePreferenceSwipeCard(id: "drinks_nightlife", title: "Drinks & nightlife", description: "cocktail bars, wine spots, rooftops, and plans that start after dark.", symbol: "wineglass.fill", imageAssetName: "drinks_nightlife"),
+    NativePreferenceSwipeCard(id: "shop_stroll", title: "Shop & stroll", description: "boutiques, markets, vintage finds, and neighborhoods worth wandering.", symbol: "bag.fill", imageAssetName: "shop_stroll"),
+    NativePreferenceSwipeCard(id: "good_coffee", title: "Good coffee", description: "specialty coffee, espresso bars, and places that nail the cup.", symbol: "cup.and.saucer.fill", imageAssetName: "good_coffee"),
+    NativePreferenceSwipeCard(id: "fun_activities", title: "Fun activities", description: "things to do when you want more than a meal and a stronger story.", symbol: "figure.2.and.child.holdinghands", imageAssetName: "fun_activities"),
+    NativePreferenceSwipeCard(id: "parks_outdoor", title: "Parks & outdoor", description: "green resets, scenic walks, and places that feel good outside.", symbol: "tree.fill", imageAssetName: "parks_outdoor"),
 ]
 
 private enum NativePostAuthAction {
@@ -394,6 +395,7 @@ private struct NativePlace: Decodable, Identifiable {
     let priceRange: String?
     let priceRangeLabel: String?
     let discoverySignals: [NativePlaceDiscoverySignal]?
+    var discoveryTopRank: Int? = nil
     var topBadgeLabel: String? = nil
     var tabIds: [String]? = nil
     let momentId: String?
@@ -1202,6 +1204,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         do {
             let session = try await api.getAuthSession(token: token)
             currentUser = session.user
+            if session.user.hasCompletedTastePreferences != true {
+                markOnboardingRequiredAfterAuth()
+            }
             await syncLocalTastePreferencesIfNeeded()
             await refreshCurrentPushTokenFromFirebase()
             await syncPushTokenIfPossible()
@@ -1801,6 +1806,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private func markOnboardingRequiredAfterAuth() {
         hasCompletedOnboarding = false
         UserDefaults.standard.set(false, forKey: onboardingKey)
+        guard currentUser?.hasCompletedTastePreferences != true else { return }
+        selectedInterests = []
+        selectedVibe = nil
+        UserDefaults.standard.removeObject(forKey: selectedInterestsKey)
+        UserDefaults.standard.removeObject(forKey: selectedVibeKey)
     }
 
     func createCollection(label: String, placeIds: [String]) async throws {
@@ -2010,7 +2020,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             longitude: resolvedPlaceBase.longitude,
             priceRange: resolvedPlaceBase.priceRange,
             priceRangeLabel: resolvedPlaceBase.priceRangeLabel,
-            discoverySignals: nil,
+            discoverySignals: resolvedPlaceBase.discoverySignals,
+            discoveryTopRank: resolvedPlaceBase.discoveryTopRank,
             momentId: createdMoment.id,
             ownerUserId: resolvedPlaceBase.ownerUserId,
             visitedDate: createdMoment.visitedDate,
@@ -2642,6 +2653,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     priceRange: moment.place.priceRange,
                     priceRangeLabel: moment.place.priceRangeLabel,
                     discoverySignals: moment.place.discoverySignals,
+                    discoveryTopRank: moment.place.discoveryTopRank,
                     momentId: moment.id,
                     ownerUserId: moment.place.ownerUserId,
                     visitedDate: moment.visitedDate,
@@ -4931,17 +4943,22 @@ private struct NativeAuthScreen: View {
 
                     VStack(alignment: .center, spacing: 14) {
                         ZStack {
-                            Circle()
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
                                 .fill(nativeAccent)
-                            Image("VibinnMapPin")
+                            Image("VibinnAuthLogo")
                                 .resizable()
                                 .scaledToFit()
-                                .padding(12)
+                                .padding(8)
                         }
                         .frame(width: 58, height: 58)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                        )
 
                         VStack(alignment: .center, spacing: 8) {
-                            Text("Create a vibe you love")
+                            Text("Go where your vibe says")
                                 .font(.system(size: 36, weight: .black))
                                 .multilineTextAlignment(.center)
                                 .foregroundStyle(.white)
@@ -5078,6 +5095,18 @@ private struct NativeAuthScreen: View {
 }
 
 private struct NativeAuthHeroPinWall: View {
+    private let heroAssets = [
+        "aesthetic_cafes",
+        "desserts_sweet_treats",
+        "street_food_casual_eats",
+        "asian_comfort_food",
+        "good_coffee",
+        "shop_stroll",
+        "drinks_nightlife",
+        "fun_activities",
+        "parks_outdoor",
+    ]
+
     var body: some View {
         GeometryReader { proxy in
             let spacing: CGFloat = 10
@@ -5086,25 +5115,25 @@ private struct NativeAuthHeroPinWall: View {
             HStack(alignment: .top, spacing: spacing) {
                 // Column 1
                 VStack(spacing: spacing) {
-                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.44)
-                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.28)
-                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.34)
+                    NativeAuthHeroTile(assetName: heroAssets[0], width: columnWidth, height: proxy.size.height * 0.44)
+                    NativeAuthHeroTile(assetName: heroAssets[1], width: columnWidth, height: proxy.size.height * 0.28)
+                    NativeAuthHeroTile(assetName: heroAssets[2], width: columnWidth, height: proxy.size.height * 0.34)
                 }
                 .frame(width: columnWidth)
 
                 // Column 2 (slightly different rhythm)
                 VStack(spacing: spacing) {
-                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.30)
-                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.46)
-                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.26)
+                    NativeAuthHeroTile(assetName: heroAssets[3], width: columnWidth, height: proxy.size.height * 0.30)
+                    NativeAuthHeroTile(assetName: heroAssets[4], width: columnWidth, height: proxy.size.height * 0.46)
+                    NativeAuthHeroTile(assetName: heroAssets[5], width: columnWidth, height: proxy.size.height * 0.26)
                 }
                 .frame(width: columnWidth)
 
                 // Column 3
                 VStack(spacing: spacing) {
-                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.40)
-                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.30)
-                    NativeAuthHeroTile(url: nil, height: proxy.size.height * 0.36)
+                    NativeAuthHeroTile(assetName: heroAssets[6], width: columnWidth, height: proxy.size.height * 0.40)
+                    NativeAuthHeroTile(assetName: heroAssets[7], width: columnWidth, height: proxy.size.height * 0.30)
+                    NativeAuthHeroTile(assetName: heroAssets[8], width: columnWidth, height: proxy.size.height * 0.36)
                 }
                 .frame(width: columnWidth)
             }
@@ -5123,17 +5152,19 @@ private struct NativeAuthHeroPinWall: View {
                 )
             )
             // Scrim for readability near the bottom.
-            .overlay(
+            .overlay(alignment: .bottom) {
                 LinearGradient(
                     colors: [
                         Color.black.opacity(0.0),
-                        Color.black.opacity(0.22),
-                        Color.black.opacity(0.76)
+                        Color.black.opacity(0.36),
+                        Color.black.opacity(0.78),
+                        Color.black.opacity(1.0)
                     ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
-            )
+                .frame(height: proxy.size.height * 0.52)
+            }
             .overlay {
                 if nativeAuthLayoutDebugMode {
                     NativeDebugFrame(label: "PINWALL", color: .cyan)
@@ -5144,33 +5175,46 @@ private struct NativeAuthHeroPinWall: View {
 }
 
 private struct NativeAuthHeroTile: View {
-    let url: String?
+    let assetName: String
+    let width: CGFloat
     let height: CGFloat
 
     var body: some View {
+        let tileShape = RoundedRectangle(cornerRadius: 26, style: .continuous)
+
         ZStack {
-            if let url, !url.isEmpty {
-                NativeRemoteImage(url: url)
-                    .scaledToFill()
-            } else {
-                RoundedRectangle(cornerRadius: 26, style: .continuous)
-                    .fill(Color.white.opacity(0.06))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 26, style: .continuous)
-                            .stroke(Color.white.opacity(0.16), lineWidth: 1)
-                    )
-                    .overlay(alignment: .bottomLeading) {
-                        Text("IMAGE")
-                            .font(.system(size: 10, weight: .black))
-                            .foregroundStyle(.white.opacity(0.28))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                    }
+            tileShape
+                .fill(Color.white.opacity(0.06))
+
+            GeometryReader { geometry in
+                if UIImage(named: assetName) != nil {
+                    Image(assetName)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                } else {
+                    Text("IMAGE")
+                        .font(.system(size: 10, weight: .black))
+                        .foregroundStyle(.white.opacity(0.28))
+                        .frame(width: geometry.size.width, height: geometry.size.height, alignment: .bottomLeading)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                }
+            }
+            .frame(width: width, height: height)
+            .clipped()
+        }
+        .frame(width: width)
+        .frame(height: height)
+        .clipped()
+        .clipShape(tileShape)
+        .contentShape(tileShape)
+        .overlay {
+            if nativeAuthHeroImageDebugMode {
+                NativeDebugFrame(label: assetName, color: .red)
             }
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: height)
-        .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
     }
 }
 
@@ -5950,25 +5994,17 @@ private struct NativePreferenceSelectionCard: View {
                     RoundedRectangle(cornerRadius: 24, style: .continuous)
                         .fill(nativeSurfaceStrong)
 
-                    AsyncImage(url: URL(string: card.imageURL)) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFill()
-                        case .empty:
-                            Rectangle()
-                                .fill(Color.white.opacity(0.04))
-                        case .failure:
-                            Rectangle()
-                                .fill(Color.white.opacity(0.04))
-                        @unknown default:
-                            Rectangle()
-                                .fill(Color.white.opacity(0.04))
-                        }
+                    if UIImage(named: card.imageAssetName) != nil {
+                        Image(card.imageAssetName)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: cardWidth, height: cardHeight)
+                            .clipped()
+                    } else {
+                        Rectangle()
+                            .fill(Color.white.opacity(0.04))
+                            .frame(width: cardWidth, height: cardHeight)
                     }
-                    .frame(width: cardWidth, height: cardHeight)
-                    .clipped()
 
                     LinearGradient(
                         colors: [Color.black.opacity(0.08), Color.black.opacity(0.24), Color.black.opacity(0.84)],
@@ -6875,7 +6911,7 @@ private struct NativeDiscoveryInspirationSection: View {
                 .padding(.horizontal, 2)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
+                HStack(spacing: 0) {
                     ForEach(media) { item in
                         Button {
                             nativeHaptic(.light)
@@ -6886,7 +6922,7 @@ private struct NativeDiscoveryInspirationSection: View {
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.horizontal, 2)
+                .padding(.horizontal, 0)
             }
             .frame(width: contentWidth, alignment: .leading)
         }
@@ -6904,7 +6940,7 @@ private struct NativeDiscoveryInspirationTile: View {
     var body: some View {
         ZStack(alignment: .bottomLeading) {
             NativeRemoteImage(url: displayURL)
-                .frame(width: 118, height: 158)
+                .frame(width: 152, height: 204)
                 .overlay(
                     LinearGradient(
                         colors: [Color.clear, Color.black.opacity(0.72)],
@@ -6928,12 +6964,7 @@ private struct NativeDiscoveryInspirationTile: View {
             }
             .padding(8)
         }
-        .frame(width: 118, height: 158)
-        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
-        )
+        .frame(width: 152, height: 204)
     }
 }
 
@@ -8921,6 +8952,7 @@ private struct NativeOwnVisitedMomentCard: View {
             priceRange: moment.place.priceRange,
             priceRangeLabel: moment.place.priceRangeLabel,
             discoverySignals: moment.place.discoverySignals,
+            discoveryTopRank: moment.place.discoveryTopRank,
             momentId: moment.id,
             ownerUserId: moment.place.ownerUserId,
             visitedDate: moment.visitedDate,
@@ -9964,6 +9996,11 @@ private struct NativeDiscoveryPlaceCard: View {
         return fallback?.isEmpty == false ? fallback : nil
     }
 
+    private var topRankLabel: String? {
+        guard let rank = place.discoveryTopRank, (1...3).contains(rank) else { return nil }
+        return "#\(rank)"
+    }
+
     private var debugBorderColor: Color {
         switch Int(height) {
         case 328: return .red
@@ -10015,12 +10052,6 @@ private struct NativeDiscoveryPlaceCard: View {
                             .background(compatibilityBadge.background)
                             .clipShape(Capsule())
 
-                            if let score = place.similarityStat {
-                                Text("\(score)% match")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .foregroundStyle(.white.opacity(0.74))
-                                    .padding(.leading, 4)
-                            }
                         }
                     } else {
                         HStack(spacing: 6) {
@@ -10070,14 +10101,14 @@ private struct NativeDiscoveryPlaceCard: View {
                 } label: {
                     Image(systemName: isCurrentlyBookmarked ? "heart.fill" : "heart")
                         .font(.system(size: 15, weight: .black))
-                        .foregroundStyle(isCurrentlyBookmarked ? .black : .white)
+                        .foregroundStyle(.white.opacity(0.68))
                         .frame(width: 36, height: 36)
                         .background(isCurrentlyBookmarked ? nativeAccent : Color.black.opacity(0.36))
                         .clipShape(Circle())
                         .overlay {
                             if isBookmarkUpdating {
                                 ProgressView()
-                                    .tint(isCurrentlyBookmarked ? .black : .white)
+                                    .tint(.white.opacity(0.68))
                                     .scaleEffect(0.7)
                             }
                         }
@@ -10105,34 +10136,14 @@ private struct NativeDiscoveryPlaceCard: View {
             }
         }
         .overlay(alignment: .bottomLeading) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(discoveryTagLabel.uppercased())
-                    .font(.system(size: 11, weight: .black))
-                    .foregroundStyle(.white.opacity(0.88))
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color.white.opacity(0.12))
-                    .clipShape(Capsule())
-
-                if let neighborhoodLabel {
-                    Text(neighborhoodLabel)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.80))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                        .padding(.leading, 2)
-                }
-
-                if let priceLabel {
-                    Text(priceLabel)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.70))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
-                        .padding(.leading, 2)
-                }
+            if let topRankLabel {
+                Text(topRankLabel)
+                    .font(.system(size: 34, weight: .black))
+                    .foregroundStyle(nativeAccent)
+                    .shadow(color: .black.opacity(0.55), radius: 10, x: 0, y: 5)
+                    .padding(.leading, 16)
+                    .padding(.bottom, 14)
             }
-            .padding(16)
         }
         .overlay(alignment: .bottomTrailing) {
             if let onDebugTap, nativeDiscoveryScoreDebugMode {
@@ -12710,7 +12721,7 @@ private struct NativePlaceDetailScreen: View {
                     }
                 }
                 .overlay(alignment: .topLeading) {
-                    if let topTag = topTagLabel {
+                    if sheetState != .default, let topTag = topTagLabel {
                         Text(topTag)
                             .font(.system(size: 12, weight: .black))
                             .foregroundStyle(.black)
@@ -14151,6 +14162,7 @@ private func mergedPlaceRetainingPresentation(_ current: NativePlace, with next:
         priceRange: next.priceRange,
         priceRangeLabel: next.priceRangeLabel,
         discoverySignals: next.discoverySignals,
+        discoveryTopRank: next.discoveryTopRank ?? current.discoveryTopRank,
         momentId: next.momentId,
         ownerUserId: next.ownerUserId,
         visitedDate: next.visitedDate,

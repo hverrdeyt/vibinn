@@ -2319,6 +2319,7 @@ function mapCachedPlaceForDiscovery(place: Prisma.PlaceGetPayload<{
     priceRangeLabel,
     category,
     topBadgeLabel: buildDiscoveryTopBadgeLabel(place.discoverySignals),
+    discoveryTopRank: buildDiscoveryTopRank(place.discoverySignals),
     discoverySignals: mapDiscoverySignalsForClient(place.discoverySignals),
     tabIds: buildDiscoveryTabIdsForPlace({
       category,
@@ -2356,6 +2357,14 @@ function buildDiscoveryTopBadgeLabel(signals: PlaceDiscoverySignalForScoring[] =
     .sort((left, right) => left.rank - right.rank)[0];
 
   return topSignal ? `Top ${topSignal.rank} ${topSignal.queryText}` : undefined;
+}
+
+function buildDiscoveryTopRank(signals: PlaceDiscoverySignalForScoring[] = []) {
+  const ranks = signals
+    .map((signal) => signal.bestResultRank ?? signal.resultRank ?? null)
+    .filter((rank): rank is number => typeof rank === 'number' && Number.isFinite(rank));
+  const topRank = ranks.length > 0 ? Math.min(...ranks) : null;
+  return topRank !== null && topRank >= 1 && topRank <= 3 ? topRank : undefined;
 }
 
 async function getCachedDiscoveryPlacesByLocation(locationLabel: string, locationType?: string) {
@@ -2468,6 +2477,7 @@ function mapMockPlaceForDiscovery(place: typeof MOCK_PLACES[number]) {
     priceRangeLabel: undefined,
     category,
     topBadgeLabel: undefined,
+    discoveryTopRank: undefined,
     discoverySignals: [],
     tabIds: buildDiscoveryTabIdsForPlace({ category, discoverySignals: [] }),
     latitude: place.latitude ?? undefined,
@@ -6114,6 +6124,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       }) ?? undefined,
       category: place.category,
       topBadgeLabel: buildDiscoveryTopBadgeLabel(place.discoverySignals),
+      discoveryTopRank: buildDiscoveryTopRank(place.discoverySignals),
       discoverySignals: mapDiscoverySignalsForClient(place.discoverySignals),
     };
   }
@@ -6273,6 +6284,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       }) ?? undefined,
       category: finalPlace.category,
       topBadgeLabel: buildDiscoveryTopBadgeLabel(finalPlace.discoverySignals),
+      discoveryTopRank: buildDiscoveryTopRank(finalPlace.discoverySignals),
       discoverySignals: mapDiscoverySignalsForClient(finalPlace.discoverySignals),
     };
   }
@@ -6333,6 +6345,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
     }) ?? undefined,
     category: place.category,
     topBadgeLabel: buildDiscoveryTopBadgeLabel(place.discoverySignals),
+    discoveryTopRank: buildDiscoveryTopRank(place.discoverySignals),
     discoverySignals: mapDiscoverySignalsForClient(place.discoverySignals),
 	  };
 }
