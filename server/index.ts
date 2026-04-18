@@ -3094,6 +3094,7 @@ async function getDiscoveryPlacesForUser(options: {
 
   return {
     places: pagedPlaces,
+    inspirationMedia: page === 1 ? await getDiscoveryInspirationMedia() : [],
     pagination: {
       page,
       limit,
@@ -3101,6 +3102,73 @@ async function getDiscoveryPlacesForUser(options: {
       hasMore: start + limit < rankedPlaces.length,
     },
   };
+}
+
+async function getDiscoveryInspirationMedia() {
+  const media = await prisma.momentMedia.findMany({
+    where: {
+      mediaType: {
+        startsWith: 'image',
+        mode: 'insensitive',
+      },
+      moment: {
+        privacy: 'PUBLIC',
+      },
+    },
+    orderBy: { createdAt: 'desc' },
+    take: 10,
+    include: {
+      moment: {
+        include: {
+          user: true,
+          place: {
+            include: {
+              media: { orderBy: { sortOrder: 'asc' } },
+              aiEnrichment: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  return media.map((item) => {
+    const traveler = item.moment.user;
+    const place = item.moment.place;
+    return {
+      id: item.id,
+      url: item.url,
+      thumbnailUrl: item.thumbnailUrl ?? item.url,
+      mediaType: 'image',
+      momentId: item.momentId,
+      place: {
+        id: place.id,
+        name: place.name,
+        location: [place.city, place.country].filter(Boolean).join(', ') || place.address || 'Unknown location',
+        image: place.primaryImageUrl ?? place.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
+        images: place.media.map((mediaItem) => mediaItem.url),
+        category: place.category,
+        tags: place.aiEnrichment?.vibeTags.length ? place.aiEnrichment.vibeTags : [place.category].filter(Boolean),
+        description: place.aiEnrichment?.description ?? '',
+        hook: place.aiEnrichment?.hook ?? '',
+      },
+      traveler: {
+        id: traveler.id,
+        username: traveler.username,
+        displayName: traveler.displayName,
+        avatar: traveler.avatarUrl,
+        bio: traveler.bio,
+        matchScore: undefined,
+        followersCount: undefined,
+        recentSavedPlaces: [],
+        recentCollections: [],
+        travelHistory: [],
+        visitedPlacesCount: undefined,
+        savedPlacesCount: undefined,
+        collectionsCount: undefined,
+      },
+    };
+  });
 }
 
 async function fetchGooglePlaceDetails(googlePlaceId: string, options?: {

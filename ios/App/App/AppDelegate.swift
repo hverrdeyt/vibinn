@@ -454,7 +454,18 @@ private struct NativePlaceDetailBundleResponse: Decodable {
 
 private struct NativeDiscoveryPlacesResponse: Decodable {
     let places: [NativePlace]
+    let inspirationMedia: [NativeDiscoveryInspirationMedia]?
     let pagination: NativeDiscoveryPagination?
+}
+
+private struct NativeDiscoveryInspirationMedia: Decodable, Identifiable {
+    let id: String
+    let url: String
+    let thumbnailUrl: String?
+    let mediaType: String?
+    let momentId: String?
+    let place: NativePlace
+    let traveler: NativeTravelerSummary
 }
 
 private struct NativeTodayRecommendationResponse: Decodable {
@@ -1028,6 +1039,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var isDiscoveryLoading = false
     @Published var isDiscoveryLoadingMore = false
     @Published var discoveryPlaces: [NativePlace] = []
+    @Published var discoveryInspirationMedia: [NativeDiscoveryInspirationMedia] = []
     @Published var discoveryPage = 1
     @Published var discoveryHasMore = false
     @Published var todayRecommendation: NativeTodayRecommendationResponse?
@@ -1301,6 +1313,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         NativeGoogleSignInCoordinator.signOut()
         clearSession()
         discoveryPlaces = []
+        discoveryInspirationMedia = []
         discoveryPage = 1
         discoveryHasMore = false
         todayRecommendation = nil
@@ -1526,6 +1539,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         selectedLocation = supportedLocation
         UserDefaults.standard.set(supportedLocation.label, forKey: locationKey)
         discoveryPlaces = []
+        discoveryInspirationMedia = []
         discoveryPage = 1
         discoveryHasMore = false
         todayRecommendation = nil
@@ -1594,6 +1608,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 token: authToken
             )
             discoveryPlaces = response.places
+            discoveryInspirationMedia = response.inspirationMedia ?? []
             discoveryPage = response.pagination?.page ?? 1
             discoveryHasMore = response.pagination?.hasMore ?? false
             nativeLogger.log("refreshDiscovery success count=\(self.discoveryPlaces.count, privacy: .public)")
@@ -1610,6 +1625,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             nativeLogger.error("refreshDiscovery failed: \(error.localizedDescription, privacy: .public)")
             if discoveryPlaces.isEmpty {
                 discoveryPlaces = nativeFallbackDiscoveryPlaces(for: selectedLocation.label)
+                discoveryInspirationMedia = []
                 discoveryPage = 1
                 discoveryHasMore = false
             }
@@ -6317,6 +6333,7 @@ private struct NativeDiscoverScreen: View {
     @State private var showDiscoveryScoreDebug = nativeDiscoveryScoreDebugMode
     @State private var showTodayRecommendationDebug = false
     @State private var selectedDebugPlace: NativePlace?
+    @State private var selectedInspirationMedia: NativeDiscoveryInspirationMedia?
     @State private var selectedDiscoveryTabId = "all"
     @State private var isLocationAccessBannerDismissed = false
     @State private var discoveryScrollOffsets: [String: CGFloat] = [:]
@@ -6396,6 +6413,7 @@ private struct NativeDiscoverScreen: View {
                         NativeDiscoveryTabPage(
                             tab: tab,
                             places: discoveryPlaces(for: tab.id),
+                            inspirationMedia: tab.id == "all" ? appState.discoveryInspirationMedia : [],
                             contentWidth: contentWidth,
                             topInset: discoveryExpandedChromeHeight,
                             shouldShowTodayRecommendationCTA: shouldShowTodayRecommendationCTA,
@@ -6420,6 +6438,9 @@ private struct NativeDiscoverScreen: View {
                                 } else {
                                     showTodayRecommendationLocationSheet = true
                                 }
+                            },
+                            onInspirationTap: { media in
+                                selectedInspirationMedia = media
                             },
                             onScrollOffsetChange: { offset in
                                 discoveryScrollOffsets[tab.id] = offset
@@ -6566,6 +6587,9 @@ private struct NativeDiscoverScreen: View {
                 }
             )
         }
+        .fullScreenCover(item: $selectedInspirationMedia) { media in
+            NativeDiscoveryInspirationFullscreen(media: media)
+        }
         .onChange(of: appState.discoveryPlaces.map(\.id)) { _ in
             if !discoveryTabs.contains(where: { $0.id == selectedDiscoveryTabId }) {
                 selectedDiscoveryTabId = "all"
@@ -6596,6 +6620,7 @@ private struct NativeDiscoveryTabPage: View {
     @EnvironmentObject private var appState: NativeAppState
     let tab: NativeDiscoveryCategoryTab
     let places: [NativePlace]
+    let inspirationMedia: [NativeDiscoveryInspirationMedia]
     let contentWidth: CGFloat
     let topInset: CGFloat
     let shouldShowTodayRecommendationCTA: Bool
@@ -6605,6 +6630,7 @@ private struct NativeDiscoveryTabPage: View {
     let onPlaceDebugTap: (NativePlace) -> Void
     let onTodayDebugTap: () -> Void
     let onTodayRecommendationTap: () -> Void
+    let onInspirationTap: (NativeDiscoveryInspirationMedia) -> Void
     let onScrollOffsetChange: (CGFloat) -> Void
 
     private var scrollCoordinateSpace: String {
@@ -6613,6 +6639,24 @@ private struct NativeDiscoveryTabPage: View {
 
     private var balancedColumns: (left: [NativeDiscoveryColumnItem], right: [NativeDiscoveryColumnItem]) {
         buildNativeBalancedDiscoveryColumns(places: places)
+    }
+
+    private var firstPagePlaces: [NativePlace] {
+        guard !inspirationMedia.isEmpty else { return places }
+        return Array(places.prefix(18))
+    }
+
+    private var remainingPlacesAfterInspiration: [NativePlace] {
+        guard !inspirationMedia.isEmpty, places.count > 18 else { return [] }
+        return Array(places.dropFirst(18))
+    }
+
+    private var firstPageColumns: (left: [NativeDiscoveryColumnItem], right: [NativeDiscoveryColumnItem]) {
+        buildNativeBalancedDiscoveryColumns(places: firstPagePlaces)
+    }
+
+    private var remainingColumns: (left: [NativeDiscoveryColumnItem], right: [NativeDiscoveryColumnItem]) {
+        buildNativeBalancedDiscoveryColumns(places: remainingPlacesAfterInspiration)
     }
 
     private var bottomContentSpacer: CGFloat {
@@ -6761,11 +6805,29 @@ private struct NativeDiscoveryTabPage: View {
                     }
                 } else {
                     NativeDiscoveryMasonryView(
-                        leftItems: balancedColumns.left,
-                        rightItems: balancedColumns.right,
+                        leftItems: inspirationMedia.isEmpty ? balancedColumns.left : firstPageColumns.left,
+                        rightItems: inspirationMedia.isEmpty ? balancedColumns.right : firstPageColumns.right,
                         containerWidth: contentWidth,
                         onDebugTap: onPlaceDebugTap
                     )
+
+                    if !inspirationMedia.isEmpty {
+                        NativeDiscoveryInspirationSection(
+                            media: inspirationMedia,
+                            contentWidth: contentWidth,
+                            onMediaTap: onInspirationTap
+                        )
+                        .padding(.top, 4)
+                    }
+
+                    if !remainingPlacesAfterInspiration.isEmpty {
+                        NativeDiscoveryMasonryView(
+                            leftItems: remainingColumns.left,
+                            rightItems: remainingColumns.right,
+                            containerWidth: contentWidth,
+                            onDebugTap: onPlaceDebugTap
+                        )
+                    }
 
                     if appState.isDiscoveryLoadingMore {
                         HStack {
@@ -6796,6 +6858,176 @@ private struct NativeDiscoveryTabPage: View {
         .refreshable {
             await appState.refreshDiscovery()
         }
+    }
+}
+
+private struct NativeDiscoveryInspirationSection: View {
+    let media: [NativeDiscoveryInspirationMedia]
+    let contentWidth: CGFloat
+    let onMediaTap: (NativeDiscoveryInspirationMedia) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("For your inspiration")
+                .font(.system(size: 22, weight: .black))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 2)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(media) { item in
+                        Button {
+                            nativeHaptic(.light)
+                            onMediaTap(item)
+                        } label: {
+                            NativeDiscoveryInspirationTile(media: item)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 2)
+            }
+            .frame(width: contentWidth, alignment: .leading)
+        }
+        .frame(width: contentWidth, alignment: .leading)
+    }
+}
+
+private struct NativeDiscoveryInspirationTile: View {
+    let media: NativeDiscoveryInspirationMedia
+
+    private var displayURL: String {
+        media.thumbnailUrl?.isEmpty == false ? media.thumbnailUrl! : media.url
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            NativeRemoteImage(url: displayURL)
+                .frame(width: 118, height: 158)
+                .overlay(
+                    LinearGradient(
+                        colors: [Color.clear, Color.black.opacity(0.72)],
+                        startPoint: .center,
+                        endPoint: .bottom
+                    )
+                )
+
+            HStack(spacing: 6) {
+                NativeAvatarCircle(
+                    url: media.traveler.avatar,
+                    fallbackText: media.traveler.displayName ?? media.traveler.username,
+                    size: 22,
+                    fontSize: 9
+                )
+
+                Text("@\(media.traveler.username)")
+                    .font(.system(size: 10, weight: .black))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+            }
+            .padding(8)
+        }
+        .frame(width: 118, height: 158)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+}
+
+private struct NativeDiscoveryInspirationFullscreen: View {
+    @Environment(\.dismiss) private var dismiss
+    let media: NativeDiscoveryInspirationMedia
+
+    var body: some View {
+        NavigationView {
+            ZStack(alignment: .topTrailing) {
+                Color.black.ignoresSafeArea()
+
+                NativeFlexibleRemoteImage(url: media.url)
+                    .ignoresSafeArea()
+
+                VStack {
+                    HStack(spacing: 12) {
+                        NavigationLink {
+                            NativeTravelerProfileScreen(initialTraveler: media.traveler)
+                        } label: {
+                            HStack(spacing: 8) {
+                                NativeAvatarCircle(
+                                    url: media.traveler.avatar,
+                                    fallbackText: media.traveler.displayName ?? media.traveler.username,
+                                    size: 32,
+                                    fontSize: 12
+                                )
+                                Text("@\(media.traveler.username)")
+                                    .font(.system(size: 13, weight: .black))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer(minLength: 0)
+
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 14, weight: .black))
+                                .foregroundStyle(.white.opacity(0.9))
+                                .frame(width: 40, height: 40)
+                                .background(Color.white.opacity(0.1))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+
+                    Spacer()
+
+                    NavigationLink {
+                        NativePlaceDetailScreen(initialPlace: media.place)
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "mappin.and.ellipse")
+                                .font(.system(size: 13, weight: .black))
+                                .foregroundStyle(nativeAccent)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(media.place.name)
+                                    .font(.system(size: 16, weight: .black))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(2)
+                                Text(media.place.location)
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.58))
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 0)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.5))
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .fill(Color.black.opacity(0.62))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 18)
+                .padding(.top, 16)
+                .padding(.bottom, 28)
+            }
+            .navigationBarHidden(true)
+        }
+        .navigationViewStyle(.stack)
+        .preferredColorScheme(.dark)
     }
 }
 
