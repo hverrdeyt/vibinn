@@ -9,7 +9,27 @@ import { getMessaging } from 'firebase-admin/messaging';
 import { Prisma } from '@prisma/client';
 import { MOCK_PLACES, SIMILAR_TRAVELERS } from '../src/mockData';
 import { prisma } from './prisma';
+import {
+  attachDecisionPlace,
+  createDecisionSession,
+  getDecisionIntentCatalog,
+  getDecisionSession,
+  getDecisionTodayFeed,
+  markDecisionGoNow,
+  saveDecisionPlace,
+  submitDecisionCheckin,
+  swipeDecisionSession,
+  swapDecisionSessionOption,
+} from './decision';
 import { generateAiCompatibilityAssessment, generateDeterministicPlaceEnrichment, generatePlaceAiEnrichment } from './placeEnrichment';
+import {
+  enrichAndStorePlaceTraits,
+  enrichAndStorePlaceTraitsBatch,
+  findPlaceIdsForTraitEnrichment,
+  getPlaceTraitCoverageStatus,
+  getStoredPlaceTraitProfile,
+  upsertPlaceTraitProfile,
+} from './placeTraitEnrichment';
 import { generateTravelerProfileDescriptor, queueTravelerProfileDescriptorRefresh } from './travelerProfileEnrichment';
 import {
   createCollection,
@@ -6403,12 +6423,56 @@ async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
   };
 }
 
+type TodayRecommendationFocus = 'coffee' | 'eat' | 'outdoor' | 'fun' | 'cheap';
+
+function normalizeTodayRecommendationFocus(value?: string | null): TodayRecommendationFocus | null {
+  const key = normalizeKeyword(value ?? '').replace(/\s+/g, '_');
+  if (!key) return null;
+  if (['coffee', 'cafe'].includes(key)) return 'coffee';
+  if (['eat', 'food', 'restaurant'].includes(key)) return 'eat';
+  if (['outdoor', 'outdoors', 'go_outdoor', 'parks_outdoor', 'park'].includes(key)) return 'outdoor';
+  if (['fun', 'something_fun', 'activity', 'activities', 'culture'].includes(key)) return 'fun';
+  if (['cheap', 'budget', 'affordable'].includes(key)) return 'cheap';
+  return null;
+}
+
+function placeMatchesTodayRecommendationFocus(
+  place: Awaited<ReturnType<typeof getCachedDiscoveryPlacesByLocation>>[number],
+  focus: TodayRecommendationFocus,
+) {
+  const category = normalizeKeyword(place.category ?? '');
+  const tags = (place.tags ?? []).map((tag) => normalizeKeyword(tag)).join(' ');
+  const haystack = `${category} ${tags}`;
+  const tabIds = new Set(place.tabIds ?? []);
+
+  switch (focus) {
+    case 'coffee':
+      return tabIds.has('coffee')
+        || place.servesCoffee === true
+        || /\b(coffee|cafe|espresso|roastery|matcha)\b/.test(haystack);
+    case 'eat':
+      return tabIds.has('eat')
+        || /\b(restaurant|food|eat|brunch|ramen|sushi|taco|burger|noodle|bakery|cafe|dining)\b/.test(haystack);
+    case 'outdoor':
+      return tabIds.has('parks-outdoor')
+        || place.outdoors === true
+        || place.outdoorSeating === true
+        || /\b(park|outdoor|garden|trail|beach|scenic)\b/.test(haystack);
+    case 'fun':
+      return tabIds.has('culture')
+        || /\b(museum|gallery|activity|arcade|bowling|theater|theatre|entertainment|experience)\b/.test(haystack);
+    case 'cheap':
+      return /\b(cheap|budget|affordable|street|casual|fast|bakery|cafe)\b/.test(haystack);
+  }
+}
+
 async function getTodayRecommendationForUser(input: {
   userId: string;
   locationLabel: string;
   locationType?: string;
   latitude: number;
   longitude: number;
+  focus?: string | null;
 }) {
   const recommendationContext = await getUserRecommendationContext(input.userId);
   let candidatePlaces: Awaited<ReturnType<typeof getCachedDiscoveryPlacesByLocation>> = [];
@@ -6476,6 +6540,7 @@ async function getTodayRecommendationForUser(input: {
     latitude: input.latitude,
     longitude: input.longitude,
   };
+  const focus = normalizeTodayRecommendationFocus(input.focus);
 
   const candidatePlaceMap = new Map(candidatePlaces.map((place) => [place.id, place]));
 
@@ -6491,6 +6556,7 @@ async function getTodayRecommendationForUser(input: {
         description: mappedPlace.description,
         whyYoullLikeIt: mappedPlace.whyYoullLikeIt,
       })) return null;
+      if (focus && !placeMatchesTodayRecommendationFocus(mappedPlace, focus)) return null;
 
       const distanceMiles = distanceBetweenMiles(origin, {
         latitude: mappedPlace.latitude,
@@ -6919,6 +6985,406 @@ async function optionalAuth(req: AuthenticatedRequest, _res: express.Response, n
 
   next();
 }
+
+function handleDecisionError(res: express.Response, error: unknown) {
+  if (error instanceof Error) {
+    if (error.message.includes('not found')) {
+      res.status(404).json({ error: error.message });
+      return;
+    }
+    if (error.message.includes('does not belong')) {
+      res.status(403).json({ error: error.message });
+      return;
+    }
+    res.status(400).json({ error: error.message });
+    return;
+  }
+  handleError(res, error);
+}
+
+app.get('/api/decision/catalog/intents', (_req, res) => {
+  res.json({
+    intents: getDecisionIntentCatalog(),
+  });
+});
+
+app.post('/api/decision/places/:placeId/trait-profile/enrich', async (req, res) => {
+  try {
+    const placeId = String(req.params.placeId ?? '').trim();
+    const provider = String(req.body?.provider ?? 'openai').trim().toLowerCase();
+
+    if (!placeId) {
+      res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    const result = await enrichAndStorePlaceTraits(placeId, provider as 'openai');
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to enrich place traits',
+    });
+  }
+});
+
+app.get('/api/decision/places/:placeId/trait-profile', async (req, res) => {
+  try {
+    const placeId = String(req.params.placeId ?? '').trim();
+
+    if (!placeId) {
+      res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    const traitProfile = await getStoredPlaceTraitProfile(placeId);
+    res.json({
+      ok: true,
+      traitProfile,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to fetch place trait profile',
+    });
+  }
+});
+
+app.get('/api/decision/trait-profiles/enrichment-targets', async (req, res) => {
+  try {
+    const city = typeof req.query.city === 'string' ? req.query.city.trim() : null;
+    const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+    const force = String(req.query.force ?? '').toLowerCase() === 'true';
+    const placeIds = await findPlaceIdsForTraitEnrichment({
+      city,
+      limit: Number.isFinite(limit) ? limit : 25,
+      force,
+    });
+
+    res.json({
+      ok: true,
+      count: placeIds.length,
+      placeIds,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to list trait enrichment targets',
+    });
+  }
+});
+
+app.get('/api/decision/trait-profiles/status', async (req, res) => {
+  try {
+    const city = typeof req.query.city === 'string' ? req.query.city.trim() : null;
+    const sampleLimit = typeof req.query.sampleLimit === 'string' ? Number(req.query.sampleLimit) : undefined;
+    const status = await getPlaceTraitCoverageStatus({
+      city,
+      limit: Number.isFinite(sampleLimit) ? sampleLimit : 10,
+    });
+
+    res.json({
+      ok: true,
+      status,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to fetch trait profile coverage status',
+    });
+  }
+});
+
+app.post('/api/decision/trait-profiles/enrich-batch', async (req, res) => {
+  try {
+    const body = req.body ?? {};
+    const city = typeof body.city === 'string' ? body.city.trim() : null;
+    const limit = typeof body.limit === 'number' && Number.isFinite(body.limit) ? body.limit : 25;
+    const placeIds = Array.isArray(body.placeIds)
+      ? body.placeIds.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+      : [];
+    const force = body.force === true;
+
+    const result = await enrichAndStorePlaceTraitsBatch({
+      provider: 'openai',
+      city,
+      limit,
+      placeIds,
+      force,
+    });
+
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to batch enrich place traits',
+    });
+  }
+});
+
+app.post('/api/decision/places/:placeId/trait-profile', async (req, res) => {
+  try {
+    const placeId = String(req.params.placeId ?? '').trim();
+    const body = req.body ?? {};
+
+    if (!placeId) {
+      res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    const requiredNumericFields = [
+      'quietScore',
+      'socialScore',
+      'soloScore',
+      'cozyScore',
+      'workScore',
+      'dateScore',
+      'utilitarianScore',
+      'qualityScore',
+      'quickReadyScore',
+      'stayReadyScore',
+      'budgetFriendlyScore',
+      'confidence',
+    ];
+
+    for (const field of requiredNumericFields) {
+      if (typeof body[field] !== 'number') {
+        res.status(400).json({ error: `${field} must be a number` });
+        return;
+      }
+    }
+
+    const stored = await upsertPlaceTraitProfile({
+      placeId,
+      provider: String(body.provider ?? 'manual').trim() || 'manual',
+      model: typeof body.model === 'string' ? body.model : null,
+      traits: {
+        quietScore: body.quietScore,
+        socialScore: body.socialScore,
+        soloScore: body.soloScore,
+        cozyScore: body.cozyScore,
+        workScore: body.workScore,
+        dateScore: body.dateScore,
+        utilitarianScore: body.utilitarianScore,
+        qualityScore: body.qualityScore,
+        quickReadyScore: body.quickReadyScore,
+        stayReadyScore: body.stayReadyScore,
+        budgetFriendlyScore: body.budgetFriendlyScore,
+        confidence: body.confidence,
+        archetype: typeof body.archetype === 'string' ? body.archetype : null,
+        evidence: typeof body.evidence === 'object' && body.evidence ? body.evidence : null,
+      },
+      evidenceJson: typeof body.evidence === 'object' && body.evidence ? body.evidence : null,
+      rawResponseJson: typeof body.rawResponseJson === 'object' && body.rawResponseJson ? body.rawResponseJson : null,
+      inputSnapshotJson: typeof body.inputSnapshotJson === 'object' && body.inputSnapshotJson ? body.inputSnapshotJson : null,
+    });
+
+    res.json({
+      ok: true,
+      stored,
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error instanceof Error ? error.message : 'Failed to store place trait profile',
+    });
+  }
+});
+
+app.post('/api/decision/sessions', optionalAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = req.body as {
+      cityKey?: string | null;
+      intentId?: string | null;
+      withValue?: string | null;
+      feelValue?: string | null;
+      stateValue?: string | null;
+      entryMode?: string | null;
+      latitude?: number | null;
+      longitude?: number | null;
+    };
+
+    const session = await createDecisionSession({
+      userId: req.authUserId,
+      cityKey: payload.cityKey ?? null,
+      intentId: payload.intentId ?? null,
+      withValue: payload.withValue ?? null,
+      feelValue: payload.feelValue ?? null,
+      stateValue: payload.stateValue ?? null,
+      entryMode: payload.entryMode ?? null,
+      latitude: typeof payload.latitude === 'number' ? payload.latitude : null,
+      longitude: typeof payload.longitude === 'number' ? payload.longitude : null,
+    });
+
+    res.status(201).json(session);
+  } catch (error) {
+    handleDecisionError(res, error);
+  }
+});
+
+app.get('/api/decision/sessions/:id', optionalAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const session = await getDecisionSession(String(req.params.id), req.authUserId);
+    res.json(session);
+  } catch (error) {
+    handleDecisionError(res, error);
+  }
+});
+
+app.post('/api/decision/sessions/:id/swipe', optionalAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = req.body as {
+      placeId?: string;
+      direction?: 'left' | 'right';
+    };
+    const placeId = String(payload.placeId ?? '').trim();
+    const direction = payload.direction === 'right' ? 'right' : 'left';
+
+    if (!placeId) {
+      res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    const response = await swipeDecisionSession({
+      sessionId: String(req.params.id),
+      authUserId: req.authUserId,
+      placeId,
+      direction,
+    });
+    res.json(response);
+  } catch (error) {
+    handleDecisionError(res, error);
+  }
+});
+
+app.post('/api/decision/sessions/:id/swap', optionalAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = req.body as {
+      replacePlaceId?: string;
+    };
+    const replacePlaceId = String(payload.replacePlaceId ?? '').trim();
+    if (!replacePlaceId) {
+      res.status(400).json({ error: 'replacePlaceId is required' });
+      return;
+    }
+
+    const response = await swapDecisionSessionOption({
+      sessionId: String(req.params.id),
+      authUserId: req.authUserId,
+      replacePlaceId,
+    });
+    res.json(response);
+  } catch (error) {
+    handleDecisionError(res, error);
+  }
+});
+
+app.post('/api/decision/sessions/:id/save', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = req.body as {
+      placeId?: string;
+    };
+    const placeId = String(payload.placeId ?? '').trim();
+    if (!placeId) {
+      res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    const response = await saveDecisionPlace({
+      sessionId: String(req.params.id),
+      userId: req.authUserId!,
+      placeId,
+    });
+    res.json(response);
+  } catch (error) {
+    handleDecisionError(res, error);
+  }
+});
+
+app.post('/api/decision/sessions/:id/go-now', optionalAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = req.body as {
+      placeId?: string;
+      mapProvider?: string | null;
+    };
+    const placeId = String(payload.placeId ?? '').trim();
+    if (!placeId) {
+      res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    const response = await markDecisionGoNow({
+      sessionId: String(req.params.id),
+      authUserId: req.authUserId,
+      placeId,
+      mapProvider: payload.mapProvider ?? null,
+    });
+    res.json(response);
+  } catch (error) {
+    handleDecisionError(res, error);
+  }
+});
+
+app.post('/api/decision/checkins', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = req.body as {
+      sessionId?: string;
+      placeId?: string | null;
+      ratingLabel?: 'disliked' | 'not_bad' | 'liked' | 'recommended';
+      threeWordReview?: string | null;
+      uploadedMedia?: string[];
+    };
+    const sessionId = String(payload.sessionId ?? '').trim();
+    if (!sessionId) {
+      res.status(400).json({ error: 'sessionId is required' });
+      return;
+    }
+
+    const ratingLabel = payload.ratingLabel ?? 'liked';
+    if (!['disliked', 'not_bad', 'liked', 'recommended'].includes(ratingLabel)) {
+      res.status(400).json({ error: 'ratingLabel is invalid' });
+      return;
+    }
+
+    const response = await submitDecisionCheckin({
+      sessionId,
+      userId: req.authUserId!,
+      placeId: payload.placeId ? String(payload.placeId).trim() : null,
+      ratingLabel,
+      threeWordReview: payload.threeWordReview ?? null,
+      uploadedMedia: Array.isArray(payload.uploadedMedia) ? payload.uploadedMedia : [],
+    });
+    res.status(201).json(response);
+  } catch (error) {
+    handleDecisionError(res, error);
+  }
+});
+
+app.get('/api/decision/feed/today', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = await getDecisionTodayFeed(req.authUserId!);
+    res.json(payload);
+  } catch (error) {
+    handleDecisionError(res, error);
+  }
+});
+
+app.post('/api/decision/add-place', optionalAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = req.body as {
+      sessionId?: string | null;
+      placeId?: string;
+    };
+    const placeId = String(payload.placeId ?? '').trim();
+    if (!placeId) {
+      res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    const response = await attachDecisionPlace({
+      sessionId: payload.sessionId ? String(payload.sessionId).trim() : null,
+      authUserId: req.authUserId,
+      placeId,
+    });
+    res.json(response);
+  } catch (error) {
+    handleDecisionError(res, error);
+  }
+});
 
 app.get('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
   void refreshSavedPlaceScoresForUser(req.authUserId!).catch(() => {});
@@ -7383,6 +7849,9 @@ app.get('/api/recommendations/today', requireAuth, async (req: AuthenticatedRequ
     const locationType = typeof req.query.type === 'string' && req.query.type.trim()
       ? req.query.type.trim()
       : 'city';
+    const focus = typeof req.query.focus === 'string' && req.query.focus.trim()
+      ? req.query.focus.trim()
+      : null;
     const latitude = typeof req.query.latitude === 'string' ? Number(req.query.latitude) : NaN;
     const longitude = typeof req.query.longitude === 'string' ? Number(req.query.longitude) : NaN;
 
@@ -7397,6 +7866,7 @@ app.get('/api/recommendations/today', requireAuth, async (req: AuthenticatedRequ
       locationType,
       latitude,
       longitude,
+      focus,
     });
 
     if (!recommendation) {
