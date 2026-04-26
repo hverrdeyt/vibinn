@@ -116,6 +116,12 @@ model User {
   shares            Share[]
   sessions          Session[]
   devices           UserDevice[]
+  decisionSessions  DecisionSession[]
+  decisionSaves     DecisionSave[]
+  decisionSessionEvents DecisionSessionEvent[]
+  decisionCheckinContexts DecisionCheckinContext[]
+  decisionFeedUnlocks DecisionFeedUnlock[]
+  experimentAssignments ExperimentAssignment[]
 }
 
 model Session {
@@ -320,6 +326,7 @@ model Place {
   location          Location?          @relation(fields: [locationId], references: [id], onDelete: SetNull)
   media             PlaceMedia[]
   aiEnrichment      PlaceAiEnrichment?
+  traitProfile      PlaceTraitProfile?
   googleSnapshots   PlaceGoogleSnapshot[]
   discoverySignals  PlaceDiscoverySignal[]
   userScores        UserPlaceScore[]
@@ -327,6 +334,39 @@ model Place {
   dismissedByUsers  DismissedPlace[]
   moments           Moment[]
   collectionPlaces  CollectionPlace[]
+  decisionSessionOptions DecisionSessionOption[]
+  decisionSaves     DecisionSave[]
+  decisionSessionEvents DecisionSessionEvent[]
+  decisionCheckinContexts DecisionCheckinContext[]
+}
+
+model PlaceTraitProfile {
+  id                String   @id @default(cuid())
+  placeId           String   @unique
+  provider          String
+  model             String?
+  sourceVersion     String
+  confidence        Float?
+  quietScore        Float
+  socialScore       Float
+  soloScore         Float
+  cozyScore         Float
+  workScore         Float
+  dateScore         Float
+  utilitarianScore  Float
+  qualityScore      Float
+  quickReadyScore   Float
+  stayReadyScore    Float
+  budgetFriendlyScore Float
+  archetype         String?
+  evidenceJson      Json?
+  rawResponseJson   Json?
+  inputSnapshotJson Json?
+  enrichedAt        DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
 }
 
 model PlaceDiscoverySignal {
@@ -518,6 +558,146 @@ model Moment {
   comments       Comment[]
   vibins         Vibin[]
   collectionMoments CollectionMoment[]
+  decisionCheckinContext DecisionCheckinContext?
+}
+
+model DecisionSession {
+  id            String   @id @default(cuid())
+  userId        String?
+  cityKey       String
+  cityLabel     String
+  intentId      String
+  entryMode     String
+  status        String
+  chosenPlaceId String?
+  userLatitude  Float?
+  userLongitude Float?
+  swapCount     Int      @default(0)
+  skipCount     Int      @default(0)
+  startedAt     DateTime @default(now())
+  endedAt       DateTime?
+  expiresAt     DateTime?
+  metadataJson  Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user          User?                 @relation(fields: [userId], references: [id], onDelete: SetNull)
+  options       DecisionSessionOption[]
+  events        DecisionSessionEvent[]
+  saves         DecisionSave[]
+  checkinContext DecisionCheckinContext?
+
+  @@index([userId, createdAt])
+  @@index([cityKey, createdAt])
+  @@index([status, createdAt])
+}
+
+model DecisionSessionOption {
+  id             String   @id @default(cuid())
+  sessionId      String
+  placeId        String
+  optionRank     Int
+  sourceType     String
+  scoreTotal     Float?
+  scoreBreakdown Json?
+  reasonLabel    String?
+  isSelected     Boolean  @default(false)
+  isSkipped      Boolean  @default(false)
+  isVisible      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  session        DecisionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  place          Place           @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, optionRank])
+  @@unique([sessionId, placeId])
+  @@index([placeId])
+}
+
+model DecisionSessionEvent {
+  id           String   @id @default(cuid())
+  sessionId    String
+  userId       String?
+  placeId      String?
+  eventType    String
+  eventValue   String?
+  eventPayload Json?
+  createdAt    DateTime @default(now())
+
+  session      DecisionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  user         User?           @relation(fields: [userId], references: [id], onDelete: SetNull)
+  place        Place?          @relation(fields: [placeId], references: [id], onDelete: SetNull)
+
+  @@index([sessionId, createdAt])
+  @@index([userId, createdAt])
+  @@index([placeId, createdAt])
+  @@index([eventType, createdAt])
+}
+
+model DecisionSave {
+  id         String   @id @default(cuid())
+  userId      String
+  sessionId   String
+  placeId     String
+  status      String
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session     DecisionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  place       Place           @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status, createdAt])
+  @@index([expiresAt])
+}
+
+model DecisionCheckinContext {
+  id             String   @id @default(cuid())
+  sessionId      String   @unique
+  momentId       String   @unique
+  userId         String
+  placeId        String
+  intentId       String?
+  ratingLabel    String
+  threeWordReview String?
+  unlockFeed     Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  session        DecisionSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  moment         Moment          @relation(fields: [momentId], references: [id], onDelete: Cascade)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place          Place           @relation(fields: [placeId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+  @@index([placeId, createdAt])
+}
+
+model DecisionFeedUnlock {
+  id            String   @id @default(cuid())
+  userId        String
+  unlockDate    DateTime
+  sourceMomentId String
+  expiresAt     DateTime
+  createdAt     DateTime @default(now())
+
+  user          User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, unlockDate])
+  @@index([expiresAt])
+}
+
+model ExperimentAssignment {
+  id            String   @id @default(cuid())
+  userId        String
+  experimentKey String
+  variant       String
+  assignedAt    DateTime @default(now())
+
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, experimentKey])
 }
 
 model MomentMedia {

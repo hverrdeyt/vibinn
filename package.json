@@ -22,6 +22,7 @@
     "places:acquire-google-text-search": "tsx scripts/acquire-google-text-search-places.ts",
     "ai:regenerate-place-enrichment": "tsx scripts/regenerate-place-enrichment.ts",
     "ai:retry-place-enrichment-failures": "tsx scripts/retry-place-enrichment-failures.ts",
+    "ai:enrich-place-traits": "tsx scripts/enrich-place-trait-profiles.ts",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
