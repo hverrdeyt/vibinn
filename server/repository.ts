@@ -322,6 +322,12 @@ function mapMomentForClient(moment: MomentWithRelations) {
   };
 }
 
+function isRenderableImageMoment(moment: Pick<MomentWithRelations, 'media'>) {
+  return moment.media.some((item) =>
+    item.mediaType.toLowerCase().startsWith('image') && isRenderableMediaUrl(item.url),
+  );
+}
+
 function buildTravelHistory(
   moments: Array<{
     id: string;
@@ -1092,10 +1098,11 @@ export async function getTravelerDiscovery(userId?: string) {
 
   const followedTravelerDescriptors = await Promise.all(
     visibleFollowedUsers.map(async (item) => {
+      const visibleMoments = item.targetUser.moments.filter(isRenderableImageMoment);
       const descriptor = await generateTravelerProfileDescriptor({
         userId: item.targetUser.id,
         displayName: item.targetUser.displayName,
-        moments: item.targetUser.moments.map(mapMomentForClient),
+        moments: visibleMoments.map(mapMomentForClient),
         bookmarkedPlaces: item.targetUser.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
       });
       return [item.targetUser.id, descriptor] as const;
@@ -1458,10 +1465,11 @@ export async function getFollowingFeed(userId?: string) {
         && !visibleSimilarUsers.some((item) => item.traveler.id === traveler.id),
       ),
     ].map(async (traveler) => {
+      const visibleMoments = traveler.moments.filter(isRenderableImageMoment);
       const descriptor = await generateTravelerProfileDescriptor({
         userId: traveler.id,
         displayName: traveler.displayName,
-        moments: traveler.moments.map(mapMomentForClient),
+        moments: visibleMoments.map(mapMomentForClient),
         bookmarkedPlaces: traveler.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
       });
       return [traveler.id, descriptor] as const;
@@ -1470,9 +1478,11 @@ export async function getFollowingFeed(userId?: string) {
   const suggestedDescriptorMap = new Map(suggestedTravelerDescriptors);
 
   const followedTravelers = visibleFollowedUsers.map((item) =>
-    trimTravelerForFeed(buildProfileUserWithMatch(
+    {
+      const visibleMoments = item.targetUser.moments.filter(isRenderableImageMoment);
+      return trimTravelerForFeed(buildProfileUserWithMatch(
       item.targetUser,
-      item.targetUser.moments.map((moment) => {
+      visibleMoments.map((moment) => {
         const mappedMoment = mapMomentForClient(moment);
         return {
           ...mappedMoment,
@@ -1503,12 +1513,13 @@ export async function getFollowingFeed(userId?: string) {
             getPlaceScoreOverride(followedPlaceOverrideMap, entry.placeId),
           )),
         })),
-        latestVisitedAtIso: item.targetUser.moments[0]?.visitedAt?.toISOString?.() ?? item.targetUser.moments[0]?.createdAt?.toISOString?.(),
-        visitedPlacesCount: item.targetUser._count.moments,
+        latestVisitedAtIso: visibleMoments[0]?.visitedAt?.toISOString?.() ?? visibleMoments[0]?.createdAt?.toISOString?.(),
+        visitedPlacesCount: visibleMoments.length,
         savedPlacesCount: item.targetUser._count.bookmarks,
         collectionsCount: item.targetUser._count.collections,
       },
-    )),
+    ));
+    }
   );
 
   const feedSavedDrops = visibleFollowedUsers
@@ -1534,9 +1545,11 @@ export async function getFollowingFeed(userId?: string) {
   const fullTravelerFeedMap = new Map(
     visibleFollowedUsers.map((item) => [
       item.targetUser.id,
-      buildProfileUserWithMatch(
+      (() => {
+        const visibleMoments = item.targetUser.moments.filter(isRenderableImageMoment);
+        return buildProfileUserWithMatch(
         item.targetUser,
-        item.targetUser.moments.map((moment) => {
+        visibleMoments.map((moment) => {
           const mappedMoment = mapMomentForClient(moment);
           return {
             ...mappedMoment,
@@ -1565,11 +1578,13 @@ export async function getFollowingFeed(userId?: string) {
               getPlaceScoreOverride(followedPlaceOverrideMap, entry.placeId),
             )),
           })),
-          latestVisitedAtIso: item.targetUser.moments[0]?.visitedAt?.toISOString?.() ?? item.targetUser.moments[0]?.createdAt?.toISOString?.(),
+          latestVisitedAtIso: visibleMoments[0]?.visitedAt?.toISOString?.() ?? visibleMoments[0]?.createdAt?.toISOString?.(),
+          visitedPlacesCount: visibleMoments.length,
           savedPlacesCount: item.targetUser._count.bookmarks,
           collectionsCount: item.targetUser._count.collections,
         },
-      ),
+      );
+      })(),
     ]),
   );
 
@@ -1958,7 +1973,8 @@ export async function searchPublicTravelers(query: string) {
 
   const travelers = await Promise.all(
     users.map(async (user) => {
-      const moments = user.moments.map(mapMomentForClient);
+      const visibleMoments = user.moments.filter(isRenderableImageMoment);
+      const moments = visibleMoments.map(mapMomentForClient);
       const descriptor = await generateTravelerProfileDescriptor({
         userId: user.id,
         displayName: user.displayName,
@@ -1973,8 +1989,8 @@ export async function searchPublicTravelers(query: string) {
           savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
           savedAtIso: bookmark.createdAt.toISOString(),
         })),
-        latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString?.() ?? user.moments[0]?.createdAt?.toISOString?.(),
-        visitedPlacesCount: user._count.moments,
+        latestVisitedAtIso: visibleMoments[0]?.visitedAt?.toISOString?.() ?? visibleMoments[0]?.createdAt?.toISOString?.(),
+        visitedPlacesCount: visibleMoments.length,
         savedPlacesCount: user._count.bookmarks,
         collectionsCount: user._count.collections,
       }));
@@ -2137,7 +2153,8 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
 
   if (!traveler) return null;
 
-  const moments = traveler.moments.map(mapMomentForClient);
+  const visibleMoments = traveler.moments.filter(isRenderableImageMoment);
+  const moments = visibleMoments.map(mapMomentForClient);
 
   const [similarity, vibinCount, followersCount, descriptor] = await Promise.all([
     prisma.travelerSimilarity.findFirst({
@@ -2187,8 +2204,8 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
           createdAt: collection.createdAt.toISOString(),
           places: collection.places.map((item) => mapPlaceForClient(item.place)),
         })),
-        latestVisitedAtIso: traveler.moments[0]?.visitedAt?.toISOString?.() ?? traveler.moments[0]?.createdAt?.toISOString?.(),
-        visitedPlacesCount: traveler.moments.length,
+        latestVisitedAtIso: visibleMoments[0]?.visitedAt?.toISOString?.() ?? visibleMoments[0]?.createdAt?.toISOString?.(),
+        visitedPlacesCount: visibleMoments.length,
         savedPlacesCount: traveler.bookmarks.length,
         collectionsCount: traveler.collections.length,
       },
@@ -2200,7 +2217,7 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
       createdAt: collection.createdAt.toISOString(),
       places: collection.places.map((item) => mapPlaceForClient(item.place)),
     })),
-    inspirationMedia: buildTravelerInspirationMedia(traveler, traveler.moments),
+    inspirationMedia: buildTravelerInspirationMedia(traveler, visibleMoments),
   };
 }
 
