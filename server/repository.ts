@@ -816,55 +816,23 @@ export async function getProfileMe(userId?: string) {
   });
 
   const moments = user.feedPosts.map(mapFeedPostForClient);
-  const userPlaceScoreOverrideMap = await getUserPlaceScoreOverrideMap(
-    user.id,
-    [
-      ...user.bookmarks.map((bookmark) => bookmark.placeId),
-      ...user.feedPosts.map((feedPost) => feedPost.placeId),
-      ...user.collections.flatMap((collection) => collection.places.map((item) => item.placeId)),
-    ],
-  );
-  const descriptor = await generateTravelerProfileDescriptor({
-    userId: user.id,
-    displayName: user.displayName,
-    moments,
-    bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(
-      bookmark.place,
-      getPlaceScoreOverride(userPlaceScoreOverrideMap, bookmark.placeId),
-    )),
-  });
 
   return {
     user: {
-      ...buildProfileUserWithMatch(user, moments, undefined, {
-        descriptor,
-        recentSavedPlaces: user.bookmarks.map((bookmark) => ({
-          place: mapPlaceForClient(
-            bookmark.place,
-            getPlaceScoreOverride(userPlaceScoreOverrideMap, bookmark.placeId),
-          ),
-          savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
-          savedAtIso: bookmark.createdAt.toISOString(),
-        })),
-        visitedPlacesCount: user.feedPosts.length,
-        savedPlacesCount: user.bookmarks.length,
-        collectionsCount: user.collections.length,
-        latestVisitedAtIso: user.feedPosts[0]?.visitedAt?.toISOString(),
-      }),
+      id: user.id,
+      displayName: user.displayName ?? user.username,
+      username: user.username,
+      email: user.email,
+      bio: user.bio,
+      avatarUrl: user.avatarUrl,
       hasCompletedTastePreferences: Boolean(user.preferences?.onboardingCompleted),
     },
-    bookmarks: user.bookmarks.map((bookmark) => mapPlaceForClient(
-      bookmark.place,
-      getPlaceScoreOverride(userPlaceScoreOverrideMap, bookmark.placeId),
-    )),
+    bookmarks: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
     collections: user.collections.map((collection) => ({
       id: collection.id,
       label: collection.title,
       createdAt: collection.createdAt.toISOString(),
-      places: collection.places.map((item) => mapPlaceForClient(
-        item.place,
-        getPlaceScoreOverride(userPlaceScoreOverrideMap, item.placeId),
-      )),
+      places: collection.places.map((item) => mapPlaceForClient(item.place)),
     })),
     moments,
   };
@@ -2124,6 +2092,7 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
       createdAt: collection.createdAt.toISOString(),
       places: collection.places.map((item) => mapPlaceForClient(item.place)),
     })),
+    moments,
     inspirationMedia: buildTravelerInspirationMedia(traveler, traveler.moments.filter(isRenderableImageMoment)),
   };
 }
