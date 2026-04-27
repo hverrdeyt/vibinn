@@ -1393,16 +1393,19 @@ export async function getFollowingFeed(userId?: string) {
       ),
     ),
   );
+  const feedParticipantIds = Array.from(new Set([currentUser.id, ...acceptedFriendIds]));
   const friendSortOrder = new Map(acceptedFriendIds.map((id, index) => [id, index]));
-  const friendUsers = acceptedFriendIds.length
+  const participantUsers = feedParticipantIds.length
     ? await prisma.user.findMany({
         where: {
           ...activeAccountWhere,
-          id: { in: acceptedFriendIds },
+          id: { in: feedParticipantIds },
         },
         include: repositoryFeedUserInclude,
       })
     : [];
+  const selfUser = participantUsers.find((user) => user.id === currentUser.id);
+  const friendUsers = participantUsers.filter((user) => user.id !== currentUser.id);
   const followedUsers = friendUsers
     .sort((a, b) => (friendSortOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (friendSortOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER))
     .map((targetUser) => ({ targetUser }));
@@ -1481,24 +1484,69 @@ export async function getFollowingFeed(userId?: string) {
     }
   );
 
-  const travelerMap = new Map(followedTravelers.map((traveler) => [traveler.id, traveler]));
-  const friendFeedPosts = followedUserIds.size
+  let selfTraveler: ReturnType<typeof trimTravelerForFeed> | null = null;
+  if (selfUser && isActiveAccount(selfUser)) {
+    const visibleMoments = selfUser.moments.filter(isRenderableImageMoment);
+    selfTraveler = trimTravelerForFeed(buildProfileUserWithMatch(
+      selfUser,
+      visibleMoments.map((moment) => {
+        const mappedMoment = mapMomentForClient(moment);
+        return {
+          ...mappedMoment,
+          place: mapPlaceForClient(moment.place),
+        };
+      }),
+      undefined,
+      {
+        vibinCount: vibinMap.get(selfUser.id) ?? 0,
+        recentSavedPlaces: selfUser.bookmarks.map((bookmark) => ({
+          place: mapPlaceForClient(bookmark.place),
+          savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+          savedAtIso: bookmark.createdAt.toISOString(),
+        })),
+        recentCollections: selfUser.collections.map((collection) => ({
+          id: collection.id,
+          label: collection.title,
+          createdAt: collection.createdAt.toISOString(),
+          places: collection.places.map((entry) => mapPlaceForClient(entry.place)),
+        })),
+        latestVisitedAtIso: visibleMoments[0]?.visitedAt?.toISOString?.() ?? visibleMoments[0]?.createdAt?.toISOString?.(),
+        visitedPlacesCount: visibleMoments.length,
+        savedPlacesCount: selfUser._count.bookmarks,
+        collectionsCount: selfUser._count.collections,
+      },
+    ));
+  }
+
+  const travelerMap = new Map([
+    ...followedTravelers.map((traveler) => [traveler.id, traveler] as const),
+    ...(selfTraveler ? [[selfTraveler.id, selfTraveler] as const] : []),
+  ]);
+
+  const feedPosts = feedParticipantIds.length
     ? await prisma.feedPost.findMany({
       where: {
-        userId: { in: Array.from(followedUserIds) },
-        privacy: { in: ['PUBLIC', 'FOLLOWERS'] },
         createdAt: { gte: todayCutoff },
+        OR: [
+          {
+            userId: currentUser.id,
+          },
+          {
+            userId: { in: Array.from(followedUserIds) },
+            privacy: { in: ['PUBLIC', 'FOLLOWERS'] },
+          },
+        ],
       },
         include: repositoryFeedPostInclude,
         orderBy: [
           { visitedAt: 'desc' },
           { createdAt: 'desc' },
         ],
-        take: 60,
+        take: 80,
       })
     : [];
 
-  const items = friendFeedPosts
+  const items = feedPosts
     .map((feedPost) => {
       const traveler = travelerMap.get(feedPost.userId);
       if (!traveler) return null;
