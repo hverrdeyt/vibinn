@@ -135,6 +135,7 @@ model User {
   decisionCheckinContexts DecisionCheckinContext[]
   decisionFeedUnlocks DecisionFeedUnlock[]
   experimentAssignments ExperimentAssignment[]
+  feedPosts         FeedPost[]
 }
 
 model Session {
@@ -346,6 +347,7 @@ model Place {
   bookmarks         Bookmark[]
   dismissedByUsers  DismissedPlace[]
   moments           Moment[]
+  feedPosts         FeedPost[]
   collectionPlaces  CollectionPlace[]
   decisionSessionOptions DecisionSessionOption[]
   decisionSaves     DecisionSave[]
@@ -654,6 +656,29 @@ model Moment {
   collectionMoments CollectionMoment[]
   decisionCheckinContext DecisionCheckinContext?
   chatMessageAttachments ChatMessageAttachment[]
+  feedPost       FeedPost?
+}
+
+model FeedPost {
+  id             String     @id @default(cuid())
+  userId         String
+  placeId        String
+  sourceMomentId String?    @unique
+  imageUrl       String
+  thumbnailUrl   String?
+  caption        String
+  privacy        Visibility @default(PUBLIC)
+  visitedAt      DateTime
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  user           User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place          Place      @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  sourceMoment   Moment?    @relation(fields: [sourceMomentId], references: [id], onDelete: SetNull)
+
+  @@index([userId, visitedAt])
+  @@index([placeId, visitedAt])
+  @@index([privacy, visitedAt])
 }
 
 model DecisionSession {

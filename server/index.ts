@@ -9373,6 +9373,12 @@ app.get('/api/feed', requireAuth, (req: AuthenticatedRequest, res) => {
     .catch((error) => handleError(res, error));
 });
 
+app.get('/api/feed/posts', requireAuth, (req: AuthenticatedRequest, res) => {
+  void getFollowingFeed(req.authUserId)
+    .then((payload) => res.json(payload))
+    .catch((error) => handleError(res, error));
+});
+
 app.get('/api/discovery/travelers/public-search', (req, res) => {
   const query = String(req.query.q ?? '').trim();
   void searchPublicTravelers(query)
