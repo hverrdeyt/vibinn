@@ -56,6 +56,7 @@ type FeedPostWithRelations = Prisma.FeedPostGetPayload<{
         };
       };
     };
+    sourceMoment: true;
   };
 }>;
 
@@ -72,6 +73,7 @@ const repositoryFeedPostInclude = {
   place: {
     include: repositoryPlaceDetailInclude,
   },
+  sourceMoment: true,
 } satisfies Prisma.FeedPostInclude;
 
 const repositoryFeedUserInclude = {
@@ -414,7 +416,33 @@ function mapFeedPostPlaceForClient(feedPost: FeedPostWithRelations): ClientPlace
     ownerUserId: feedPost.userId,
     visitedDate: feedPost.visitedAt.toISOString().split('T')[0],
     visitedAtIso: feedPost.visitedAt.toISOString(),
-    momentCaption: feedPost.caption,
+    momentCaption: feedPost.threeWordReview ?? feedPost.caption,
+    momentRatingLabel: feedPost.ratingLabel ? mapMomentRatingLabelForClient(feedPost.ratingLabel) : undefined,
+  };
+}
+
+function mapFeedPostForClient(feedPost: FeedPostWithRelations) {
+  const visitedAtIso = feedPost.visitedAt.toISOString();
+  return {
+    id: feedPost.sourceMomentId ?? feedPost.id,
+    placeId: feedPost.placeId,
+    visitedDate: visitedAtIso.split('T')[0],
+    visitedAtIso,
+    caption: feedPost.threeWordReview ?? feedPost.caption,
+    uploadedMedia: [feedPost.imageUrl],
+    uploadedMediaItems: [{
+      url: feedPost.imageUrl,
+      mediaType: 'image' as const,
+    }],
+    rating: undefined,
+    ratingLabel: feedPost.ratingLabel ? mapMomentRatingLabelForClient(feedPost.ratingLabel) : undefined,
+    budgetLevel: '$$' as const,
+    visitType: 'solo' as const,
+    timeOfDay: 'afternoon' as const,
+    privacy: feedPost.privacy.toLowerCase() as MomentRecord['privacy'],
+    wouldRevisit: 'yes' as const,
+    vibeTags: [],
+    place: mapFeedPostPlaceForClient(feedPost),
   };
 }
 
@@ -702,6 +730,13 @@ export async function getProfileMe(userId?: string) {
           },
         },
       },
+      feedPosts: {
+        where: {
+          privacy: { in: ['PUBLIC', 'FOLLOWERS'] },
+        },
+        orderBy: { visitedAt: 'desc' },
+        include: repositoryFeedPostInclude,
+      },
       moments: {
         orderBy: { createdAt: 'desc' },
         include: {
@@ -733,11 +768,12 @@ export async function getProfileMe(userId?: string) {
     },
   });
 
-  const moments = user.moments.map(mapMomentForClient);
+  const moments = user.feedPosts.map(mapFeedPostForClient);
   const userPlaceScoreOverrideMap = await getUserPlaceScoreOverrideMap(
     user.id,
     [
       ...user.bookmarks.map((bookmark) => bookmark.placeId),
+      ...user.feedPosts.map((feedPost) => feedPost.placeId),
       ...user.collections.flatMap((collection) => collection.places.map((item) => item.placeId)),
     ],
   );
@@ -763,10 +799,10 @@ export async function getProfileMe(userId?: string) {
           savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
           savedAtIso: bookmark.createdAt.toISOString(),
         })),
-        visitedPlacesCount: user.moments.length,
+        visitedPlacesCount: user.feedPosts.length,
         savedPlacesCount: user.bookmarks.length,
         collectionsCount: user.collections.length,
-        latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString(),
+        latestVisitedAtIso: user.feedPosts[0]?.visitedAt?.toISOString(),
       }),
       hasCompletedTastePreferences: Boolean(user.preferences?.onboardingCompleted),
     },
@@ -854,6 +890,13 @@ export async function getPublicProfileByUsername(username: string) {
           },
         },
       },
+      feedPosts: {
+        where: {
+          privacy: 'PUBLIC',
+        },
+        orderBy: { visitedAt: 'desc' },
+        include: repositoryFeedPostInclude,
+      },
       moments: {
         orderBy: { createdAt: 'desc' },
         include: {
@@ -889,7 +932,7 @@ export async function getPublicProfileByUsername(username: string) {
     return null;
   }
 
-  const moments = user.moments.map(mapMomentForClient);
+  const moments = user.feedPosts.map(mapFeedPostForClient);
   const descriptor = await generateTravelerProfileDescriptor({
     userId: user.id,
     displayName: user.displayName,
@@ -911,7 +954,8 @@ export async function getPublicProfileByUsername(username: string) {
         createdAt: collection.createdAt.toISOString(),
         places: collection.places.map((item) => mapPlaceForClient(item.place)),
       })),
-      latestVisitedAtIso: user.moments[0]?.visitedAt?.toISOString?.() ?? user.moments[0]?.createdAt?.toISOString?.(),
+      latestVisitedAtIso: user.feedPosts[0]?.visitedAt?.toISOString?.(),
+      visitedPlacesCount: user.feedPosts.length,
       savedPlacesCount: user.bookmarks.length,
       collectionsCount: user.collections.length,
     }),
@@ -1845,6 +1889,13 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
           },
         },
       },
+      feedPosts: {
+        where: {
+          privacy: 'PUBLIC',
+        },
+        orderBy: { visitedAt: 'desc' },
+        include: repositoryFeedPostInclude,
+      },
       moments: {
         orderBy: { createdAt: 'desc' },
         include: {
@@ -1878,8 +1929,7 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
 
   if (!traveler) return null;
 
-  const visibleMoments = traveler.moments.filter(isRenderableImageMoment);
-  const moments = visibleMoments.map(mapMomentForClient);
+  const moments = traveler.feedPosts.map(mapFeedPostForClient);
 
   const [similarity, vibinCount, followersCount, descriptor] = await Promise.all([
     prisma.travelerSimilarity.findFirst({
@@ -1929,8 +1979,8 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
           createdAt: collection.createdAt.toISOString(),
           places: collection.places.map((item) => mapPlaceForClient(item.place)),
         })),
-        latestVisitedAtIso: visibleMoments[0]?.visitedAt?.toISOString?.() ?? visibleMoments[0]?.createdAt?.toISOString?.(),
-        visitedPlacesCount: visibleMoments.length,
+        latestVisitedAtIso: traveler.feedPosts[0]?.visitedAt?.toISOString?.(),
+        visitedPlacesCount: traveler.feedPosts.length,
         savedPlacesCount: traveler.bookmarks.length,
         collectionsCount: traveler.collections.length,
       },
@@ -1942,7 +1992,7 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
       createdAt: collection.createdAt.toISOString(),
       places: collection.places.map((item) => mapPlaceForClient(item.place)),
     })),
-    inspirationMedia: buildTravelerInspirationMedia(traveler, visibleMoments),
+    inspirationMedia: buildTravelerInspirationMedia(traveler, traveler.moments.filter(isRenderableImageMoment)),
   };
 }
 
@@ -2592,6 +2642,8 @@ async function syncFeedPostForMoment(moment: MomentWithRelations) {
       imageUrl: primaryImage.url,
       thumbnailUrl: primaryImage.thumbnailUrl ?? primaryImage.url,
       caption: moment.caption,
+      ratingLabel: moment.ratingLabel,
+      threeWordReview: moment.caption,
       privacy: moment.privacy,
       visitedAt: moment.visitedAt,
     },
@@ -2601,6 +2653,8 @@ async function syncFeedPostForMoment(moment: MomentWithRelations) {
       imageUrl: primaryImage.url,
       thumbnailUrl: primaryImage.thumbnailUrl ?? primaryImage.url,
       caption: moment.caption,
+      ratingLabel: moment.ratingLabel,
+      threeWordReview: moment.caption,
       privacy: moment.privacy,
       visitedAt: moment.visitedAt,
     },

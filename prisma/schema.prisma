@@ -667,6 +667,8 @@ model FeedPost {
   imageUrl       String
   thumbnailUrl   String?
   caption        String
+  ratingLabel    MomentRatingLabel?
+  threeWordReview String?
   privacy        Visibility @default(PUBLIC)
   visitedAt      DateTime
   createdAt      DateTime   @default(now())
