@@ -595,6 +595,48 @@ async function ensureAcceptedFriendship(userId: string, otherUserId: string) {
   return state.friendship!;
 }
 
+async function listAcceptedFriends(userId: string) {
+  const friendships = await prisma.friendship.findMany({
+    where: {
+      status: 'ACCEPTED',
+      OR: [
+        { requesterId: userId },
+        { addresseeId: userId },
+      ],
+    },
+    orderBy: { respondedAt: 'desc' },
+    include: {
+      requester: {
+        select: {
+          id: true,
+          username: true,
+          displayName: true,
+          avatarUrl: true,
+        },
+      },
+      addressee: {
+        select: {
+          id: true,
+          username: true,
+          displayName: true,
+          avatarUrl: true,
+        },
+      },
+    },
+  });
+
+  return friendships.map((friendship) => {
+    const friend = friendship.requesterId === userId ? friendship.addressee : friendship.requester;
+    return {
+      id: friend.id,
+      username: friend.username,
+      displayName: friend.displayName ?? friend.username,
+      avatar: friend.avatarUrl ?? null,
+      matchScore: null,
+    };
+  });
+}
+
 const chatMessageAttachmentArgs = Prisma.validator<Prisma.ChatMessageAttachmentDefaultArgs>()({
   include: {
     moment: {
@@ -9744,6 +9786,24 @@ app.get('/api/friendships/requests', requireAuth, async (req: AuthenticatedReque
           avatar: item.requester.avatarUrl ?? null,
         },
       })),
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/friendships/users/:userId', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const targetUserId = String(req.params.userId ?? '').trim();
+    if (!targetUserId) {
+      res.status(400).json({ error: 'userId is required' });
+      return;
+    }
+
+    const friends = await listAcceptedFriends(targetUserId);
+    res.json({
+      friends,
+      count: friends.length,
     });
   } catch (error) {
     handleError(res, error);
