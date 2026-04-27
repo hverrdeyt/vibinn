@@ -60,6 +60,8 @@ type FeedPostWithRelations = Prisma.FeedPostGetPayload<{
   };
 }>;
 
+const BOOKMARK_TTL_MS = 48 * 60 * 60 * 1000;
+
 const repositoryPlaceDetailInclude = {
   aiEnrichment: true,
   media: {
@@ -259,6 +261,63 @@ function mapPlaceForClient(
     priceRange: priceRangeLabel,
     priceRangeLabel,
     category: place.category,
+  };
+}
+
+function resolveBookmarkExpiresAt(bookmark: { createdAt: Date; expiresAt?: Date | null }) {
+  return bookmark.expiresAt ?? new Date(bookmark.createdAt.getTime() + BOOKMARK_TTL_MS);
+}
+
+function normalizeBookmarkSource(source?: string | null) {
+  return source?.trim().toLowerCase() || 'saved';
+}
+
+function formatBookmarkSourceLabel(source?: string | null) {
+  const normalized = normalizeBookmarkSource(source);
+  switch (normalized) {
+    case 'todays_pick':
+    case 'daily':
+    case 'decision':
+      return 'Saved from Daily';
+    case 'feed':
+      return 'Saved from Feed';
+    case 'discovery':
+      return 'Saved from Discovery';
+    case 'profile':
+      return 'Saved from Profile';
+    case 'user_profile':
+      return 'Saved from User Profile';
+    case 'place_details':
+      return 'Saved from Place Details';
+    case 'saved':
+      return 'Saved on Vibinn';
+    default:
+      return `Saved from ${normalized.replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())}`;
+  }
+}
+
+function mapBookmarkEntryForClient(
+  bookmark: {
+    id: string;
+    createdAt: Date;
+    expiresAt?: Date | null;
+    source?: string | null;
+    place: PlaceWithRelations;
+    placeId: string;
+  },
+  overrides?: {
+    similarityStat?: number | null;
+    recommendationReason?: string | null;
+  },
+) {
+  const expiresAt = resolveBookmarkExpiresAt(bookmark);
+  return {
+    id: bookmark.id,
+    place: mapPlaceForClient(bookmark.place, overrides),
+    savedAtIso: bookmark.createdAt.toISOString(),
+    expiresAtIso: expiresAt.toISOString(),
+    source: normalizeBookmarkSource(bookmark.source),
+    sourceLabel: formatBookmarkSourceLabel(bookmark.source),
   };
 }
 
@@ -1539,8 +1598,8 @@ export async function getFollowingFeed(userId?: string) {
       },
         include: repositoryFeedPostInclude,
         orderBy: [
-          { visitedAt: 'desc' },
           { createdAt: 'desc' },
+          { visitedAt: 'desc' },
         ],
         take: 80,
       })
@@ -1555,8 +1614,8 @@ export async function getFollowingFeed(userId?: string) {
         id: `feed-post-${feedPost.id}`,
         type: 'visited' as const,
         traveler,
-        timestampLabel: formatRelativeActivityLabel(feedPost.visitedAt),
-        sortTimestamp: feedPost.visitedAt.toISOString(),
+        timestampLabel: formatRelativeActivityLabel(feedPost.createdAt),
+        sortTimestamp: feedPost.createdAt.toISOString(),
         place: mapFeedPostPlaceForClient(feedPost),
         collection: null,
         caption: feedPost.caption || null,
@@ -1568,6 +1627,42 @@ export async function getFollowingFeed(userId?: string) {
       const bTime = b.sortTimestamp ? new Date(b.sortTimestamp).getTime() : 0;
       return bTime - aTime;
     });
+
+  const fallbackFriendFeedPosts = followedUserIds.size
+    ? await prisma.feedPost.findMany({
+      where: {
+        userId: { in: Array.from(followedUserIds) },
+        privacy: { in: ['PUBLIC', 'FOLLOWERS'] },
+        createdAt: { lt: todayCutoff },
+      },
+        include: repositoryFeedPostInclude,
+        orderBy: [
+          { createdAt: 'desc' },
+          { visitedAt: 'desc' },
+        ],
+        take: 12,
+      })
+    : [];
+
+  const fallbackItems = fallbackFriendFeedPosts
+    .map((feedPost) => {
+      const traveler = travelerMap.get(feedPost.userId);
+      if (!traveler) return null;
+
+      return {
+        id: `fallback-feed-post-${feedPost.id}`,
+        type: 'visited' as const,
+        traveler,
+        timestampLabel: formatRelativeActivityLabel(feedPost.createdAt),
+        sortTimestamp: feedPost.createdAt.toISOString(),
+        place: mapFeedPostPlaceForClient(feedPost),
+        collection: null,
+        caption: feedPost.caption || null,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .filter((item, index, array) => array.findIndex((candidate) => candidate.traveler.id === item.traveler.id) === index)
+    .slice(0, 3);
 
   const suggestedFeedPosts = await prisma.feedPost.findMany({
     where: {
@@ -1585,8 +1680,8 @@ export async function getFollowingFeed(userId?: string) {
       },
     },
     orderBy: [
-      { visitedAt: 'desc' },
       { createdAt: 'desc' },
+      { visitedAt: 'desc' },
     ],
     take: 24,
   });
@@ -1679,8 +1774,8 @@ export async function getFollowingFeed(userId?: string) {
         id: `suggested-feed-post-${feedPost.id}`,
         type: 'visited' as const,
         traveler,
-        timestampLabel: formatRelativeActivityLabel(feedPost.visitedAt),
-        sortTimestamp: feedPost.visitedAt.toISOString(),
+        timestampLabel: formatRelativeActivityLabel(feedPost.createdAt),
+        sortTimestamp: feedPost.createdAt.toISOString(),
         place: mapFeedPostPlaceForClient(feedPost),
         collection: null,
         caption: feedPost.caption || null,
@@ -1697,6 +1792,7 @@ export async function getFollowingFeed(userId?: string) {
     followedTravelers,
     suggestedTravelers: [],
     items,
+    fallbackItems,
     suggestedItems,
   };
 }
@@ -2664,10 +2760,18 @@ export async function getBookmarks(userId?: string) {
     bookmarks.map((bookmark) => bookmark.placeId),
   );
 
-  return bookmarks.map((bookmark) => mapPlaceForClient(
-    bookmark.place,
-    getPlaceScoreOverride(persistedScoreMap, bookmark.placeId),
-  ));
+  const activeBookmarks = bookmarks.filter((bookmark) => resolveBookmarkExpiresAt(bookmark) > new Date());
+
+  return {
+    bookmarks: activeBookmarks.map((bookmark) => mapPlaceForClient(
+      bookmark.place,
+      getPlaceScoreOverride(persistedScoreMap, bookmark.placeId),
+    )),
+    entries: activeBookmarks.map((bookmark) => mapBookmarkEntryForClient(
+      bookmark,
+      getPlaceScoreOverride(persistedScoreMap, bookmark.placeId),
+    )),
+  };
 }
 
 async function syncFeedPostForMoment(moment: MomentWithRelations) {

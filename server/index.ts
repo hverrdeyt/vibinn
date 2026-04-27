@@ -8011,7 +8011,7 @@ app.get('/api/collections/:id/public', (req, res) => {
 app.get('/api/bookmarks', requireAuth, (req: AuthenticatedRequest, res) => {
   void refreshSavedPlaceScoresForUser(req.authUserId!).catch(() => {});
   void getBookmarks(req.authUserId)
-    .then((bookmarks) => res.json({ bookmarks }))
+    .then((payload) => res.json(payload))
     .catch((error) => handleError(res, error));
 });
 
@@ -9468,13 +9468,14 @@ app.patch('/api/preferences', requireAuth, async (req: AuthenticatedRequest, res
 
 app.post('/api/bookmarks', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const { placeId, place } = req.body as { placeId?: string; place?: BookmarkPlaceSnapshot };
+    const { placeId, place, source } = req.body as { placeId?: string; place?: BookmarkPlaceSnapshot; source?: string };
     if (!placeId) {
       res.status(400).json({ error: 'placeId is required' });
       return;
     }
 
     await ensureBookmarkablePlaceExists(placeId, place ?? null);
+    const expiresAt = new Date(Date.now() + (48 * 60 * 60 * 1000));
 
     await prisma.bookmark.upsert({
       where: {
@@ -9483,11 +9484,16 @@ app.post('/api/bookmarks', requireAuth, async (req: AuthenticatedRequest, res) =
           placeId,
         },
       },
-      update: {},
+      update: {
+        source: source?.trim() || undefined,
+        expiresAt,
+      } as Prisma.BookmarkUpdateInput,
       create: {
         userId: req.authUserId!,
         placeId,
-      },
+        source: source?.trim() || undefined,
+        expiresAt,
+      } as Prisma.BookmarkUncheckedCreateInput,
     });
 
     await prisma.dismissedPlace.deleteMany({
@@ -9502,12 +9508,12 @@ app.post('/api/bookmarks', requireAuth, async (req: AuthenticatedRequest, res) =
     });
     void queueOwnTravelerDescriptorRefresh(req.authUserId!).catch(() => {});
 
-    const bookmarks = await prisma.bookmark.findMany({
-      where: { userId: req.authUserId! },
-      select: { placeId: true },
+    const payload = await getBookmarks(req.authUserId!);
+    res.json({
+      bookmarkedPlaceIds: payload.bookmarks.map((item) => item.id),
+      bookmarks: payload.bookmarks,
+      entries: payload.entries,
     });
-
-    res.json({ bookmarkedPlaceIds: bookmarks.map((item) => item.placeId) });
   } catch (error) {
     handleError(res, error);
   }
@@ -9533,12 +9539,12 @@ app.delete('/api/bookmarks/:placeId', requireAuth, async (req: AuthenticatedRequ
     });
     void queueOwnTravelerDescriptorRefresh(req.authUserId!).catch(() => {});
 
-    const bookmarks = await prisma.bookmark.findMany({
-      where: { userId: req.authUserId! },
-      select: { placeId: true },
+    const payload = await getBookmarks(req.authUserId!);
+    res.json({
+      bookmarkedPlaceIds: payload.bookmarks.map((item) => item.id),
+      bookmarks: payload.bookmarks,
+      entries: payload.entries,
     });
-
-    res.json({ bookmarkedPlaceIds: bookmarks.map((item) => item.placeId) });
   } catch (error) {
     handleError(res, error);
   }

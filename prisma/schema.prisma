@@ -476,12 +476,15 @@ model Bookmark {
   id        String   @id @default(cuid())
   userId    String
   placeId   String
+  source    String?
+  expiresAt DateTime?
   createdAt DateTime @default(now())
 
   user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
   place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
 
   @@unique([userId, placeId])
+  @@index([expiresAt])
 }
 
 model DismissedPlace {

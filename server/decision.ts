@@ -2530,10 +2530,15 @@ export async function saveDecisionPlace(input: {
           placeId: input.placeId,
         },
       },
-      update: {},
+      update: {
+        source: 'todays_pick',
+        expiresAt,
+      },
       create: {
         userId: input.userId,
         placeId: input.placeId,
+        source: 'todays_pick',
+        expiresAt,
       },
     });
 
