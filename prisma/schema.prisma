@@ -58,6 +58,7 @@ enum NotificationType {
   COMMENT
   VIBIN
   FOLLOW
+  CHAT_MESSAGE
   SYSTEM
 }
 
@@ -67,6 +68,12 @@ enum TargetType {
   PLACE
   PLACE_VISIT
   COLLECTION
+  CONVERSATION
+}
+
+enum FriendshipStatus {
+  PENDING
+  ACCEPTED
 }
 
 enum GooglePlaceSnapshotSource {
@@ -106,6 +113,12 @@ model User {
   vibinsReceived    Vibin[]              @relation("VibinReceiver")
   followsGiven      Follow[]             @relation("FollowSource")
   followsReceived   Follow[]             @relation("FollowTarget")
+  friendshipRequestsSent Friendship[]    @relation("FriendshipRequester")
+  friendshipRequestsReceived Friendship[] @relation("FriendshipAddressee")
+  conversationMemberships ConversationMember[]
+  sentChatMessages  ChatMessage[]        @relation("ChatMessageSender")
+  directConversationsA Conversation[]    @relation("ConversationDirectUserA")
+  directConversationsB Conversation[]    @relation("ConversationDirectUserB")
   blocksGiven       UserBlock[]          @relation("UserBlockSource")
   blocksReceived    UserBlock[]          @relation("UserBlockTarget")
   reportsGiven      UserReport[]         @relation("UserReportReporter")
@@ -494,6 +507,87 @@ model Follow {
   @@unique([sourceUserId, targetUserId])
 }
 
+model Friendship {
+  id             String           @id @default(cuid())
+  requesterId    String
+  addresseeId    String
+  status         FriendshipStatus @default(PENDING)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  respondedAt    DateTime?
+
+  requester      User             @relation("FriendshipRequester", fields: [requesterId], references: [id], onDelete: Cascade)
+  addressee      User             @relation("FriendshipAddressee", fields: [addresseeId], references: [id], onDelete: Cascade)
+
+  @@unique([requesterId, addresseeId])
+  @@index([requesterId, status])
+  @@index([addresseeId, status])
+}
+
+model Conversation {
+  id             String   @id @default(cuid())
+  kind           String   @default("direct")
+  directUserAId  String?
+  directUserBId  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  lastMessageAt  DateTime?
+
+  directUserA    User?    @relation("ConversationDirectUserA", fields: [directUserAId], references: [id], onDelete: SetNull)
+  directUserB    User?    @relation("ConversationDirectUserB", fields: [directUserBId], references: [id], onDelete: SetNull)
+  members        ConversationMember[]
+  messages       ChatMessage[]
+
+  @@unique([directUserAId, directUserBId])
+  @@index([lastMessageAt])
+}
+
+model ConversationMember {
+  id             String   @id @default(cuid())
+  conversationId String
+  userId         String
+  createdAt      DateTime @default(now())
+  lastReadAt     DateTime?
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([conversationId, userId])
+  @@index([userId, createdAt])
+}
+
+model ChatMessage {
+  id             String   @id @default(cuid())
+  conversationId String
+  senderUserId   String
+  kind           String   @default("text")
+  body           String?
+  createdAt      DateTime @default(now())
+
+  conversation   Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderUser     User                 @relation("ChatMessageSender", fields: [senderUserId], references: [id], onDelete: Cascade)
+  attachments    ChatMessageAttachment[]
+
+  @@index([conversationId, createdAt])
+  @@index([senderUserId, createdAt])
+}
+
+model ChatMessageAttachment {
+  id          String     @id @default(cuid())
+  messageId    String
+  targetType   TargetType
+  targetId     String
+  momentId     String?
+  previewText  String?
+  createdAt    DateTime   @default(now())
+
+  message      ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  moment       Moment?     @relation(fields: [momentId], references: [id], onDelete: SetNull)
+
+  @@index([messageId])
+  @@index([targetType, targetId])
+}
+
 model UserBlock {
   id            String   @id @default(cuid())
   sourceUserId  String
@@ -559,6 +653,7 @@ model Moment {
   vibins         Vibin[]
   collectionMoments CollectionMoment[]
   decisionCheckinContext DecisionCheckinContext?
+  chatMessageAttachments ChatMessageAttachment[]
 }
 
 model DecisionSession {

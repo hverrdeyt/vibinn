@@ -182,6 +182,11 @@ type DecisionScoreBreakdown = {
   };
 };
 
+type TraitEvidenceByTrait = Partial<Record<
+  'quiet' | 'social' | 'solo' | 'cozy' | 'work' | 'date' | 'utilitarian' | 'quality',
+  string
+>>;
+
 type RankedCandidate = {
   place: PlaceCandidate;
   distanceMiles: number;
@@ -1647,6 +1652,51 @@ function buildDecisionReason(intent: DecisionIntentDefinition, place: PlaceCandi
   return `Worth a look if you want something more ${intent.feelValue} and ${intent.stateValue.replace('_', ' ')}.`;
 }
 
+function getTraitEvidenceByTrait(place: PlaceCandidate): TraitEvidenceByTrait {
+  const raw = (place.traitProfile?.evidenceJson as any)?.byTrait;
+  if (!raw || typeof raw !== 'object') return {};
+  const allowedKeys = ['quiet', 'social', 'solo', 'cozy', 'work', 'date', 'utilitarian', 'quality'] as const;
+  return allowedKeys.reduce<TraitEvidenceByTrait>((accumulator, key) => {
+    const value = raw[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      accumulator[key] = value.trim();
+    }
+    return accumulator;
+  }, {});
+}
+
+function pickFeelEvidence(place: PlaceCandidate, feelValue: DecisionFeelValue) {
+  const evidenceByTrait = getTraitEvidenceByTrait(place);
+  const keysByFeel: Record<DecisionFeelValue, (keyof TraitEvidenceByTrait)[]> = {
+    chill: ['cozy', 'quiet', 'quality'],
+    quiet: ['quiet', 'solo', 'work'],
+    social: ['social', 'cozy', 'date'],
+    lowkey: ['solo', 'utilitarian', 'quiet', 'cozy'],
+    great: ['quality', 'date', 'cozy'],
+  };
+
+  for (const key of keysByFeel[feelValue]) {
+    const value = evidenceByTrait[key];
+    if (typeof value === 'string' && value.length > 0) {
+      return value;
+    }
+  }
+
+  return null;
+}
+
+function estimateTravelTimeMinutes(distanceMiles: number) {
+  if (distanceMiles <= 0.15) return 2;
+  if (distanceMiles <= 0.35) return Math.max(3, Math.round((distanceMiles * 16) + 1));
+  if (distanceMiles <= 1.2) return Math.max(5, Math.round((distanceMiles * 6) + 1));
+  return Math.max(8, Math.round((distanceMiles * 4.5) + 2));
+}
+
+function buildTravelTimeLabel(distanceMiles: number) {
+  const minutes = estimateTravelTimeMinutes(distanceMiles);
+  return `${minutes} mins away`;
+}
+
 function computeTraitDrivenIntentSpecificBonus(
   place: PlaceCandidate,
   traits: ResolvedPlaceTraits,
@@ -1824,9 +1874,11 @@ function mapDecisionPlaceForClient(place: PlaceCandidate, intent: DecisionIntent
     name: place.name,
     thumbnailUrl: inferThumbnailUrl(place),
     distanceMiles: Number(distanceMiles.toFixed(1)),
+    travelTimeLabel: buildTravelTimeLabel(distanceMiles),
     neighborhood: deriveNeighborhood(place),
     city: place.city ?? place.location?.name ?? null,
     vibeLabel: inferVibeLabel(place, intent),
+    feelEvidenceLabel: pickFeelEvidence(place, intent.feelValue),
     priceRangeLabel: buildCompactPriceLabel(place),
     topBadge: traits.quality >= 0.82 ? 'Sharp Pick' : traits.quickReady >= 0.78 ? 'Easy Stop' : null,
     timeToVisit: inferVisitTimeLabels(place),

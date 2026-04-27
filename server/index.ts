@@ -6,7 +6,7 @@ import path from 'node:path';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { cert, getApps, initializeApp as initializeFirebaseAdminApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
-import { Prisma } from '@prisma/client';
+import { Prisma, NotificationType, TargetType } from '@prisma/client';
 import { MOCK_PLACES, SIMILAR_TRAVELERS } from '../src/mockData';
 import { prisma } from './prisma';
 import {
@@ -488,8 +488,8 @@ async function createSession(userId: string) {
 async function createNotification(input: {
   userId: string;
   actorUserId?: string | null;
-  type: 'PLACE_MATCH' | 'TRAVELER_OVERLAP' | 'COMMENT' | 'VIBIN' | 'FOLLOW' | 'SYSTEM';
-  targetType?: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION' | null;
+  type: NotificationType;
+  targetType?: TargetType | null;
   targetId?: string | null;
   title: string;
   body: string;
@@ -516,6 +516,366 @@ async function createNotification(input: {
       ...(input.targetId ? { targetId: input.targetId } : {}),
     },
   });
+}
+
+function normalizeDirectConversationPair(userIdA: string, userIdB: string) {
+  return userIdA.localeCompare(userIdB) <= 0
+    ? [userIdA, userIdB] as const
+    : [userIdB, userIdA] as const;
+}
+
+async function findBlockingRelationship(userId: string, otherUserId: string) {
+  return prisma.userBlock.findFirst({
+    where: {
+      OR: [
+        { sourceUserId: userId, targetUserId: otherUserId },
+        { sourceUserId: otherUserId, targetUserId: userId },
+      ],
+    },
+  });
+}
+
+async function findFriendshipBetween(userId: string, otherUserId: string) {
+  return prisma.friendship.findFirst({
+    where: {
+      OR: [
+        { requesterId: userId, addresseeId: otherUserId },
+        { requesterId: otherUserId, addresseeId: userId },
+      ],
+    },
+  });
+}
+
+async function resolveFriendshipStatusForUsers(userId: string, otherUserId: string) {
+  const [blockingRelationship, friendship] = await Promise.all([
+    findBlockingRelationship(userId, otherUserId),
+    findFriendshipBetween(userId, otherUserId),
+  ]);
+
+  if (blockingRelationship) {
+    return {
+      status: 'blocked' as const,
+      friendship,
+    };
+  }
+
+  if (!friendship) {
+    return {
+      status: 'none' as const,
+      friendship: null,
+    };
+  }
+
+  if (friendship.status === 'ACCEPTED') {
+    return {
+      status: 'accepted' as const,
+      friendship,
+    };
+  }
+
+  return {
+    status: friendship.requesterId === userId ? 'pending_sent' as const : 'pending_received' as const,
+    friendship,
+  };
+}
+
+async function ensureAcceptedFriendship(userId: string, otherUserId: string) {
+  if (userId === otherUserId) {
+    throw new Error('Cannot start a conversation with yourself');
+  }
+
+  const state = await resolveFriendshipStatusForUsers(userId, otherUserId);
+  if (state.status === 'blocked') {
+    throw new Error('Cannot chat with a blocked account');
+  }
+  if (state.status !== 'accepted') {
+    throw new Error('Chat is only available for friends');
+  }
+
+  return state.friendship!;
+}
+
+const chatMessageAttachmentArgs = Prisma.validator<Prisma.ChatMessageAttachmentDefaultArgs>()({
+  include: {
+    moment: {
+      include: {
+        place: true,
+        media: {
+          orderBy: { sortOrder: 'asc' },
+          take: 1,
+        },
+      },
+    },
+  },
+});
+
+const chatMessageArgs = Prisma.validator<Prisma.ChatMessageDefaultArgs>()({
+  include: {
+    senderUser: {
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        avatarUrl: true,
+      },
+    },
+    attachments: {
+      include: chatMessageAttachmentArgs.include,
+    },
+  },
+});
+
+const conversationArgs = Prisma.validator<Prisma.ConversationDefaultArgs>()({
+  include: {
+    members: {
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    },
+    messages: {
+      orderBy: { createdAt: 'desc' },
+      take: 1,
+      include: chatMessageArgs.include,
+    },
+  },
+});
+
+type ChatMessageAttachmentWithRelations = Prisma.ChatMessageAttachmentGetPayload<typeof chatMessageAttachmentArgs>;
+type ChatMessageWithRelations = Prisma.ChatMessageGetPayload<typeof chatMessageArgs>;
+type ConversationWithRelations = {
+  id: string;
+  kind: string;
+  createdAt: Date;
+  updatedAt: Date;
+  lastMessageAt: Date | null;
+  members: Array<{
+    userId: string;
+    lastReadAt: Date | null;
+    user: {
+      id: string;
+      username: string;
+      displayName: string | null;
+      avatarUrl: string | null;
+    };
+  }>;
+  messages: ChatMessageWithRelations[];
+};
+
+function mapChatAttachmentForClient(attachment: ChatMessageAttachmentWithRelations) {
+  return {
+    id: attachment.id,
+    targetType: attachment.targetType,
+    targetId: attachment.targetId,
+    previewText: attachment.previewText ?? null,
+    moment: attachment.moment
+      ? {
+          id: attachment.moment.id,
+          caption: attachment.moment.caption,
+          visitedAt: attachment.moment.visitedAt.toISOString(),
+          place: {
+            id: attachment.moment.place.id,
+            name: attachment.moment.place.name,
+            location: attachment.moment.place.city ?? attachment.moment.place.address ?? attachment.moment.place.name,
+            image: attachment.moment.media[0]?.url ?? attachment.moment.place.primaryImageUrl ?? null,
+          },
+        }
+      : null,
+  };
+}
+
+function mapChatMessageForClient(message: ChatMessageWithRelations) {
+  return {
+    id: message.id,
+    conversationId: message.conversationId,
+    kind: message.kind,
+    body: message.body ?? '',
+    createdAt: message.createdAt.toISOString(),
+    sender: {
+      id: message.senderUser.id,
+      username: message.senderUser.username,
+      displayName: message.senderUser.displayName ?? message.senderUser.username,
+      avatarUrl: message.senderUser.avatarUrl ?? null,
+    },
+    attachments: message.attachments.map(mapChatAttachmentForClient),
+  };
+}
+
+async function ensureDirectConversation(userId: string, otherUserId: string) {
+  await ensureAcceptedFriendship(userId, otherUserId);
+
+  const [directUserAId, directUserBId] = normalizeDirectConversationPair(userId, otherUserId);
+  const existing = await prisma.conversation.findUnique({
+    where: {
+      directUserAId_directUserBId: {
+        directUserAId,
+        directUserBId,
+      },
+    },
+    include: conversationArgs.include,
+  });
+
+  if (existing) {
+    return existing;
+  }
+
+  return prisma.conversation.create({
+    data: {
+      kind: 'direct',
+      directUserAId,
+      directUserBId,
+      members: {
+        create: [
+          { userId: directUserAId },
+          { userId: directUserBId },
+        ],
+      },
+    },
+    include: conversationArgs.include,
+  });
+}
+
+async function assertConversationMember(conversationId: string, userId: string) {
+  const member = await prisma.conversationMember.findUnique({
+    where: {
+      conversationId_userId: {
+        conversationId,
+        userId,
+      },
+    },
+  });
+
+  if (!member) {
+    throw new Error('Conversation not found');
+  }
+
+  return member;
+}
+
+async function mapConversationSummaryForUser(
+  conversation: ConversationWithRelations,
+  userId: string
+) {
+  const otherMember = conversation.members.find((member) => member.userId !== userId);
+  const viewerMember = conversation.members.find((member) => member.userId === userId) ?? null;
+  const lastMessage = conversation.messages[0] ?? null;
+  const unreadCount = await prisma.chatMessage.count({
+    where: {
+      conversationId: conversation.id,
+      senderUserId: { not: userId },
+      ...(viewerMember?.lastReadAt
+        ? { createdAt: { gt: viewerMember.lastReadAt } }
+        : {}),
+    },
+  });
+
+  return {
+    id: conversation.id,
+    kind: conversation.kind,
+    updatedAt: conversation.updatedAt.toISOString(),
+    lastMessageAt: conversation.lastMessageAt?.toISOString() ?? lastMessage?.createdAt.toISOString() ?? conversation.createdAt.toISOString(),
+    unreadCount,
+    otherUser: otherMember
+      ? {
+          id: otherMember.user.id,
+          username: otherMember.user.username,
+          displayName: otherMember.user.displayName ?? otherMember.user.username,
+          avatarUrl: otherMember.user.avatarUrl ?? null,
+        }
+      : null,
+    lastMessage: lastMessage ? mapChatMessageForClient(lastMessage) : null,
+  };
+}
+
+async function createChatMessage(input: {
+  conversationId: string;
+  senderUserId: string;
+  kind?: string;
+  body?: string | null;
+  attachments?: Array<{
+    targetType: TargetType;
+    targetId: string;
+    momentId?: string | null;
+    previewText?: string | null;
+  }>;
+}) {
+  const trimmedBody = input.body?.trim() ?? '';
+  if (!trimmedBody && (!input.attachments || input.attachments.length === 0)) {
+    throw new Error('Message body or attachment is required');
+  }
+
+  await assertConversationMember(input.conversationId, input.senderUserId);
+
+  const message = await prisma.$transaction(async (tx) => {
+    const created = await tx.chatMessage.create({
+      data: {
+        conversationId: input.conversationId,
+        senderUserId: input.senderUserId,
+        kind: input.kind ?? (input.attachments?.length ? 'attachment' : 'text'),
+        body: trimmedBody || null,
+        attachments: input.attachments?.length
+          ? {
+              create: input.attachments.map((attachment) => ({
+                targetType: attachment.targetType,
+                targetId: attachment.targetId,
+                momentId: attachment.momentId ?? null,
+                previewText: attachment.previewText ?? null,
+              })),
+            }
+          : undefined,
+      },
+      include: chatMessageArgs.include,
+    });
+
+    await tx.conversation.update({
+      where: { id: input.conversationId },
+      data: {
+        lastMessageAt: created.createdAt,
+      },
+    });
+
+    return created;
+  });
+
+  const conversation = await prisma.conversation.findUnique({
+    where: { id: input.conversationId },
+    include: {
+      members: true,
+    },
+  });
+
+  if (conversation) {
+    const actor = await prisma.user.findUnique({
+      where: { id: input.senderUserId },
+      select: { username: true, displayName: true },
+    });
+
+    if (actor) {
+      await Promise.all(
+        conversation.members
+          .filter((member) => member.userId !== input.senderUserId)
+          .map((member) =>
+            createNotification({
+              userId: member.userId,
+              actorUserId: input.senderUserId,
+              type: 'CHAT_MESSAGE',
+              targetType: 'CONVERSATION',
+              targetId: input.conversationId,
+              title: `${actor.displayName ?? actor.username} sent a message`,
+              body: trimmedBody || input.attachments?.[0]?.previewText || 'Opened a chat with you',
+            })
+          )
+      );
+    }
+  }
+
+  return message;
 }
 
 function mapUserForClient(user: { id: string; username: string; displayName: string | null; email: string; bio?: string | null; avatarUrl?: string | null }) {
@@ -9335,6 +9695,381 @@ app.post('/api/follows/toggle', requireAuth, async (req: AuthenticatedRequest, r
   }
 });
 
+app.get('/api/friendships/status/:userId', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const otherUserId = String(req.params.userId ?? '').trim();
+    if (!otherUserId) {
+      res.status(400).json({ error: 'userId is required' });
+      return;
+    }
+
+    const status = await resolveFriendshipStatusForUsers(req.authUserId!, otherUserId);
+    res.json({
+      status: status.status,
+      friendshipId: status.friendship?.id ?? null,
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/friendships/requests', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const requests = await prisma.friendship.findMany({
+      where: {
+        addresseeId: req.authUserId!,
+        status: 'PENDING',
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        requester: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    });
+
+    res.json({
+      requests: requests.map((item) => ({
+        id: item.id,
+        createdAt: item.createdAt.toISOString(),
+        requester: {
+          id: item.requester.id,
+          username: item.requester.username,
+          displayName: item.requester.displayName ?? item.requester.username,
+          avatar: item.requester.avatarUrl ?? null,
+        },
+      })),
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/friendships/request', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const targetUserId = String(req.body?.targetUserId ?? '').trim();
+    if (!targetUserId) {
+      res.status(400).json({ error: 'targetUserId is required' });
+      return;
+    }
+    if (targetUserId === req.authUserId) {
+      res.status(400).json({ error: 'Cannot add yourself' });
+      return;
+    }
+
+    const state = await resolveFriendshipStatusForUsers(req.authUserId!, targetUserId);
+    if (state.status === 'blocked') {
+      res.status(400).json({ error: 'Cannot add a blocked account' });
+      return;
+    }
+    if (state.status === 'accepted') {
+      res.json({ status: 'accepted', friendshipId: state.friendship?.id ?? null });
+      return;
+    }
+    if (state.status === 'pending_sent') {
+      res.json({ status: 'pending_sent', friendshipId: state.friendship?.id ?? null });
+      return;
+    }
+    if (state.status === 'pending_received' && state.friendship) {
+      const accepted = await prisma.friendship.update({
+        where: { id: state.friendship.id },
+        data: {
+          status: 'ACCEPTED',
+          respondedAt: new Date(),
+        },
+      });
+      const actor = await prisma.user.findUnique({
+        where: { id: req.authUserId! },
+        select: { username: true, displayName: true },
+      });
+      if (actor) {
+        await createNotification({
+          userId: targetUserId,
+          actorUserId: req.authUserId!,
+          type: 'SYSTEM',
+          targetType: 'PROFILE',
+          targetId: req.authUserId!,
+          title: `${actor.displayName ?? actor.username} accepted your friend request`,
+          body: `${actor.displayName ?? actor.username} accepted your friend request.`,
+        });
+      }
+      res.json({ status: 'accepted', friendshipId: accepted.id });
+      return;
+    }
+
+    const friendship = await prisma.friendship.create({
+      data: {
+        requesterId: req.authUserId!,
+        addresseeId: targetUserId,
+        status: 'PENDING',
+      },
+    });
+
+    const actor = await prisma.user.findUnique({
+      where: { id: req.authUserId! },
+      select: { username: true, displayName: true },
+    });
+    if (actor) {
+      await createNotification({
+        userId: targetUserId,
+        actorUserId: req.authUserId!,
+        type: 'SYSTEM',
+        targetType: 'PROFILE',
+        targetId: req.authUserId!,
+        title: `${actor.displayName ?? actor.username} sent you a friend request`,
+        body: `${actor.displayName ?? actor.username} sent you a friend request.`,
+      });
+    }
+
+    res.status(201).json({ status: 'pending_sent', friendshipId: friendship.id });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/friendships/respond', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const requesterUserId = String(req.body?.requesterUserId ?? '').trim();
+    const action = String(req.body?.action ?? '').trim().toLowerCase();
+
+    if (!requesterUserId || !['accept', 'decline'].includes(action)) {
+      res.status(400).json({ error: 'requesterUserId and valid action are required' });
+      return;
+    }
+
+    const friendship = await prisma.friendship.findFirst({
+      where: {
+        requesterId: requesterUserId,
+        addresseeId: req.authUserId!,
+        status: 'PENDING',
+      },
+    });
+
+    if (!friendship) {
+      res.status(404).json({ error: 'Friend request not found' });
+      return;
+    }
+
+    if (action === 'decline') {
+      await prisma.friendship.delete({ where: { id: friendship.id } });
+      res.json({ status: 'declined' });
+      return;
+    }
+
+    const updated = await prisma.friendship.update({
+      where: { id: friendship.id },
+      data: {
+        status: 'ACCEPTED',
+        respondedAt: new Date(),
+      },
+    });
+
+    const actor = await prisma.user.findUnique({
+      where: { id: req.authUserId! },
+      select: { username: true, displayName: true },
+    });
+    if (actor) {
+      await createNotification({
+        userId: requesterUserId,
+        actorUserId: req.authUserId!,
+        type: 'SYSTEM',
+        targetType: 'PROFILE',
+        targetId: req.authUserId!,
+        title: `${actor.displayName ?? actor.username} accepted your friend request`,
+        body: `${actor.displayName ?? actor.username} accepted your friend request.`,
+      });
+    }
+
+    res.json({ status: 'accepted', friendshipId: updated.id });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/friendships/remove', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const targetUserId = String(req.body?.targetUserId ?? '').trim();
+    if (!targetUserId) {
+      res.status(400).json({ error: 'targetUserId is required' });
+      return;
+    }
+
+    const friendship = await findFriendshipBetween(req.authUserId!, targetUserId);
+    if (!friendship) {
+      res.json({ removed: false });
+      return;
+    }
+
+    await prisma.friendship.delete({ where: { id: friendship.id } });
+    res.json({ removed: true });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/chat/conversations', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const conversations = await prisma.conversation.findMany({
+      where: {
+        members: {
+          some: {
+            userId: req.authUserId!,
+          },
+        },
+      },
+      orderBy: [
+        { lastMessageAt: 'desc' },
+        { updatedAt: 'desc' },
+      ],
+      include: conversationArgs.include,
+    });
+
+    const items = await Promise.all(
+      conversations.map((conversation) => mapConversationSummaryForUser(conversation, req.authUserId!))
+    );
+
+    res.json({ conversations: items });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/chat/conversations/start', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const otherUserId = String(req.body?.otherUserId ?? '').trim();
+    if (!otherUserId) {
+      res.status(400).json({ error: 'otherUserId is required' });
+      return;
+    }
+
+    const conversation = await ensureDirectConversation(req.authUserId!, otherUserId);
+    const summary = await mapConversationSummaryForUser(conversation, req.authUserId!);
+    res.json({ conversation: summary });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/chat/conversations/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const conversationId = String(req.params.id ?? '').trim();
+    await assertConversationMember(conversationId, req.authUserId!);
+
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: conversationId },
+      include: {
+        members: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                username: true,
+                displayName: true,
+                avatarUrl: true,
+              },
+            },
+          },
+        },
+        messages: {
+          orderBy: { createdAt: 'asc' },
+          take: 100,
+          include: chatMessageArgs.include,
+        },
+      },
+    });
+
+    if (!conversation) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
+    const summary = await mapConversationSummaryForUser({
+      ...conversation,
+      messages: conversation.messages.slice(-1),
+    }, req.authUserId!);
+
+    res.json({
+      conversation: {
+        ...summary,
+        members: conversation.members.map((member) => ({
+          id: member.user.id,
+          username: member.user.username,
+          displayName: member.user.displayName ?? member.user.username,
+          avatarUrl: member.user.avatarUrl ?? null,
+        })),
+      },
+      messages: conversation.messages.map(mapChatMessageForClient),
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/chat/conversations/:id/messages', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const conversationId = String(req.params.id ?? '').trim();
+    const body = typeof req.body?.body === 'string' ? req.body.body : null;
+    const attachments = Array.isArray(req.body?.attachments)
+      ? req.body.attachments
+          .filter((attachment: unknown): attachment is { targetType: TargetType; targetId: string; momentId?: string | null; previewText?: string | null } =>
+            typeof attachment === 'object'
+            && attachment !== null
+            && typeof (attachment as any).targetType === 'string'
+            && typeof (attachment as any).targetId === 'string'
+          )
+      : [];
+
+    const message = await createChatMessage({
+      conversationId,
+      senderUserId: req.authUserId!,
+      body,
+      attachments,
+    });
+
+    await prisma.conversationMember.update({
+      where: {
+        conversationId_userId: {
+          conversationId,
+          userId: req.authUserId!,
+        },
+      },
+      data: {
+        lastReadAt: message.createdAt,
+      },
+    });
+
+    res.status(201).json({ message: mapChatMessageForClient(message) });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/chat/conversations/:id/read', requireAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const conversationId = String(req.params.id ?? '').trim();
+    await prisma.conversationMember.update({
+      where: {
+        conversationId_userId: {
+          conversationId,
+          userId: req.authUserId!,
+        },
+      },
+      data: {
+        lastReadAt: new Date(),
+      },
+    });
+
+    res.json({ ok: true });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.post('/api/reports', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const {
@@ -9668,6 +10403,48 @@ app.post('/api/comments', requireAuth, async (req: AuthenticatedRequest, res) =>
         title: `${comment.user.displayName ?? comment.user.username} commented`,
         body: comment.body,
       });
+    }
+
+    if (
+      targetType === 'MOMENT'
+      && notificationUserId
+      && notificationUserId !== req.authUserId
+    ) {
+      const friendshipState = await resolveFriendshipStatusForUsers(req.authUserId!, notificationUserId);
+      if (friendshipState.status === 'accepted') {
+        const conversation = await ensureDirectConversation(req.authUserId!, notificationUserId);
+        const existingMirror = await prisma.chatMessage.findFirst({
+          where: {
+            conversationId: conversation.id,
+            senderUserId: req.authUserId!,
+            body: comment.body.trim(),
+            attachments: {
+              some: {
+                targetType: 'MOMENT',
+                targetId,
+              },
+            },
+          },
+          select: { id: true },
+        });
+
+        if (!existingMirror) {
+          await createChatMessage({
+            conversationId: conversation.id,
+            senderUserId: req.authUserId!,
+            kind: 'moment_comment',
+            body: comment.body.trim(),
+            attachments: [
+              {
+                targetType: 'MOMENT',
+                targetId,
+                momentId: momentId ?? targetId,
+                previewText: 'Commented on your post',
+              },
+            ],
+          });
+        }
+      }
     }
 
     await runRecommendationWriteback({

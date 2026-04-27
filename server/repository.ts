@@ -268,6 +268,30 @@ type ClientPlace = ReturnType<typeof mapPlaceForClient> & {
   momentRatingLabel?: MomentRecord['ratingLabel'];
 };
 
+function mapMomentPlaceForClient(moment: MomentWithRelations): ClientPlace {
+  const mappedMoment = mapMomentForClient(moment);
+  const usableUploadedMedia = mappedMoment.uploadedMedia.filter((url) => isRenderableMediaUrl(url));
+  const usableUploadedMediaItems = mappedMoment.uploadedMediaItems.filter((item) => isRenderableMediaUrl(item.url));
+
+  return {
+    ...mappedMoment.place,
+    placeMediaUrls: mappedMoment.place.images ?? [],
+    userMediaUrls: usableUploadedMedia,
+    momentMedia: usableUploadedMediaItems.length > 0 ? usableUploadedMediaItems : undefined,
+    momentId: mappedMoment.id,
+    ownerUserId: moment.userId,
+    visitedDate: mappedMoment.visitedDate,
+    visitedAtIso: mappedMoment.visitedAtIso,
+    momentCaption: mappedMoment.caption,
+    momentVibeTags: mappedMoment.vibeTags,
+    momentVisitType: mappedMoment.visitType,
+    momentTimeOfDay: mappedMoment.timeOfDay,
+    momentWouldRevisit: mappedMoment.wouldRevisit,
+    momentRating: mappedMoment.rating,
+    momentRatingLabel: mappedMoment.ratingLabel,
+  };
+}
+
 function mapMomentForClient(moment: MomentWithRelations) {
   return {
     id: moment.id,
@@ -1401,6 +1425,11 @@ export async function getFollowingFeed(userId?: string) {
   const visibleSimilarUsers = similarUsers.filter((item) => !blockedUserIds.has(item.traveler.id) && isActiveAccount(item.traveler));
   const visibleFallbackTravelers = fallbackTravelers.filter((traveler) => !blockedUserIds.has(traveler.id) && isActiveAccount(traveler));
   const followedUserIds = new Set(visibleFollowedUsers.map((item) => item.targetUser.id));
+  const excludedSuggestedUserIds = new Set([
+    currentUser.id,
+    ...blockedUserIds,
+    ...followedUserIds,
+  ]);
 
   const followedPlaceIds = Array.from(new Set([
     ...visibleFollowedUsers.flatMap((item) => item.targetUser.bookmarks.map((bookmark) => bookmark.placeId)),
@@ -1658,10 +1687,185 @@ export async function getFollowingFeed(userId?: string) {
       ),
   ]).slice(0, 12);
 
+  const suggestedMomentCandidates = await prisma.moment.findMany({
+    where: {
+      privacy: 'PUBLIC',
+      userId: {
+        notIn: Array.from(excludedSuggestedUserIds),
+      },
+      user: activeAccountWhere,
+    },
+    include: {
+      place: {
+        include: {
+          aiEnrichment: true,
+          media: { orderBy: { sortOrder: 'asc' } },
+        },
+      },
+      media: { orderBy: { sortOrder: 'asc' } },
+      user: {
+        include: {
+          badges: true,
+          flags: true,
+          _count: {
+            select: {
+              moments: true,
+              bookmarks: true,
+              collections: true,
+            },
+          },
+          bookmarks: {
+            orderBy: { createdAt: 'desc' },
+            take: 4,
+            include: {
+              place: {
+                include: {
+                  aiEnrichment: true,
+                  media: { orderBy: { sortOrder: 'asc' } },
+                },
+              },
+            },
+          },
+          moments: {
+            orderBy: { createdAt: 'desc' },
+            take: 6,
+            include: {
+              place: {
+                include: {
+                  aiEnrichment: true,
+                  media: { orderBy: { sortOrder: 'asc' } },
+                },
+              },
+              media: { orderBy: { sortOrder: 'asc' } },
+            },
+          },
+          collections: {
+            orderBy: { createdAt: 'desc' },
+            take: 2,
+            include: {
+              places: {
+                orderBy: { sortOrder: 'asc' },
+                take: 4,
+                include: {
+                  place: {
+                    include: {
+                      aiEnrichment: true,
+                      media: { orderBy: { sortOrder: 'asc' } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    orderBy: [
+      { createdAt: 'desc' },
+    ],
+    take: 24,
+  });
+
+  const suggestedMomentIds = suggestedMomentCandidates.map((moment) => moment.id);
+  const suggestedMomentVibins = suggestedMomentIds.length
+    ? await prisma.vibin.groupBy({
+        by: ['targetId'],
+        where: {
+          targetType: 'MOMENT',
+          targetId: { in: suggestedMomentIds },
+        },
+        _count: { _all: true },
+      })
+    : [];
+  const suggestedMomentComments = suggestedMomentIds.length
+    ? await prisma.comment.groupBy({
+        by: ['targetId'],
+        where: {
+          targetType: 'MOMENT',
+          targetId: { in: suggestedMomentIds },
+        },
+        _count: { _all: true },
+      })
+    : [];
+  const suggestedMomentVibinMap = new Map(suggestedMomentVibins.map((item) => [item.targetId, item._count._all]));
+  const suggestedMomentCommentMap = new Map(suggestedMomentComments.map((item) => [item.targetId, item._count._all]));
+
+  const suggestedMomentUserDescriptors = await Promise.all(
+    Array.from(new Map(suggestedMomentCandidates.map((moment) => [moment.user.id, moment.user])).values()).map(async (traveler) => {
+      const descriptor = await generateTravelerProfileDescriptor({
+        userId: traveler.id,
+        displayName: traveler.displayName,
+        moments: traveler.moments.map(mapMomentForClient),
+        bookmarkedPlaces: traveler.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+      });
+      return [traveler.id, descriptor] as const;
+    }),
+  );
+  const suggestedMomentDescriptorMap = new Map(suggestedMomentUserDescriptors);
+  const suggestedMomentTravelerMap = new Map(
+    Array.from(new Map(suggestedMomentCandidates.map((moment) => [moment.user.id, moment.user])).values()).map((traveler) => [
+      traveler.id,
+      trimTravelerForFeed(buildProfileUserWithMatch(
+        traveler,
+        traveler.moments.map(mapMomentForClient),
+        undefined,
+        {
+          vibinCount: vibinMap.get(traveler.id) ?? 0,
+          descriptor: suggestedMomentDescriptorMap.get(traveler.id),
+          recentSavedPlaces: traveler.bookmarks.map((bookmark) => ({
+            place: mapPlaceForClient(bookmark.place),
+            savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
+            savedAtIso: bookmark.createdAt.toISOString(),
+          })),
+          recentCollections: traveler.collections.map((collection) => ({
+            id: collection.id,
+            label: collection.title,
+            createdAt: collection.createdAt.toISOString(),
+            places: collection.places.map((entry) => mapPlaceForClient(entry.place)),
+          })),
+          latestVisitedAtIso: traveler.moments[0]?.visitedAt?.toISOString?.() ?? traveler.moments[0]?.createdAt?.toISOString?.(),
+          visitedPlacesCount: traveler._count.moments,
+          savedPlacesCount: traveler._count.bookmarks,
+          collectionsCount: traveler._count.collections,
+        },
+      )),
+    ]),
+  );
+
+  const suggestedItems = suggestedMomentCandidates
+    .map((moment) => {
+      const traveler = suggestedMomentTravelerMap.get(moment.user.id);
+      if (!traveler) return null;
+
+      const vibinCount = suggestedMomentVibinMap.get(moment.id) ?? 0;
+      const commentCount = suggestedMomentCommentMap.get(moment.id) ?? 0;
+      const ageHours = Math.max(1, (Date.now() - moment.createdAt.getTime()) / (1000 * 60 * 60));
+      const freshnessBonus = 48 / ageHours;
+      const popularityScore = (vibinCount * 3) + (commentCount * 2) + freshnessBonus;
+
+      return {
+        id: `suggested-visited-${moment.user.id}-${moment.id}`,
+        type: 'visited' as const,
+        traveler,
+        timestampLabel: formatRelativeActivityLabel(moment.visitedAt),
+        sortTimestamp: moment.visitedAt.toISOString(),
+        place: mapMomentPlaceForClient(moment),
+        collection: null,
+        caption: moment.caption ?? null,
+        popularityScore,
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .sort((a, b) => b.popularityScore - a.popularityScore)
+    .filter((item, index, array) => array.findIndex((candidate) => candidate.traveler.id === item.traveler.id) === index)
+    .slice(0, 3)
+    .map(({ popularityScore: _popularityScore, ...item }) => item);
+
   return {
     followedTravelers,
     suggestedTravelers,
     items,
+    suggestedItems,
   };
 }
 
@@ -2174,6 +2378,8 @@ export async function getNotifications(userId?: string) {
       const messageKind =
         item.type === 'FOLLOW'
           ? 'follow'
+          : String(item.type) === 'CHAT_MESSAGE'
+            ? 'chat'
           : item.type === 'VIBIN'
             ? placeContext === 'saved'
               ? 'vibin_saved'
