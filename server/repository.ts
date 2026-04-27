@@ -796,18 +796,6 @@ export async function getProfileMe(userId?: string) {
         orderBy: { visitedAt: 'desc' },
         include: repositoryFeedPostInclude,
       },
-      moments: {
-        orderBy: { createdAt: 'desc' },
-        include: {
-          place: {
-            include: {
-              aiEnrichment: true,
-              media: { orderBy: { sortOrder: 'asc' } },
-            },
-          },
-          media: { orderBy: { sortOrder: 'asc' } },
-        },
-      },
       collections: {
         orderBy: { createdAt: 'desc' },
         include: {
