@@ -1561,10 +1561,39 @@ export async function getFollowingFeed(userId?: string) {
       })
     : [];
 
+  const feedMomentIds = feedPosts
+    .map((feedPost) => feedPost.sourceMomentId)
+    .filter((value): value is string => Boolean(value));
+  const [feedMomentVibins, vibedFeedMomentsByMe] = await Promise.all([
+    feedMomentIds.length
+      ? prisma.vibin.groupBy({
+          by: ['targetId'],
+          where: {
+            targetType: 'MOMENT',
+            targetId: { in: feedMomentIds },
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
+    feedMomentIds.length
+      ? prisma.vibin.findMany({
+          where: {
+            senderUserId: currentUser.id,
+            targetType: 'MOMENT',
+            targetId: { in: feedMomentIds },
+          },
+          select: { targetId: true },
+        })
+      : Promise.resolve([]),
+  ]);
+  const feedMomentVibinMap = new Map(feedMomentVibins.map((item) => [item.targetId, item._count._all]));
+  const vibedFeedMomentIds = new Set(vibedFeedMomentsByMe.map((item) => item.targetId));
+
   const items = feedPosts
     .map((feedPost) => {
       const traveler = travelerMap.get(feedPost.userId);
       if (!traveler) return null;
+      const interactionTargetId = feedPost.sourceMomentId ?? '';
 
       return {
         id: `feed-post-${feedPost.id}`,
@@ -1575,6 +1604,8 @@ export async function getFollowingFeed(userId?: string) {
         place: mapFeedPostPlaceForClient(feedPost),
         collection: null,
         caption: feedPost.caption || null,
+        isVibed: interactionTargetId ? vibedFeedMomentIds.has(interactionTargetId) : false,
+        vibinCount: interactionTargetId ? (feedMomentVibinMap.get(interactionTargetId) ?? 0) : 0,
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
@@ -1600,10 +1631,39 @@ export async function getFollowingFeed(userId?: string) {
       })
     : [];
 
+  const fallbackMomentIds = fallbackFriendFeedPosts
+    .map((feedPost) => feedPost.sourceMomentId)
+    .filter((value): value is string => Boolean(value));
+  const [fallbackMomentVibins, vibedFallbackMomentsByMe] = await Promise.all([
+    fallbackMomentIds.length
+      ? prisma.vibin.groupBy({
+          by: ['targetId'],
+          where: {
+            targetType: 'MOMENT',
+            targetId: { in: fallbackMomentIds },
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
+    fallbackMomentIds.length
+      ? prisma.vibin.findMany({
+          where: {
+            senderUserId: currentUser.id,
+            targetType: 'MOMENT',
+            targetId: { in: fallbackMomentIds },
+          },
+          select: { targetId: true },
+        })
+      : Promise.resolve([]),
+  ]);
+  const fallbackMomentVibinMap = new Map(fallbackMomentVibins.map((item) => [item.targetId, item._count._all]));
+  const vibedFallbackMomentIds = new Set(vibedFallbackMomentsByMe.map((item) => item.targetId));
+
   const fallbackItems = fallbackFriendFeedPosts
     .map((feedPost) => {
       const traveler = travelerMap.get(feedPost.userId);
       if (!traveler) return null;
+      const interactionTargetId = feedPost.sourceMomentId ?? '';
 
       return {
         id: `fallback-feed-post-${feedPost.id}`,
@@ -1614,6 +1674,8 @@ export async function getFollowingFeed(userId?: string) {
         place: mapFeedPostPlaceForClient(feedPost),
         collection: null,
         caption: feedPost.caption || null,
+        isVibed: interactionTargetId ? vibedFallbackMomentIds.has(interactionTargetId) : false,
+        vibinCount: interactionTargetId ? (fallbackMomentVibinMap.get(interactionTargetId) ?? 0) : 0,
       };
     })
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
@@ -1735,6 +1797,8 @@ export async function getFollowingFeed(userId?: string) {
         place: mapFeedPostPlaceForClient(feedPost),
         collection: null,
         caption: feedPost.caption || null,
+        isVibed: false,
+        vibinCount,
         popularityScore,
       };
     })
