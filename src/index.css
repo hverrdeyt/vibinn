@@ -1,6 +1,14 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
+@font-face {
+  font-family: "BBH Bartle";
+  src: url("/fonts/BBHBartle-Regular.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
@@ -153,4 +161,9 @@
 
 .landing-sticker {
   filter: drop-shadow(0 10px 0 rgba(0, 0, 0, 0.18)) drop-shadow(0 18px 24px rgba(0, 0, 0, 0.18));
+}
+
+.landing-bbh-bartle {
+  font-family: "BBH Bartle", "Inter", ui-sans-serif, system-ui, sans-serif;
+  letter-spacing: 0.01em;
 }
