@@ -135,3 +135,22 @@
   height: var(--app-height);
   min-height: var(--app-height);
 }
+
+.landing-snap-shell {
+  scroll-snap-type: y mandatory;
+  scrollbar-width: none;
+  overscroll-behavior-y: contain;
+}
+
+.landing-snap-shell::-webkit-scrollbar {
+  display: none;
+}
+
+.landing-snap-section {
+  min-height: 100svh;
+  min-height: 100dvh;
+}
+
+.landing-sticker {
+  filter: drop-shadow(0 10px 0 rgba(0, 0, 0, 0.18)) drop-shadow(0 18px 24px rgba(0, 0, 0, 0.18));
+}
