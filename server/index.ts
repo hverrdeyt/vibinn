@@ -579,7 +579,7 @@ async function resolveFriendshipStatusForUsers(userId: string, otherUserId: stri
   };
 }
 
-async function ensureAcceptedFriendship(userId: string, otherUserId: string) {
+async function assertCanDirectMessage(userId: string, otherUserId: string) {
   if (userId === otherUserId) {
     throw new Error('Cannot start a conversation with yourself');
   }
@@ -588,11 +588,8 @@ async function ensureAcceptedFriendship(userId: string, otherUserId: string) {
   if (state.status === 'blocked') {
     throw new Error('Cannot chat with a blocked account');
   }
-  if (state.status !== 'accepted') {
-    throw new Error('Chat is only available for friends');
-  }
 
-  return state.friendship!;
+  return state;
 }
 
 async function listAcceptedFriends(userId: string) {
@@ -750,7 +747,7 @@ function mapChatMessageForClient(message: ChatMessageWithRelations) {
 }
 
 async function ensureDirectConversation(userId: string, otherUserId: string) {
-  await ensureAcceptedFriendship(userId, otherUserId);
+  await assertCanDirectMessage(userId, otherUserId);
 
   const [directUserAId, directUserBId] = normalizeDirectConversationPair(userId, otherUserId);
   const existing = await prisma.conversation.findUnique({
@@ -807,6 +804,10 @@ async function mapConversationSummaryForUser(
   const otherMember = conversation.members.find((member) => member.userId !== userId);
   const viewerMember = conversation.members.find((member) => member.userId === userId) ?? null;
   const lastMessage = conversation.messages[0] ?? null;
+  const friendshipState = otherMember
+    ? await resolveFriendshipStatusForUsers(userId, otherMember.userId)
+    : null;
+  const isRequest = otherMember != null && friendshipState?.status !== 'accepted';
   const unreadCount = await prisma.chatMessage.count({
     where: {
       conversationId: conversation.id,
@@ -823,6 +824,7 @@ async function mapConversationSummaryForUser(
     updatedAt: conversation.updatedAt.toISOString(),
     lastMessageAt: conversation.lastMessageAt?.toISOString() ?? lastMessage?.createdAt.toISOString() ?? conversation.createdAt.toISOString(),
     unreadCount,
+    isRequest,
     otherUser: otherMember
       ? {
           id: otherMember.user.id,
