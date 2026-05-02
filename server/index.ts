@@ -88,7 +88,7 @@ const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
 const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
 const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY;
 const FIREBASE_SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-const UNSUPPORTED_CITY_GATE_ENABLED = String(process.env.UNSUPPORTED_CITY_GATE_ENABLED ?? 'true').toLowerCase() !== 'false';
+const UNSUPPORTED_CITY_GATE_ENABLED = String(process.env.UNSUPPORTED_CITY_GATE_ENABLED ?? 'false').toLowerCase() === 'true';
 
 const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_ENDPOINT
   ? new S3Client({
@@ -1004,8 +1004,189 @@ async function eraseAccount(userId: string) {
     throw new Error('User not found');
   }
 
-  await prisma.user.delete({
-    where: { id: user.id },
+  const [moments, directConversations] = await Promise.all([
+    prisma.moment.findMany({
+      where: { userId: user.id },
+      select: { id: true },
+    }),
+    prisma.conversation.findMany({
+      where: {
+        OR: [
+          { directUserAId: user.id },
+          { directUserBId: user.id },
+          { members: { some: { userId: user.id } } },
+        ],
+      },
+      select: { id: true },
+    }),
+  ]);
+
+  const momentIds = moments.map((moment) => moment.id);
+  const conversationIds = directConversations.map((conversation) => conversation.id);
+
+  await prisma.$transaction(async (tx) => {
+    if (conversationIds.length > 0) {
+      await tx.chatMessageAttachment.deleteMany({
+        where: {
+          message: {
+            conversationId: { in: conversationIds },
+          },
+        },
+      });
+      await tx.chatMessage.deleteMany({
+        where: {
+          conversationId: { in: conversationIds },
+        },
+      });
+      await tx.conversationMember.deleteMany({
+        where: {
+          conversationId: { in: conversationIds },
+        },
+      });
+      await tx.conversation.deleteMany({
+        where: {
+          id: { in: conversationIds },
+        },
+      });
+    }
+
+    if (momentIds.length > 0) {
+      await tx.collectionMoment.deleteMany({
+        where: {
+          momentId: { in: momentIds },
+        },
+      });
+      await tx.chatMessageAttachment.deleteMany({
+        where: {
+          momentId: { in: momentIds },
+        },
+      });
+      await tx.decisionCheckinContext.deleteMany({
+        where: {
+          momentId: { in: momentIds },
+        },
+      });
+      await tx.feedPost.deleteMany({
+        where: {
+          OR: [
+            { userId: user.id },
+            { sourceMomentId: { in: momentIds } },
+          ],
+        },
+      });
+      await tx.vibin.deleteMany({
+        where: {
+          OR: [
+            { senderUserId: user.id },
+            { receiverUserId: user.id },
+            { momentId: { in: momentIds } },
+          ],
+        },
+      });
+      await tx.comment.deleteMany({
+        where: {
+          OR: [
+            { userId: user.id },
+            { momentId: { in: momentIds } },
+          ],
+        },
+      });
+      await tx.momentMedia.deleteMany({
+        where: {
+          momentId: { in: momentIds },
+        },
+      });
+      await tx.moment.deleteMany({
+        where: {
+          id: { in: momentIds },
+        },
+      });
+    }
+
+    await tx.notification.updateMany({
+      where: { actorUserId: user.id },
+      data: { actorUserId: null },
+    });
+    await tx.userReport.updateMany({
+      where: { targetUserId: user.id },
+      data: { targetUserId: null },
+    });
+    await tx.vibin.updateMany({
+      where: { receiverUserId: user.id },
+      data: { receiverUserId: null },
+    });
+    await tx.decisionSession.updateMany({
+      where: { userId: user.id },
+      data: { userId: null },
+    });
+    await tx.decisionSessionEvent.updateMany({
+      where: { userId: user.id },
+      data: { userId: null },
+    });
+    await tx.conversation.updateMany({
+      where: { directUserAId: user.id },
+      data: { directUserAId: null },
+    });
+    await tx.conversation.updateMany({
+      where: { directUserBId: user.id },
+      data: { directUserBId: null },
+    });
+
+    await tx.notification.deleteMany({ where: { userId: user.id } });
+    await tx.share.deleteMany({ where: { userId: user.id } });
+    await tx.userBlock.deleteMany({
+      where: {
+        OR: [
+          { sourceUserId: user.id },
+          { targetUserId: user.id },
+        ],
+      },
+    });
+    await tx.userReport.deleteMany({ where: { reporterId: user.id } });
+    await tx.follow.deleteMany({
+      where: {
+        OR: [
+          { sourceUserId: user.id },
+          { targetUserId: user.id },
+        ],
+      },
+    });
+    await tx.friendship.deleteMany({
+      where: {
+        OR: [
+          { requesterId: user.id },
+          { addresseeId: user.id },
+        ],
+      },
+    });
+    await tx.travelerSimilarity.deleteMany({
+      where: {
+        OR: [
+          { userId: user.id },
+          { travelerId: user.id },
+        ],
+      },
+    });
+    await tx.userPlaceScore.deleteMany({ where: { userId: user.id } });
+    await tx.bookmark.deleteMany({ where: { userId: user.id } });
+    await tx.dismissedPlace.deleteMany({ where: { userId: user.id } });
+    await tx.collection.deleteMany({ where: { userId: user.id } });
+    await tx.userSavedLocation.deleteMany({ where: { userId: user.id } });
+    await tx.userBadge.deleteMany({ where: { userId: user.id } });
+    await tx.userFlag.deleteMany({ where: { userId: user.id } });
+    await tx.userPreference.deleteMany({ where: { userId: user.id } });
+    await tx.userAccountSettings.deleteMany({ where: { userId: user.id } });
+    await tx.userNotificationSettings.deleteMany({ where: { userId: user.id } });
+    await tx.userPrivacySettings.deleteMany({ where: { userId: user.id } });
+    await tx.session.deleteMany({ where: { userId: user.id } });
+    await tx.userDevice.deleteMany({ where: { userId: user.id } });
+    await tx.decisionSave.deleteMany({ where: { userId: user.id } });
+    await tx.decisionFeedUnlock.deleteMany({ where: { userId: user.id } });
+    await tx.experimentAssignment.deleteMany({ where: { userId: user.id } });
+
+    await tx.user.delete({
+      where: { id: user.id },
+    });
   });
 }
 
