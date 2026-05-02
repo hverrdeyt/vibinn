@@ -1,0 +1,19 @@
+{
+  "name": "Vibinn Club",
+  "short_name": "Vibinn",
+  "description": "Find your travel vibe, save hidden gems, and meet travelers like you.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#09090b",
+  "theme_color": "#09090b",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "/vibinn-icon.png",
+      "sizes": "640x640",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

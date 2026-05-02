@@ -88,6 +88,7 @@ const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
 const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
 const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY;
 const FIREBASE_SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+const UNSUPPORTED_CITY_GATE_ENABLED = String(process.env.UNSUPPORTED_CITY_GATE_ENABLED ?? 'true').toLowerCase() !== 'false';
 
 const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_ENDPOINT
   ? new S3Client({
@@ -996,7 +997,6 @@ async function eraseAccount(userId: string) {
     select: {
       id: true,
       username: true,
-      email: true,
     },
   });
 
@@ -1004,40 +1004,9 @@ async function eraseAccount(userId: string) {
     throw new Error('User not found');
   }
 
-  const deletedSuffix = `${Date.now()}-${user.id.slice(0, 8)}`;
-  const deletedUsername = await buildUniqueUsername(`deleted.${user.id.slice(0, 8)}`);
-  const deletedEmail = `deleted+${deletedSuffix}@vibinn.invalid`;
-  const deletedAvatar = 'https://placehold.co/400x400/111111/D3FF48?text=D';
-
-  await prisma.$transaction([
-    prisma.follow.deleteMany({
-      where: {
-        OR: [
-          { sourceUserId: user.id },
-          { targetUserId: user.id },
-        ],
-      },
-    }),
-    prisma.userDevice.updateMany({
-      where: { userId: user.id },
-      data: { isActive: false },
-    }),
-    prisma.session.deleteMany({
-      where: { userId: user.id },
-    }),
-    prisma.user.update({
-      where: { id: user.id },
-      data: {
-        username: deletedUsername,
-        displayName: 'Deleted account',
-        email: deletedEmail,
-        passwordHash: hashPassword(crypto.randomUUID()),
-        bio: 'This account has been deleted.',
-        avatarUrl: deletedAvatar,
-        appleSubject: null,
-      },
-    }),
-  ]);
+  await prisma.user.delete({
+    where: { id: user.id },
+  });
 }
 
 function normalizeLocationPart(part: string) {
@@ -7841,6 +7810,12 @@ app.patch('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
   void updateProfile(req.authUserId, req.body)
     .then((user) => res.json({ user }))
     .catch((error) => handleError(res, error));
+});
+
+app.get('/api/client-config', (_req, res) => {
+  res.json({
+    unsupportedCityGateEnabled: UNSUPPORTED_CITY_GATE_ENABLED,
+  });
 });
 
 app.delete('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
