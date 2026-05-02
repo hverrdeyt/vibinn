@@ -2067,10 +2067,20 @@ async function buildSessionOptions(input: {
     feelValue: intent.feelValue,
     stateValue: intent.stateValue,
   }, input.cityKey);
-  const origin = {
+  const requestedOrigin = {
     latitude: input.latitude ?? city.latitude,
     longitude: input.longitude ?? city.longitude,
   };
+  const requestedOriginDistanceFromCityCenter = distanceBetweenMiles(requestedOrigin, {
+    latitude: city.latitude,
+    longitude: city.longitude,
+  });
+  const origin = requestedOriginDistanceFromCityCenter > 60
+    ? {
+        latitude: city.latitude,
+        longitude: city.longitude,
+      }
+    : requestedOrigin;
   const [profile, pool] = await Promise.all([
     buildUserDecisionProfile(input.userId),
     fetchDecisionCandidatePool({
