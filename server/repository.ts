@@ -1849,20 +1849,6 @@ export async function searchPublicTravelers(query: string) {
             },
           ],
         },
-        {
-          OR: [
-            {
-              moments: {
-                some: {},
-              },
-            },
-            {
-              bookmarks: {
-                some: {},
-              },
-            },
-          ],
-        },
       ],
     },
     include: {
