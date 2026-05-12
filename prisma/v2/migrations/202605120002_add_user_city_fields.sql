@@ -1,0 +1,5 @@
+ALTER TABLE "User"
+ADD COLUMN "cityLabel" TEXT,
+ADD COLUMN "cityLatitude" DOUBLE PRECISION,
+ADD COLUMN "cityLongitude" DOUBLE PRECISION,
+ADD COLUMN "citySource" TEXT;

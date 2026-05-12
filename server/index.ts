@@ -1,5 +1,5 @@
 import express from 'express';
-import dotenv from 'dotenv';
+import './env';
 import crypto from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -61,8 +61,24 @@ import {
   updatePrivacySettings,
   updateProfile,
 } from './repository';
-
-dotenv.config();
+import {
+  AuthV2Error,
+  generateMyInviteCode,
+  getMyInviteCode,
+  getMyOnboardingState,
+  getMyProfile,
+  getV2SessionFromToken,
+  joinPhoneWaitlist,
+  matchRegisteredContacts,
+  requestOtp,
+  revokeV2Session,
+  updateMyCity,
+  updateMyProfile,
+  updateMyOnboardingState,
+  validateInviteCode,
+  verifyOtp,
+} from './authV2';
+import { APP_ENV } from './env';
 
 const app = express();
 const port = Number(process.env.API_PORT || 3001);
@@ -89,6 +105,43 @@ const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
 const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY;
 const FIREBASE_SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 const UNSUPPORTED_CITY_GATE_ENABLED = String(process.env.UNSUPPORTED_CITY_GATE_ENABLED ?? 'true').toLowerCase() === 'true';
+const USE_STAGING_FIXED_OTP = APP_ENV === 'staging';
+const V2_OTP_CODE_LENGTH = Number(process.env.VONAGE_VERIFY_CODE_LENGTH || 4);
+const VONAGE_VERIFY_ENABLED = USE_STAGING_FIXED_OTP || Boolean(process.env.VONAGE_API_KEY && process.env.VONAGE_API_SECRET);
+
+function getAuthV2ErrorStatus(error: AuthV2Error) {
+  switch (error.code) {
+    case 'INVITE_CODE_NOT_FOUND':
+      return 404;
+    case 'INVITE_CODE_LIMIT_REACHED':
+    case 'INVITE_CODE_EXPIRED':
+    case 'INVITE_CODE_PAUSED':
+    case 'INVITE_CODE_ALREADY_EXISTS':
+    case 'OTP_REQUEST_INACTIVE':
+    case 'OTP_REQUEST_EXPIRED':
+      return 409;
+    case 'PHONE_INVALID_FORMAT':
+    case 'INVITE_CODE_INVALID':
+    case 'INVITE_CODE_REQUIRED':
+    case 'INVALID_MAX_REDEMPTIONS':
+    case 'ONBOARDING_STEP_INVALID':
+    case 'DISPLAY_NAME_INVALID':
+    case 'USERNAME_INVALID':
+    case 'AVATAR_URL_INVALID':
+    case 'CITY_LABEL_INVALID':
+    case 'CITY_COORDINATES_INVALID':
+      return 400;
+    case 'PHONE_NOT_REGISTERED':
+    case 'OTP_REQUEST_NOT_FOUND':
+    case 'USER_NOT_FOUND':
+      return 404;
+    case 'PHONE_ALREADY_REGISTERED':
+    case 'USERNAME_TAKEN':
+      return 409;
+    default:
+      return 500;
+  }
+}
 
 const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_ENDPOINT
   ? new S3Client({
@@ -126,6 +179,8 @@ let appleKeyCache: {
 
 type AuthenticatedRequest = express.Request & {
   authUserId?: string;
+  authV2UserId?: string;
+  authV2Token?: string;
 };
 
 type BookmarkPlaceSnapshot = {
@@ -7239,6 +7294,33 @@ app.use(async (req: AuthenticatedRequest, _res, next) => {
   next();
 });
 
+app.use(async (req: AuthenticatedRequest, _res, next) => {
+  if (!req.path.startsWith('/api/v2/')) {
+    next();
+    return;
+  }
+
+  const header = req.header('Authorization');
+  const token = header?.startsWith('Bearer ') ? header.slice(7).trim() : null;
+
+  if (!token) {
+    next();
+    return;
+  }
+
+  try {
+    const session = await getV2SessionFromToken(token);
+    if (session) {
+      req.authV2UserId = session.userId;
+      req.authV2Token = token;
+    }
+  } catch (error) {
+    console.error(error);
+  }
+
+  next();
+});
+
 app.use(express.json({ limit: '100mb' }));
 app.use('/uploads', express.static(UPLOADS_DIR));
 
@@ -7279,6 +7361,397 @@ app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
 
     res.json({ user: await mapUserForClientWithTasteState(user) });
   } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/auth/config', (_req, res) => {
+  res.json({
+    otpProvider: USE_STAGING_FIXED_OTP ? 'fixed_code' : 'vonage_verify',
+    enabled: VONAGE_VERIFY_ENABLED,
+    inviteRequired: true,
+    codeLength: V2_OTP_CODE_LENGTH,
+    fixedCodeEnabled: USE_STAGING_FIXED_OTP,
+  });
+});
+
+app.get('/api/v2/invite-codes/validate', async (req, res) => {
+  try {
+    const code = String(req.query.code ?? '').trim();
+    if (!code) {
+      res.status(400).json({ error: 'code is required', code: 'INVITE_CODE_REQUIRED' });
+      return;
+    }
+
+    const inviteCode = await validateInviteCode(code);
+    res.json({
+      valid: true,
+      inviteCode,
+    });
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({
+        valid: false,
+        error: error.message,
+        code: error.code,
+      });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/waitlist', async (req, res) => {
+  try {
+    const { phoneNumber, source } = req.body as {
+      phoneNumber?: string;
+      source?: string;
+    };
+
+    if (!phoneNumber?.trim()) {
+      res.status(400).json({ error: 'phoneNumber is required', code: 'PHONE_REQUIRED' });
+      return;
+    }
+
+    const entry = await joinPhoneWaitlist({
+      phoneNumber,
+      source,
+    });
+
+    res.status(201).json({ entry });
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/auth/session', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2Token || !req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const session = await getV2SessionFromToken(req.authV2Token);
+    if (!session) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    res.json({ user: session.user });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/onboarding', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const onboarding = await getMyOnboardingState(req.authV2UserId);
+    res.json({ onboarding });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.patch('/api/v2/onboarding', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const {
+      currentStep,
+      completedStep,
+      skippedStep,
+    } = req.body as {
+      currentStep?: 'WELCOME' | 'INVITE_CONFIRMED' | 'PHONE_VERIFICATION' | 'PROFILE' | 'LOCATION_PERMISSION' | 'CONTACTS_PERMISSION' | 'FRIENDS' | 'FIRST_PLACE' | 'INVITE_SHARE' | 'COMPLETED';
+      completedStep?: string;
+      skippedStep?: string;
+    };
+
+    const onboarding = await updateMyOnboardingState({
+      userId: req.authV2UserId,
+      currentStep,
+      completedStep,
+      skippedStep,
+    });
+
+    res.json({ onboarding });
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/profile/me', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const user = await getMyProfile(req.authV2UserId);
+    res.json({ user });
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.patch('/api/v2/profile/me', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const {
+      displayName,
+      username,
+      avatarUrl,
+    } = req.body as {
+      displayName?: string;
+      username?: string;
+      avatarUrl?: string | null;
+    };
+
+    if (!displayName?.trim() || !username?.trim()) {
+      res.status(400).json({ error: 'displayName and username are required', code: 'PROFILE_REQUIRED_FIELDS' });
+      return;
+    }
+
+    const user = await updateMyProfile({
+      userId: req.authV2UserId,
+      displayName,
+      username,
+      avatarUrl,
+    });
+
+    const onboarding = await getMyOnboardingState(req.authV2UserId);
+    res.json({ user, onboarding });
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.patch('/api/v2/profile/location', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const {
+      cityLabel,
+      cityLatitude,
+      cityLongitude,
+      citySource,
+    } = req.body as {
+      cityLabel?: string;
+      cityLatitude?: number | null;
+      cityLongitude?: number | null;
+      citySource?: string | null;
+    };
+
+    if (!cityLabel?.trim()) {
+      res.status(400).json({ error: 'cityLabel is required', code: 'CITY_LABEL_REQUIRED' });
+      return;
+    }
+
+    const user = await updateMyCity({
+      userId: req.authV2UserId,
+      cityLabel,
+      cityLatitude,
+      cityLongitude,
+      citySource,
+    });
+
+    const onboarding = await getMyOnboardingState(req.authV2UserId);
+    res.json({ user, onboarding });
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/contacts/match', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { phoneNumbers } = req.body as {
+      phoneNumbers?: string[];
+    };
+
+    if (!Array.isArray(phoneNumbers)) {
+      res.status(400).json({ error: 'phoneNumbers must be an array', code: 'CONTACTS_PHONE_NUMBERS_REQUIRED' });
+      return;
+    }
+
+    const matches = await matchRegisteredContacts({
+      userId: req.authV2UserId,
+      phoneNumbers,
+    });
+
+    await updateMyOnboardingState({
+      userId: req.authV2UserId,
+      completedStep: 'CONTACTS_PERMISSION',
+      currentStep: 'FRIENDS',
+    });
+
+    const onboarding = await getMyOnboardingState(req.authV2UserId);
+    res.json({ matches, onboarding });
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/auth/otp/request', async (req, res) => {
+  try {
+    const {
+      phoneNumber,
+      purpose,
+      inviteCode,
+    } = req.body as {
+      phoneNumber?: string;
+      purpose?: 'SIGN_UP' | 'SIGN_IN';
+      inviteCode?: string;
+    };
+
+    if (!phoneNumber?.trim()) {
+      res.status(400).json({ error: 'phoneNumber is required' });
+      return;
+    }
+
+    const response = await requestOtp({
+      phoneNumber,
+      purpose: purpose === 'SIGN_UP' ? 'SIGN_UP' : 'SIGN_IN',
+      inviteCode,
+    });
+
+    res.status(201).json(response);
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/auth/otp/verify', async (req, res) => {
+  try {
+    const {
+      otpRequestId,
+      code,
+      inviteCode,
+      displayName,
+    } = req.body as {
+      otpRequestId?: string;
+      code?: string;
+      inviteCode?: string;
+      displayName?: string;
+    };
+
+    if (!otpRequestId?.trim() || !code?.trim()) {
+      res.status(400).json({ error: 'otpRequestId and code are required' });
+      return;
+    }
+
+    const response = await verifyOtp({
+      otpRequestId,
+      code,
+      inviteCode,
+      displayName,
+    });
+
+    res.json(response);
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/auth/logout', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (req.authV2Token) {
+      await revokeV2Session(req.authV2Token);
+    }
+    res.status(204).send();
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/invite-codes/me', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const inviteCode = await getMyInviteCode(req.authV2UserId);
+    res.json({ inviteCode });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/invite-codes/me', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { maxRedemptions, label } = req.body as {
+      maxRedemptions?: number;
+      label?: string;
+    };
+
+    const inviteCode = await generateMyInviteCode({
+      ownerUserId: req.authV2UserId,
+      maxRedemptions: typeof maxRedemptions === 'number' ? maxRedemptions : 5,
+      label,
+    });
+
+    res.status(201).json({ inviteCode });
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
     handleError(res, error);
   }
 });
@@ -8002,7 +8475,12 @@ app.get('/api/client-config', (_req, res) => {
 app.delete('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
   void eraseAccount(req.authUserId!)
     .then(() => res.status(204).send())
-    .catch((error) => handleError(res, error));
+    .catch((error) => {
+      console.error('delete account failed', req.authUserId, error);
+      res.status(500).json({
+        error: error instanceof Error ? error.message : 'Failed to delete account',
+      });
+    });
 });
 
 app.get('/api/notifications', requireAuth, (req: AuthenticatedRequest, res) => {
