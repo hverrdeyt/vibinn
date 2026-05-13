@@ -2050,7 +2050,7 @@ function mapStoredOsmPlaceForClient(place: {
   address: string | null;
   city: string | null;
   country: string | null;
-  neighborhood: string | null;
+  neighborhood?: string | null;
   category: string;
   primaryImageUrl: string | null;
   latitude: number | null;
@@ -2200,7 +2200,6 @@ async function ensureOsmPlaceRecord(input: {
   address?: string | null;
   city?: string | null;
   country?: string | null;
-  neighborhood?: string | null;
   category: string;
   latitude?: number | null;
   longitude?: number | null;
@@ -2218,7 +2217,6 @@ async function ensureOsmPlaceRecord(input: {
       address: true,
       city: true,
       country: true,
-      neighborhood: true,
       category: true,
       primaryImageUrl: true,
       latitude: true,
@@ -2236,7 +2234,6 @@ async function ensureOsmPlaceRecord(input: {
       address: input.address ?? null,
       city: input.city ?? null,
       country: input.country ?? null,
-      neighborhood: input.neighborhood ?? null,
       category: input.category,
       latitude: input.latitude ?? null,
       longitude: input.longitude ?? null,
@@ -2248,7 +2245,6 @@ async function ensureOsmPlaceRecord(input: {
       address: true,
       city: true,
       country: true,
-      neighborhood: true,
       category: true,
       primaryImageUrl: true,
       latitude: true,
@@ -2272,7 +2268,6 @@ async function mapNominatimResultToPlaceCandidate(result: NominatimSearchResult)
     address: result.display_name ?? null,
     city: address.city ?? address.town ?? address.village ?? address.municipality ?? null,
     country: address.country ?? null,
-    neighborhood: address.neighbourhood ?? address.suburb ?? null,
     category: inferOsmPlaceCategory({
       category: result.category ?? null,
       type: result.type ?? null,
@@ -2315,7 +2310,6 @@ async function mapOverpassElementToPlaceCandidate(element: OverpassElement) {
     address: addressParts.join(', ') || tags.name || null,
     city: tags['addr:city'] ?? null,
     country: tags['addr:country'] ?? null,
-    neighborhood: tags['addr:suburb'] ?? null,
     category: inferOsmPlaceCategory({ tags }),
     latitude,
     longitude,

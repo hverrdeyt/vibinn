@@ -3085,23 +3085,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func reverseV2PhotoPlaces(latitude: Double, longitude: Double) async throws -> [NativePlace] {
-        let path = "/api/v2/onboarding/photo-places/reverse?lat=\(latitude)&lon=\(longitude)"
-        let response: NativePlaceLookupResponse = try await request(
-            path: path,
-            method: "GET",
-            token: nil
-        )
-        return response.places
+        try await api.reverseV2PhotoPlaces(latitude: latitude, longitude: longitude)
     }
 
     func searchV2PhotoPlaces(query: String) async throws -> [NativePlace] {
-        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
-        let response: NativePlaceLookupResponse = try await request(
-            path: "/api/v2/onboarding/photo-places/search?q=\(encodedQuery)",
-            method: "GET",
-            token: nil
-        )
-        return response.places
+        try await api.searchV2PhotoPlaces(query: query)
     }
 
     func loadOrCreateMyInviteCode(token: String) async throws -> NativeV2InviteCodeSummary {
@@ -3116,14 +3104,6 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
 
         throw NSError(domain: "NativeV2InviteCode", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to prepare invite code"])
-    }
-
-    func reverseV2PhotoPlaces(latitude: Double, longitude: Double) async throws -> [NativePlace] {
-        try await api.reverseV2PhotoPlaces(latitude: latitude, longitude: longitude)
-    }
-
-    func searchV2PhotoPlaces(query: String) async throws -> [NativePlace] {
-        try await api.searchV2PhotoPlaces(query: query)
     }
 
     func loadPlaceScoreDebug(for placeId: String) async throws -> NativePlaceScoreDebugResponse {
@@ -5553,6 +5533,26 @@ private struct NativeAPIClient {
                 citySource: citySource
             )
         )
+    }
+
+    func reverseV2PhotoPlaces(latitude: Double, longitude: Double) async throws -> [NativePlace] {
+        let path = "/api/v2/onboarding/photo-places/reverse?lat=\(latitude)&lon=\(longitude)"
+        let response: NativePlaceLookupResponse = try await request(
+            path: path,
+            method: "GET",
+            token: nil
+        )
+        return response.places
+    }
+
+    func searchV2PhotoPlaces(query: String) async throws -> [NativePlace] {
+        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        let response: NativePlaceLookupResponse = try await request(
+            path: "/api/v2/onboarding/photo-places/search?q=\(encodedQuery)",
+            method: "GET",
+            token: nil
+        )
+        return response.places
     }
 
     private struct NativeDecisionSessionBody: Encodable {
@@ -26807,11 +26807,11 @@ private struct NativeSingleMetadataImagePicker: UIViewControllerRepresentable {
             let latitudeRef = gps?[kCGImagePropertyGPSLatitudeRef] as? String
             let longitudeRef = gps?[kCGImagePropertyGPSLongitudeRef] as? String
 
-            if latitudeRef == "S", let latitude {
-                latitude = -abs(latitude)
+            if latitudeRef == "S", let resolvedLatitude = latitude {
+                latitude = -abs(resolvedLatitude)
             }
-            if longitudeRef == "W", let longitude {
-                longitude = -abs(longitude)
+            if longitudeRef == "W", let resolvedLongitude = longitude {
+                longitude = -abs(resolvedLongitude)
             }
 
             let rawDate =
