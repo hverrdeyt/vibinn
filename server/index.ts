@@ -2078,6 +2078,46 @@ function mapStoredOsmPlaceForClient(place: {
   };
 }
 
+function buildTransientOsmPlaceCandidate(input: {
+  name: string;
+  address?: string | null;
+  city?: string | null;
+  country?: string | null;
+  neighborhood?: string | null;
+  category: string;
+  latitude?: number | null;
+  longitude?: number | null;
+}) {
+  const placeholderImage = 'https://placehold.co/800x1000/111111/ffffff?text=Place';
+  const location = [input.city, input.country].filter(Boolean).join(', ') || input.address || 'Unknown location';
+  const stableId = `osm:${Buffer.from([
+    input.name,
+    input.address ?? '',
+    input.latitude ?? '',
+    input.longitude ?? '',
+  ].join('|')).toString('base64url').slice(0, 32)}`;
+
+  return {
+    id: stableId,
+    googlePlaceId: undefined,
+    name: input.name,
+    location,
+    address: input.address ?? undefined,
+    neighborhood: input.neighborhood ?? undefined,
+    description: '',
+    hook: '',
+    image: placeholderImage,
+    images: [placeholderImage],
+    tags: [input.category].filter(Boolean),
+    similarityStat: undefined,
+    whyYoullLikeIt: [],
+    category: input.category,
+    latitude: input.latitude ?? undefined,
+    longitude: input.longitude ?? undefined,
+    mapsUrl: buildOsmMapsUrl(input.latitude, input.longitude) ?? undefined,
+  };
+}
+
 function inferOsmPlaceName(input: {
   name?: string | null;
   displayName?: string | null;
@@ -2200,59 +2240,69 @@ async function ensureOsmPlaceRecord(input: {
   address?: string | null;
   city?: string | null;
   country?: string | null;
+  neighborhood?: string | null;
   category: string;
   latitude?: number | null;
   longitude?: number | null;
 }) {
-  const existing = await prisma.place.findFirst({
-    where: {
-      googlePlaceId: null,
+  try {
+    const existing = await prisma.place.findFirst({
+      where: {
+        googlePlaceId: null,
+        name: input.name,
+        address: input.address ?? null,
+      },
+      select: {
+        id: true,
+        googlePlaceId: true,
+        name: true,
+        address: true,
+        city: true,
+        country: true,
+        category: true,
+        primaryImageUrl: true,
+        latitude: true,
+        longitude: true,
+      },
+    });
+
+    if (existing) {
+      return mapStoredOsmPlaceForClient(existing);
+    }
+
+    const created = await prisma.place.create({
+      data: {
+        name: input.name,
+        address: input.address ?? null,
+        city: input.city ?? null,
+        country: input.country ?? null,
+        category: input.category,
+        latitude: input.latitude ?? null,
+        longitude: input.longitude ?? null,
+      },
+      select: {
+        id: true,
+        googlePlaceId: true,
+        name: true,
+        address: true,
+        city: true,
+        country: true,
+        category: true,
+        primaryImageUrl: true,
+        latitude: true,
+        longitude: true,
+      },
+    });
+
+    return mapStoredOsmPlaceForClient(created);
+  } catch (error) {
+    console.warn('Falling back to transient OSM place candidate', {
       name: input.name,
       address: input.address ?? null,
-    },
-    select: {
-      id: true,
-      googlePlaceId: true,
-      name: true,
-      address: true,
-      city: true,
-      country: true,
-      category: true,
-      primaryImageUrl: true,
-      latitude: true,
-      longitude: true,
-    },
-  });
-
-  if (existing) {
-    return mapStoredOsmPlaceForClient(existing);
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return buildTransientOsmPlaceCandidate(input);
   }
-
-  const created = await prisma.place.create({
-    data: {
-      name: input.name,
-      address: input.address ?? null,
-      city: input.city ?? null,
-      country: input.country ?? null,
-      category: input.category,
-      latitude: input.latitude ?? null,
-      longitude: input.longitude ?? null,
-    },
-    select: {
-      id: true,
-      googlePlaceId: true,
-      name: true,
-      address: true,
-      city: true,
-      country: true,
-      category: true,
-      primaryImageUrl: true,
-      latitude: true,
-      longitude: true,
-    },
-  });
-
-  return mapStoredOsmPlaceForClient(created);
 }
 
 async function mapNominatimResultToPlaceCandidate(result: NominatimSearchResult) {
@@ -2268,6 +2318,7 @@ async function mapNominatimResultToPlaceCandidate(result: NominatimSearchResult)
     address: result.display_name ?? null,
     city: address.city ?? address.town ?? address.village ?? address.municipality ?? null,
     country: address.country ?? null,
+    neighborhood: address.neighbourhood ?? address.suburb ?? null,
     category: inferOsmPlaceCategory({
       category: result.category ?? null,
       type: result.type ?? null,
@@ -2310,6 +2361,7 @@ async function mapOverpassElementToPlaceCandidate(element: OverpassElement) {
     address: addressParts.join(', ') || tags.name || null,
     city: tags['addr:city'] ?? null,
     country: tags['addr:country'] ?? null,
+    neighborhood: tags['addr:suburb'] ?? null,
     category: inferOsmPlaceCategory({ tags }),
     latitude,
     longitude,
