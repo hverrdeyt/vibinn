@@ -2014,6 +2014,323 @@ async function getLocationSuggestions(input: string) {
   return getFallbackLocationSuggestions(normalizedInput);
 }
 
+type NominatimSearchResult = {
+  osm_id: number | string;
+  osm_type: 'node' | 'way' | 'relation';
+  lat?: string;
+  lon?: string;
+  display_name?: string;
+  name?: string;
+  category?: string;
+  type?: string;
+  address?: Record<string, string | undefined>;
+};
+
+type OverpassElement = {
+  type: 'node' | 'way' | 'relation';
+  id: number;
+  lat?: number;
+  lon?: number;
+  center?: {
+    lat: number;
+    lon: number;
+  };
+  tags?: Record<string, string | undefined>;
+};
+
+function buildOsmMapsUrl(latitude?: number | null, longitude?: number | null) {
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') return null;
+  return `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=18/${latitude}/${longitude}`;
+}
+
+function mapStoredOsmPlaceForClient(place: {
+  id: string;
+  googlePlaceId: string | null;
+  name: string;
+  address: string | null;
+  city: string | null;
+  country: string | null;
+  neighborhood: string | null;
+  category: string;
+  primaryImageUrl: string | null;
+  latitude: number | null;
+  longitude: number | null;
+}) {
+  const placeholderImage = 'https://placehold.co/800x1000/111111/ffffff?text=Place';
+  return {
+    id: place.id,
+    googlePlaceId: place.googlePlaceId ?? undefined,
+    name: place.name,
+    location: [place.city, place.country].filter(Boolean).join(', ') || place.address || 'Unknown location',
+    address: place.address ?? undefined,
+    neighborhood: place.neighborhood ?? undefined,
+    description: '',
+    hook: '',
+    image: place.primaryImageUrl ?? placeholderImage,
+    images: place.primaryImageUrl ? [place.primaryImageUrl] : [placeholderImage],
+    tags: [place.category].filter(Boolean),
+    similarityStat: undefined,
+    whyYoullLikeIt: [],
+    category: place.category,
+    latitude: place.latitude ?? undefined,
+    longitude: place.longitude ?? undefined,
+    mapsUrl: buildOsmMapsUrl(place.latitude, place.longitude) ?? undefined,
+  };
+}
+
+function inferOsmPlaceName(input: {
+  name?: string | null;
+  displayName?: string | null;
+  address?: Record<string, string | undefined> | null;
+}) {
+  const explicitName = input.name?.trim();
+  if (explicitName) return explicitName;
+
+  const address = input.address ?? {};
+  const candidate =
+    address.amenity
+    ?? address.shop
+    ?? address.tourism
+    ?? address.leisure
+    ?? address.building
+    ?? address.road
+    ?? address.neighbourhood
+    ?? address.suburb
+    ?? address.city;
+
+  if (candidate?.trim()) return candidate.trim();
+
+  return input.displayName?.split(',')[0]?.trim() || 'Pinned place';
+}
+
+function inferOsmPlaceCategory(input: {
+  category?: string | null;
+  type?: string | null;
+  tags?: Record<string, string | undefined> | null;
+}) {
+  const raw =
+    input.tags?.amenity
+    ?? input.tags?.shop
+    ?? input.tags?.tourism
+    ?? input.tags?.leisure
+    ?? input.type
+    ?? input.category
+    ?? 'place';
+
+  return raw.replace(/_/g, ' ').trim() || 'place';
+}
+
+async function fetchNominatimSearchResults(query: string, limit = 6) {
+  const url = new URL('https://nominatim.openstreetmap.org/search');
+  url.searchParams.set('q', query);
+  url.searchParams.set('format', 'jsonv2');
+  url.searchParams.set('addressdetails', '1');
+  url.searchParams.set('limit', String(limit));
+
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Vibinn/1.0',
+      'Accept-Language': 'en',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Nominatim search failed with ${response.status}`);
+  }
+
+  return response.json() as Promise<NominatimSearchResult[]>;
+}
+
+async function fetchNominatimReverseResult(latitude: number, longitude: number) {
+  const url = new URL('https://nominatim.openstreetmap.org/reverse');
+  url.searchParams.set('lat', String(latitude));
+  url.searchParams.set('lon', String(longitude));
+  url.searchParams.set('format', 'jsonv2');
+  url.searchParams.set('addressdetails', '1');
+
+  const response = await fetch(url, {
+    headers: {
+      'User-Agent': 'Vibinn/1.0',
+      'Accept-Language': 'en',
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Nominatim reverse failed with ${response.status}`);
+  }
+
+  return response.json() as Promise<NominatimSearchResult>;
+}
+
+async function fetchOverpassNearbyResults(latitude: number, longitude: number) {
+  const query = `
+[out:json][timeout:10];
+(
+  node(around:160,${latitude},${longitude})[name][amenity];
+  way(around:160,${latitude},${longitude})[name][amenity];
+  node(around:160,${latitude},${longitude})[name][shop];
+  way(around:160,${latitude},${longitude})[name][shop];
+  node(around:160,${latitude},${longitude})[name][tourism];
+  way(around:160,${latitude},${longitude})[name][tourism];
+  node(around:160,${latitude},${longitude})[name][leisure];
+  way(around:160,${latitude},${longitude})[name][leisure];
+);
+out center;
+`.trim();
+
+  const response = await fetch('https://overpass-api.de/api/interpreter', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'text/plain',
+      'User-Agent': 'Vibinn/1.0',
+    },
+    body: query,
+  });
+
+  if (!response.ok) {
+    throw new Error(`Overpass nearby failed with ${response.status}`);
+  }
+
+  const data = await response.json() as { elements?: OverpassElement[] };
+  return data.elements ?? [];
+}
+
+async function ensureOsmPlaceRecord(input: {
+  name: string;
+  address?: string | null;
+  city?: string | null;
+  country?: string | null;
+  neighborhood?: string | null;
+  category: string;
+  latitude?: number | null;
+  longitude?: number | null;
+}) {
+  const existing = await prisma.place.findFirst({
+    where: {
+      googlePlaceId: null,
+      name: input.name,
+      address: input.address ?? null,
+    },
+    select: {
+      id: true,
+      googlePlaceId: true,
+      name: true,
+      address: true,
+      city: true,
+      country: true,
+      neighborhood: true,
+      category: true,
+      primaryImageUrl: true,
+      latitude: true,
+      longitude: true,
+    },
+  });
+
+  if (existing) {
+    return mapStoredOsmPlaceForClient(existing);
+  }
+
+  const created = await prisma.place.create({
+    data: {
+      name: input.name,
+      address: input.address ?? null,
+      city: input.city ?? null,
+      country: input.country ?? null,
+      neighborhood: input.neighborhood ?? null,
+      category: input.category,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
+    },
+    select: {
+      id: true,
+      googlePlaceId: true,
+      name: true,
+      address: true,
+      city: true,
+      country: true,
+      neighborhood: true,
+      category: true,
+      primaryImageUrl: true,
+      latitude: true,
+      longitude: true,
+    },
+  });
+
+  return mapStoredOsmPlaceForClient(created);
+}
+
+async function mapNominatimResultToPlaceCandidate(result: NominatimSearchResult) {
+  const latitude = result.lat ? Number(result.lat) : null;
+  const longitude = result.lon ? Number(result.lon) : null;
+  const address = result.address ?? {};
+  return ensureOsmPlaceRecord({
+    name: inferOsmPlaceName({
+      name: result.name ?? null,
+      displayName: result.display_name ?? null,
+      address,
+    }),
+    address: result.display_name ?? null,
+    city: address.city ?? address.town ?? address.village ?? address.municipality ?? null,
+    country: address.country ?? null,
+    neighborhood: address.neighbourhood ?? address.suburb ?? null,
+    category: inferOsmPlaceCategory({
+      category: result.category ?? null,
+      type: result.type ?? null,
+    }),
+    latitude,
+    longitude,
+  });
+}
+
+async function mapOverpassElementToPlaceCandidate(element: OverpassElement) {
+  const latitude = element.lat ?? element.center?.lat ?? null;
+  const longitude = element.lon ?? element.center?.lon ?? null;
+  const tags = element.tags ?? {};
+  const name = inferOsmPlaceName({
+    name: tags.name ?? null,
+    displayName: [
+      tags.name,
+      tags['addr:street'],
+      tags['addr:city'],
+      tags['addr:country'],
+    ].filter(Boolean).join(', '),
+    address: {
+      road: tags['addr:street'],
+      city: tags['addr:city'],
+      country: tags['addr:country'],
+      neighbourhood: tags['addr:suburb'],
+    },
+  });
+
+  const addressParts = [
+    tags['addr:housenumber'],
+    tags['addr:street'],
+    tags['addr:suburb'],
+    tags['addr:city'],
+    tags['addr:country'],
+  ].filter(Boolean);
+
+  return ensureOsmPlaceRecord({
+    name,
+    address: addressParts.join(', ') || tags.name || null,
+    city: tags['addr:city'] ?? null,
+    country: tags['addr:country'] ?? null,
+    neighborhood: tags['addr:suburb'] ?? null,
+    category: inferOsmPlaceCategory({ tags }),
+    latitude,
+    longitude,
+  });
+}
+
+function dedupeNativePlacesById<T extends { id: string }>(places: T[]) {
+  const seen = new Set<string>();
+  return places.filter((place) => {
+    if (seen.has(place.id)) return false;
+    seen.add(place.id);
+    return true;
+  });
+}
+
 async function mapGoogleSearchPlaceToInternalPlace(rawPlace: GoogleTextSearchPlace, options?: {
   queryContext?: string;
   discoverySignals?: PlaceDiscoverySignalInput[];
@@ -8830,6 +9147,119 @@ app.post('/api/uploads/media', requireAuth, async (req: AuthenticatedRequest, re
     }));
 
     res.status(201).json({ files: uploaded });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/uploads/media', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const files = (req.body as {
+      files?: Array<{
+        fileName?: string;
+        mimeType?: string;
+        dataUrl?: string;
+      }>;
+    }).files ?? [];
+
+    if (!files.length) {
+      res.status(400).json({ error: 'files are required' });
+      return;
+    }
+
+    const uploaded = await Promise.all(files.map(async (file, index) => {
+      if (!file.fileName || !file.dataUrl) {
+        throw new Error('Each file needs fileName and dataUrl');
+      }
+
+      const parsed = parseDataUrl(file.dataUrl);
+      const extension = getUploadExtension(file.fileName, file.mimeType ?? parsed.mimeType);
+      const safeBaseName = path.basename(sanitizeFileName(file.fileName), path.extname(file.fileName));
+      const storageName = `${Date.now()}-${index}-${crypto.randomUUID().slice(0, 8)}-${safeBaseName}${extension}`;
+      const objectKey = `moments/${req.authV2UserId}/${storageName}`;
+
+      if (r2Client && R2_BUCKET_NAME) {
+        await r2Client.send(new PutObjectCommand({
+          Bucket: R2_BUCKET_NAME,
+          Key: objectKey,
+          Body: parsed.buffer,
+          ContentType: file.mimeType ?? parsed.mimeType,
+          CacheControl: 'public, max-age=31536000, immutable',
+        }));
+      } else {
+        await mkdir(UPLOADS_DIR, { recursive: true });
+        const absolutePath = path.join(UPLOADS_DIR, storageName);
+        await writeFile(absolutePath, parsed.buffer);
+      }
+
+      return {
+        url: buildMediaUrl(r2Client && R2_BUCKET_NAME ? objectKey : storageName, requestOrigin),
+        fileName: file.fileName,
+        mediaType: (file.mimeType ?? parsed.mimeType).startsWith('video/') ? 'video' : 'image',
+      };
+    }));
+
+    res.status(201).json({ files: uploaded });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/onboarding/photo-places/reverse', async (req, res) => {
+  try {
+    const latitude = Number(req.query.lat);
+    const longitude = Number(req.query.lon);
+
+    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+      res.status(400).json({ error: 'lat and lon are required' });
+      return;
+    }
+
+    const [reverseResult, nearbyResults] = await Promise.all([
+      fetchNominatimReverseResult(latitude, longitude).catch(() => null),
+      fetchOverpassNearbyResults(latitude, longitude).catch(() => []),
+    ]);
+
+    const candidatePromises: Promise<ReturnType<typeof mapStoredOsmPlaceForClient>>[] = [];
+
+    if (reverseResult) {
+      candidatePromises.push(mapNominatimResultToPlaceCandidate(reverseResult));
+    }
+
+    candidatePromises.push(
+      ...nearbyResults
+        .filter((element) => Boolean(element.tags?.name))
+        .slice(0, 6)
+        .map((element) => mapOverpassElementToPlaceCandidate(element))
+    );
+
+    const places = dedupeNativePlacesById((await Promise.all(candidatePromises)).slice(0, 6));
+    res.json({ places });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
+  try {
+    const query = String(req.query.q ?? '').trim();
+    if (query.length < 2) {
+      res.json({ places: [] });
+      return;
+    }
+
+    const results = await fetchNominatimSearchResults(query, 8);
+    const places = dedupeNativePlacesById(
+      await Promise.all(results.map((result) => mapNominatimResultToPlaceCandidate(result)))
+    ).slice(0, 8);
+
+    res.json({ places });
   } catch (error) {
     handleError(res, error);
   }
