@@ -55,6 +55,16 @@ type UpdateOnboardingStateInput = {
   skippedStep?: string;
 };
 
+type DebugOnboardingJumpStep =
+  | 'WELCOME'
+  | 'PROFILE'
+  | 'LOCATION_PERMISSION'
+  | 'CONTACTS_PERMISSION'
+  | 'FRIENDS'
+  | 'FIRST_PLACE'
+  | 'INVITE_SHARE'
+  | 'COMPLETED';
+
 const VALID_ONBOARDING_STEPS = new Set([
   'WELCOME',
   'INVITE_CONFIRMED',
@@ -532,6 +542,27 @@ function mapOnboardingState(state: {
   };
 }
 
+function completedStepsForDebugJump(step: DebugOnboardingJumpStep) {
+  switch (step) {
+    case 'WELCOME':
+      return [] as string[];
+    case 'PROFILE':
+      return ['INVITE_CONFIRMED', 'PHONE_VERIFICATION'];
+    case 'LOCATION_PERMISSION':
+      return ['INVITE_CONFIRMED', 'PHONE_VERIFICATION', 'PROFILE'];
+    case 'CONTACTS_PERMISSION':
+      return ['INVITE_CONFIRMED', 'PHONE_VERIFICATION', 'PROFILE', 'LOCATION_PERMISSION'];
+    case 'FRIENDS':
+      return ['INVITE_CONFIRMED', 'PHONE_VERIFICATION', 'PROFILE', 'LOCATION_PERMISSION', 'CONTACTS_PERMISSION'];
+    case 'FIRST_PLACE':
+      return ['INVITE_CONFIRMED', 'PHONE_VERIFICATION', 'PROFILE', 'LOCATION_PERMISSION', 'CONTACTS_PERMISSION', 'FRIENDS'];
+    case 'INVITE_SHARE':
+      return ['INVITE_CONFIRMED', 'PHONE_VERIFICATION', 'PROFILE', 'LOCATION_PERMISSION', 'CONTACTS_PERMISSION', 'FRIENDS', 'FIRST_PLACE'];
+    case 'COMPLETED':
+      return ['INVITE_CONFIRMED', 'PHONE_VERIFICATION', 'PROFILE', 'LOCATION_PERMISSION', 'CONTACTS_PERMISSION', 'FRIENDS', 'FIRST_PLACE', 'INVITE_SHARE'];
+  }
+}
+
 export async function getMyOnboardingState(userId: string) {
   const state = await ensureUserOnboardingState(userId);
   return mapOnboardingState(state);
@@ -562,6 +593,81 @@ export async function updateMyOnboardingState(input: UpdateOnboardingStateInput)
   });
 
   return mapOnboardingState(state);
+}
+
+export async function resetMyOnboardingStateForDebug(userId: string) {
+  const state = await ensureUserOnboardingState(userId);
+  const reset = await prismaV2.userOnboardingState.update({
+    where: { userId },
+    data: {
+      currentStep: 'WELCOME',
+      completedSteps: [],
+      skippedSteps: [],
+      inviteCodeValidated: false,
+      inviteCodeValidatedAt: null,
+      phoneVerifiedAt: null,
+      profileCompletedAt: null,
+      locationDecisionAt: null,
+      contactsDecisionAt: null,
+      firstPlaceLoggedAt: null,
+      inviteShareSeenAt: null,
+    },
+  });
+
+  await prismaV2.user.update({
+    where: { id: userId },
+    data: {
+      onboardingCompleted: false,
+      status: state.profileCompletedAt ? 'ACTIVE' : 'PENDING_PROFILE',
+    },
+  });
+
+  return mapOnboardingState(reset);
+}
+
+export async function jumpMyOnboardingStateForDebug(userId: string, step: DebugOnboardingJumpStep) {
+  const now = new Date();
+  const completedSteps = completedStepsForDebugJump(step);
+  const jumped = await prismaV2.userOnboardingState.upsert({
+    where: { userId },
+    update: {
+      currentStep: step,
+      completedSteps,
+      skippedSteps: [],
+      inviteCodeValidated: completedSteps.includes('INVITE_CONFIRMED'),
+      inviteCodeValidatedAt: completedSteps.includes('INVITE_CONFIRMED') ? now : null,
+      phoneVerifiedAt: completedSteps.includes('PHONE_VERIFICATION') ? now : null,
+      profileCompletedAt: completedSteps.includes('PROFILE') ? now : null,
+      locationDecisionAt: completedSteps.includes('LOCATION_PERMISSION') ? now : null,
+      contactsDecisionAt: completedSteps.includes('CONTACTS_PERMISSION') ? now : null,
+      firstPlaceLoggedAt: completedSteps.includes('FIRST_PLACE') ? now : null,
+      inviteShareSeenAt: completedSteps.includes('INVITE_SHARE') ? now : null,
+    },
+    create: {
+      userId,
+      currentStep: step,
+      completedSteps,
+      skippedSteps: [],
+      inviteCodeValidated: completedSteps.includes('INVITE_CONFIRMED'),
+      inviteCodeValidatedAt: completedSteps.includes('INVITE_CONFIRMED') ? now : null,
+      phoneVerifiedAt: completedSteps.includes('PHONE_VERIFICATION') ? now : null,
+      profileCompletedAt: completedSteps.includes('PROFILE') ? now : null,
+      locationDecisionAt: completedSteps.includes('LOCATION_PERMISSION') ? now : null,
+      contactsDecisionAt: completedSteps.includes('CONTACTS_PERMISSION') ? now : null,
+      firstPlaceLoggedAt: completedSteps.includes('FIRST_PLACE') ? now : null,
+      inviteShareSeenAt: completedSteps.includes('INVITE_SHARE') ? now : null,
+    },
+  });
+
+  await prismaV2.user.update({
+    where: { id: userId },
+    data: {
+      onboardingCompleted: step === 'COMPLETED',
+      status: completedSteps.includes('PROFILE') ? 'ACTIVE' : 'PENDING_PROFILE',
+    },
+  });
+
+  return mapOnboardingState(jumped);
 }
 
 export async function getMyProfile(userId: string) {

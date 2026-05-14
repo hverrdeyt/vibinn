@@ -68,9 +68,11 @@ import {
   getMyOnboardingState,
   getMyProfile,
   getV2SessionFromToken,
+  jumpMyOnboardingStateForDebug,
   joinPhoneWaitlist,
   matchRegisteredContacts,
   requestOtp,
+  resetMyOnboardingStateForDebug,
   revokeV2Session,
   updateMyCity,
   updateMyProfile,
@@ -7848,6 +7850,59 @@ app.patch('/api/v2/onboarding', async (req: AuthenticatedRequest, res) => {
       skippedStep,
     });
 
+    res.json({ onboarding });
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/debug/onboarding/reset', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (APP_ENV !== 'staging') {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const onboarding = await resetMyOnboardingStateForDebug(req.authV2UserId);
+    res.json({ onboarding });
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/debug/onboarding/jump', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (APP_ENV !== 'staging') {
+      res.status(404).json({ error: 'Not found' });
+      return;
+    }
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { step } = req.body as {
+      step?: 'WELCOME' | 'PROFILE' | 'LOCATION_PERMISSION' | 'CONTACTS_PERMISSION' | 'FRIENDS' | 'FIRST_PLACE' | 'INVITE_SHARE' | 'COMPLETED';
+    };
+
+    if (!step) {
+      res.status(400).json({ error: 'step is required' });
+      return;
+    }
+
+    const onboarding = await jumpMyOnboardingStateForDebug(req.authV2UserId, step);
     res.json({ onboarding });
   } catch (error) {
     if (error instanceof AuthV2Error) {
