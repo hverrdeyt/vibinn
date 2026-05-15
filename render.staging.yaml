@@ -9,7 +9,7 @@ services:
     name: vibecheck-api-staging
     runtime: node
     plan: free
-    buildCommand: npm install && npm run prisma:generate && npm run prisma:v2:generate:staging
+    buildCommand: npm install && npm run prisma:generate && npm run prisma:v2:generate:staging && npm run prisma:v2:migrate:deploy:staging
     startCommand: npm run start:server:staging
     autoDeploy: true
     envVars:

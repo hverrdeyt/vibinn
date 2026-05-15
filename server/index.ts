@@ -549,6 +549,116 @@ function mapV2MomentForClient(moment: {
   };
 }
 
+function startOfWeekUtc(date = new Date()) {
+  const next = new Date(date);
+  next.setUTCHours(0, 0, 0, 0);
+  const weekday = next.getUTCDay();
+  const diff = (weekday + 6) % 7;
+  next.setUTCDate(next.getUTCDate() - diff);
+  return next;
+}
+
+function startOfMonthUtc(date = new Date()) {
+  const next = new Date(date);
+  next.setUTCHours(0, 0, 0, 0);
+  next.setUTCDate(1);
+  return next;
+}
+
+async function buildV2HomepageOverview(userId: string) {
+  const now = new Date();
+  const weekStart = startOfWeekUtc(now);
+  const monthStart = startOfMonthUtc(now);
+
+  const [weekCount, monthCount, distinctMonthPlaces, inviteCode] = await Promise.all([
+    prismaV2.moment.count({
+      where: {
+        userId,
+        visitedAt: { gte: weekStart },
+      },
+    }),
+    prismaV2.moment.count({
+      where: {
+        userId,
+        visitedAt: { gte: monthStart },
+      },
+    }),
+    prismaV2.moment.findMany({
+      where: {
+        userId,
+        visitedAt: { gte: monthStart },
+      },
+      select: {
+        placeId: true,
+      },
+      distinct: ['placeId'],
+    }),
+    prismaV2.inviteCode.findUnique({
+      where: { ownerUserId: userId },
+      select: {
+        redeemedCount: true,
+        maxRedemptions: true,
+      },
+    }),
+  ]);
+
+  const uniqueMonthCount = distinctMonthPlaces.length;
+  const primaryPeriodValue = weekCount > 0 ? weekCount : monthCount;
+  const primaryPeriodLabel = weekCount > 0 ? 'places this week' : 'places this month';
+  const inviteProgress = inviteCode?.redeemedCount ?? 0;
+
+  const stats = [
+    {
+      id: 'places-period',
+      value: primaryPeriodValue,
+      label: primaryPeriodLabel,
+    },
+    {
+      id: 'unique-month',
+      value: uniqueMonthCount,
+      label: 'unique places this month',
+    },
+  ];
+
+  const challenges = [
+    {
+      id: 'weekly-logger',
+      icon: 'flame.fill',
+      title: weekCount >= 3 ? 'Weekly logging done' : 'Log 3 places this week',
+      subtitle: weekCount >= 3
+        ? `You already logged ${weekCount} places this week.`
+        : `${weekCount}/3 places logged so far this week.`,
+      cta: weekCount >= 3 ? 'Keep going' : 'Add a log',
+      action: 'add_log',
+    },
+    {
+      id: 'monthly-explorer',
+      icon: 'map.fill',
+      title: uniqueMonthCount >= 5 ? 'Monthly explorer complete' : 'Visit 5 unique places this month',
+      subtitle: uniqueMonthCount >= 5
+        ? `You already visited ${uniqueMonthCount} unique places this month.`
+        : `${uniqueMonthCount}/5 unique places explored this month.`,
+      cta: uniqueMonthCount >= 5 ? 'Log another' : 'Keep exploring',
+      action: 'add_log',
+    },
+    {
+      id: 'invite-circle',
+      icon: 'paperplane.fill',
+      title: inviteProgress > 0 ? 'Your invite is working' : 'Invite your first friend',
+      subtitle: inviteProgress > 0
+        ? `${inviteProgress}${inviteCode?.maxRedemptions ? `/${inviteCode.maxRedemptions}` : ''} invite slots used so far.`
+        : 'Share your code and bring a friend into Vibinn.',
+      cta: 'Invite friends',
+      action: 'invite_friends',
+    },
+  ];
+
+  return {
+    stats,
+    challenges,
+  };
+}
+
 function getFirebaseMessagingClient() {
   try {
     if (getApps().length > 0) {
@@ -8054,6 +8164,20 @@ app.get('/api/v2/profile/me', async (req: AuthenticatedRequest, res) => {
       res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
       return;
     }
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/home/overview', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const overview = await buildV2HomepageOverview(req.authV2UserId);
+    res.json(overview);
+  } catch (error) {
     handleError(res, error);
   }
 });

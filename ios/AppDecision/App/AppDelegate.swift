@@ -1004,6 +1004,26 @@ private struct NativeV2ProfileResponse: Decodable {
     let onboarding: NativeV2OnboardingPayload?
 }
 
+private struct NativeHomepageStat: Decodable, Identifiable {
+    let id: String
+    let value: Int
+    let label: String
+}
+
+private struct NativeHomepageChallenge: Decodable, Identifiable {
+    let id: String
+    let icon: String
+    let title: String
+    let subtitle: String
+    let cta: String
+    let action: String
+}
+
+private struct NativeHomepageOverview: Decodable {
+    let stats: [NativeHomepageStat]
+    let challenges: [NativeHomepageChallenge]
+}
+
 private struct NativeInviteContact: Identifiable, Hashable {
     let id: String
     let displayName: String
@@ -2508,6 +2528,11 @@ private enum NativeWidgetImageCacheStore {
 
 @MainActor
 private final class NativeAppState: NSObject, ObservableObject, CLLocationManagerDelegate {
+    private enum NativeSessionFlavor: String {
+        case legacy
+        case v2
+    }
+
     @Published var isBootstrapping = true
     @Published var currentUser: NativeAuthUser?
     @Published var activeTab: NativeTab = .discover
@@ -2537,6 +2562,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var savedPlaces: [NativePlace] = []
     @Published var collections: [NativeCollection] = []
     @Published var myMoments: [NativeMoment] = []
+    @Published var homepageOverview: NativeHomepageOverview?
     @Published var ownFeedItemsCache: [NativeFeedItem] = []
     @Published var followedTravelers: [NativeTravelerSummary] = []
     @Published var suggestedTravelers: [NativeTravelerSummary] = []
@@ -2553,6 +2579,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var notificationPermissionState: NativeNotificationPermissionState = .notDetermined
     @Published var profileErrorMessage: String?
     @Published var discoveryErrorMessage: String?
+    @Published var homepageOverviewErrorMessage: String?
     @Published var feedErrorMessage: String?
     @Published var savedErrorMessage: String?
     @Published var activeToast: NativeToastState?
@@ -2572,6 +2599,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private let cachedUserKey = "vibinn_native_cached_user"
     private let onboardingKey = "vibinn_native_onboarding_completed"
     private let inviteOnboardingKey = "vibinn_native_invite_onboarding_completed"
+    private let sessionFlavorKey = "vibinn_native_session_flavor"
     private let locationKey = "vibinn_native_location_label"
     private let selectedInterestsKey = "vibinn_native_selected_interests"
     private let selectedVibeKey = "vibinn_native_selected_vibe"
@@ -3017,6 +3045,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         do {
             let session = try await api.getAuthSession(token: token)
             guard authToken == token else { return }
+            sessionFlavor = .legacy
             currentUser = session.user
             cachedAuthUser = session.user
             if session.user.hasCompletedTastePreferences != true {
@@ -3031,6 +3060,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 do {
                     let v2Session = try await api.getV2AuthSession(token: token)
                     guard authToken == token else { return }
+                    sessionFlavor = .v2
                     syncCurrentUserFromV2Payload(v2Session.user)
                     await runStartupMaintenance()
                     nativeLogger.log("bootstrap v2 revalidated user=\(self.currentUser?.username ?? "unknown", privacy: .public)")
@@ -3048,6 +3078,12 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private func runStartupMaintenance() async {
         await syncLocalTastePreferencesIfNeeded()
         await refreshCurrentPushTokenFromFirebase()
+        await refreshHomepageOverview()
+        guard usesV2Session == false else {
+            chatUnreadCount = 0
+            notificationUnreadCount = 0
+            return
+        }
         await syncPushTokenIfPossible()
         await refreshChatUnreadCount()
     }
@@ -3057,10 +3093,19 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         return nsError.domain == "NativeAPI" && nsError.code == 401
     }
 
+    private func unsupportedLegacyFeatureError(_ featureName: String) -> NSError {
+        NSError(
+            domain: "NativeFeatureUnavailable",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "\(featureName) isn't available in the new app yet."]
+        )
+    }
+
     func login(email: String, password: String) async throws {
         nativeLogger.log("login start email=\(email, privacy: .public)")
         let response = try await api.login(email: email, password: password)
         authToken = response.token
+        sessionFlavor = .legacy
         currentUser = response.user
         cachedAuthUser = response.user
         markOnboardingRequiredAfterAuth()
@@ -3076,6 +3121,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         nativeLogger.log("register start email=\(email, privacy: .public)")
         let response = try await api.register(name: name, email: email, password: password)
         authToken = response.token
+        sessionFlavor = .legacy
         currentUser = response.user
         cachedAuthUser = response.user
         markOnboardingRequiredAfterAuth()
@@ -3099,6 +3145,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw error
         }
         authToken = response.token
+        sessionFlavor = .legacy
         currentUser = response.user
         cachedAuthUser = response.user
         markOnboardingRequiredAfterAuth()
@@ -3133,6 +3180,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw error
         }
         authToken = response.token
+        sessionFlavor = .legacy
         currentUser = response.user
         cachedAuthUser = response.user
         markOnboardingRequiredAfterAuth()
@@ -3161,6 +3209,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     func verifyPhoneSignupOtp(otpRequestId: String, code: String, inviteCode: String) async throws -> NativeV2VerifyOtpResponse {
         let response = try await api.verifyV2Otp(otpRequestId: otpRequestId, code: code, inviteCode: inviteCode)
         authToken = response.token
+        sessionFlavor = .v2
         syncCurrentUserFromV2Payload(response.user)
         markInviteOnboardingRequired()
         Task { [weak self] in
@@ -3202,6 +3251,22 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         )
         syncCurrentUserFromV2Payload(response.user)
         return response
+    }
+
+    func refreshHomepageOverview() async {
+        guard usesV2Session, let token = authToken, currentUser != nil else {
+            homepageOverview = nil
+            homepageOverviewErrorMessage = nil
+            return
+        }
+
+        do {
+            homepageOverview = try await api.getV2HomepageOverview(token: token)
+            homepageOverviewErrorMessage = nil
+        } catch {
+            homepageOverviewErrorMessage = error.localizedDescription
+            nativeLogger.error("refreshHomepageOverview failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func syncCurrentUserFromV2Payload(_ payload: NativeV2UserPayload) {
@@ -4288,6 +4353,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         nativeLogger.log("submitCheckIn own feed rebuild complete count=\(self.ownFeedItemsCache.count, privacy: .public)")
         clearDecisionSessionState()
         nativeLogger.log("submitCheckIn cleared decision session state after successful check-in")
+        await refreshHomepageOverview()
         await requestPushNotificationsAfterFirstContentActionIfNeeded()
         nativeLogger.log("submitCheckIn push permission follow-up complete")
     }
@@ -4388,6 +4454,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func fetchChatConversations() async throws -> [NativeChatConversationSummary] {
+        guard usesV2Session == false else { return [] }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to see your chats.")
             throw URLError(.userAuthenticationRequired)
@@ -4398,6 +4465,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func startChatConversation(with userId: String) async throws -> NativeChatConversationSummary {
+        guard usesV2Session == false else {
+            throw unsupportedLegacyFeatureError("Chat")
+        }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to start a chat.")
             throw URLError(.userAuthenticationRequired)
@@ -4406,6 +4476,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func fetchChatConversation(id: String) async throws -> NativeChatConversationDetailResponse {
+        guard usesV2Session == false else {
+            throw unsupportedLegacyFeatureError("Chat")
+        }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to view chats.")
             throw URLError(.userAuthenticationRequired)
@@ -4414,6 +4487,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func sendChatMessage(conversationId: String, body: String) async throws -> NativeChatMessage {
+        guard usesV2Session == false else {
+            throw unsupportedLegacyFeatureError("Chat")
+        }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to send messages.")
             throw URLError(.userAuthenticationRequired)
@@ -4422,13 +4498,14 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func markChatConversationRead(id: String) async throws {
+        guard usesV2Session == false else { return }
         guard let token = authToken else { return }
         try await api.markChatConversationRead(id: id, token: token)
         await refreshChatUnreadCount()
     }
 
     func refreshChatUnreadCount() async {
-        guard let token = authToken, currentUser != nil else {
+        guard usesV2Session == false, let token = authToken, currentUser != nil else {
             chatUnreadCount = 0
             return
         }
@@ -4671,6 +4748,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func fetchNotificationSettings() async throws -> NativeNotificationSettings {
+        guard usesV2Session == false else {
+            return NativeNotificationSettings(pushEnabled: false, emailEnabled: false, recommendationEnabled: false)
+        }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to manage notifications.")
             throw URLError(.userAuthenticationRequired)
@@ -4683,6 +4763,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         _ enabled: Bool,
         currentSettings: NativeNotificationSettings
     ) async throws {
+        guard usesV2Session == false else { return }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to manage notifications.")
             throw URLError(.userAuthenticationRequired)
@@ -4711,6 +4792,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func fetchNotifications() async throws -> [NativeNotificationItem] {
+        guard usesV2Session == false else { return [] }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to see your notifications.")
             throw URLError(.userAuthenticationRequired)
@@ -4721,7 +4803,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func refreshNotificationUnreadCount() async {
-        guard currentUser != nil else {
+        guard usesV2Session == false, currentUser != nil else {
             notificationUnreadCount = 0
             return
         }
@@ -4998,6 +5080,25 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         set { UserDefaults.standard.set(newValue, forKey: nativePushTokenUserDefaultsKey) }
     }
 
+    private var sessionFlavor: NativeSessionFlavor {
+        get {
+            guard
+                let rawValue = UserDefaults.standard.string(forKey: sessionFlavorKey),
+                let flavor = NativeSessionFlavor(rawValue: rawValue)
+            else {
+                return .legacy
+            }
+            return flavor
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: sessionFlavorKey)
+        }
+    }
+
+    private var usesV2Session: Bool {
+        sessionFlavor == .v2
+    }
+
     private var lastSyncedPushToken: String? {
         get { UserDefaults.standard.string(forKey: syncedPushTokenKey) }
         set { UserDefaults.standard.set(newValue, forKey: syncedPushTokenKey) }
@@ -5007,6 +5108,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = nil
         currentUser = nil
         cachedAuthUser = nil
+        sessionFlavor = .legacy
         lastSyncedPushToken = nil
         notificationUnreadCount = 0
         clearPersistedDecisionSession()
@@ -5088,7 +5190,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     private func syncPushTokenIfPossible(force: Bool = false) async {
-        guard let authToken, currentUser != nil, let currentPushToken, !currentPushToken.isEmpty else { return }
+        guard usesV2Session == false, let authToken, currentUser != nil, let currentPushToken, !currentPushToken.isEmpty else { return }
         if !force && lastSyncedPushToken == currentPushToken {
             return
         }
@@ -5547,6 +5649,14 @@ private struct NativeAPIClient {
     func getMyV2InviteCode(token: String) async throws -> NativeV2MyInviteCodeResponse {
         try await request(
             path: "/api/v2/invite-codes/me",
+            method: "GET",
+            token: token
+        )
+    }
+
+    func getV2HomepageOverview(token: String) async throws -> NativeHomepageOverview {
+        try await request(
+            path: "/api/v2/home/overview",
             method: "GET",
             token: token
         )
@@ -7402,6 +7512,7 @@ private struct NativeHomepageShellScreen: View {
     @State private var photoAuthorizationStatus: PHAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var recentPhotoPreviews: [UIImage] = []
     @State private var showHeroPhotoPicker = false
+    @State private var showAllChallenges = false
     @State private var selectedHeroPhoto: NativePickedPhotoAsset?
 
     private var greetingName: String {
@@ -7417,7 +7528,7 @@ private struct NativeHomepageShellScreen: View {
             VStack(alignment: .leading, spacing: 22) {
                 homepageHeader
                 heroActionCard
-                quickActions
+                statsAndChallengesSection
                 journalPreview
                 feedPreview
             }
@@ -7430,8 +7541,17 @@ private struct NativeHomepageShellScreen: View {
         .sheet(isPresented: $showHeroPhotoPicker) {
             NativeSingleMetadataImagePicker(selection: $selectedHeroPhoto)
         }
+        .sheet(isPresented: $showAllChallenges) {
+            NativeHomepageChallengesSheet(
+                challenges: appState.homepageOverview?.challenges ?? [],
+                onAction: handleHomepageChallengeAction
+            )
+        }
         .onAppear {
             refreshHomepagePhotoPreviewIfNeeded()
+            Task {
+                await appState.refreshHomepageOverview()
+            }
         }
         .onChange(of: photoAuthorizationStatus) { _ in
             refreshHomepagePhotoPreviewIfNeeded()
@@ -7509,22 +7629,71 @@ private struct NativeHomepageShellScreen: View {
         .buttonStyle(.plain)
     }
 
-    private var quickActions: some View {
-        HStack(spacing: 12) {
-            homepageActionCard(
-                title: "Add a place",
-                subtitle: "Log your next moment",
-                icon: "plus",
-                action: {
-                    appState.presentCheckInFlow()
-                }
-            )
+    private var statsAndChallengesSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Stats & challenge")
+                .font(nativeAppFont(size: 18, weight: .black))
+                .foregroundStyle(.white)
 
-            homepageActionCard(
-                title: "Invite friends",
-                subtitle: "Share your code",
-                icon: "paperplane.fill"
-            )
+            if let overview = appState.homepageOverview {
+                HStack(spacing: 12) {
+                    ForEach(overview.stats.prefix(2)) { stat in
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("\(stat.value)")
+                                    .font(nativeAppFont(size: 28, weight: .black))
+                                    .foregroundStyle(.white)
+
+                                Text(stat.label)
+                                    .font(nativeAppFont(size: 13, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.62))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack {
+                        Text("Challenges")
+                            .font(nativeAppFont(size: 16, weight: .black))
+                            .foregroundStyle(.white)
+
+                        Spacer()
+
+                        if overview.challenges.count > 2 {
+                            Button {
+                                showAllChallenges = true
+                            } label: {
+                                Text("See all")
+                                    .font(nativeAppFont(size: 13, weight: .bold))
+                                    .foregroundStyle(nativeAccent)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+
+                    VStack(spacing: 10) {
+                        ForEach(overview.challenges.prefix(2)) { challenge in
+                            homepageChallengeCard(challenge)
+                        }
+                    }
+                }
+            } else {
+                NativeSurfaceCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Your stats are warming up.")
+                            .font(nativeAppFont(size: 16, weight: .black))
+                            .foregroundStyle(.white)
+                        Text("Add a few logs and your weekly progress plus challenges will show up here.")
+                            .font(nativeAppFont(size: 13, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.62))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
     }
 
@@ -7747,6 +7916,47 @@ private struct NativeHomepageShellScreen: View {
         }
     }
 
+    private func homepageChallengeCard(_ challenge: NativeHomepageChallenge) -> some View {
+        NativeSurfaceCard {
+            HStack(alignment: .center, spacing: 14) {
+                Image(systemName: challenge.icon)
+                    .font(nativeAppFont(size: 18, weight: .black))
+                    .foregroundStyle(.black)
+                    .frame(width: 42, height: 42)
+                    .background(nativeAccent)
+                    .clipShape(Circle())
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(challenge.title)
+                        .font(nativeAppFont(size: 15, weight: .black))
+                        .foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(challenge.subtitle)
+                        .font(nativeAppFont(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 8)
+
+                Button {
+                    handleHomepageChallengeAction(challenge)
+                } label: {
+                    Text(challenge.cta)
+                        .font(nativeAppFont(size: 13, weight: .bold))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(nativeAccent)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
     private func homepageListRow(title: String, subtitle: String) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
@@ -7854,6 +8064,87 @@ private struct NativeCityFilterPills: View {
             .onChange(of: selectedCity) { newValue in
                 withAnimation(.easeInOut(duration: 0.22)) {
                     proxy.scrollTo(newValue ?? "__all__", anchor: .center)
+                }
+            }
+        }
+    }
+
+    private func handleHomepageChallengeAction(_ challenge: NativeHomepageChallenge) {
+        switch challenge.action {
+        case "add_log":
+            appState.presentCheckInFlow()
+        case "invite_friends":
+            appState.showToast(message: "Invite flow is coming next.", icon: "paperplane.fill")
+        default:
+            break
+        }
+    }
+}
+
+private struct NativeHomepageChallengesSheet: View {
+    let challenges: [NativeHomepageChallenge]
+    let onAction: (NativeHomepageChallenge) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(challenges) { challenge in
+                        NativeSurfaceCard {
+                            HStack(alignment: .center, spacing: 14) {
+                                Image(systemName: challenge.icon)
+                                    .font(nativeAppFont(size: 18, weight: .black))
+                                    .foregroundStyle(.black)
+                                    .frame(width: 42, height: 42)
+                                    .background(nativeAccent)
+                                    .clipShape(Circle())
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(challenge.title)
+                                        .font(nativeAppFont(size: 15, weight: .black))
+                                        .foregroundStyle(.white)
+                                        .fixedSize(horizontal: false, vertical: true)
+
+                                    Text(challenge.subtitle)
+                                        .font(nativeAppFont(size: 13, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.62))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+
+                                Spacer(minLength: 8)
+
+                                Button {
+                                    onAction(challenge)
+                                    dismiss()
+                                } label: {
+                                    Text(challenge.cta)
+                                        .font(nativeAppFont(size: 13, weight: .bold))
+                                        .foregroundStyle(.black)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 10)
+                                        .background(nativeAccent)
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 20)
+                .padding(.bottom, 40)
+            }
+            .background(Color.black.ignoresSafeArea())
+            .navigationTitle("All challenges")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") {
+                        dismiss()
+                    }
+                    .foregroundStyle(.white)
                 }
             }
         }
@@ -27812,6 +28103,25 @@ private struct NativeCheckInScreen: View {
                                     .foregroundStyle(.white.opacity(0.5))
                                     .multilineTextAlignment(.center)
                                     .padding(.horizontal, 28)
+                                if inlineCamera.authorizationStatus == .denied || inlineCamera.authorizationStatus == .restricted {
+                                    Button {
+                                        appState.openAppSettings()
+                                    } label: {
+                                        Text("Allow camera")
+                                            .font(nativeAppFont(size: 14, weight: .bold))
+                                            .foregroundStyle(.white)
+                                            .padding(.horizontal, 18)
+                                            .padding(.vertical, 10)
+                                            .background(nativeSurface)
+                                            .overlay(
+                                                Capsule()
+                                                    .stroke(nativeBorder, lineWidth: 1)
+                                            )
+                                            .clipShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
+                                    .padding(.top, 2)
+                                }
                             }
                         }
 
