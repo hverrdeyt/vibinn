@@ -493,6 +493,62 @@ async function ensureLegacyUserForV2User(v2UserId: string) {
   return createdUser;
 }
 
+function mapV2MomentForClient(moment: {
+  id: string;
+  placeId: string;
+  visitedAt: Date;
+  caption: string;
+  uploadedMedia: string[];
+  rating: number | null;
+  ratingLabel: string | null;
+  placeName: string;
+  placeLocation: string;
+  placeAddress: string | null;
+  placeNeighborhood: string | null;
+  placeCategory: string | null;
+  placeGooglePlaceId: string | null;
+  autocompleteSessionToken: string | null;
+  placeLatitude: number | null;
+  placeLongitude: number | null;
+}) {
+  const primaryImage = moment.uploadedMedia[0] || 'https://placehold.co/800x1000/111111/ffffff?text=Place';
+
+  return {
+    id: moment.id,
+    placeId: moment.placeId,
+    visitedDate: moment.visitedAt.toISOString().split('T')[0],
+    visitedAtIso: moment.visitedAt.toISOString(),
+    caption: moment.caption,
+    uploadedMedia: moment.uploadedMedia,
+    rating: moment.rating ?? undefined,
+    ratingLabel: moment.ratingLabel ?? undefined,
+    place: {
+      id: moment.placeId,
+      googlePlaceId: moment.placeGooglePlaceId ?? undefined,
+      autocompleteSessionToken: moment.autocompleteSessionToken ?? undefined,
+      name: moment.placeName,
+      location: moment.placeLocation,
+      address: moment.placeAddress ?? undefined,
+      neighborhood: moment.placeNeighborhood ?? undefined,
+      category: moment.placeCategory ?? undefined,
+      description: '',
+      hook: '',
+      image: primaryImage,
+      images: moment.uploadedMedia.length > 0 ? moment.uploadedMedia : [primaryImage],
+      momentMedia: moment.uploadedMedia.map((url) => ({
+        url,
+        mediaType: url.toLowerCase().endsWith('.mp4') ? 'video' : 'image',
+      })),
+      placeMediaUrls: [primaryImage],
+      userMediaUrls: moment.uploadedMedia,
+      tags: moment.placeCategory ? [moment.placeCategory] : [],
+      latitude: moment.placeLatitude ?? undefined,
+      longitude: moment.placeLongitude ?? undefined,
+      mapsUrl: buildOsmMapsUrl(moment.placeLatitude ?? undefined, moment.placeLongitude ?? undefined) ?? undefined,
+    },
+  };
+}
+
 function getFirebaseMessagingClient() {
   try {
     if (getApps().length > 0) {
@@ -9235,23 +9291,55 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
     }
 
     const payload = { ...req.body };
-    const googlePlaceId = typeof payload.googlePlaceId === 'string' ? payload.googlePlaceId.trim() : '';
-    if (googlePlaceId) {
-      const acquiredPlace = await acquireCheckInPlaceFromGoogleDetails({
-        googlePlaceId,
-        sessionToken: typeof payload.autocompleteSessionToken === 'string' ? payload.autocompleteSessionToken : null,
-        locationLabel: typeof payload.placeSearchLocation === 'string' ? payload.placeSearchLocation : null,
-      });
-      payload.placeId = acquiredPlace.id;
+    const placeId = typeof payload.placeId === 'string' ? payload.placeId.trim() : '';
+    const placeName = typeof payload.placeName === 'string' ? payload.placeName.trim() : '';
+    const uploadedMedia = Array.isArray(payload.uploadedMedia)
+      ? payload.uploadedMedia.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+      : [];
+    const visitedDate = typeof payload.visitedDate === 'string' ? payload.visitedDate.trim() : '';
+    const caption = typeof payload.caption === 'string' ? payload.caption.trim() : '';
+
+    if (!placeId || !placeName || !visitedDate) {
+      res.status(400).json({ error: 'placeId, placeName, and visitedDate are required' });
+      return;
     }
 
-    const legacyUser = await ensureLegacyUserForV2User(req.authV2UserId);
-    const moment = await createMoment(legacyUser.id, payload);
-    await runRecommendationWriteback({
-      userId: legacyUser.id,
-      placeIds: [moment.placeId],
+    const moment = await prismaV2.moment.create({
+      data: {
+        userId: req.authV2UserId,
+        placeId,
+        placeName,
+        placeLocation: typeof payload.placeSearchLocation === 'string' && payload.placeSearchLocation.trim().length > 0
+          ? payload.placeSearchLocation.trim()
+          : typeof payload.placeAddress === 'string' && payload.placeAddress.trim().length > 0
+            ? payload.placeAddress.trim()
+            : 'Unknown location',
+        placeAddress: typeof payload.placeAddress === 'string' ? payload.placeAddress.trim() || null : null,
+        placeNeighborhood: null,
+        placeCategory: typeof payload.placeCategory === 'string' ? payload.placeCategory.trim() || null : null,
+        placeGooglePlaceId: typeof payload.googlePlaceId === 'string' ? payload.googlePlaceId.trim() || null : null,
+        autocompleteSessionToken: typeof payload.autocompleteSessionToken === 'string' ? payload.autocompleteSessionToken.trim() || null : null,
+        placeLatitude: typeof payload.placeLatitude === 'number' ? payload.placeLatitude : null,
+        placeLongitude: typeof payload.placeLongitude === 'number' ? payload.placeLongitude : null,
+        visitedAt: new Date(visitedDate),
+        caption,
+        uploadedMedia,
+        rating: typeof payload.rating === 'number' ? payload.rating : null,
+        ratingLabel: typeof payload.ratingLabel === 'string' ? payload.ratingLabel.trim() || null : null,
+        wouldRevisit: typeof payload.wouldRevisit === 'string' ? payload.wouldRevisit.trim() || null : null,
+        vibeTags: Array.isArray(payload.vibeTags)
+          ? payload.vibeTags.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+          : [],
+      },
     });
-    res.status(201).json({ moment });
+
+    await updateMyOnboardingState({
+      userId: req.authV2UserId,
+      currentStep: 'INVITE_SHARE',
+      completedStep: 'FIRST_PLACE',
+    });
+
+    res.status(201).json({ moment: mapV2MomentForClient(moment) });
   } catch (error) {
     handleError(res, error);
   }
