@@ -630,6 +630,8 @@ async function buildV2HomepageOverview(userId: string) {
         : `${weekCount}/3 places logged so far this week.`,
       cta: weekCount >= 3 ? 'Keep going' : 'Add a log',
       action: 'add_log',
+      current: weekCount,
+      target: 3,
     },
     {
       id: 'monthly-explorer',
@@ -640,6 +642,8 @@ async function buildV2HomepageOverview(userId: string) {
         : `${uniqueMonthCount}/5 unique places explored this month.`,
       cta: uniqueMonthCount >= 5 ? 'Log another' : 'Keep exploring',
       action: 'add_log',
+      current: uniqueMonthCount,
+      target: 5,
     },
     {
       id: 'invite-circle',
@@ -650,6 +654,8 @@ async function buildV2HomepageOverview(userId: string) {
         : 'Share your code and bring a friend into Vibinn.',
       cta: 'Invite friends',
       action: 'invite_friends',
+      current: inviteProgress,
+      target: inviteCode?.maxRedemptions ?? 5,
     },
   ];
 
