@@ -9187,6 +9187,33 @@ app.post('/api/moments', requireAuth, async (req: AuthenticatedRequest, res) => 
         locationLabel: typeof payload.placeSearchLocation === 'string' ? payload.placeSearchLocation : null,
       });
       payload.placeId = acquiredPlace.id;
+    } else {
+      const placeId = typeof payload.placeId === 'string' ? payload.placeId.trim() : '';
+      const existingPlace = placeId
+        ? await prisma.place.findUnique({
+            where: { id: placeId },
+            select: { id: true },
+          })
+        : null;
+
+      if (!existingPlace) {
+        const placeName = typeof payload.placeName === 'string' ? payload.placeName.trim() : '';
+        if (!placeName) {
+          res.status(400).json({ error: 'placeName is required when placeId is not stored yet' });
+          return;
+        }
+
+        const persistedPlace = await ensureOsmPlaceRecord({
+          name: placeName,
+          address: typeof payload.placeAddress === 'string' ? payload.placeAddress.trim() || null : null,
+          category: typeof payload.placeCategory === 'string' && payload.placeCategory.trim()
+            ? payload.placeCategory.trim()
+            : 'place',
+          latitude: typeof payload.placeLatitude === 'number' ? payload.placeLatitude : null,
+          longitude: typeof payload.placeLongitude === 'number' ? payload.placeLongitude : null,
+        });
+        payload.placeId = persistedPlace.id;
+      }
     }
 
     const moment = await createMoment(req.authUserId, payload);

@@ -4196,6 +4196,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             googlePlaceId: place.googlePlaceId,
             autocompleteSessionToken: place.autocompleteSessionToken,
             placeSearchLocation: selectedLocation.label,
+            placeName: place.name,
+            placeAddress: place.address,
+            placeCategory: place.category,
+            placeLatitude: place.latitude,
+            placeLongitude: place.longitude,
             visitedDate: visitedDate,
             caption: note,
             ratingLabel: ratingLabel,
@@ -6456,6 +6461,11 @@ private struct NativeAPIClient {
         let googlePlaceId: String?
         let autocompleteSessionToken: String?
         let placeSearchLocation: String?
+        let placeName: String?
+        let placeAddress: String?
+        let placeCategory: String?
+        let placeLatitude: Double?
+        let placeLongitude: Double?
         let visitedDate: String
         let caption: String
         let uploadedMedia: [String]
@@ -6479,6 +6489,11 @@ private struct NativeAPIClient {
         googlePlaceId: String?,
         autocompleteSessionToken: String?,
         placeSearchLocation: String?,
+        placeName: String?,
+        placeAddress: String?,
+        placeCategory: String?,
+        placeLatitude: Double?,
+        placeLongitude: Double?,
         visitedDate: String,
         caption: String,
         ratingLabel: String,
@@ -6495,6 +6510,11 @@ private struct NativeAPIClient {
                 googlePlaceId: googlePlaceId,
                 autocompleteSessionToken: autocompleteSessionToken,
                 placeSearchLocation: placeSearchLocation,
+                placeName: placeName,
+                placeAddress: placeAddress,
+                placeCategory: placeCategory,
+                placeLatitude: placeLatitude,
+                placeLongitude: placeLongitude,
                 visitedDate: visitedDate,
                 caption: caption,
                 uploadedMedia: uploadedMedia,
