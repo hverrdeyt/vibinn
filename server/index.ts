@@ -9,6 +9,7 @@ import { getMessaging } from 'firebase-admin/messaging';
 import { Prisma, NotificationType, TargetType } from '@prisma/client';
 import { MOCK_PLACES, SIMILAR_TRAVELERS } from '../src/mockData';
 import { prisma } from './prisma';
+import { prismaV2 } from './prismaV2';
 import {
   attachDecisionPlace,
   createDecisionSession,
@@ -420,6 +421,76 @@ async function buildUniqueUsername(base: string) {
   }
 
   return candidate;
+}
+
+function buildLegacyMirrorEmailForV2User(userId: string) {
+  return `v2.${userId}@vibinn.local`;
+}
+
+async function ensureLegacyUserForV2User(v2UserId: string) {
+  const v2User = await prismaV2.user.findUnique({
+    where: { id: v2UserId },
+    select: {
+      id: true,
+      phoneNumberE164: true,
+      displayName: true,
+      username: true,
+      avatarUrl: true,
+    },
+  });
+
+  if (!v2User) {
+    throw new Error('V2 user not found');
+  }
+
+  const mirrorEmail = buildLegacyMirrorEmailForV2User(v2User.id);
+  const fallbackDisplayName = v2User.displayName?.trim() || `Traveler ${v2User.phoneNumberE164.slice(-4)}`;
+  const baseUsername = buildUsernameFromName(
+    v2User.username?.trim() || v2User.displayName?.trim() || `traveler.${v2User.phoneNumberE164.replace(/\D+/g, '').slice(-6)}`
+  );
+  const placeholderAvatar = `https://placehold.co/400x400/111111/D3FF48?text=${encodeURIComponent(fallbackDisplayName.slice(0, 1).toUpperCase())}`;
+
+  const existingUser = await prisma.user.findUnique({
+    where: { email: mirrorEmail },
+  });
+
+  if (existingUser) {
+    let nextUsername = existingUser.username;
+    if (v2User.username?.trim()) {
+      const usernameOwner = await prisma.user.findUnique({
+        where: { username: baseUsername },
+        select: { id: true },
+      });
+      nextUsername = !usernameOwner || usernameOwner.id === existingUser.id
+        ? baseUsername
+        : await buildUniqueUsername(baseUsername);
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: existingUser.id },
+      data: {
+        displayName: v2User.displayName?.trim() || existingUser.displayName,
+        username: nextUsername,
+        avatarUrl: v2User.avatarUrl?.trim() || existingUser.avatarUrl,
+      },
+    });
+    await ensureDefaultUserRelations(updatedUser.id);
+    return updatedUser;
+  }
+
+  const createdUser = await prisma.user.create({
+    data: {
+      username: await buildUniqueUsername(baseUsername),
+      displayName: fallbackDisplayName,
+      email: mirrorEmail,
+      bio: 'Still building my travel graph.',
+      avatarUrl: v2User.avatarUrl?.trim() || placeholderAvatar,
+      authProvider: 'MANUAL',
+      emailVerifiedAt: new Date(),
+    },
+  });
+  await ensureDefaultUserRelations(createdUser.id);
+  return createdUser;
 }
 
 function getFirebaseMessagingClient() {
@@ -9129,6 +9200,36 @@ app.post('/api/moments', requireAuth, async (req: AuthenticatedRequest, res) => 
   }
 });
 
+app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const payload = { ...req.body };
+    const googlePlaceId = typeof payload.googlePlaceId === 'string' ? payload.googlePlaceId.trim() : '';
+    if (googlePlaceId) {
+      const acquiredPlace = await acquireCheckInPlaceFromGoogleDetails({
+        googlePlaceId,
+        sessionToken: typeof payload.autocompleteSessionToken === 'string' ? payload.autocompleteSessionToken : null,
+        locationLabel: typeof payload.placeSearchLocation === 'string' ? payload.placeSearchLocation : null,
+      });
+      payload.placeId = acquiredPlace.id;
+    }
+
+    const legacyUser = await ensureLegacyUserForV2User(req.authV2UserId);
+    const moment = await createMoment(legacyUser.id, payload);
+    await runRecommendationWriteback({
+      userId: legacyUser.id,
+      placeIds: [moment.placeId],
+    });
+    res.status(201).json({ moment });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.patch('/api/moments/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const moment = await updateMoment(req.authUserId, req.params.id, req.body);
@@ -9378,7 +9479,7 @@ app.get('/api/lookups/places', (req, res) => {
     .catch((error) => handleError(res, error));
 });
 
-app.get('/api/lookups/places/autocomplete', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/lookups/places/autocomplete', optionalAuth, (req: AuthenticatedRequest, res) => {
   const q = String(req.query.q || '').trim();
   const locationLabel = String(req.query.location || '').trim();
   const sessionToken = String(req.query.sessionToken || crypto.randomUUID()).trim();
