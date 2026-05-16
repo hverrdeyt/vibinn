@@ -665,6 +665,21 @@ async function buildV2HomepageOverview(userId: string) {
   };
 }
 
+async function buildV2HomepageRecentMemories(userId: string) {
+  const moments = await prismaV2.moment.findMany({
+    where: { userId },
+    orderBy: [
+      { visitedAt: 'desc' },
+      { createdAt: 'desc' },
+    ],
+    take: 5,
+  });
+
+  return {
+    moments: moments.map(mapV2MomentForClient),
+  };
+}
+
 function getFirebaseMessagingClient() {
   try {
     if (getApps().length > 0) {
@@ -8183,6 +8198,20 @@ app.get('/api/v2/home/overview', async (req: AuthenticatedRequest, res) => {
 
     const overview = await buildV2HomepageOverview(req.authV2UserId);
     res.json(overview);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/home/recent-memories', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const payload = await buildV2HomepageRecentMemories(req.authV2UserId);
+    res.json(payload);
   } catch (error) {
     handleError(res, error);
   }
