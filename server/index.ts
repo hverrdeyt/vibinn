@@ -740,6 +740,20 @@ async function buildV2HomepageRecentMemories(userId: string, requestOrigin?: str
   };
 }
 
+async function buildV2DiaryMoments(userId: string, requestOrigin?: string) {
+  const moments = await prismaV2.moment.findMany({
+    where: { userId },
+    orderBy: [
+      { visitedAt: 'desc' },
+      { createdAt: 'desc' },
+    ],
+  });
+
+  return {
+    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin)),
+  };
+}
+
 function getFirebaseMessagingClient() {
   try {
     if (getApps().length > 0) {
@@ -8272,6 +8286,21 @@ app.get('/api/v2/home/recent-memories', async (req: AuthenticatedRequest, res) =
 
     const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
     const payload = await buildV2HomepageRecentMemories(req.authV2UserId, requestOrigin);
+    res.json(payload);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const payload = await buildV2DiaryMoments(req.authV2UserId, requestOrigin);
     res.json(payload);
   } catch (error) {
     handleError(res, error);

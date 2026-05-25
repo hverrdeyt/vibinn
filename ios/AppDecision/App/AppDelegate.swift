@@ -2196,6 +2196,23 @@ private struct NativeHomepageRecentMemoriesResponse: Decodable {
     let moments: [NativeMoment]
 }
 
+private enum NativeDiaryViewMode: String, CaseIterable, Identifiable {
+    case gallery = "Gallery"
+    case timeline = "Timeline"
+    case maps = "Maps"
+
+    var id: String { rawValue }
+}
+
+private enum NativeDiaryTimeFilter: String, CaseIterable, Identifiable {
+    case thisWeek = "This week"
+    case thisMonth = "This month"
+    case lastMonth = "Last month"
+    case last3Months = "Last 3 months"
+
+    var id: String { rawValue }
+}
+
 struct NativeComment: Decodable, Identifiable {
     let id: String
     let user: String
@@ -2598,6 +2615,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var myMoments: [NativeMoment] = []
     @Published var homepageOverview: NativeHomepageOverview?
     @Published var homepageRecentMemories: [NativeMoment] = []
+    @Published var diaryMoments: [NativeMoment] = []
     @Published var ownFeedItemsCache: [NativeFeedItem] = []
     @Published var followedTravelers: [NativeTravelerSummary] = []
     @Published var suggestedTravelers: [NativeTravelerSummary] = []
@@ -2616,6 +2634,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var discoveryErrorMessage: String?
     @Published var homepageOverviewErrorMessage: String?
     @Published var homepageRecentMemoriesErrorMessage: String?
+    @Published var diaryMomentsErrorMessage: String?
     @Published var feedErrorMessage: String?
     @Published var savedErrorMessage: String?
     @Published var activeToast: NativeToastState?
@@ -3320,6 +3339,23 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         } catch {
             homepageRecentMemoriesErrorMessage = error.localizedDescription
             nativeLogger.error("refreshHomepageRecentMemories failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    func refreshV2DiaryMoments() async {
+        guard usesV2Session, let token = authToken, currentUser != nil else {
+            diaryMoments = []
+            diaryMomentsErrorMessage = nil
+            return
+        }
+
+        do {
+            let response = try await api.getV2Moments(token: token)
+            diaryMoments = response.moments
+            diaryMomentsErrorMessage = nil
+        } catch {
+            diaryMomentsErrorMessage = error.localizedDescription
+            nativeLogger.error("refreshV2DiaryMoments failed: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -4409,6 +4445,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         nativeLogger.log("submitCheckIn cleared decision session state after successful check-in")
         await refreshHomepageOverview()
         await refreshHomepageRecentMemories()
+        await refreshV2DiaryMoments()
         await requestPushNotificationsAfterFirstContentActionIfNeeded()
         nativeLogger.log("submitCheckIn push permission follow-up complete")
     }
@@ -5720,6 +5757,14 @@ private struct NativeAPIClient {
     func getV2HomepageRecentMemories(token: String) async throws -> NativeHomepageRecentMemoriesResponse {
         try await request(
             path: "/api/v2/home/recent-memories",
+            method: "GET",
+            token: token
+        )
+    }
+
+    func getV2Moments(token: String) async throws -> NativeMomentsResponse {
+        try await request(
+            path: "/api/v2/moments",
             method: "GET",
             token: token
         )
@@ -7567,6 +7612,514 @@ private struct NativeMainPlaceholderScreen: View {
             }
             .padding(.horizontal, 24)
         }
+    }
+}
+
+private struct NativeDiaryScreen: View {
+    @EnvironmentObject private var appState: NativeAppState
+    @State private var activeMode: NativeDiaryViewMode = .gallery
+    @State private var activeTimeFilter: NativeDiaryTimeFilter = .thisWeek
+    @State private var activeCityFilter: String = "All cities"
+    @State private var selectedMoment: NativeMoment?
+    @State private var mapRegion = MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 40.7128, longitude: -74.0060),
+        span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25)
+    )
+
+    private var allMoments: [NativeMoment] {
+        appState.diaryMoments
+    }
+
+    private var availableCities: [String] {
+        ["All cities"] + Array(Set(allMoments.compactMap(nativeCityKey(for:)))).sorted()
+    }
+
+    private var galleryMoments: [NativeMoment] {
+        filteredMomentsByTime(activeTimeFilter)
+    }
+
+    private var timelineMoments: [NativeMoment] {
+        let filtered = activeCityFilter == "All cities"
+            ? allMoments
+            : allMoments.filter { nativeCityKey(for: $0) == activeCityFilter }
+        return filtered.sorted { lhs, rhs in
+            nativeDiaryDate(for: lhs) > nativeDiaryDate(for: rhs)
+        }
+    }
+
+    private var mapMoments: [NativeMoment] {
+        filteredMomentsByTime(activeTimeFilter).filter {
+            $0.place.latitude != nil && $0.place.longitude != nil
+        }
+    }
+
+    var body: some View {
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 18) {
+                diaryHeader
+                diaryModePicker
+                diaryFilterSection
+                diaryContent
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 120)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationBarHidden(true)
+        .task {
+            await appState.refreshV2DiaryMoments()
+            updateMapRegion()
+        }
+        .onChange(of: appState.diaryMoments.count) { _ in
+            updateMapRegion()
+        }
+        .onChange(of: activeTimeFilter) { _ in
+            if activeMode == .maps {
+                updateMapRegion()
+            }
+        }
+        .onChange(of: activeMode) { _ in
+            if activeMode == .maps {
+                updateMapRegion()
+            }
+        }
+        .fullScreenCover(item: $selectedMoment) { moment in
+            NativeDecisionHistoryMomentFullscreen(moment: moment)
+        }
+    }
+
+    private var diaryHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("DIARY")
+                .font(nativePixelAccentFont(size: 10))
+                .foregroundStyle(nativeAccent.opacity(0.88))
+
+            Text("Your logged memories")
+                .font(nativeAppFont(size: 28, weight: .black))
+                .foregroundStyle(.white)
+        }
+    }
+
+    private var diaryModePicker: some View {
+        HStack(spacing: 10) {
+            ForEach(NativeDiaryViewMode.allCases) { mode in
+                Button {
+                    activeMode = mode
+                } label: {
+                    Text(mode.rawValue)
+                        .font(nativeAppFont(size: 13, weight: .black))
+                        .foregroundStyle(activeMode == mode ? .black : .white.opacity(0.74))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(activeMode == mode ? nativeAccent : Color.white.opacity(0.06))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var diaryFilterSection: some View {
+        switch activeMode {
+        case .gallery, .maps:
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(NativeDiaryTimeFilter.allCases) { filter in
+                        Button {
+                            activeTimeFilter = filter
+                        } label: {
+                            Text(filter.rawValue)
+                                .font(nativeAppFont(size: 12, weight: .bold))
+                                .foregroundStyle(activeTimeFilter == filter ? .black : .white.opacity(0.72))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(activeTimeFilter == filter ? nativeAccent : Color.white.opacity(0.06))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        case .timeline:
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(availableCities, id: \.self) { city in
+                        Button {
+                            activeCityFilter = city
+                        } label: {
+                            Text(city)
+                                .font(nativeAppFont(size: 12, weight: .bold))
+                                .foregroundStyle(activeCityFilter == city ? .black : .white.opacity(0.72))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(activeCityFilter == city ? nativeAccent : Color.white.opacity(0.06))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var diaryContent: some View {
+        switch activeMode {
+        case .gallery:
+            if galleryMoments.isEmpty {
+                diaryEmptyState("No memories in this range yet.")
+            } else {
+                LazyVGrid(columns: [
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12),
+                ], spacing: 12) {
+                    ForEach(galleryMoments) { moment in
+                        Button {
+                            selectedMoment = moment
+                        } label: {
+                            diaryGalleryCard(moment)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        case .timeline:
+            if timelineMoments.isEmpty {
+                diaryEmptyState("No memories for this city yet.")
+            } else {
+                VStack(spacing: 14) {
+                    ForEach(timelineMoments) { moment in
+                        Button {
+                            selectedMoment = moment
+                        } label: {
+                            diaryTimelineCard(moment)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        case .maps:
+            if mapMoments.isEmpty {
+                diaryEmptyState("No mapped memories in this range yet.")
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    diaryMapCard
+
+                    Text("\(mapMoments.count) mapped memories")
+                        .font(nativeAppFont(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.58))
+                }
+            }
+        }
+    }
+
+    private var diaryMapCard: some View {
+        Map(coordinateRegion: $mapRegion, annotationItems: mapMoments) { moment in
+            MapAnnotation(coordinate: CLLocationCoordinate2D(
+                latitude: moment.place.latitude ?? 0,
+                longitude: moment.place.longitude ?? 0
+            )) {
+                Button {
+                    selectedMoment = moment
+                } label: {
+                    VStack(spacing: 6) {
+                        ZStack {
+                            if let media = nativeDiaryMediaURL(for: moment) {
+                                NativeRemoteImage(url: media)
+                            } else {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(Color.white.opacity(0.08))
+                            }
+                        }
+                        .frame(width: 54, height: 54)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                        )
+
+                        Text(moment.place.name)
+                            .font(nativeAppFont(size: 10, weight: .black))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.78))
+                            .clipShape(Capsule())
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(height: 380)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func diaryGalleryCard(_ moment: NativeMoment) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            Group {
+                if let media = nativeDiaryMediaURL(for: moment) {
+                    NativeRemoteImage(url: media)
+                } else {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                        .overlay(
+                            Image(systemName: "photo")
+                                .font(nativeAppFont(size: 22, weight: .black))
+                                .foregroundStyle(.white.opacity(0.3))
+                        )
+                }
+            }
+            .aspectRatio(1, contentMode: .fill)
+
+            LinearGradient(
+                colors: [Color.clear, Color.black.opacity(0.75)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(moment.place.name)
+                    .font(nativeAppFont(size: 14, weight: .black))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                Text(NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate))
+                    .font(nativeAppFont(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.68))
+            }
+            .padding(14)
+        }
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func diaryTimelineCard(_ moment: NativeMoment) -> some View {
+        let dateLabel = NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate)
+        let shortAddress = diaryShortAddress(for: moment.place)
+        let ratingMeta = nativeMomentRatingMeta(label: moment.ratingLabel, fallbackRating: moment.rating)
+
+        return NativeSurfaceCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .center, spacing: 10) {
+                    diaryAvatarSquare(
+                        name: appState.currentUser?.displayName,
+                        username: appState.currentUser?.username,
+                        avatarURL: appState.currentUser?.avatarUrl,
+                        size: 42
+                    )
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(appState.currentUser?.displayName ?? "You")
+                            .font(nativeAppFont(size: 15, weight: .black))
+                            .foregroundStyle(.white)
+
+                        if let username = appState.currentUser?.username, !username.isEmpty {
+                            Text("@\(username)")
+                                .font(nativeAppFont(size: 12, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.48))
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Text(dateLabel)
+                        .font(nativeAppFont(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.58))
+                }
+
+                if let ratingMeta {
+                    HStack(spacing: 8) {
+                        Image(systemName: ratingMeta.icon)
+                            .font(nativeAppFont(size: 12, weight: .black))
+                        Text(ratingMeta.label)
+                            .font(nativeAppFont(size: 12, weight: .bold))
+                    }
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(nativeAccent)
+                    .clipShape(Capsule())
+                }
+
+                if let review = moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines), !review.isEmpty {
+                    Text(review)
+                        .font(nativeAppFont(size: 15, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .lineLimit(2)
+                }
+
+                Group {
+                    if let mediaURL = nativeDiaryMediaURL(for: moment) {
+                        NativeRemoteImage(url: mediaURL)
+                    } else {
+                        RoundedRectangle(cornerRadius: 24, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .font(nativeAppFont(size: 22, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.3))
+                            )
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(moment.place.name)
+                        .font(nativeAppFont(size: 17, weight: .black))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+
+                    Text(diaryPlaceMetaLine(for: moment.place, shortAddress: shortAddress))
+                        .font(nativeAppFont(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.58))
+                        .lineLimit(2)
+                }
+            }
+        }
+    }
+
+    private func diaryAvatarSquare(name: String?, username: String?, avatarURL: String?, size: CGFloat) -> some View {
+        ZStack {
+            if let avatarURL, !avatarURL.isEmpty {
+                NativeRemoteImage(url: avatarURL)
+            } else {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        Text(nativeAvatarInitials(from: name ?? username ?? "V"))
+                            .font(nativeAppFont(size: 15, weight: .black))
+                            .foregroundStyle(.white)
+                    )
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func diaryEmptyState(_ message: String) -> some View {
+        NativeSurfaceCard {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(message)
+                    .font(nativeAppFont(size: 16, weight: .black))
+                    .foregroundStyle(.white)
+                Text("Add more logs and your diary will start to fill up here.")
+                    .font(nativeAppFont(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func filteredMomentsByTime(_ filter: NativeDiaryTimeFilter) -> [NativeMoment] {
+        let calendar = Calendar.current
+        let now = Date()
+
+        return allMoments.filter { moment in
+            let date = nativeDiaryDate(for: moment)
+            switch filter {
+            case .thisWeek:
+                return calendar.isDate(date, equalTo: now, toGranularity: .weekOfYear)
+                    && calendar.isDate(date, equalTo: now, toGranularity: .yearForWeekOfYear)
+            case .thisMonth:
+                return calendar.isDate(date, equalTo: now, toGranularity: .month)
+                    && calendar.isDate(date, equalTo: now, toGranularity: .year)
+            case .lastMonth:
+                guard let lastMonth = calendar.date(byAdding: .month, value: -1, to: now) else { return false }
+                return calendar.isDate(date, equalTo: lastMonth, toGranularity: .month)
+                    && calendar.isDate(date, equalTo: lastMonth, toGranularity: .year)
+            case .last3Months:
+                guard let start = calendar.date(byAdding: .month, value: -3, to: now) else { return true }
+                return date >= start && date <= now
+            }
+        }
+    }
+
+    private func nativeDiaryDate(for moment: NativeMoment) -> Date {
+        NativeAppState.date(from: moment.visitedAtIso ?? moment.visitedDate) ?? Date.distantPast
+    }
+
+    private func nativeDiaryMediaURL(for moment: NativeMoment) -> String? {
+        if let uploaded = moment.uploadedMedia?.first(where: { !$0.isEmpty }) {
+            return uploaded
+        }
+        if let image = moment.place.image, !image.isEmpty {
+            return image
+        }
+        return moment.place.images?.first(where: { !$0.isEmpty })
+    }
+
+    private func diaryShortAddress(for place: NativePlace) -> String {
+        let raw = place.address?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if raw.isEmpty {
+            return place.location
+        }
+        let parts = raw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let first = parts.first else { return place.location }
+        if CharacterSet.decimalDigits.isSuperset(of: CharacterSet(charactersIn: first)),
+           parts.count > 1 {
+            return "\(first) \(parts[1])"
+        }
+        return first
+    }
+
+    private func diaryPlaceMetaLine(for place: NativePlace, shortAddress: String) -> String {
+        let segments = [place.category?.trimmingCharacters(in: .whitespacesAndNewlines), shortAddress]
+            .compactMap { value -> String? in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+        return segments.joined(separator: " • ")
+    }
+
+    private func updateMapRegion() {
+        let coordinates = mapMoments.compactMap { moment -> CLLocationCoordinate2D? in
+            guard let latitude = moment.place.latitude, let longitude = moment.place.longitude else { return nil }
+            return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        }
+        guard !coordinates.isEmpty else { return }
+
+        let latitudes = coordinates.map(\.latitude)
+        let longitudes = coordinates.map(\.longitude)
+        let minLat = latitudes.min() ?? 0
+        let maxLat = latitudes.max() ?? 0
+        let minLon = longitudes.min() ?? 0
+        let maxLon = longitudes.max() ?? 0
+
+        mapRegion = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(
+                latitude: (minLat + maxLat) / 2,
+                longitude: (minLon + maxLon) / 2
+            ),
+            span: MKCoordinateSpan(
+                latitudeDelta: max((maxLat - minLat) * 1.6, 0.05),
+                longitudeDelta: max((maxLon - minLon) * 1.6, 0.05)
+            )
+        )
     }
 }
 
@@ -14167,11 +14720,7 @@ private struct NativeMainTabView: View {
             .tag(NativeTab.discover)
 
             NavigationView {
-                NativeMainPlaceholderScreen(
-                    title: "Diary",
-                    subtitle: "New diary shell",
-                    symbol: "book.closed.fill"
-                )
+                NativeDiaryScreen()
             }
             .navigationViewStyle(.stack)
             .tabItem { Label("Diary", systemImage: "book.closed.fill") }
@@ -27972,8 +28521,10 @@ private struct NativeRemoteImage: View {
                     .resizable()
                     .scaledToFill()
             case .failure(let error):
-                nativeLogger.error("NativeRemoteImage failed url=\(url ?? "nil", privacy: .public) resolved=\(nativeResolvedImageURL(url) ?? "nil", privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 fallback
+                    .onAppear {
+                        nativeLogger.error("NativeRemoteImage failed url=\(url ?? "nil", privacy: .public) resolved=\(nativeResolvedImageURL(url) ?? "nil", privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                    }
             case .empty:
                 ZStack {
                     fallback
@@ -28003,6 +28554,12 @@ private func nativeResolvedImageURL(_ url: String?) -> String? {
     }
     if raw.hasPrefix("http://api.vibinn.club") {
         return raw.replacingOccurrences(of: "http://api.vibinn.club", with: "https://api.vibinn.club")
+    }
+    if raw.hasPrefix("https://vibecheck-api-staging.onrender.com") {
+        return raw.replacingOccurrences(of: "https://vibecheck-api-staging.onrender.com", with: "https://vibinn-api-staging.onrender.com")
+    }
+    if raw.hasPrefix("http://vibecheck-api-staging.onrender.com") {
+        return raw.replacingOccurrences(of: "http://vibecheck-api-staging.onrender.com", with: "https://vibinn-api-staging.onrender.com")
     }
     if raw.hasPrefix("http://") || raw.hasPrefix("https://") {
         return raw
