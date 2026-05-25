@@ -493,6 +493,65 @@ async function ensureLegacyUserForV2User(v2UserId: string) {
   return createdUser;
 }
 
+function resolveMomentMediaUrls(urls: string[], requestOrigin?: string) {
+  return urls.map((url) => {
+    const trimmed = url.trim();
+    if (!trimmed) {
+      return url;
+    }
+    if (/^https?:\/\//i.test(trimmed)) {
+      return trimmed;
+    }
+    if (trimmed.startsWith('moments/')) {
+      return buildMediaUrl(trimmed, requestOrigin);
+    }
+    if (trimmed.startsWith('/api/media?key=') || trimmed.startsWith('api/media?key=')) {
+      const key = trimmed
+        .replace(/^\/+/, '')
+        .replace(/^api\/media\?key=/, '');
+      return buildMediaUrl(decodeURIComponent(key), requestOrigin);
+    }
+    if (trimmed.startsWith('/api/media?path=') || trimmed.startsWith('api/media?path=')) {
+      const key = trimmed
+        .replace(/^\/+/, '')
+        .replace(/^api\/media\?path=/, '');
+      return buildMediaUrl(decodeURIComponent(key), requestOrigin);
+    }
+    if (trimmed.startsWith('/uploads/') || trimmed.startsWith('uploads/')) {
+      const key = trimmed.split('/').pop();
+      if (key) {
+        return buildMediaUrl(key, requestOrigin);
+      }
+    }
+    if (trimmed.startsWith('api/media?') && requestOrigin) {
+      return `${requestOrigin.replace(/\/$/, '')}/${trimmed.replace(/^\/+/, '')}`;
+    }
+    if (trimmed.startsWith('/api/media?') && requestOrigin) {
+      return `${requestOrigin.replace(/\/$/, '')}${trimmed}`;
+    }
+    if (trimmed.startsWith('api/media?') || trimmed.startsWith('/api/media?')) {
+      return trimmed;
+    }
+    if (/^[^/?#]+\.(jpg|jpeg|png|webp|gif|heic|heif)$/i.test(trimmed)) {
+      return buildMediaUrl(trimmed, requestOrigin);
+    }
+    if (trimmed.includes('/moments/')) {
+      const key = trimmed.split('/moments/')[1];
+      if (key) {
+        return buildMediaUrl(`moments/${key}`, requestOrigin);
+      }
+    }
+    if (/^https?:\/\//i.test(url)) {
+      return url;
+    }
+    const normalized = trimmed.replace(/^\/+/, '');
+    if (normalized.startsWith('api/media?') && requestOrigin) {
+      return `${requestOrigin.replace(/\/$/, '')}/${normalized}`;
+    }
+    return trimmed;
+  });
+}
+
 function mapV2MomentForClient(moment: {
   id: string;
   placeId: string;
@@ -510,8 +569,9 @@ function mapV2MomentForClient(moment: {
   autocompleteSessionToken: string | null;
   placeLatitude: number | null;
   placeLongitude: number | null;
-}) {
-  const primaryImage = moment.uploadedMedia[0] || 'https://placehold.co/800x1000/111111/ffffff?text=Place';
+}, requestOrigin?: string) {
+  const resolvedMedia = resolveMomentMediaUrls(moment.uploadedMedia, requestOrigin);
+  const primaryImage = resolvedMedia[0] || 'https://placehold.co/800x1000/111111/ffffff?text=Place';
 
   return {
     id: moment.id,
@@ -519,7 +579,7 @@ function mapV2MomentForClient(moment: {
     visitedDate: moment.visitedAt.toISOString().split('T')[0],
     visitedAtIso: moment.visitedAt.toISOString(),
     caption: moment.caption,
-    uploadedMedia: moment.uploadedMedia,
+    uploadedMedia: resolvedMedia,
     rating: moment.rating ?? undefined,
     ratingLabel: moment.ratingLabel ?? undefined,
     place: {
@@ -534,13 +594,13 @@ function mapV2MomentForClient(moment: {
       description: '',
       hook: '',
       image: primaryImage,
-      images: moment.uploadedMedia.length > 0 ? moment.uploadedMedia : [primaryImage],
-      momentMedia: moment.uploadedMedia.map((url) => ({
+      images: resolvedMedia.length > 0 ? resolvedMedia : [primaryImage],
+      momentMedia: resolvedMedia.map((url) => ({
         url,
         mediaType: url.toLowerCase().endsWith('.mp4') ? 'video' : 'image',
       })),
       placeMediaUrls: [primaryImage],
-      userMediaUrls: moment.uploadedMedia,
+      userMediaUrls: resolvedMedia,
       tags: moment.placeCategory ? [moment.placeCategory] : [],
       latitude: moment.placeLatitude ?? undefined,
       longitude: moment.placeLongitude ?? undefined,
@@ -665,7 +725,7 @@ async function buildV2HomepageOverview(userId: string) {
   };
 }
 
-async function buildV2HomepageRecentMemories(userId: string) {
+async function buildV2HomepageRecentMemories(userId: string, requestOrigin?: string) {
   const moments = await prismaV2.moment.findMany({
     where: { userId },
     orderBy: [
@@ -676,7 +736,7 @@ async function buildV2HomepageRecentMemories(userId: string) {
   });
 
   return {
-    moments: moments.map(mapV2MomentForClient),
+    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin)),
   };
 }
 
@@ -8210,7 +8270,8 @@ app.get('/api/v2/home/recent-memories', async (req: AuthenticatedRequest, res) =
       return;
     }
 
-    const payload = await buildV2HomepageRecentMemories(req.authV2UserId);
+    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const payload = await buildV2HomepageRecentMemories(req.authV2UserId, requestOrigin);
     res.json(payload);
   } catch (error) {
     handleError(res, error);
@@ -9498,7 +9559,8 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
       completedStep: 'FIRST_PLACE',
     });
 
-    res.status(201).json({ moment: mapV2MomentForClient(moment) });
+    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    res.status(201).json({ moment: mapV2MomentForClient(moment, requestOrigin) });
   } catch (error) {
     handleError(res, error);
   }

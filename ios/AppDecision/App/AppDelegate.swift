@@ -1017,6 +1017,36 @@ private struct NativeHomepageChallenge: Decodable, Identifiable {
     let subtitle: String
     let cta: String
     let action: String
+    let current: Int
+    let target: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case icon
+        case title
+        case subtitle
+        case cta
+        case action
+        case current
+        case target
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        icon = try container.decode(String.self, forKey: .icon)
+        title = try container.decode(String.self, forKey: .title)
+        subtitle = try container.decode(String.self, forKey: .subtitle)
+        cta = try container.decode(String.self, forKey: .cta)
+        action = try container.decode(String.self, forKey: .action)
+        current = try container.decodeIfPresent(Int.self, forKey: .current) ?? 0
+        target = max(try container.decodeIfPresent(Int.self, forKey: .target) ?? 1, 1)
+    }
+
+    var progressValue: Double {
+        guard target > 0 else { return 0 }
+        return min(max(Double(current) / Double(target), 0), 1)
+    }
 }
 
 private struct NativeHomepageOverview: Decodable {
@@ -2162,6 +2192,10 @@ private struct NativeMomentsResponse: Decodable {
     let moments: [NativeMoment]
 }
 
+private struct NativeHomepageRecentMemoriesResponse: Decodable {
+    let moments: [NativeMoment]
+}
+
 struct NativeComment: Decodable, Identifiable {
     let id: String
     let user: String
@@ -2563,6 +2597,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var collections: [NativeCollection] = []
     @Published var myMoments: [NativeMoment] = []
     @Published var homepageOverview: NativeHomepageOverview?
+    @Published var homepageRecentMemories: [NativeMoment] = []
     @Published var ownFeedItemsCache: [NativeFeedItem] = []
     @Published var followedTravelers: [NativeTravelerSummary] = []
     @Published var suggestedTravelers: [NativeTravelerSummary] = []
@@ -2580,6 +2615,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var profileErrorMessage: String?
     @Published var discoveryErrorMessage: String?
     @Published var homepageOverviewErrorMessage: String?
+    @Published var homepageRecentMemoriesErrorMessage: String?
     @Published var feedErrorMessage: String?
     @Published var savedErrorMessage: String?
     @Published var activeToast: NativeToastState?
@@ -3079,6 +3115,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         await syncLocalTastePreferencesIfNeeded()
         await refreshCurrentPushTokenFromFirebase()
         await refreshHomepageOverview()
+        await refreshHomepageRecentMemories()
         guard usesV2Session == false else {
             chatUnreadCount = 0
             notificationUnreadCount = 0
@@ -3269,8 +3306,25 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
     }
 
+    func refreshHomepageRecentMemories() async {
+        guard usesV2Session, let token = authToken, currentUser != nil else {
+            homepageRecentMemories = []
+            homepageRecentMemoriesErrorMessage = nil
+            return
+        }
+
+        do {
+            let response = try await api.getV2HomepageRecentMemories(token: token)
+            homepageRecentMemories = response.moments
+            homepageRecentMemoriesErrorMessage = nil
+        } catch {
+            homepageRecentMemoriesErrorMessage = error.localizedDescription
+            nativeLogger.error("refreshHomepageRecentMemories failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     private func syncCurrentUserFromV2Payload(_ payload: NativeV2UserPayload) {
-        let fallbackUsername = currentUser?.username ?? "vibinn"
+        let fallbackUsername = currentUser?.username ?? nativeFallbackUsername(from: payload.phoneNumber)
         let mergedUser = NativeAuthUser(
             id: payload.id,
             displayName: payload.displayName ?? currentUser?.displayName,
@@ -4354,6 +4408,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         clearDecisionSessionState()
         nativeLogger.log("submitCheckIn cleared decision session state after successful check-in")
         await refreshHomepageOverview()
+        await refreshHomepageRecentMemories()
         await requestPushNotificationsAfterFirstContentActionIfNeeded()
         nativeLogger.log("submitCheckIn push permission follow-up complete")
     }
@@ -5657,6 +5712,14 @@ private struct NativeAPIClient {
     func getV2HomepageOverview(token: String) async throws -> NativeHomepageOverview {
         try await request(
             path: "/api/v2/home/overview",
+            method: "GET",
+            token: token
+        )
+    }
+
+    func getV2HomepageRecentMemories(token: String) async throws -> NativeHomepageRecentMemoriesResponse {
+        try await request(
+            path: "/api/v2/home/recent-memories",
             method: "GET",
             token: token
         )
@@ -7516,11 +7579,27 @@ private struct NativeHomepageShellScreen: View {
     @State private var selectedHeroPhoto: NativePickedPhotoAsset?
 
     private var greetingName: String {
+        let username = appState.currentUser?.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let username, !username.isEmpty {
+            return username
+        }
         let candidate = appState.currentUser?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let candidate, !candidate.isEmpty {
             return candidate
         }
         return "there"
+    }
+
+    private var greetingPrefix: String {
+        let hour = Calendar.current.component(.hour, from: Date())
+        switch hour {
+        case 5..<12:
+            return "Good morning"
+        case 12..<17:
+            return "Good afternoon"
+        default:
+            return "Good evening"
+        }
     }
 
     var body: some View {
@@ -7529,7 +7608,7 @@ private struct NativeHomepageShellScreen: View {
                 homepageHeader
                 heroActionCard
                 statsAndChallengesSection
-                journalPreview
+                recentMemoriesSection
                 feedPreview
             }
             .padding(.horizontal, 20)
@@ -7551,6 +7630,7 @@ private struct NativeHomepageShellScreen: View {
             refreshHomepagePhotoPreviewIfNeeded()
             Task {
                 await appState.refreshHomepageOverview()
+                await appState.refreshHomepageRecentMemories()
             }
         }
         .onChange(of: photoAuthorizationStatus) { _ in
@@ -7573,7 +7653,7 @@ private struct NativeHomepageShellScreen: View {
                     .font(nativePixelAccentFont(size: 10))
                     .foregroundStyle(nativeAccent.opacity(0.88))
 
-                Text("Good evening,\n\(greetingName).")
+                Text("\(greetingPrefix),\n\(greetingName).")
                     .font(nativeAppFont(size: 28, weight: .black))
                     .foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
@@ -7630,58 +7710,38 @@ private struct NativeHomepageShellScreen: View {
     }
 
     private var statsAndChallengesSection: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Stats & challenge")
-                .font(nativeAppFont(size: 18, weight: .black))
-                .foregroundStyle(.white)
+        NativeSurfaceCard {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .center) {
+                    Text("Your progress")
+                        .font(nativeAppFont(size: 18, weight: .black))
+                        .foregroundStyle(.white)
 
-            if let overview = appState.homepageOverview {
-                HStack(spacing: 12) {
-                    ForEach(overview.stats.prefix(2)) { stat in
-                        NativeSurfaceCard {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Text("\(stat.value)")
-                                    .font(nativeAppFont(size: 28, weight: .black))
-                                    .foregroundStyle(.white)
+                    Spacer()
 
-                                Text(stat.label)
-                                    .font(nativeAppFont(size: 13, weight: .medium))
-                                    .foregroundStyle(.white.opacity(0.62))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    if let overview = appState.homepageOverview, overview.challenges.count > 2 {
+                        Button {
+                            showAllChallenges = true
+                        } label: {
+                            Text("See all")
+                                .font(nativeAppFont(size: 13, weight: .bold))
+                                .foregroundStyle(nativeAccent)
                         }
+                        .buttonStyle(.plain)
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Challenges")
-                            .font(nativeAppFont(size: 16, weight: .black))
-                            .foregroundStyle(.white)
-
-                        Spacer()
-
-                        if overview.challenges.count > 2 {
-                            Button {
-                                showAllChallenges = true
-                            } label: {
-                                Text("See all")
-                                    .font(nativeAppFont(size: 13, weight: .bold))
-                                    .foregroundStyle(nativeAccent)
-                            }
-                            .buttonStyle(.plain)
+                if let overview = appState.homepageOverview {
+                    HStack(spacing: 12) {
+                        ForEach(overview.stats.prefix(2)) { stat in
+                            homepageStatCard(stat)
                         }
                     }
 
-                    VStack(spacing: 10) {
-                        ForEach(overview.challenges.prefix(2)) { challenge in
-                            homepageChallengeCard(challenge)
-                        }
+                    NativeHomepageChallengeCarousel(challenges: Array(overview.challenges.prefix(2))) { challenge in
+                        handleHomepageChallengeAction(challenge)
                     }
-                }
-            } else {
-                NativeSurfaceCard {
+                } else {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("Your stats are warming up.")
                             .font(nativeAppFont(size: 16, weight: .black))
@@ -7694,35 +7754,75 @@ private struct NativeHomepageShellScreen: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private var journalPreview: some View {
+    private var recentMemoriesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Your diary")
+            Text("Recent memories")
                 .font(nativeAppFont(size: 18, weight: .black))
                 .foregroundStyle(.white)
 
-            NativeSurfaceCard {
-                VStack(alignment: .leading, spacing: 14) {
-                    RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
-                        .frame(height: 168)
-                        .overlay(
-                            VStack(spacing: 10) {
-                                Image(systemName: "photo.on.rectangle.angled")
-                                    .font(nativeAppFont(size: 24, weight: .black))
-                                    .foregroundStyle(nativeAccent)
-                                Text("Your latest entry preview will live here.")
-                                    .font(nativeAppFont(size: 14, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.62))
-                            }
-                        )
+            if appState.homepageRecentMemories.isEmpty {
+                NativeSurfaceCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Your latest memories will show up here.")
+                            .font(nativeAppFont(size: 16, weight: .black))
+                            .foregroundStyle(.white)
+                        Text("Add a few logs and we’ll turn them into swipeable memory cards.")
+                            .font(nativeAppFont(size: 13, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.62))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            } else {
+                let cardWidth = min(max(UIScreen.main.bounds.width * 0.76, 270), 312)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    LazyHStack(spacing: 14) {
+                        ForEach(appState.homepageRecentMemories.prefix(5)) { moment in
+                            homepageRecentMemoryCard(moment, width: cardWidth)
+                        }
 
-                    Text("You’re one entry away from turning this into a real diary.")
-                        .font(nativeAppFont(size: 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.68))
-                        .fixedSize(horizontal: false, vertical: true)
+                        Button {
+                            appState.activeTab = .feed
+                        } label: {
+                            VStack(alignment: .leading, spacing: 14) {
+                                Spacer(minLength: 0)
+
+                                Image(systemName: "arrow.right")
+                                    .font(nativeAppFont(size: 24, weight: .black))
+                                    .foregroundStyle(.black)
+                                    .frame(width: 54, height: 54)
+                                    .background(nativeAccent)
+                                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text("See all")
+                                        .font(nativeAppFont(size: 20, weight: .black))
+                                        .foregroundStyle(.white)
+
+                                    Text("Open your diary and see every memory you’ve logged.")
+                                        .font(nativeAppFont(size: 13, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.62))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+
+                                Spacer(minLength: 0)
+                            }
+                            .padding(18)
+                            .frame(width: cardWidth, height: 420, alignment: .topLeading)
+                            .background(
+                                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                    .fill(Color.white.opacity(0.05))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 28, style: .continuous)
+                                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                                    )
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
         }
@@ -7916,42 +8016,80 @@ private struct NativeHomepageShellScreen: View {
         }
     }
 
+    private func homepageStatCard(_ stat: NativeHomepageStat) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("\(stat.value)")
+                .font(nativeAppFont(size: 28, weight: .black))
+                .foregroundStyle(.white)
+
+            Text(stat.label)
+                .font(nativeAppFont(size: 13, weight: .medium))
+                .foregroundStyle(.white.opacity(0.62))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
+    }
+
     private func homepageChallengeCard(_ challenge: NativeHomepageChallenge) -> some View {
         NativeSurfaceCard {
-            HStack(alignment: .center, spacing: 14) {
-                Image(systemName: challenge.icon)
-                    .font(nativeAppFont(size: 18, weight: .black))
-                    .foregroundStyle(.black)
-                    .frame(width: 42, height: 42)
-                    .background(nativeAccent)
-                    .clipShape(Circle())
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(challenge.title)
-                        .font(nativeAppFont(size: 15, weight: .black))
-                        .foregroundStyle(.white)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Text(challenge.subtitle)
-                        .font(nativeAppFont(size: 13, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.62))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 8)
-
-                Button {
-                    handleHomepageChallengeAction(challenge)
-                } label: {
-                    Text(challenge.cta)
-                        .font(nativeAppFont(size: 13, weight: .bold))
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 14) {
+                    Image(systemName: challenge.icon)
+                        .font(nativeAppFont(size: 18, weight: .black))
                         .foregroundStyle(.black)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
+                        .frame(width: 42, height: 42)
                         .background(nativeAccent)
-                        .clipShape(Capsule())
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(challenge.title)
+                            .font(nativeAppFont(size: 15, weight: .black))
+                            .foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button {
+                        handleHomepageChallengeAction(challenge)
+                    } label: {
+                        Text(challenge.cta)
+                            .font(nativeAppFont(size: 13, weight: .bold))
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(nativeAccent)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("\(min(challenge.current, challenge.target))/\(challenge.target)")
+                            .font(nativeAppFont(size: 12, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.72))
+                        Spacer()
+                    }
+
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 999, style: .continuous)
+                                .fill(Color.white.opacity(0.08))
+                            RoundedRectangle(cornerRadius: 999, style: .continuous)
+                                .fill(nativeAccent)
+                                .frame(width: max(20, proxy.size.width * challenge.progressValue))
+                        }
+                    }
+                    .frame(height: 8)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -7969,6 +8107,214 @@ private struct NativeHomepageShellScreen: View {
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func homepageRecentMemoryCard(_ moment: NativeMoment, width: CGFloat) -> some View {
+        let dateLabel = NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate)
+        let shortAddress = homepageShortAddress(for: moment.place)
+        let ratingMeta = nativeMomentRatingMeta(label: moment.ratingLabel, fallbackRating: moment.rating)
+        let usernameLabel = homepageDisplayUsername()
+
+        return VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 10) {
+                homepageAvatarSquare(
+                    name: appState.currentUser?.displayName,
+                    username: appState.currentUser?.username,
+                    avatarURL: appState.currentUser?.avatarUrl,
+                    size: 42
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(appState.currentUser?.displayName ?? "You")
+                        .font(nativeAppFont(size: 15, weight: .black))
+                        .foregroundStyle(.white)
+
+                    if let usernameLabel {
+                        Text(usernameLabel)
+                            .font(nativeAppFont(size: 12, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.48))
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                Text(dateLabel)
+                    .font(nativeAppFont(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.58))
+            }
+
+            if let ratingMeta {
+                HStack(spacing: 8) {
+                    Image(systemName: ratingMeta.icon)
+                        .font(nativeAppFont(size: 12, weight: .black))
+                    Text(ratingMeta.label)
+                        .font(nativeAppFont(size: 12, weight: .bold))
+                }
+                .foregroundStyle(.black)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(nativeAccent)
+                .clipShape(Capsule())
+            }
+
+            if let review = moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines), !review.isEmpty {
+                Text(review)
+                    .font(nativeAppFont(size: 15, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(2)
+            }
+
+            Group {
+                if let mediaURL = moment.uploadedMedia?.first, !mediaURL.isEmpty {
+                    NativeRemoteImage(url: mediaURL)
+                } else {
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                        .overlay(
+                            Image(systemName: "photo")
+                                .font(nativeAppFont(size: 22, weight: .black))
+                                .foregroundStyle(.white.opacity(0.3))
+                        )
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .aspectRatio(1, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(moment.place.name)
+                    .font(nativeAppFont(size: 17, weight: .black))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                Text(homepagePlaceMetaLine(for: moment.place, shortAddress: shortAddress))
+                    .font(nativeAppFont(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.58))
+                    .lineLimit(2)
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    appState.showToast(message: "Comments are coming next.", icon: "bubble.left.and.bubble.right.fill")
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "bubble.left")
+                            .font(nativeAppFont(size: 14, weight: .black))
+                        Text("Comment")
+                            .font(nativeAppFont(size: 13, weight: .bold))
+                    }
+                    .foregroundStyle(.white.opacity(0.82))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    appState.showToast(message: "Likes are coming next.", icon: "heart.fill")
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: "heart")
+                            .font(nativeAppFont(size: 14, weight: .black))
+                        Text("Like")
+                            .font(nativeAppFont(size: 13, weight: .bold))
+                    }
+                    .foregroundStyle(.white.opacity(0.82))
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
+                    .background(Color.white.opacity(0.06))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(16)
+        .frame(width: width, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 28, style: .continuous)
+                .fill(Color(red: 18 / 255, green: 17 / 255, blue: 15 / 255))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 28, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+        )
+    }
+
+    private func homepageAvatarSquare(name: String?, username: String?, avatarURL: String?, size: CGFloat) -> some View {
+        ZStack {
+            if let avatarURL, !avatarURL.isEmpty {
+                NativeRemoteImage(url: avatarURL)
+            } else {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        Text(nativeAvatarInitials(from: name ?? username ?? "V"))
+                            .font(nativeAppFont(size: 15, weight: .black))
+                            .foregroundStyle(.white)
+                    )
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
+    }
+
+    private func homepageShortAddress(for place: NativePlace) -> String {
+        let raw = place.address?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if raw.isEmpty {
+            return place.location
+        }
+        let parts = raw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let first = parts.first else { return place.location }
+        if CharacterSet.decimalDigits.isSuperset(of: CharacterSet(charactersIn: first)),
+           parts.count > 1 {
+            return "\(first) \(parts[1])"
+        }
+        return first
+    }
+
+    private func homepagePlaceMetaLine(for place: NativePlace, shortAddress: String) -> String {
+        let segments = [place.category?.trimmingCharacters(in: .whitespacesAndNewlines), shortAddress]
+            .compactMap { value -> String? in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+        return segments.joined(separator: " • ")
+    }
+
+    private func homepageDisplayUsername() -> String? {
+        guard let currentUser = appState.currentUser else {
+            return nil
+        }
+        let raw = currentUser.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+              !raw.isEmpty,
+              raw.lowercased() != "vibinn" else {
+            return nil
+        }
+        return "@\(raw)"
+    }
+
+    private func handleHomepageChallengeAction(_ challenge: NativeHomepageChallenge) {
+        switch challenge.action {
+        case "add_log":
+            appState.presentCheckInFlow()
+        case "invite_friends":
+            appState.showToast(message: "Invite flow is coming next.", icon: "paperplane.fill")
+        default:
+            break
+        }
     }
 }
 
@@ -8069,14 +8415,105 @@ private struct NativeCityFilterPills: View {
         }
     }
 
-    private func handleHomepageChallengeAction(_ challenge: NativeHomepageChallenge) {
-        switch challenge.action {
-        case "add_log":
-            appState.presentCheckInFlow()
-        case "invite_friends":
-            appState.showToast(message: "Invite flow is coming next.", icon: "paperplane.fill")
-        default:
-            break
+}
+
+private struct NativeHomepageChallengeCarousel: View {
+    let challenges: [NativeHomepageChallenge]
+    let onAction: (NativeHomepageChallenge) -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            let cardWidth = min(max(proxy.size.width * 0.78, 248), 290)
+
+            Group {
+                if #available(iOS 17.0, *) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(spacing: 12) {
+                            ForEach(challenges) { challenge in
+                                NativeHomepageChallengeCompactCard(challenge: challenge, onAction: {
+                                    onAction(challenge)
+                                })
+                                .frame(width: cardWidth)
+                            }
+                        }
+                        .scrollTargetLayout()
+                    }
+                    .scrollTargetBehavior(.viewAligned)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(spacing: 12) {
+                            ForEach(challenges) { challenge in
+                                NativeHomepageChallengeCompactCard(challenge: challenge, onAction: {
+                                    onAction(challenge)
+                                })
+                                .frame(width: cardWidth)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .frame(height: 158)
+    }
+}
+
+private struct NativeHomepageChallengeCompactCard: View {
+    let challenge: NativeHomepageChallenge
+    let onAction: () -> Void
+
+    var body: some View {
+        NativeSurfaceCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .top, spacing: 14) {
+                    Image(systemName: challenge.icon)
+                        .font(nativeAppFont(size: 18, weight: .black))
+                        .foregroundStyle(.black)
+                        .frame(width: 42, height: 42)
+                        .background(nativeAccent)
+                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(challenge.title)
+                            .font(nativeAppFont(size: 15, weight: .black))
+                            .foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Button(action: onAction) {
+                        Text(challenge.cta)
+                            .font(nativeAppFont(size: 13, weight: .bold))
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(nativeAccent)
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("\(min(challenge.current, challenge.target))/\(challenge.target)")
+                            .font(nativeAppFont(size: 12, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.72))
+                        Spacer()
+                    }
+
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 999, style: .continuous)
+                                .fill(Color.white.opacity(0.08))
+                            RoundedRectangle(cornerRadius: 999, style: .continuous)
+                                .fill(nativeAccent)
+                                .frame(width: max(20, proxy.size.width * challenge.progressValue))
+                        }
+                    }
+                    .frame(height: 8)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -8087,46 +8524,63 @@ private struct NativeHomepageChallengesSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationStack {
+        NavigationView {
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 12) {
                     ForEach(challenges) { challenge in
                         NativeSurfaceCard {
-                            HStack(alignment: .center, spacing: 14) {
-                                Image(systemName: challenge.icon)
-                                    .font(nativeAppFont(size: 18, weight: .black))
-                                    .foregroundStyle(.black)
-                                    .frame(width: 42, height: 42)
-                                    .background(nativeAccent)
-                                    .clipShape(Circle())
-
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(challenge.title)
-                                        .font(nativeAppFont(size: 15, weight: .black))
-                                        .foregroundStyle(.white)
-                                        .fixedSize(horizontal: false, vertical: true)
-
-                                    Text(challenge.subtitle)
-                                        .font(nativeAppFont(size: 13, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.62))
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-
-                                Spacer(minLength: 8)
-
-                                Button {
-                                    onAction(challenge)
-                                    dismiss()
-                                } label: {
-                                    Text(challenge.cta)
-                                        .font(nativeAppFont(size: 13, weight: .bold))
+                            VStack(alignment: .leading, spacing: 12) {
+                                HStack(alignment: .top, spacing: 14) {
+                                    Image(systemName: challenge.icon)
+                                        .font(nativeAppFont(size: 18, weight: .black))
                                         .foregroundStyle(.black)
-                                        .padding(.horizontal, 14)
-                                        .padding(.vertical, 10)
+                                        .frame(width: 42, height: 42)
                                         .background(nativeAccent)
-                                        .clipShape(Capsule())
+                                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+                                    VStack(alignment: .leading, spacing: 0) {
+                                        Text(challenge.title)
+                                            .font(nativeAppFont(size: 15, weight: .black))
+                                            .foregroundStyle(.white)
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+
+                                    Spacer(minLength: 8)
+
+                                    Button {
+                                        onAction(challenge)
+                                        dismiss()
+                                    } label: {
+                                        Text(challenge.cta)
+                                            .font(nativeAppFont(size: 13, weight: .bold))
+                                            .foregroundStyle(.black)
+                                            .padding(.horizontal, 14)
+                                            .padding(.vertical, 10)
+                                            .background(nativeAccent)
+                                            .clipShape(Capsule())
+                                    }
+                                    .buttonStyle(.plain)
                                 }
-                                .buttonStyle(.plain)
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    HStack {
+                                        Text("\(min(challenge.current, challenge.target))/\(challenge.target)")
+                                            .font(nativeAppFont(size: 12, weight: .bold))
+                                            .foregroundStyle(.white.opacity(0.72))
+                                        Spacer()
+                                    }
+
+                                    GeometryReader { proxy in
+                                        ZStack(alignment: .leading) {
+                                            RoundedRectangle(cornerRadius: 999, style: .continuous)
+                                                .fill(Color.white.opacity(0.08))
+                                            RoundedRectangle(cornerRadius: 999, style: .continuous)
+                                                .fill(nativeAccent)
+                                                .frame(width: max(20, proxy.size.width * challenge.progressValue))
+                                        }
+                                    }
+                                    .frame(height: 8)
+                                }
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         }
@@ -13709,7 +14163,7 @@ private struct NativeMainTabView: View {
                 NativeHomepageShellScreen()
             }
             .navigationViewStyle(.stack)
-            .tabItem { Label("Homepage", systemImage: "house.fill") }
+            .tabItem { Label("Home", systemImage: "house.fill") }
             .tag(NativeTab.discover)
 
             NavigationView {
@@ -14365,7 +14819,7 @@ private struct NativeFloatingTabBar: View {
     @Binding var activeTab: NativeTab
 
     private let tabs: [(tab: NativeTab, icon: String, title: String, isPrimary: Bool)] = [
-        (.discover, "house.fill", "Homepage", false),
+        (.discover, "house.fill", "Home", false),
         (.feed, "book.closed.fill", "Diary", false),
         (.checkIn, "plus", "Add", true),
         (.chat, "rectangle.stack.fill", "Feed", false),
@@ -14399,7 +14853,7 @@ private struct NativeFloatingTabBar: View {
             select(tab: item.tab)
         } label: {
             if item.isPrimary {
-                VStack(spacing: 6) {
+                VStack(spacing: 4) {
                     Image(systemName: item.icon)
                         .font(nativeAppFont(size: 22, weight: .black))
                         .foregroundStyle(.black)
@@ -14411,12 +14865,14 @@ private struct NativeFloatingTabBar: View {
                                 .stroke(Color.black.opacity(0.18), lineWidth: 1)
                         )
                         .shadow(color: nativeAccent.opacity(0.28), radius: 16, x: 0, y: 8)
+                        .offset(y: -18)
+                        .padding(.bottom, -18)
 
                     Text(item.title)
                         .font(nativeAppFont(size: 11, weight: .black))
                         .foregroundStyle(activeTab == item.tab ? .white : .white.opacity(0.62))
                 }
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, minHeight: 56, alignment: .bottom)
             } else {
                 VStack(spacing: 6) {
                     Image(systemName: item.icon)
@@ -16783,6 +17239,7 @@ private struct NativeDecisionSessionResultView: View {
                 }
             }
         }
+        .navigationViewStyle(.stack)
     }
 }
 
@@ -27514,7 +27971,8 @@ private struct NativeRemoteImage: View {
                 image
                     .resizable()
                     .scaledToFill()
-            case .failure(_):
+            case .failure(let error):
+                nativeLogger.error("NativeRemoteImage failed url=\(url ?? "nil", privacy: .public) resolved=\(nativeResolvedImageURL(url) ?? "nil", privacy: .public) error=\(error.localizedDescription, privacy: .public)")
                 fallback
             case .empty:
                 ZStack {
@@ -27550,7 +28008,15 @@ private func nativeResolvedImageURL(_ url: String?) -> String? {
         return raw
     }
     let sanitized = raw.hasPrefix("/") ? raw : "/\(raw)"
-    return "https://api.vibinn.club\(sanitized)"
+    return nativeResolvedAPIBaseURL().absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + sanitized
+}
+
+private func nativeFallbackUsername(from phoneNumber: String?) -> String {
+    let digits = (phoneNumber ?? "").filter(\.isNumber)
+    if digits.count >= 4 {
+        return "traveler\(digits.suffix(4))"
+    }
+    return "traveler"
 }
 
 private func nativeDistanceBetweenMiles(
@@ -27617,6 +28083,23 @@ private func nativeNormalizedMomentRatingLabel(_ value: String?) -> String {
 
 private func nativeMomentRatingChoice(for value: String?) -> NativeMomentRatingChoice {
     NativeMomentRatingChoice(rawValue: nativeNormalizedMomentRatingLabel(value)) ?? .liked
+}
+
+private func nativeAvatarInitials(from raw: String) -> String {
+    let tokens = raw
+        .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+        .map(String.init)
+        .filter { !$0.isEmpty }
+
+    if tokens.count >= 2 {
+        return (String(tokens[0].prefix(1)) + String(tokens[1].prefix(1))).uppercased()
+    }
+
+    if let first = tokens.first {
+        return String(first.prefix(1)).uppercased()
+    }
+
+    return "V"
 }
 
 private func nativeMomentRatingScore(for value: String?) -> Int {
@@ -27859,9 +28342,10 @@ private struct NativeCheckInScreen: View {
             }
             guard let _ = newValue else { return }
             if activeMediaPicker == .library {
+                activeMediaPicker = nil
                 Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 180_000_000)
                     await analyzeSelectedCheckInPhoto()
-                    activeMediaPicker = nil
                 }
             }
         }
@@ -28105,7 +28589,8 @@ private struct NativeCheckInScreen: View {
                                     .padding(.horizontal, 28)
                                 if inlineCamera.authorizationStatus == .denied || inlineCamera.authorizationStatus == .restricted {
                                     Button {
-                                        appState.openAppSettings()
+                                        guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
+                                        UIApplication.shared.open(settingsURL)
                                     } label: {
                                         Text("Allow camera")
                                             .font(nativeAppFont(size: 14, weight: .bold))
@@ -28148,10 +28633,10 @@ private struct NativeCheckInScreen: View {
                     .frame(maxWidth: .infinity)
                     .aspectRatio(1, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    .overlay(
+                    .overlay(alignment: .center) {
                         RoundedRectangle(cornerRadius: 28, style: .continuous)
                             .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                    )
+                    }
 
                     if isAnalyzingPlace {
                         EmptyView()
