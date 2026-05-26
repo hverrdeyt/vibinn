@@ -897,28 +897,23 @@ export async function joinPhoneWaitlist(input: JoinWaitlistInput) {
 
 export async function requestOtp(input: RequestOtpInput) {
   const phoneNumberE164 = normalizePhoneNumberE164(input.phoneNumber);
+  const requestedPurpose: AuthPurpose = input.purpose === 'SIGN_IN' ? 'SIGN_IN' : 'SIGN_UP';
+  const existingUser = await prismaV2.user.findUnique({
+    where: { phoneNumberE164 },
+  });
+  const effectivePurpose: AuthPurpose = requestedPurpose === 'SIGN_UP' && existingUser ? 'SIGN_IN' : requestedPurpose;
 
-  if (input.purpose === 'SIGN_IN') {
-    const existingUser = await prismaV2.user.findUnique({
-      where: { phoneNumberE164 },
-    });
+  if (effectivePurpose === 'SIGN_IN') {
     if (!existingUser) {
       throw new AuthV2Error('PHONE_NOT_REGISTERED', 'Phone number is not registered');
     }
   }
 
-  if (input.purpose === 'SIGN_UP') {
+  if (requestedPurpose === 'SIGN_UP') {
     if (!input.inviteCode?.trim()) {
       throw new AuthV2Error('INVITE_CODE_REQUIRED', 'Invite code is required');
     }
     await getActiveInviteCodeOrThrow(input.inviteCode);
-
-    const existingUser = await prismaV2.user.findUnique({
-      where: { phoneNumberE164 },
-    });
-    if (existingUser) {
-      throw new AuthV2Error('PHONE_ALREADY_REGISTERED', 'Phone number is already registered');
-    }
   }
 
   const providerRequestId = USE_STAGING_FIXED_OTP
@@ -927,7 +922,7 @@ export async function requestOtp(input: RequestOtpInput) {
   const otpRequest = await prismaV2.otpRequest.create({
     data: {
       phoneNumberE164,
-      purpose: input.purpose,
+      purpose: effectivePurpose,
       provider: 'VONAGE_VERIFY',
       providerRequestId,
       status: 'PENDING',
@@ -982,6 +977,22 @@ export async function verifyOtp(input: VerifyOtpInput) {
     let user = await tx.user.findUnique({
       where: { phoneNumberE164: otpRequest.phoneNumberE164 },
     });
+    let onboardingState:
+      | {
+          currentStep: string;
+          completedSteps: string[];
+          skippedSteps: string[];
+          inviteCodeValidated: boolean;
+          inviteCodeValidatedAt: Date | null;
+          phoneVerifiedAt: Date | null;
+          profileCompletedAt: Date | null;
+          locationDecisionAt: Date | null;
+          contactsDecisionAt: Date | null;
+          firstPlaceLoggedAt: Date | null;
+          inviteShareSeenAt: Date | null;
+          updatedAt: Date;
+        }
+      | null = null;
 
     if (otpRequest.purpose === 'SIGN_UP') {
       if (!input.inviteCode?.trim()) {
@@ -1002,7 +1013,7 @@ export async function verifyOtp(input: VerifyOtpInput) {
         },
       });
 
-      await tx.userOnboardingState.create({
+      onboardingState = await tx.userOnboardingState.create({
         data: {
           userId: user.id,
           currentStep: input.displayName?.trim() ? 'LOCATION_PERMISSION' : 'PROFILE',
@@ -1045,26 +1056,48 @@ export async function verifyOtp(input: VerifyOtpInput) {
         },
       });
 
-      await tx.userOnboardingState.upsert({
+      const existingState = await tx.userOnboardingState.findUnique({
         where: { userId: user.id },
-        update: {
-          currentStep: 'FIRST_PLACE',
-          completedSteps: {
-            set: Array.from(new Set(['INVITE_CONFIRMED', 'PHONE_VERIFICATION', 'PROFILE', 'LOCATION_PERMISSION', 'CONTACTS_PERMISSION', 'FRIENDS'])),
-          },
-          inviteCodeValidated: true,
-          inviteCodeValidatedAt: now,
-          phoneVerifiedAt: now,
-        },
-        create: {
-          userId: user.id,
-          currentStep: 'FIRST_PLACE',
-          completedSteps: ['INVITE_CONFIRMED', 'PHONE_VERIFICATION', 'PROFILE', 'LOCATION_PERMISSION', 'CONTACTS_PERMISSION', 'FRIENDS'],
-          inviteCodeValidated: true,
-          inviteCodeValidatedAt: now,
-          phoneVerifiedAt: now,
-        },
       });
+
+      if (existingState) {
+        onboardingState = await tx.userOnboardingState.update({
+          where: { userId: user.id },
+          data: {
+            completedSteps: {
+              set: Array.from(new Set([...existingState.completedSteps, 'PHONE_VERIFICATION'])),
+            },
+            inviteCodeValidated: existingState.inviteCodeValidated || Boolean(input.inviteCode?.trim()),
+            inviteCodeValidatedAt: existingState.inviteCodeValidatedAt ?? (input.inviteCode?.trim() ? now : null),
+            phoneVerifiedAt: now,
+          },
+        });
+      } else {
+        const completedSteps = user.onboardingCompleted
+          ? ['INVITE_CONFIRMED', 'PHONE_VERIFICATION', 'PROFILE', 'LOCATION_PERMISSION', 'CONTACTS_PERMISSION', 'FRIENDS', 'FIRST_PLACE', 'INVITE_SHARE']
+          : (user.status === 'ACTIVE'
+              ? ['INVITE_CONFIRMED', 'PHONE_VERIFICATION', 'PROFILE']
+              : ['INVITE_CONFIRMED', 'PHONE_VERIFICATION']);
+        const currentStep = user.onboardingCompleted
+          ? 'COMPLETED'
+          : (user.status === 'ACTIVE' ? 'FIRST_PLACE' : 'PROFILE');
+
+        onboardingState = await tx.userOnboardingState.create({
+          data: {
+            userId: user.id,
+            currentStep,
+            completedSteps,
+            inviteCodeValidated: Boolean(input.inviteCode?.trim()),
+            inviteCodeValidatedAt: input.inviteCode?.trim() ? now : null,
+            phoneVerifiedAt: now,
+            profileCompletedAt: completedSteps.includes('PROFILE') ? now : null,
+            locationDecisionAt: completedSteps.includes('LOCATION_PERMISSION') ? now : null,
+            contactsDecisionAt: completedSteps.includes('CONTACTS_PERMISSION') ? now : null,
+            firstPlaceLoggedAt: completedSteps.includes('FIRST_PLACE') ? now : null,
+            inviteShareSeenAt: completedSteps.includes('INVITE_SHARE') ? now : null,
+          },
+        });
+      }
     }
 
     await tx.otpRequest.update({
@@ -1086,11 +1119,14 @@ export async function verifyOtp(input: VerifyOtpInput) {
       },
     });
 
-    return { token, user };
+    return { token, user, onboardingState, authPurpose: otpRequest.purpose };
   });
 
   return {
     token: result.token,
     user: mapUser(result.user),
+    onboarding: result.onboardingState ? mapOnboardingState(result.onboardingState) : undefined,
+    authPurpose: result.authPurpose,
+    isExistingUser: result.authPurpose === 'SIGN_IN',
   };
 }
