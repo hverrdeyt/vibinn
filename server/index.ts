@@ -93,7 +93,7 @@ const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 const R2_ENDPOINT = process.env.R2_ENDPOINT;
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
-const GOOGLE_NEARBY_FREE_MONTHLY_LIMIT = Number(process.env.GOOGLE_NEARBY_FREE_MONTHLY_LIMIT || 3);
+const GOOGLE_NEARBY_FREE_MONTHLY_LIMIT = Number(process.env.GOOGLE_NEARBY_FREE_MONTHLY_LIMIT || 0);
 const TICKETMASTER_API_KEY = process.env.TICKETMASTER_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ENABLE_RUNTIME_AI = String(process.env.ENABLE_RUNTIME_AI ?? '').toLowerCase() === 'true';
@@ -9909,7 +9909,7 @@ app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequ
     }
 
     const usageState = await getNearbyDetectionUsageState(req.authV2UserId);
-    if (usageState.currentCount >= GOOGLE_NEARBY_FREE_MONTHLY_LIMIT) {
+    if (GOOGLE_NEARBY_FREE_MONTHLY_LIMIT > 0 && usageState.currentCount >= GOOGLE_NEARBY_FREE_MONTHLY_LIMIT) {
       res.json({
         places: [],
         limitReached: true,
@@ -9939,7 +9939,9 @@ app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequ
       return;
     }
 
-    await incrementNearbyDetectionUsage(req.authV2UserId, usageState.monthKey, usageState.currentCount);
+    if (GOOGLE_NEARBY_FREE_MONTHLY_LIMIT > 0) {
+      await incrementNearbyDetectionUsage(req.authV2UserId, usageState.monthKey, usageState.currentCount);
+    }
 
     const places = dedupeNativePlacesById(
       await Promise.all(
