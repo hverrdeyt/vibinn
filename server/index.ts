@@ -1790,6 +1790,31 @@ function scoreGoogleNearbyTypeForCheckIn(primaryType?: string, types?: string[])
   return 1;
 }
 
+function inferCategoryFromAutocompletePrediction(prediction: GooglePlaceSuggestion) {
+  const rawSecondaryText = prediction.structuredFormat?.secondaryText?.text ?? prediction.text?.text ?? '';
+  const lowered = rawSecondaryText.toLowerCase();
+
+  if (/(cafe|coffee)/.test(lowered)) return 'cafe';
+  if (/(restaurant|eatery|bistro|diner|brunch)/.test(lowered)) return 'restaurant';
+  if (/(bakery|patisserie)/.test(lowered)) return 'bakery';
+  if (/(bar|pub|cocktail|brewery)/.test(lowered)) return 'bar';
+  if (/(dessert|ice cream|gelato)/.test(lowered)) return 'dessert shop';
+
+  const tokens = rawSecondaryText
+    .split(/[·,]/)
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+
+  const candidate = tokens.find((token) =>
+    !token.includes('usa')
+    && !token.includes('indonesia')
+    && token.length > 2
+    && !/[0-9]/.test(token)
+  );
+
+  return candidate ?? 'place';
+}
+
 function mapGoogleLocationType(type?: string): 'city' | 'province' | 'country' {
   if (type === 'country') return 'country';
   if (type === 'administrative_area_level_1' || type === 'administrative_area_level_2') return 'province';
@@ -2353,7 +2378,7 @@ async function getPlaceSuggestions(input: string) {
             const mainText = prediction.structuredFormat?.mainText?.text ?? prediction.text?.text ?? 'Unnamed place';
             const secondaryText = prediction.structuredFormat?.secondaryText?.text ?? '';
             const locationBits = parseLocationBits(secondaryText);
-            const category = 'recommended spot';
+            const category = inferCategoryFromAutocompletePrediction(prediction);
 
             const place = await prisma.place.upsert({
               where: { googlePlaceId: prediction.placeId },
@@ -9965,7 +9990,6 @@ app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequ
       await Promise.all(
         nearbyResults
           .filter((place) => Boolean(place.id))
-          .filter((place) => isRelevantPredictionType(place.primaryType ?? place.types?.[0]))
           .map((place, index) => ({
             place,
             index,

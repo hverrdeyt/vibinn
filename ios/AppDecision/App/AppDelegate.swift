@@ -2096,6 +2096,14 @@ private struct NativeTravelerProfileResponse: Decodable {
 
 private struct NativePlaceLookupResponse: Decodable {
     let places: [NativePlace]
+    let limitReached: Bool?
+    let message: String?
+}
+
+private struct NativePlaceLookupResult {
+    let places: [NativePlace]
+    let limitReached: Bool
+    let message: String?
 }
 
 private struct NativePickedPhotoAsset: Identifiable, Equatable {
@@ -3460,7 +3468,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         cachedAuthUser = mergedUser
     }
 
-    func reverseV2PhotoPlaces(latitude: Double, longitude: Double) async throws -> [NativePlace] {
+    func reverseV2PhotoPlaces(latitude: Double, longitude: Double) async throws -> NativePlaceLookupResult {
         try await api.reverseV2PhotoPlaces(latitude: latitude, longitude: longitude, token: authToken)
     }
 
@@ -6036,14 +6044,18 @@ private struct NativeAPIClient {
         )
     }
 
-    func reverseV2PhotoPlaces(latitude: Double, longitude: Double, token: String?) async throws -> [NativePlace] {
+    func reverseV2PhotoPlaces(latitude: Double, longitude: Double, token: String?) async throws -> NativePlaceLookupResult {
         let path = "/api/v2/onboarding/photo-places/reverse?lat=\(latitude)&lon=\(longitude)"
         let response: NativePlaceLookupResponse = try await request(
             path: path,
             method: "GET",
             token: token
         )
-        return response.places
+        return NativePlaceLookupResult(
+            places: response.places,
+            limitReached: response.limitReached ?? false,
+            message: response.message
+        )
     }
 
     func searchV2PhotoPlaces(query: String, token: String?) async throws -> [NativePlace] {
@@ -13013,7 +13025,7 @@ private struct NativeAuthScreen: View {
             if let latitude = photo.latitude, let longitude = photo.longitude {
                 let candidates = try await appState.reverseV2PhotoPlaces(latitude: latitude, longitude: longitude)
                 try? await ensureFirstPlaceReadingMinimum(from: startedAt)
-                firstPlaceCandidates = Array(candidates.prefix(2))
+                firstPlaceCandidates = Array(candidates.places.prefix(2))
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                     firstPlaceStage = firstPlaceCandidates.isEmpty ? .noLocation : .exifCandidates
                 }
@@ -13025,7 +13037,7 @@ private struct NativeAuthScreen: View {
                     firstPlaceManualResults = try await appState.reverseV2PhotoPlaces(
                         latitude: coordinate.latitude,
                         longitude: coordinate.longitude
-                    )
+                    ).places
                 }
                 try? await ensureFirstPlaceReadingMinimum(from: startedAt)
                 withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
@@ -13074,7 +13086,7 @@ private struct NativeAuthScreen: View {
                     firstPlaceManualResults = try await appState.reverseV2PhotoPlaces(
                         latitude: coordinate.latitude,
                         longitude: coordinate.longitude
-                    )
+                    ).places
                 } catch {
                     presentTransientErrorMessage("Could not load nearby places right now.")
                 }
@@ -31000,9 +31012,13 @@ private struct NativeCheckInScreen: View {
         }
 
         do {
-            let candidates = try await appState.reverseV2PhotoPlaces(latitude: latitude, longitude: longitude)
-            placeCandidates = Array(candidates.prefix(3))
+            let lookup = try await appState.reverseV2PhotoPlaces(latitude: latitude, longitude: longitude)
+            nativeLogger.log("photo place reverse result places=\(lookup.places.count, privacy: .public) limit_reached=\(lookup.limitReached, privacy: .public) message=\(lookup.message ?? "-", privacy: .public)")
+            placeCandidates = Array(lookup.places.prefix(10))
             selectedPlace = placeCandidates.first
+            if placeCandidates.isEmpty, let message = lookup.message, !message.isEmpty {
+                errorMessage = message
+            }
         } catch {
             placeCandidates = []
             let nsError = error as NSError
