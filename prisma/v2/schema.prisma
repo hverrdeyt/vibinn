@@ -172,6 +172,46 @@ model UserOnboardingState {
   user                   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+model Place {
+  id                         String    @id @default(cuid())
+  googlePlaceId              String?   @unique
+  name                       String
+  address                    String?
+  city                       String?
+  country                    String?
+  neighborhood               String?
+  category                   String
+  shortFormattedAddress      String?
+  googleTypes                String[]  @default([])
+  googlePrimaryType          String?
+  googlePrimaryTypeDisplayName String?
+  latitude                   Float?
+  longitude                  Float?
+  rating                     Float?
+  userRatingCount            Int?
+  priceLevel                 Int?
+  openingHours               String[]  @default([])
+  currentOpeningHours        String[]  @default([])
+  servesBreakfast            Boolean?
+  servesLunch                Boolean?
+  servesDinner               Boolean?
+  servesBeer                 Boolean?
+  servesWine                 Boolean?
+  servesBrunch               Boolean?
+  servesDessert              Boolean?
+  servesCoffee               Boolean?
+  servesCocktails            Boolean?
+  goodForGroups              Boolean?
+  goodForWatchingSports      Boolean?
+  outdoorSeating             Boolean?
+  mapsUrl                    String?
+  websiteUri                 String?
+  primaryImageUrl            String?
+  lastGoogleFetchedAt        DateTime?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
+}
+
 model Moment {
   id                       String    @id @default(cuid())
   userId                   String

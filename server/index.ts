@@ -1799,7 +1799,24 @@ function scoreGoogleNearbyTypeForCheckIn(primaryType?: string, types?: string[])
   return 1;
 }
 
+function humanizeGooglePlaceType(type?: string | null) {
+  if (!type) return null;
+  return type
+    .replace(/_/g, ' ')
+    .replace(/-/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 function inferCategoryFromAutocompletePrediction(prediction: GooglePlaceSuggestion) {
+  const normalizedTypes = prediction.types?.map((type) => type.trim().toLowerCase()).filter(Boolean) ?? [];
+  const preferredType = normalizedTypes.find((type) => FOOD_AND_BEVERAGE_PLACE_TYPES.has(type))
+    ?? normalizedTypes.find((type) => isRelevantPredictionType(type))
+    ?? normalizedTypes[0];
+
+  const typeLabel = humanizeGooglePlaceType(preferredType);
+  if (typeLabel) return typeLabel;
+
   const rawSecondaryText = prediction.structuredFormat?.secondaryText?.text ?? prediction.text?.text ?? '';
   const lowered = rawSecondaryText.toLowerCase();
 
@@ -1900,6 +1917,8 @@ type GooglePlaceSuggestion = {
     mainText?: { text?: string };
     secondaryText?: { text?: string };
   };
+  types?: string[];
+  distanceMeters?: number;
 };
 
 const CHECK_IN_AUTOCOMPLETE_CITY_BOUNDS: Record<string, {
@@ -1934,6 +1953,7 @@ function normalizeCheckInAutocompleteCity(value?: string | null) {
 async function fetchGooglePlaceSuggestions(input: string, options?: {
   sessionToken?: string | null;
   locationLabel?: string | null;
+  origin?: { latitude: number; longitude: number } | null;
 }) {
   if (!GOOGLE_MAPS_API_KEY) return null;
 
@@ -1947,12 +1967,13 @@ async function fetchGooglePlaceSuggestions(input: string, options?: {
     headers: {
       'Content-Type': 'application/json',
       'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
-      'X-Goog-FieldMask': 'suggestions.placePrediction.place,suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat',
+      'X-Goog-FieldMask': 'suggestions.placePrediction.place,suggestions.placePrediction.placeId,suggestions.placePrediction.text,suggestions.placePrediction.structuredFormat,suggestions.placePrediction.types,suggestions.placePrediction.distanceMeters',
     },
     body: JSON.stringify({
       input,
       includeQueryPredictions: false,
       ...(options?.sessionToken ? { sessionToken: options.sessionToken } : {}),
+      ...(options?.origin ? { origin: options.origin } : {}),
       ...(locationRestriction ? { locationRestriction } : {}),
     }),
   });
@@ -2478,6 +2499,7 @@ function mapGoogleAutocompleteSuggestionForClient(
     similarityStat: undefined,
     whyYoullLikeIt: [],
     category,
+    distanceMeters: prediction.distanceMeters ?? undefined,
   };
 }
 
@@ -2608,6 +2630,42 @@ function mapStoredPlaceForClient(place: {
   };
 }
 
+function mapStoredV2PlaceForClient(place: {
+  id: string;
+  googlePlaceId: string | null;
+  name: string;
+  address: string | null;
+  city: string | null;
+  country: string | null;
+  neighborhood?: string | null;
+  category: string;
+  primaryImageUrl?: string | null;
+  latitude: number | null;
+  longitude: number | null;
+  mapsUrl?: string | null;
+}) {
+  const placeholderImage = 'https://placehold.co/800x1000/111111/ffffff?text=Place';
+  return {
+    id: place.id,
+    googlePlaceId: place.googlePlaceId ?? undefined,
+    name: place.name,
+    location: [place.city, place.country].filter(Boolean).join(', ') || place.address || 'Unknown location',
+    address: place.address ?? undefined,
+    neighborhood: place.neighborhood ?? undefined,
+    description: '',
+    hook: '',
+    image: place.primaryImageUrl ?? placeholderImage,
+    images: place.primaryImageUrl ? [place.primaryImageUrl] : [placeholderImage],
+    tags: [place.category].filter(Boolean),
+    similarityStat: undefined,
+    whyYoullLikeIt: [],
+    category: place.category,
+    latitude: place.latitude ?? undefined,
+    longitude: place.longitude ?? undefined,
+    mapsUrl: place.mapsUrl ?? buildPlaceMapsUrl(place.latitude, place.longitude) ?? undefined,
+  };
+}
+
 function buildTransientPlaceCandidate(input: {
   name: string;
   address?: string | null;
@@ -2716,6 +2774,73 @@ async function ensureManualPlaceRecord(input: {
     });
     return buildTransientPlaceCandidate(input);
   }
+}
+
+async function ensureManualV2PlaceRecord(input: {
+  name: string;
+  address?: string | null;
+  city?: string | null;
+  country?: string | null;
+  neighborhood?: string | null;
+  category: string;
+  latitude?: number | null;
+  longitude?: number | null;
+}) {
+  const existing = await prismaV2.place.findFirst({
+    where: {
+      googlePlaceId: null,
+      name: input.name,
+      address: input.address ?? null,
+    },
+    select: {
+      id: true,
+      googlePlaceId: true,
+      name: true,
+      address: true,
+      city: true,
+      country: true,
+      neighborhood: true,
+      category: true,
+      primaryImageUrl: true,
+      latitude: true,
+      longitude: true,
+      mapsUrl: true,
+    },
+  });
+
+  if (existing) {
+    return mapStoredV2PlaceForClient(existing);
+  }
+
+  const created = await prismaV2.place.create({
+    data: {
+      name: input.name,
+      address: input.address ?? null,
+      city: input.city ?? null,
+      country: input.country ?? null,
+      neighborhood: input.neighborhood ?? null,
+      category: input.category,
+      latitude: input.latitude ?? null,
+      longitude: input.longitude ?? null,
+      mapsUrl: buildPlaceMapsUrl(input.latitude, input.longitude),
+    },
+    select: {
+      id: true,
+      googlePlaceId: true,
+      name: true,
+      address: true,
+      city: true,
+      country: true,
+      neighborhood: true,
+      category: true,
+      primaryImageUrl: true,
+      latitude: true,
+      longitude: true,
+      mapsUrl: true,
+    },
+  });
+
+  return mapStoredV2PlaceForClient(created);
 }
 
 function dedupeNativePlacesById<T extends { id: string }>(places: T[]) {
@@ -3133,6 +3258,135 @@ async function acquireCheckInPlaceFromGoogleDetails(input: {
   });
 
   return place;
+}
+
+async function acquireCheckInPlaceFromGoogleDetailsV2(input: {
+  googlePlaceId: string;
+  sessionToken?: string | null;
+  locationLabel?: string | null;
+}) {
+  const googlePlaceId = input.googlePlaceId.trim();
+  if (!googlePlaceId) throw new Error('googlePlaceId is required');
+
+  const existingPlace = await prismaV2.place.findUnique({
+    where: { googlePlaceId },
+    select: {
+      id: true,
+      address: true,
+      lastGoogleFetchedAt: true,
+      primaryImageUrl: true,
+    },
+  });
+
+  const needsDetails = !existingPlace || !existingPlace.lastGoogleFetchedAt || !existingPlace.address;
+  if (existingPlace && !needsDetails) {
+    return existingPlace;
+  }
+
+  const details = await fetchGooglePlaceDetails(googlePlaceId, {
+    sessionToken: input.sessionToken,
+  });
+
+  if (!details) {
+    throw new Error('Google Place Details is unavailable');
+  }
+
+  const effectiveDisplayName = details.displayName?.text ?? 'Unnamed place';
+  const effectiveAddress = details.formattedAddress;
+  const effectiveLocation = details.location;
+  const effectivePrimaryType = details.primaryType;
+  const effectiveTypes = details.types;
+  const effectiveRating = details.rating ?? null;
+  const effectiveUserRatingCount = details.userRatingCount ?? null;
+  const effectivePriceLevel = mapGooglePriceLevel(details.priceLevel);
+  const effectivePhotoRefs = details.photos ?? [];
+  const locationBits = parseLocationBits(effectiveAddress);
+  const neighborhoodBits = extractNeighborhoodFromAddressComponents(details.addressComponents);
+  const category = (effectivePrimaryType ?? effectiveTypes?.[0] ?? 'recommended spot').replace(/_/g, ' ');
+
+  const shouldFetchPhotos = !existingPlace || !existingPlace.primaryImageUrl;
+  const photoUris = shouldFetchPhotos && effectivePhotoRefs.length > 0
+    ? await fetchGooglePhotoUris(effectivePhotoRefs.map((photo) => photo.name), 1).catch((error) => {
+        console.error(error);
+        return [];
+      })
+    : [];
+  const primaryImageUrl = photoUris[0] ?? existingPlace?.primaryImageUrl ?? null;
+
+  return prismaV2.place.upsert({
+    where: { googlePlaceId },
+    update: {
+      name: effectiveDisplayName,
+      address: effectiveAddress,
+      city: locationBits.city,
+      country: locationBits.country,
+      neighborhood: neighborhoodBits.neighborhood ?? null,
+      category,
+      shortFormattedAddress: details.shortFormattedAddress ?? null,
+      googleTypes: effectiveTypes ?? [],
+      googlePrimaryType: effectivePrimaryType ?? null,
+      googlePrimaryTypeDisplayName: details.primaryTypeDisplayName?.text ?? null,
+      latitude: effectiveLocation?.latitude ?? null,
+      longitude: effectiveLocation?.longitude ?? null,
+      rating: effectiveRating,
+      userRatingCount: effectiveUserRatingCount,
+      priceLevel: effectivePriceLevel,
+      openingHours: details.regularOpeningHours?.weekdayDescriptions ?? [],
+      currentOpeningHours: details.currentOpeningHours?.weekdayDescriptions ?? [],
+      servesBreakfast: details.servesBreakfast ?? null,
+      servesLunch: details.servesLunch ?? null,
+      servesDinner: details.servesDinner ?? null,
+      servesBeer: details.servesBeer ?? null,
+      servesWine: details.servesWine ?? null,
+      servesBrunch: details.servesBrunch ?? null,
+      servesDessert: details.servesDessert ?? null,
+      servesCoffee: details.servesCoffee ?? null,
+      servesCocktails: details.servesCocktails ?? null,
+      goodForGroups: details.goodForGroups ?? null,
+      goodForWatchingSports: details.goodForWatchingSports ?? null,
+      outdoorSeating: details.outdoorSeating ?? null,
+      mapsUrl: details.googleMapsUri ?? buildPlaceMapsUrl(effectiveLocation?.latitude, effectiveLocation?.longitude),
+      websiteUri: details.websiteUri ?? null,
+      primaryImageUrl: primaryImageUrl ?? undefined,
+      lastGoogleFetchedAt: new Date(),
+    },
+    create: {
+      googlePlaceId,
+      name: effectiveDisplayName,
+      address: effectiveAddress,
+      city: locationBits.city,
+      country: locationBits.country,
+      neighborhood: neighborhoodBits.neighborhood ?? null,
+      category,
+      shortFormattedAddress: details.shortFormattedAddress ?? null,
+      googleTypes: effectiveTypes ?? [],
+      googlePrimaryType: effectivePrimaryType ?? null,
+      googlePrimaryTypeDisplayName: details.primaryTypeDisplayName?.text ?? null,
+      latitude: effectiveLocation?.latitude ?? null,
+      longitude: effectiveLocation?.longitude ?? null,
+      rating: effectiveRating,
+      userRatingCount: effectiveUserRatingCount,
+      priceLevel: effectivePriceLevel,
+      openingHours: details.regularOpeningHours?.weekdayDescriptions ?? [],
+      currentOpeningHours: details.currentOpeningHours?.weekdayDescriptions ?? [],
+      servesBreakfast: details.servesBreakfast ?? null,
+      servesLunch: details.servesLunch ?? null,
+      servesDinner: details.servesDinner ?? null,
+      servesBeer: details.servesBeer ?? null,
+      servesWine: details.servesWine ?? null,
+      servesBrunch: details.servesBrunch ?? null,
+      servesDessert: details.servesDessert ?? null,
+      servesCoffee: details.servesCoffee ?? null,
+      servesCocktails: details.servesCocktails ?? null,
+      goodForGroups: details.goodForGroups ?? null,
+      goodForWatchingSports: details.goodForWatchingSports ?? null,
+      outdoorSeating: details.outdoorSeating ?? null,
+      mapsUrl: details.googleMapsUri ?? buildPlaceMapsUrl(effectiveLocation?.latitude, effectiveLocation?.longitude),
+      websiteUri: details.websiteUri ?? null,
+      primaryImageUrl,
+      lastGoogleFetchedAt: new Date(),
+    },
+  });
 }
 
 function normalizePlaceCategory(category?: string | null, tags: string[] = []) {
@@ -7357,7 +7611,49 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
     },
   });
 
-  if (!place) return null;
+  if (!place) {
+    const v2Place = await prismaV2.place.findUnique({
+      where: { id: placeId },
+    });
+
+    if (!v2Place) return null;
+
+    return {
+      id: v2Place.id,
+      googlePlaceId: v2Place.googlePlaceId ?? undefined,
+      name: v2Place.name,
+      location: [v2Place.city, v2Place.country].filter(Boolean).join(', ') || v2Place.address || 'Unknown location',
+      description: '',
+      hook: '',
+      address: v2Place.address ?? undefined,
+      image: v2Place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
+      images: v2Place.primaryImageUrl
+        ? [v2Place.primaryImageUrl]
+        : ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
+      tags: [v2Place.category].filter(Boolean),
+      whyYoullLikeIt: [],
+      rating: v2Place.rating ?? undefined,
+      priceLevel: v2Place.priceLevel ?? undefined,
+      openingHours: v2Place.openingHours.length > 0 ? v2Place.openingHours : undefined,
+      servesBreakfast: v2Place.servesBreakfast ?? undefined,
+      servesLunch: v2Place.servesLunch ?? undefined,
+      servesDinner: v2Place.servesDinner ?? undefined,
+      servesBeer: v2Place.servesBeer ?? undefined,
+      servesWine: v2Place.servesWine ?? undefined,
+      servesBrunch: v2Place.servesBrunch ?? undefined,
+      servesDessert: v2Place.servesDessert ?? undefined,
+      servesCoffee: v2Place.servesCoffee ?? undefined,
+      servesCocktails: v2Place.servesCocktails ?? undefined,
+      goodForGroups: v2Place.goodForGroups ?? undefined,
+      goodForWatchingSports: v2Place.goodForWatchingSports ?? undefined,
+      outdoors: v2Place.outdoorSeating ?? undefined,
+      outdoorSeating: v2Place.outdoorSeating ?? undefined,
+      mapsUrl: v2Place.mapsUrl ?? buildPlaceMapsUrl(v2Place.latitude, v2Place.longitude) ?? undefined,
+      latitude: v2Place.latitude ?? undefined,
+      longitude: v2Place.longitude ?? undefined,
+      category: v2Place.category,
+    };
+  }
 
   const persistedScore = userId
     ? await prisma.userPlaceScore.findUnique({
@@ -9595,13 +9891,13 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
     let resolvedPlaceLongitude = typeof payload.placeLongitude === 'number' ? payload.placeLongitude : null;
 
     if (googlePlaceId) {
-      const canonicalPlace = await acquireCheckInPlaceFromGoogleDetails({
+      const canonicalPlace = await acquireCheckInPlaceFromGoogleDetailsV2({
         googlePlaceId,
         sessionToken: autocompleteSessionToken,
         locationLabel: resolvedPlaceLocation,
       });
 
-      const placeRecord = await prisma.place.findUnique({
+      const placeRecord = await prismaV2.place.findUnique({
         where: { id: canonicalPlace.id },
         select: {
           id: true,
@@ -9625,6 +9921,43 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
         resolvedPlaceCategory = placeRecord.category || resolvedPlaceCategory;
         resolvedPlaceLatitude = placeRecord.latitude ?? resolvedPlaceLatitude;
         resolvedPlaceLongitude = placeRecord.longitude ?? resolvedPlaceLongitude;
+      }
+    } else {
+      const existingPlace = placeId
+        ? await prismaV2.place.findUnique({
+            where: { id: placeId },
+            select: {
+              id: true,
+              name: true,
+              address: true,
+              city: true,
+              country: true,
+              category: true,
+              latitude: true,
+              longitude: true,
+            },
+          })
+        : null;
+
+      if (existingPlace) {
+        resolvedPlaceId = existingPlace.id;
+        resolvedPlaceName = existingPlace.name;
+        resolvedPlaceAddress = existingPlace.address ?? resolvedPlaceAddress;
+        resolvedPlaceLocation = [existingPlace.city, existingPlace.country].filter(Boolean).join(', ')
+          || existingPlace.address
+          || resolvedPlaceLocation;
+        resolvedPlaceCategory = existingPlace.category || resolvedPlaceCategory;
+        resolvedPlaceLatitude = existingPlace.latitude ?? resolvedPlaceLatitude;
+        resolvedPlaceLongitude = existingPlace.longitude ?? resolvedPlaceLongitude;
+      } else {
+        const persistedPlace = await ensureManualV2PlaceRecord({
+          name: resolvedPlaceName,
+          address: resolvedPlaceAddress,
+          category: resolvedPlaceCategory || 'place',
+          latitude: resolvedPlaceLatitude,
+          longitude: resolvedPlaceLongitude,
+        });
+        resolvedPlaceId = persistedPlace.id;
       }
     }
 
@@ -9968,6 +10301,8 @@ app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
   try {
     const query = String(req.query.q ?? '').trim();
     const sessionToken = String(req.query.sessionToken ?? crypto.randomUUID()).trim();
+    const originLat = Number(req.query.originLat);
+    const originLon = Number(req.query.originLon);
 
     if (query.length < 2) {
       res.json({ places: [] });
@@ -9977,6 +10312,9 @@ app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
     const predictions = await fetchGooglePlaceSuggestions(query, {
       sessionToken,
       locationLabel: typeof req.query.location === 'string' ? req.query.location : null,
+      origin: Number.isFinite(originLat) && Number.isFinite(originLon)
+        ? { latitude: originLat, longitude: originLon }
+        : null,
     });
     const places = dedupeNativePlacesById(
       (predictions ?? []).map((prediction) =>

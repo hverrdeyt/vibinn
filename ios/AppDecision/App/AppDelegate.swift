@@ -1154,6 +1154,7 @@ private struct NativePlace: Decodable, Identifiable {
     let mapsUrl: String?
     let latitude: Double?
     let longitude: Double?
+    var distanceMeters: Double? = nil
     let priceRange: String?
     let priceRangeLabel: String?
     let discoverySignals: [NativePlaceDiscoverySignal]?
@@ -3473,7 +3474,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func searchV2PhotoPlaces(query: String) async throws -> [NativePlace] {
-        try await api.searchV2PhotoPlaces(query: query, token: authToken)
+        try await api.searchV2PhotoPlaces(query: query, token: authToken, origin: currentCoordinate)
     }
 
     func resetV2OnboardingForDebug(token: String) async throws -> NativeV2OnboardingPayload {
@@ -6058,10 +6059,14 @@ private struct NativeAPIClient {
         )
     }
 
-    func searchV2PhotoPlaces(query: String, token: String?) async throws -> [NativePlace] {
+    func searchV2PhotoPlaces(query: String, token: String?, origin: CLLocationCoordinate2D?) async throws -> [NativePlace] {
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        var path = "/api/v2/onboarding/photo-places/search?q=\(encodedQuery)"
+        if let origin {
+            path += "&originLat=\(origin.latitude)&originLon=\(origin.longitude)"
+        }
         let response: NativePlaceLookupResponse = try await request(
-            path: "/api/v2/onboarding/photo-places/search?q=\(encodedQuery)",
+            path: path,
             method: "GET",
             token: token
         )
@@ -31583,34 +31588,48 @@ private struct NativeCheckInPlaceRow: View {
         return Array(parts.prefix(2)).joined(separator: ", ")
     }
 
-    private var secondaryLine: String {
-        let typeLabel = placeTypeLabel
-        let addressLabel = shortAddressLabel
-
-        switch (typeLabel, addressLabel) {
-        case let (.some(typeLabel), .some(addressLabel)):
-            return "\(typeLabel)  •  \(addressLabel)"
-        case let (.some(typeLabel), nil):
-            return typeLabel
-        case let (nil, .some(addressLabel)):
-            return addressLabel
-        case (nil, nil):
-            return place.location
+    private var tertiaryLine: String? {
+        if let distanceLabel {
+            return distanceLabel
         }
+        if let shortAddressLabel, !shortAddressLabel.isEmpty {
+            return shortAddressLabel
+        }
+        let fallbackLocation = place.location.trimmingCharacters(in: .whitespacesAndNewlines)
+        return fallbackLocation.isEmpty ? nil : fallbackLocation
+    }
+
+    private var distanceLabel: String? {
+        guard let distanceMeters = place.distanceMeters, distanceMeters > 0 else { return nil }
+        if distanceMeters < 160.934 {
+            let feet = distanceMeters * 3.28084
+            return String(format: "%.0f ft away", feet)
+        }
+        let miles = distanceMeters / 1609.344
+        return String(format: "%.1f mi away", miles)
     }
 
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(place.name)
                     .font(nativeAppFont(size: 17, weight: .black))
                     .foregroundStyle(.white)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Text(secondaryLine)
-                    .font(nativeAppFont(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.58))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .lineLimit(1)
+                if let placeTypeLabel {
+                    Text(placeTypeLabel)
+                        .font(nativeAppFont(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(1)
+                }
+                if let tertiaryLine {
+                    Text(tertiaryLine)
+                        .font(nativeAppFont(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.52))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .lineLimit(1)
+                }
             }
             if isSelected {
                 Image(systemName: "checkmark.circle.fill")
