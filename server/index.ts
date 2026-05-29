@@ -2452,6 +2452,7 @@ function mapGoogleAutocompleteSuggestionForClient(
   const secondaryText = prediction.structuredFormat?.secondaryText?.text ?? '';
   const locationBits = parseLocationBits(secondaryText);
   const location = locationBits.location || secondaryText || options.locationLabel || 'Google Places';
+  const category = inferCategoryFromAutocompletePrediction(prediction);
 
   return {
     id: `google:${prediction.placeId}`,
@@ -2467,7 +2468,7 @@ function mapGoogleAutocompleteSuggestionForClient(
     tags: [],
     similarityStat: undefined,
     whyYoullLikeIt: [],
-    category: 'google place',
+    category,
   };
 }
 
