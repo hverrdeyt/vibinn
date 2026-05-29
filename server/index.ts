@@ -1746,9 +1746,48 @@ const LOCATION_TYPES = new Set([
   'country',
 ]);
 
+const FOOD_AND_BEVERAGE_PLACE_TYPES = new Set([
+  'restaurant',
+  'cafe',
+  'coffee_shop',
+  'bakery',
+  'bar',
+  'pub',
+  'meal_takeaway',
+  'meal_delivery',
+  'fast_food_restaurant',
+  'brunch_restaurant',
+  'breakfast_restaurant',
+  'seafood_restaurant',
+  'pizza_restaurant',
+  'sandwich_shop',
+  'ice_cream_shop',
+  'tea_house',
+  'juice_shop',
+  'dessert_shop',
+  'ramen_restaurant',
+  'sushi_restaurant',
+  'steak_house',
+  'hamburger_restaurant',
+  'chinese_restaurant',
+  'indian_restaurant',
+  'mexican_restaurant',
+  'thai_restaurant',
+  'bar_and_grill',
+  'food_court',
+  'food_stand',
+]);
+
 function isRelevantPredictionType(type?: string) {
   if (!type) return true;
   return !IRRELEVANT_PRIMARY_TYPES.has(type);
+}
+
+function scoreGoogleNearbyTypeForCheckIn(primaryType?: string, types?: string[]) {
+  const normalizedTypes = [primaryType, ...(types ?? [])].filter(Boolean) as string[];
+  if (normalizedTypes.some((type) => FOOD_AND_BEVERAGE_PLACE_TYPES.has(type))) return 3;
+  if (normalizedTypes.some((type) => isRelevantPredictionType(type))) return 2;
+  return 1;
 }
 
 function mapGoogleLocationType(type?: string): 'city' | 'province' | 'country' {
@@ -1924,7 +1963,7 @@ async function fetchGoogleNearbyPlaceCandidates(latitude: number, longitude: num
       ].join(','),
     },
     body: JSON.stringify({
-      maxResultCount: options?.maxResultCount ?? 6,
+      maxResultCount: options?.maxResultCount ?? 10,
       rankPreference: 'DISTANCE',
       locationRestriction: {
         circle: {
@@ -9899,7 +9938,7 @@ app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequ
 
     let nearbyResults: GooglePlaceDetailsResponse[] | null = null;
     try {
-      nearbyResults = await fetchGoogleNearbyPlaceCandidates(latitude, longitude, { maxResultCount: 6 });
+      nearbyResults = await fetchGoogleNearbyPlaceCandidates(latitude, longitude, { maxResultCount: 10 });
     } catch (error) {
       console.error('Google Nearby auto-detect failed', {
         userId: req.authV2UserId,
@@ -9926,10 +9965,21 @@ app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequ
       await Promise.all(
         nearbyResults
           .filter((place) => Boolean(place.id))
-          .slice(0, 6)
+          .filter((place) => isRelevantPredictionType(place.primaryType ?? place.types?.[0]))
+          .map((place, index) => ({
+            place,
+            index,
+            score: scoreGoogleNearbyTypeForCheckIn(place.primaryType, place.types),
+          }))
+          .sort((left, right) => {
+            if (right.score !== left.score) return right.score - left.score;
+            return left.index - right.index;
+          })
+          .slice(0, 10)
+          .map(({ place }) => place)
           .map((place) => mapGoogleNearbyCandidateForClient(place))
       )
-    ).slice(0, 6);
+    ).slice(0, 10);
 
     res.json({ places, limitReached: false });
   } catch (error) {
