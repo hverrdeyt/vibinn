@@ -7887,6 +7887,12 @@ private struct NativeDiaryScreen: View {
             await appState.refreshV2DiaryMoments()
             updateMapRegion()
         }
+        .onAppear {
+            Task {
+                await appState.refreshV2DiaryMoments()
+                updateMapRegion()
+            }
+        }
         .onChange(of: appState.diaryMoments.count) { _ in
             updateMapRegion()
         }
@@ -8029,6 +8035,9 @@ private struct NativeDiaryScreen: View {
     private var diaryContent: some View {
         switch activeMode {
         case .gallery:
+            if let errorMessage = appState.diaryMomentsErrorMessage, !errorMessage.isEmpty, gallerySections.isEmpty {
+                diaryEmptyState("Could not load memories right now.")
+            } else
             if gallerySections.isEmpty {
                 diaryEmptyState("No memories yet.")
             } else {
@@ -8058,6 +8067,9 @@ private struct NativeDiaryScreen: View {
                 }
             }
         case .timeline:
+            if let errorMessage = appState.diaryMomentsErrorMessage, !errorMessage.isEmpty, timelineMoments.isEmpty {
+                diaryEmptyState("Could not load memories right now.")
+            } else
             if timelineMoments.isEmpty {
                 diaryEmptyState("No memories for this city yet.")
             } else {
@@ -8073,6 +8085,9 @@ private struct NativeDiaryScreen: View {
                 }
             }
         case .maps:
+            if let errorMessage = appState.diaryMomentsErrorMessage, !errorMessage.isEmpty, mapMoments.isEmpty {
+                diaryEmptyState("Could not load memories right now.")
+            } else
             if mapMoments.isEmpty {
                 diaryEmptyState("No mapped memories in this range yet.")
             } else {
@@ -13022,34 +13037,13 @@ private struct NativeAuthScreen: View {
         }
 
         do {
-            if let latitude = photo.latitude, let longitude = photo.longitude {
-                let candidates = try await appState.reverseV2PhotoPlaces(latitude: latitude, longitude: longitude)
-                try? await ensureFirstPlaceReadingMinimum(from: startedAt)
-                firstPlaceCandidates = Array(candidates.places.prefix(2))
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                    firstPlaceStage = firstPlaceCandidates.isEmpty ? .noLocation : .exifCandidates
-                }
-            } else {
-                if
-                    appState.locationPermissionState == .authorized,
-                    let coordinate = appState.currentCoordinate
-                {
-                    firstPlaceManualResults = try await appState.reverseV2PhotoPlaces(
-                        latitude: coordinate.latitude,
-                        longitude: coordinate.longitude
-                    ).places
-                }
-                try? await ensureFirstPlaceReadingMinimum(from: startedAt)
-                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                    firstPlaceStage = .noLocation
-                }
-            }
-        } catch {
-            try? await ensureFirstPlaceReadingMinimum(from: startedAt)
-            presentTransientErrorMessage("Could not read your photo right now.")
+            _ = photo
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                 firstPlaceStage = .noLocation
             }
+            try? await ensureFirstPlaceReadingMinimum(from: startedAt)
+        } catch {
+            try? await ensureFirstPlaceReadingMinimum(from: startedAt)
         }
 
         isFirstPlaceAnalyzing = false
@@ -31007,25 +31001,7 @@ private struct NativeCheckInScreen: View {
             }
         }
 
-        guard let latitude = selectedPhotoAsset.latitude, let longitude = selectedPhotoAsset.longitude else {
-            return
-        }
-
-        do {
-            let lookup = try await appState.reverseV2PhotoPlaces(latitude: latitude, longitude: longitude)
-            nativeLogger.log("photo place reverse result places=\(lookup.places.count, privacy: .public) limit_reached=\(lookup.limitReached, privacy: .public) message=\(lookup.message ?? "-", privacy: .public)")
-            placeCandidates = Array(lookup.places.prefix(10))
-            selectedPlace = placeCandidates.first
-            if placeCandidates.isEmpty, let message = lookup.message, !message.isEmpty {
-                errorMessage = message
-            }
-        } catch {
-            placeCandidates = []
-            let nsError = error as NSError
-            if !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorUserAuthenticationRequired) {
-                errorMessage = "Could not analyze the place from this photo."
-            }
-        }
+        _ = selectedPhotoAsset
     }
 
     private func resetSelectedCheckInPhoto() {

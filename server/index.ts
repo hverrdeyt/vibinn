@@ -782,6 +782,9 @@ async function buildV2DiaryMoments(userId: string, requestOrigin?: string) {
             targetId: { in: momentIds },
           },
           _count: { _all: true },
+        }).catch((error) => {
+          console.error('buildV2DiaryMoments comment counts failed', error);
+          return [];
         })
       : Promise.resolve([]),
     momentIds.length
@@ -792,6 +795,9 @@ async function buildV2DiaryMoments(userId: string, requestOrigin?: string) {
             targetId: { in: momentIds },
           },
           _count: { _all: true },
+        }).catch((error) => {
+          console.error('buildV2DiaryMoments like counts failed', error);
+          return [];
         })
       : Promise.resolve([]),
     momentIds.length
@@ -808,6 +814,9 @@ async function buildV2DiaryMoments(userId: string, requestOrigin?: string) {
               },
             },
           },
+        }).catch((error) => {
+          console.error('buildV2DiaryMoments latest comments failed', error);
+          return [];
         })
       : Promise.resolve([]),
   ]);
@@ -9939,74 +9948,17 @@ async function incrementNearbyDetectionUsage(userId: string, monthKey: string, c
 
 app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequest, res) => {
   try {
-    if (!req.authV2UserId) {
-      res.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
-
-    const latitude = Number(req.query.lat);
-    const longitude = Number(req.query.lon);
-
-    if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-      res.status(400).json({ error: 'lat and lon are required' });
-      return;
-    }
-
-    const usageState = await getNearbyDetectionUsageState(req.authV2UserId);
-    if (GOOGLE_NEARBY_FREE_MONTHLY_LIMIT > 0 && usageState.currentCount >= GOOGLE_NEARBY_FREE_MONTHLY_LIMIT) {
-      res.json({
-        places: [],
-        limitReached: true,
-        message: 'Auto-detect limit reached this month. Search manually instead.',
-      });
-      return;
-    }
-
-    let nearbyResults: GooglePlaceDetailsResponse[] | null = null;
-    try {
-      nearbyResults = await fetchGoogleNearbyPlaceCandidates(latitude, longitude, { maxResultCount: 10 });
-    } catch (error) {
-      console.error('Google Nearby auto-detect failed', {
-        userId: req.authV2UserId,
-        latitude,
-        longitude,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
-    if (!nearbyResults) {
-      res.json({
-        places: [],
-        limitReached: false,
-        message: 'Auto-detect is temporarily unavailable. Search manually instead.',
-      });
-      return;
-    }
-
-    if (GOOGLE_NEARBY_FREE_MONTHLY_LIMIT > 0) {
-      await incrementNearbyDetectionUsage(req.authV2UserId, usageState.monthKey, usageState.currentCount);
-    }
-
-    const places = dedupeNativePlacesById(
-      await Promise.all(
-        nearbyResults
-          .filter((place) => Boolean(place.id))
-          .map((place, index) => ({
-            place,
-            index,
-            score: scoreGoogleNearbyTypeForCheckIn(place.primaryType, place.types),
-          }))
-          .sort((left, right) => {
-            if (right.score !== left.score) return right.score - left.score;
-            return left.index - right.index;
-          })
-          .slice(0, 10)
-          .map(({ place }) => place)
-          .map((place) => mapGoogleNearbyCandidateForClient(place))
-      )
-    ).slice(0, 10);
-
-    res.json({ places, limitReached: false });
+    console.warn('Photo place reverse endpoint called while disabled', {
+      userId: req.authV2UserId ?? null,
+      latitude: req.query.lat ?? null,
+      longitude: req.query.lon ?? null,
+    });
+    res.status(410).json({
+      error: 'Photo auto-detect disabled',
+      places: [],
+      limitReached: false,
+      message: 'Photo location auto-detect is disabled. Search manually instead.',
+    });
   } catch (error) {
     handleError(res, error);
   }
