@@ -60,6 +60,8 @@ model User {
   cityLatitude        Float?
   cityLongitude       Float?
   citySource          String?
+  nearbyDetectionMonthKey String?
+  nearbyDetectionCount Int              @default(0)
   status              UserStatus        @default(PENDING_PROFILE)
   onboardingCompleted Boolean           @default(false)
   lastLoginAt         DateTime?

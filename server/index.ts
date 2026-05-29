@@ -93,6 +93,7 @@ const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 const R2_ENDPOINT = process.env.R2_ENDPOINT;
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
+const GOOGLE_NEARBY_FREE_MONTHLY_LIMIT = Number(process.env.GOOGLE_NEARBY_FREE_MONTHLY_LIMIT || 3);
 const TICKETMASTER_API_KEY = process.env.TICKETMASTER_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const ENABLE_RUNTIME_AI = String(process.env.ENABLE_RUNTIME_AI ?? '').toLowerCase() === 'true';
@@ -249,6 +250,13 @@ function buildMediaUrl(key: string, requestOrigin?: string) {
     return `${baseOrigin}/api/media?key=${encodeURIComponent(key)}`;
   }
   return `/api/media?key=${encodeURIComponent(key)}`;
+}
+
+function buildMomentObjectKey(userId: string, storageName: string) {
+  const normalizedUserId = userId.trim();
+  const normalizedStorageName = storageName.trim();
+  const prefix = APP_ENV === 'staging' ? 'staging/' : '';
+  return `${prefix}moments/${normalizedUserId}/${normalizedStorageName}`;
 }
 
 function getAllowedGoogleClientIds() {
@@ -569,7 +577,12 @@ function mapV2MomentForClient(moment: {
   autocompleteSessionToken: string | null;
   placeLatitude: number | null;
   placeLongitude: number | null;
-}, requestOrigin?: string) {
+}, requestOrigin?: string, counts?: { commentCount?: number; likeCount?: number }, latestComment: {
+  id: string;
+  user: { username: string };
+  body: string;
+  createdAt: Date;
+} | null = null) {
   const resolvedMedia = resolveMomentMediaUrls(moment.uploadedMedia, requestOrigin);
   const primaryImage = resolvedMedia[0] || 'https://placehold.co/800x1000/111111/ffffff?text=Place';
 
@@ -582,6 +595,16 @@ function mapV2MomentForClient(moment: {
     uploadedMedia: resolvedMedia,
     rating: moment.rating ?? undefined,
     ratingLabel: moment.ratingLabel ?? undefined,
+    commentCount: counts?.commentCount ?? 0,
+    likeCount: counts?.likeCount ?? 0,
+    latestComment: latestComment
+      ? {
+          id: latestComment.id,
+          user: latestComment.user.username,
+          body: latestComment.body,
+          createdAt: latestComment.createdAt.toISOString(),
+        }
+      : undefined,
     place: {
       id: moment.placeId,
       googlePlaceId: moment.placeGooglePlaceId ?? undefined,
@@ -604,7 +627,7 @@ function mapV2MomentForClient(moment: {
       tags: moment.placeCategory ? [moment.placeCategory] : [],
       latitude: moment.placeLatitude ?? undefined,
       longitude: moment.placeLongitude ?? undefined,
-      mapsUrl: buildOsmMapsUrl(moment.placeLatitude ?? undefined, moment.placeLongitude ?? undefined) ?? undefined,
+      mapsUrl: buildPlaceMapsUrl(moment.placeLatitude ?? undefined, moment.placeLongitude ?? undefined) ?? undefined,
     },
   };
 }
@@ -749,8 +772,60 @@ async function buildV2DiaryMoments(userId: string, requestOrigin?: string) {
     ],
   });
 
+  const momentIds = moments.map((moment) => moment.id);
+  const [commentsByMoment, vibinsByMoment, latestComments] = await Promise.all([
+    momentIds.length
+      ? prisma.comment.groupBy({
+          by: ['targetId'],
+          where: {
+            targetType: 'MOMENT',
+            targetId: { in: momentIds },
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
+    momentIds.length
+      ? prisma.vibin.groupBy({
+          by: ['targetId'],
+          where: {
+            targetType: 'MOMENT',
+            targetId: { in: momentIds },
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
+    momentIds.length
+      ? prisma.comment.findMany({
+          where: {
+            targetType: 'MOMENT',
+            targetId: { in: momentIds },
+          },
+          orderBy: { createdAt: 'desc' },
+          include: {
+            user: {
+              select: {
+                username: true,
+              },
+            },
+          },
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const commentCounts = Object.fromEntries(commentsByMoment.map((item) => [item.targetId, item._count._all]));
+  const likeCounts = Object.fromEntries(vibinsByMoment.map((item) => [item.targetId, item._count._all]));
+  const latestCommentByMoment = new Map<string, (typeof latestComments)[number]>();
+  for (const comment of latestComments) {
+    if (!latestCommentByMoment.has(comment.targetId)) {
+      latestCommentByMoment.set(comment.targetId, comment);
+    }
+  }
+
   return {
-    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin)),
+    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
+      commentCount: commentCounts[moment.id] ?? 0,
+      likeCount: likeCounts[moment.id] ?? 0,
+    }, latestCommentByMoment.get(moment.id) ?? null)),
   };
 }
 
@@ -1826,6 +1901,49 @@ async function fetchGooglePlaceSuggestions(input: string, options?: {
     .slice(0, 6) ?? [];
 }
 
+async function fetchGoogleNearbyPlaceCandidates(latitude: number, longitude: number, options?: {
+  maxResultCount?: number;
+}) {
+  if (!GOOGLE_MAPS_API_KEY) return null;
+
+  const response = await fetch('https://places.googleapis.com/v1/places:searchNearby', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
+      'X-Goog-FieldMask': [
+        'places.id',
+        'places.displayName',
+        'places.formattedAddress',
+        'places.shortFormattedAddress',
+        'places.location',
+        'places.primaryType',
+        'places.primaryTypeDisplayName',
+        'places.googleMapsUri',
+        'places.types',
+      ].join(','),
+    },
+    body: JSON.stringify({
+      maxResultCount: options?.maxResultCount ?? 6,
+      rankPreference: 'DISTANCE',
+      locationRestriction: {
+        circle: {
+          center: { latitude, longitude },
+          radius: 120,
+        },
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    throw new Error(`Google Nearby failed with ${response.status}${errorBody ? `: ${errorBody}` : ''}`);
+  }
+
+  const data = await response.json() as { places?: GooglePlaceDetailsResponse[] };
+  return data.places ?? [];
+}
+
 type GoogleMoney = {
   currencyCode?: string;
   units?: string | number;
@@ -2289,6 +2407,55 @@ function mapGoogleAutocompleteSuggestionForClient(
   };
 }
 
+async function mapGoogleNearbyCandidateForClient(rawPlace: GooglePlaceDetailsResponse) {
+  const effectiveDisplayName = rawPlace.displayName?.text ?? 'Unnamed place';
+  const effectiveAddress = rawPlace.formattedAddress ?? rawPlace.shortFormattedAddress ?? '';
+  const effectiveLocation = rawPlace.location;
+  const locationBits = parseLocationBits(effectiveAddress);
+  const category = (rawPlace.primaryType ?? rawPlace.types?.[0] ?? 'google place').replace(/_/g, ' ');
+
+  const existingPlace = await prisma.place.findUnique({
+    where: { googlePlaceId: rawPlace.id },
+    select: {
+      id: true,
+      googlePlaceId: true,
+      name: true,
+      address: true,
+      city: true,
+      country: true,
+      neighborhood: true,
+      category: true,
+      primaryImageUrl: true,
+      latitude: true,
+      longitude: true,
+    },
+  });
+
+  if (existingPlace) {
+    return mapStoredPlaceForClient(existingPlace);
+  }
+
+  return {
+    id: `google:${rawPlace.id}`,
+    googlePlaceId: rawPlace.id,
+    name: effectiveDisplayName,
+    location: [locationBits.city, locationBits.country].filter(Boolean).join(', ') || effectiveAddress || 'Google Places',
+    address: effectiveAddress || undefined,
+    neighborhood: extractNeighborhoodFromAddressComponents(rawPlace.addressComponents).neighborhood ?? undefined,
+    description: '',
+    hook: '',
+    image: 'https://placehold.co/800x1000/111111/ffffff?text=Place',
+    images: ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
+    tags: [category],
+    similarityStat: undefined,
+    whyYoullLikeIt: [],
+    category,
+    latitude: effectiveLocation?.latitude ?? undefined,
+    longitude: effectiveLocation?.longitude ?? undefined,
+    mapsUrl: rawPlace.googleMapsUri ?? undefined,
+  };
+}
+
 async function getCheckInPlaceSuggestions(input: string, options: {
   sessionToken: string;
   locationLabel: string;
@@ -2348,36 +2515,12 @@ async function getLocationSuggestions(input: string) {
   return getFallbackLocationSuggestions(normalizedInput);
 }
 
-type NominatimSearchResult = {
-  osm_id: number | string;
-  osm_type: 'node' | 'way' | 'relation';
-  lat?: string;
-  lon?: string;
-  display_name?: string;
-  name?: string;
-  category?: string;
-  type?: string;
-  address?: Record<string, string | undefined>;
-};
-
-type OverpassElement = {
-  type: 'node' | 'way' | 'relation';
-  id: number;
-  lat?: number;
-  lon?: number;
-  center?: {
-    lat: number;
-    lon: number;
-  };
-  tags?: Record<string, string | undefined>;
-};
-
-function buildOsmMapsUrl(latitude?: number | null, longitude?: number | null) {
+function buildPlaceMapsUrl(latitude?: number | null, longitude?: number | null) {
   if (typeof latitude !== 'number' || typeof longitude !== 'number') return null;
-  return `https://www.openstreetmap.org/?mlat=${latitude}&mlon=${longitude}#map=18/${latitude}/${longitude}`;
+  return `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`;
 }
 
-function mapStoredOsmPlaceForClient(place: {
+function mapStoredPlaceForClient(place: {
   id: string;
   googlePlaceId: string | null;
   name: string;
@@ -2408,11 +2551,11 @@ function mapStoredOsmPlaceForClient(place: {
     category: place.category,
     latitude: place.latitude ?? undefined,
     longitude: place.longitude ?? undefined,
-    mapsUrl: buildOsmMapsUrl(place.latitude, place.longitude) ?? undefined,
+    mapsUrl: buildPlaceMapsUrl(place.latitude, place.longitude) ?? undefined,
   };
 }
 
-function buildTransientOsmPlaceCandidate(input: {
+function buildTransientPlaceCandidate(input: {
   name: string;
   address?: string | null;
   city?: string | null;
@@ -2424,7 +2567,7 @@ function buildTransientOsmPlaceCandidate(input: {
 }) {
   const placeholderImage = 'https://placehold.co/800x1000/111111/ffffff?text=Place';
   const location = [input.city, input.country].filter(Boolean).join(', ') || input.address || 'Unknown location';
-  const stableId = `osm:${Buffer.from([
+  const stableId = `manual:${Buffer.from([
     input.name,
     input.address ?? '',
     input.latitude ?? '',
@@ -2448,128 +2591,11 @@ function buildTransientOsmPlaceCandidate(input: {
     category: input.category,
     latitude: input.latitude ?? undefined,
     longitude: input.longitude ?? undefined,
-    mapsUrl: buildOsmMapsUrl(input.latitude, input.longitude) ?? undefined,
+    mapsUrl: buildPlaceMapsUrl(input.latitude, input.longitude) ?? undefined,
   };
 }
 
-function inferOsmPlaceName(input: {
-  name?: string | null;
-  displayName?: string | null;
-  address?: Record<string, string | undefined> | null;
-}) {
-  const explicitName = input.name?.trim();
-  if (explicitName) return explicitName;
-
-  const address = input.address ?? {};
-  const candidate =
-    address.amenity
-    ?? address.shop
-    ?? address.tourism
-    ?? address.leisure
-    ?? address.building
-    ?? address.road
-    ?? address.neighbourhood
-    ?? address.suburb
-    ?? address.city;
-
-  if (candidate?.trim()) return candidate.trim();
-
-  return input.displayName?.split(',')[0]?.trim() || 'Pinned place';
-}
-
-function inferOsmPlaceCategory(input: {
-  category?: string | null;
-  type?: string | null;
-  tags?: Record<string, string | undefined> | null;
-}) {
-  const raw =
-    input.tags?.amenity
-    ?? input.tags?.shop
-    ?? input.tags?.tourism
-    ?? input.tags?.leisure
-    ?? input.type
-    ?? input.category
-    ?? 'place';
-
-  return raw.replace(/_/g, ' ').trim() || 'place';
-}
-
-async function fetchNominatimSearchResults(query: string, limit = 6) {
-  const url = new URL('https://nominatim.openstreetmap.org/search');
-  url.searchParams.set('q', query);
-  url.searchParams.set('format', 'jsonv2');
-  url.searchParams.set('addressdetails', '1');
-  url.searchParams.set('limit', String(limit));
-
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Vibinn/1.0',
-      'Accept-Language': 'en',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Nominatim search failed with ${response.status}`);
-  }
-
-  return response.json() as Promise<NominatimSearchResult[]>;
-}
-
-async function fetchNominatimReverseResult(latitude: number, longitude: number) {
-  const url = new URL('https://nominatim.openstreetmap.org/reverse');
-  url.searchParams.set('lat', String(latitude));
-  url.searchParams.set('lon', String(longitude));
-  url.searchParams.set('format', 'jsonv2');
-  url.searchParams.set('addressdetails', '1');
-
-  const response = await fetch(url, {
-    headers: {
-      'User-Agent': 'Vibinn/1.0',
-      'Accept-Language': 'en',
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Nominatim reverse failed with ${response.status}`);
-  }
-
-  return response.json() as Promise<NominatimSearchResult>;
-}
-
-async function fetchOverpassNearbyResults(latitude: number, longitude: number) {
-  const query = `
-[out:json][timeout:10];
-(
-  node(around:160,${latitude},${longitude})[name][amenity];
-  way(around:160,${latitude},${longitude})[name][amenity];
-  node(around:160,${latitude},${longitude})[name][shop];
-  way(around:160,${latitude},${longitude})[name][shop];
-  node(around:160,${latitude},${longitude})[name][tourism];
-  way(around:160,${latitude},${longitude})[name][tourism];
-  node(around:160,${latitude},${longitude})[name][leisure];
-  way(around:160,${latitude},${longitude})[name][leisure];
-);
-out center;
-`.trim();
-
-  const response = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'text/plain',
-      'User-Agent': 'Vibinn/1.0',
-    },
-    body: query,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Overpass nearby failed with ${response.status}`);
-  }
-
-  const data = await response.json() as { elements?: OverpassElement[] };
-  return data.elements ?? [];
-}
-
-async function ensureOsmPlaceRecord(input: {
+async function ensureManualPlaceRecord(input: {
   name: string;
   address?: string | null;
   city?: string | null;
@@ -2601,7 +2627,7 @@ async function ensureOsmPlaceRecord(input: {
     });
 
     if (existing) {
-      return mapStoredOsmPlaceForClient(existing);
+      return mapStoredPlaceForClient(existing);
     }
 
     const created = await prisma.place.create({
@@ -2628,78 +2654,15 @@ async function ensureOsmPlaceRecord(input: {
       },
     });
 
-    return mapStoredOsmPlaceForClient(created);
+    return mapStoredPlaceForClient(created);
   } catch (error) {
-    console.warn('Falling back to transient OSM place candidate', {
+    console.warn('Falling back to transient manual place candidate', {
       name: input.name,
       address: input.address ?? null,
       error: error instanceof Error ? error.message : String(error),
     });
-    return buildTransientOsmPlaceCandidate(input);
+    return buildTransientPlaceCandidate(input);
   }
-}
-
-async function mapNominatimResultToPlaceCandidate(result: NominatimSearchResult) {
-  const latitude = result.lat ? Number(result.lat) : null;
-  const longitude = result.lon ? Number(result.lon) : null;
-  const address = result.address ?? {};
-  return ensureOsmPlaceRecord({
-    name: inferOsmPlaceName({
-      name: result.name ?? null,
-      displayName: result.display_name ?? null,
-      address,
-    }),
-    address: result.display_name ?? null,
-    city: address.city ?? address.town ?? address.village ?? address.municipality ?? null,
-    country: address.country ?? null,
-    neighborhood: address.neighbourhood ?? address.suburb ?? null,
-    category: inferOsmPlaceCategory({
-      category: result.category ?? null,
-      type: result.type ?? null,
-    }),
-    latitude,
-    longitude,
-  });
-}
-
-async function mapOverpassElementToPlaceCandidate(element: OverpassElement) {
-  const latitude = element.lat ?? element.center?.lat ?? null;
-  const longitude = element.lon ?? element.center?.lon ?? null;
-  const tags = element.tags ?? {};
-  const name = inferOsmPlaceName({
-    name: tags.name ?? null,
-    displayName: [
-      tags.name,
-      tags['addr:street'],
-      tags['addr:city'],
-      tags['addr:country'],
-    ].filter(Boolean).join(', '),
-    address: {
-      road: tags['addr:street'],
-      city: tags['addr:city'],
-      country: tags['addr:country'],
-      neighbourhood: tags['addr:suburb'],
-    },
-  });
-
-  const addressParts = [
-    tags['addr:housenumber'],
-    tags['addr:street'],
-    tags['addr:suburb'],
-    tags['addr:city'],
-    tags['addr:country'],
-  ].filter(Boolean);
-
-  return ensureOsmPlaceRecord({
-    name,
-    address: addressParts.join(', ') || tags.name || null,
-    city: tags['addr:city'] ?? null,
-    country: tags['addr:country'] ?? null,
-    neighborhood: tags['addr:suburb'] ?? null,
-    category: inferOsmPlaceCategory({ tags }),
-    latitude,
-    longitude,
-  });
 }
 
 function dedupeNativePlacesById<T extends { id: string }>(places: T[]) {
@@ -8778,6 +8741,14 @@ function requireAuth(req: AuthenticatedRequest, res: express.Response, next: exp
   next();
 }
 
+function requireV2Auth(req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) {
+  if (!req.authV2UserId) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  next();
+}
+
 async function optionalAuth(req: AuthenticatedRequest, _res: express.Response, next: express.NextFunction) {
   try {
     const header = req.header('Authorization');
@@ -9508,7 +9479,7 @@ app.post('/api/moments', requireAuth, async (req: AuthenticatedRequest, res) => 
           return;
         }
 
-        const persistedPlace = await ensureOsmPlaceRecord({
+        const persistedPlace = await ensureManualPlaceRecord({
           name: placeName,
           address: typeof payload.placeAddress === 'string' ? payload.placeAddress.trim() || null : null,
           category: typeof payload.placeCategory === 'string' && payload.placeCategory.trim()
@@ -9553,23 +9524,70 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
       return;
     }
 
+    const googlePlaceId = typeof payload.googlePlaceId === 'string' ? payload.googlePlaceId.trim() || null : null;
+    const autocompleteSessionToken = typeof payload.autocompleteSessionToken === 'string'
+      ? payload.autocompleteSessionToken.trim() || null
+      : null;
+
+    let resolvedPlaceId = placeId;
+    let resolvedPlaceName = placeName;
+    let resolvedPlaceAddress = typeof payload.placeAddress === 'string' ? payload.placeAddress.trim() || null : null;
+    let resolvedPlaceLocation = typeof payload.placeSearchLocation === 'string' && payload.placeSearchLocation.trim().length > 0
+      ? payload.placeSearchLocation.trim()
+      : resolvedPlaceAddress && resolvedPlaceAddress.length > 0
+        ? resolvedPlaceAddress
+        : 'Unknown location';
+    let resolvedPlaceCategory = typeof payload.placeCategory === 'string' ? payload.placeCategory.trim() || null : null;
+    let resolvedPlaceLatitude = typeof payload.placeLatitude === 'number' ? payload.placeLatitude : null;
+    let resolvedPlaceLongitude = typeof payload.placeLongitude === 'number' ? payload.placeLongitude : null;
+
+    if (googlePlaceId) {
+      const canonicalPlace = await acquireCheckInPlaceFromGoogleDetails({
+        googlePlaceId,
+        sessionToken: autocompleteSessionToken,
+        locationLabel: resolvedPlaceLocation,
+      });
+
+      const placeRecord = await prisma.place.findUnique({
+        where: { id: canonicalPlace.id },
+        select: {
+          id: true,
+          name: true,
+          address: true,
+          city: true,
+          country: true,
+          category: true,
+          latitude: true,
+          longitude: true,
+        },
+      });
+
+      if (placeRecord) {
+        resolvedPlaceId = placeRecord.id;
+        resolvedPlaceName = placeRecord.name;
+        resolvedPlaceAddress = placeRecord.address ?? resolvedPlaceAddress;
+        resolvedPlaceLocation = [placeRecord.city, placeRecord.country].filter(Boolean).join(', ')
+          || placeRecord.address
+          || resolvedPlaceLocation;
+        resolvedPlaceCategory = placeRecord.category || resolvedPlaceCategory;
+        resolvedPlaceLatitude = placeRecord.latitude ?? resolvedPlaceLatitude;
+        resolvedPlaceLongitude = placeRecord.longitude ?? resolvedPlaceLongitude;
+      }
+    }
+
     const moment = await prismaV2.moment.create({
       data: {
         userId: req.authV2UserId,
-        placeId,
-        placeName,
-        placeLocation: typeof payload.placeSearchLocation === 'string' && payload.placeSearchLocation.trim().length > 0
-          ? payload.placeSearchLocation.trim()
-          : typeof payload.placeAddress === 'string' && payload.placeAddress.trim().length > 0
-            ? payload.placeAddress.trim()
-            : 'Unknown location',
-        placeAddress: typeof payload.placeAddress === 'string' ? payload.placeAddress.trim() || null : null,
+        placeId: resolvedPlaceId,
+        placeName: resolvedPlaceName,
+        placeLocation: resolvedPlaceLocation,
+        placeAddress: resolvedPlaceAddress,
         placeNeighborhood: null,
-        placeCategory: typeof payload.placeCategory === 'string' ? payload.placeCategory.trim() || null : null,
-        placeGooglePlaceId: typeof payload.googlePlaceId === 'string' ? payload.googlePlaceId.trim() || null : null,
-        autocompleteSessionToken: typeof payload.autocompleteSessionToken === 'string' ? payload.autocompleteSessionToken.trim() || null : null,
-        placeLatitude: typeof payload.placeLatitude === 'number' ? payload.placeLatitude : null,
-        placeLongitude: typeof payload.placeLongitude === 'number' ? payload.placeLongitude : null,
+        placeCategory: resolvedPlaceCategory,
+        placeGooglePlaceId: googlePlaceId,
+        autocompleteSessionToken,
+        placeLatitude: resolvedPlaceLatitude,
+        placeLongitude: resolvedPlaceLongitude,
         visitedAt: new Date(visitedDate),
         caption,
         uploadedMedia,
@@ -9612,6 +9630,47 @@ app.patch('/api/moments/:id', requireAuth, async (req: AuthenticatedRequest, res
   }
 });
 
+app.patch('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = req.body ?? {};
+    const ratingLabel = typeof payload.ratingLabel === 'string' ? payload.ratingLabel.trim() : null;
+    if (ratingLabel && !['disliked', 'not_bad', 'liked', 'recommended'].includes(ratingLabel)) {
+      res.status(400).json({ error: 'ratingLabel is invalid' });
+      return;
+    }
+
+    const existing = await prismaV2.moment.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.authV2UserId,
+      },
+    });
+
+    if (!existing) {
+      res.status(404).json({ error: 'Moment not found' });
+      return;
+    }
+
+    const updated = await prismaV2.moment.update({
+      where: { id: existing.id },
+      data: {
+        visitedAt: typeof payload.visitedDate === 'string' && payload.visitedDate.trim().length > 0
+          ? new Date(payload.visitedDate)
+          : undefined,
+        caption: typeof payload.caption === 'string' ? payload.caption.trim() : undefined,
+        rating: typeof payload.rating === 'number' ? payload.rating : undefined,
+        ratingLabel,
+        wouldRevisit: typeof payload.wouldRevisit === 'string' ? payload.wouldRevisit.trim() || null : undefined,
+      },
+    });
+
+    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    res.json({ moment: mapV2MomentForClient(updated, requestOrigin) });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.delete('/api/moments/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const result = await deleteMoment(req.authUserId, req.params.id);
@@ -9623,6 +9682,30 @@ app.delete('/api/moments/:id', requireAuth, async (req: AuthenticatedRequest, re
       userId: req.authUserId!,
       placeIds: [result.placeId],
     });
+    res.json({});
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.delete('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const existing = await prismaV2.moment.findFirst({
+      where: {
+        id: req.params.id,
+        userId: req.authV2UserId,
+      },
+    });
+
+    if (!existing) {
+      res.status(404).json({ error: 'Moment not found' });
+      return;
+    }
+
+    await prismaV2.moment.delete({
+      where: { id: existing.id },
+    });
+
     res.json({});
   } catch (error) {
     handleError(res, error);
@@ -9690,7 +9773,7 @@ app.post('/api/uploads/media', requireAuth, async (req: AuthenticatedRequest, re
       const extension = getUploadExtension(file.fileName, file.mimeType ?? parsed.mimeType);
       const safeBaseName = path.basename(sanitizeFileName(file.fileName), path.extname(file.fileName));
       const storageName = `${Date.now()}-${index}-${crypto.randomUUID().slice(0, 8)}-${safeBaseName}${extension}`;
-      const objectKey = `moments/${req.authUserId}/${storageName}`;
+      const objectKey = buildMomentObjectKey(req.authUserId!, storageName);
 
       if (r2Client && R2_BUCKET_NAME) {
         await r2Client.send(new PutObjectCommand({
@@ -9749,7 +9832,7 @@ app.post('/api/v2/uploads/media', async (req: AuthenticatedRequest, res) => {
       const extension = getUploadExtension(file.fileName, file.mimeType ?? parsed.mimeType);
       const safeBaseName = path.basename(sanitizeFileName(file.fileName), path.extname(file.fileName));
       const storageName = `${Date.now()}-${index}-${crypto.randomUUID().slice(0, 8)}-${safeBaseName}${extension}`;
-      const objectKey = `moments/${req.authV2UserId}/${storageName}`;
+      const objectKey = buildMomentObjectKey(req.authV2UserId, storageName);
 
       if (r2Client && R2_BUCKET_NAME) {
         await r2Client.send(new PutObjectCommand({
@@ -9778,8 +9861,47 @@ app.post('/api/v2/uploads/media', async (req: AuthenticatedRequest, res) => {
   }
 });
 
-app.get('/api/v2/onboarding/photo-places/reverse', async (req, res) => {
+function currentNearbyUsageMonthKey(date = new Date()) {
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+}
+
+async function consumeNearbyDetectionSlotIfNeeded(userId: string) {
+  const monthKey = currentNearbyUsageMonthKey();
+  const user = await prismaV2.user.findUnique({
+    where: { id: userId },
+    select: {
+      nearbyDetectionMonthKey: true,
+      nearbyDetectionCount: true,
+    },
+  });
+
+  if (!user) {
+    throw new Error('User not found');
+  }
+
+  const currentCount = user.nearbyDetectionMonthKey == monthKey ? user.nearbyDetectionCount : 0;
+  if (currentCount >= GOOGLE_NEARBY_FREE_MONTHLY_LIMIT) {
+    return false;
+  }
+
+  await prismaV2.user.update({
+    where: { id: userId },
+    data: {
+      nearbyDetectionMonthKey: monthKey,
+      nearbyDetectionCount: currentCount + 1,
+    },
+  });
+
+  return true;
+}
+
+app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequest, res) => {
   try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const latitude = Number(req.query.lat);
     const longitude = Number(req.query.lon);
 
@@ -9788,26 +9910,27 @@ app.get('/api/v2/onboarding/photo-places/reverse', async (req, res) => {
       return;
     }
 
-    const [reverseResult, nearbyResults] = await Promise.all([
-      fetchNominatimReverseResult(latitude, longitude).catch(() => null),
-      fetchOverpassNearbyResults(latitude, longitude).catch(() => []),
-    ]);
-
-    const candidatePromises: Promise<ReturnType<typeof mapStoredOsmPlaceForClient>>[] = [];
-
-    if (reverseResult) {
-      candidatePromises.push(mapNominatimResultToPlaceCandidate(reverseResult));
+    const canUseNearby = await consumeNearbyDetectionSlotIfNeeded(req.authV2UserId);
+    if (!canUseNearby) {
+      res.json({
+        places: [],
+        limitReached: true,
+        message: 'Auto-detect limit reached this month. Search manually instead.',
+      });
+      return;
     }
 
-    candidatePromises.push(
-      ...nearbyResults
-        .filter((element) => Boolean(element.tags?.name))
-        .slice(0, 6)
-        .map((element) => mapOverpassElementToPlaceCandidate(element))
-    );
+    const nearbyResults = await fetchGoogleNearbyPlaceCandidates(latitude, longitude, { maxResultCount: 6 });
+    const places = dedupeNativePlacesById(
+      await Promise.all(
+        nearbyResults
+          .filter((place) => Boolean(place.id))
+          .slice(0, 6)
+          .map((place) => mapGoogleNearbyCandidateForClient(place))
+      )
+    ).slice(0, 6);
 
-    const places = dedupeNativePlacesById((await Promise.all(candidatePromises)).slice(0, 6));
-    res.json({ places });
+    res.json({ places, limitReached: false });
   } catch (error) {
     handleError(res, error);
   }
@@ -9816,14 +9939,21 @@ app.get('/api/v2/onboarding/photo-places/reverse', async (req, res) => {
 app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
   try {
     const query = String(req.query.q ?? '').trim();
+    const sessionToken = String(req.query.sessionToken ?? crypto.randomUUID()).trim();
+
     if (query.length < 2) {
       res.json({ places: [] });
       return;
     }
 
-    const results = await fetchNominatimSearchResults(query, 8);
+    const predictions = await fetchGooglePlaceSuggestions(query, {
+      sessionToken,
+      locationLabel: typeof req.query.location === 'string' ? req.query.location : null,
+    });
     const places = dedupeNativePlacesById(
-      await Promise.all(results.map((result) => mapNominatimResultToPlaceCandidate(result)))
+      (predictions ?? []).map((prediction) =>
+        mapGoogleAutocompleteSuggestionForClient(prediction, { sessionToken })
+      )
     ).slice(0, 8);
 
     res.json({ places });
