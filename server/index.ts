@@ -2414,27 +2414,6 @@ async function mapGoogleNearbyCandidateForClient(rawPlace: GooglePlaceDetailsRes
   const locationBits = parseLocationBits(effectiveAddress);
   const category = (rawPlace.primaryType ?? rawPlace.types?.[0] ?? 'google place').replace(/_/g, ' ');
 
-  const existingPlace = await prisma.place.findUnique({
-    where: { googlePlaceId: rawPlace.id },
-    select: {
-      id: true,
-      googlePlaceId: true,
-      name: true,
-      address: true,
-      city: true,
-      country: true,
-      neighborhood: true,
-      category: true,
-      primaryImageUrl: true,
-      latitude: true,
-      longitude: true,
-    },
-  });
-
-  if (existingPlace) {
-    return mapStoredPlaceForClient(existingPlace);
-  }
-
   return {
     id: `google:${rawPlace.id}`,
     googlePlaceId: rawPlace.id,
