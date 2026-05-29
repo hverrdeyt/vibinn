@@ -9865,7 +9865,7 @@ function currentNearbyUsageMonthKey(date = new Date()) {
   return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
-async function consumeNearbyDetectionSlotIfNeeded(userId: string) {
+async function getNearbyDetectionUsageState(userId: string) {
   const monthKey = currentNearbyUsageMonthKey();
   const user = await prismaV2.user.findUnique({
     where: { id: userId },
@@ -9880,10 +9880,10 @@ async function consumeNearbyDetectionSlotIfNeeded(userId: string) {
   }
 
   const currentCount = user.nearbyDetectionMonthKey == monthKey ? user.nearbyDetectionCount : 0;
-  if (currentCount >= GOOGLE_NEARBY_FREE_MONTHLY_LIMIT) {
-    return false;
-  }
+  return { monthKey, currentCount };
+}
 
+async function incrementNearbyDetectionUsage(userId: string, monthKey: string, currentCount: number) {
   await prismaV2.user.update({
     where: { id: userId },
     data: {
@@ -9891,8 +9891,6 @@ async function consumeNearbyDetectionSlotIfNeeded(userId: string) {
       nearbyDetectionCount: currentCount + 1,
     },
   });
-
-  return true;
 }
 
 app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequest, res) => {
@@ -9910,8 +9908,8 @@ app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequ
       return;
     }
 
-    const canUseNearby = await consumeNearbyDetectionSlotIfNeeded(req.authV2UserId);
-    if (!canUseNearby) {
+    const usageState = await getNearbyDetectionUsageState(req.authV2UserId);
+    if (usageState.currentCount >= GOOGLE_NEARBY_FREE_MONTHLY_LIMIT) {
       res.json({
         places: [],
         limitReached: true,
@@ -9920,7 +9918,29 @@ app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequ
       return;
     }
 
-    const nearbyResults = await fetchGoogleNearbyPlaceCandidates(latitude, longitude, { maxResultCount: 6 });
+    let nearbyResults: GooglePlaceDetailsResponse[] | null = null;
+    try {
+      nearbyResults = await fetchGoogleNearbyPlaceCandidates(latitude, longitude, { maxResultCount: 6 });
+    } catch (error) {
+      console.error('Google Nearby auto-detect failed', {
+        userId: req.authV2UserId,
+        latitude,
+        longitude,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+
+    if (!nearbyResults) {
+      res.json({
+        places: [],
+        limitReached: false,
+        message: 'Auto-detect is temporarily unavailable. Search manually instead.',
+      });
+      return;
+    }
+
+    await incrementNearbyDetectionUsage(req.authV2UserId, usageState.monthKey, usageState.currentCount);
+
     const places = dedupeNativePlacesById(
       await Promise.all(
         nearbyResults
