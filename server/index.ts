@@ -730,8 +730,37 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
     }),
   ]);
 
+  const placeIdsNeedingFallback = Array.from(new Set(
+    moments
+      .filter((moment) => moment.placeLatitude == null || moment.placeLongitude == null)
+      .map((moment) => moment.placeId)
+  ));
+
+  const fallbackPlaces = placeIdsNeedingFallback.length > 0
+    ? await prismaV2.place.findMany({
+        where: { id: { in: placeIdsNeedingFallback } },
+        select: {
+          id: true,
+          googlePlaceId: true,
+          name: true,
+          address: true,
+          city: true,
+          country: true,
+          neighborhood: true,
+          category: true,
+          primaryImageUrl: true,
+          latitude: true,
+          longitude: true,
+          mapsUrl: true,
+        },
+      })
+    : [];
+
   const followerCountMap = new Map(followerCounts.map((item) => [item.targetUserId, item._count._all]));
   const visitedCountMap = new Map(visitedCounts.map((item) => [item.userId, item._count._all]));
+  const fallbackPlaceMap = new Map(
+    fallbackPlaces.map((place) => [place.id, mapStoredV2PlaceForClient(place)] as const),
+  );
   const travelerMap = new Map(
     follows.map((follow) => [
       follow.targetUserId,
@@ -753,13 +782,28 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
     }
 
     const mappedMoment = mapV2MomentForClient(moment, requestOrigin);
+    const fallbackPlace = fallbackPlaceMap.get(moment.placeId);
+    const mergedPlace = fallbackPlace
+      ? {
+          ...fallbackPlace,
+          ...mappedMoment.place,
+          latitude: mappedMoment.place.latitude ?? fallbackPlace.latitude,
+          longitude: mappedMoment.place.longitude ?? fallbackPlace.longitude,
+          mapsUrl: mappedMoment.place.mapsUrl ?? fallbackPlace.mapsUrl,
+          image: mappedMoment.place.image ?? fallbackPlace.image,
+          images: (mappedMoment.place.images && mappedMoment.place.images.length > 0)
+            ? mappedMoment.place.images
+            : fallbackPlace.images,
+        }
+      : mappedMoment.place;
+
     return [{
       id: `visited-${moment.id}`,
       type: 'visited',
       traveler,
       timestampLabel: formatRelativeActivityLabelV2(moment.visitedAt),
       sortTimestamp: moment.visitedAt.toISOString(),
-      place: mappedMoment.place,
+      place: mergedPlace,
       collection: null,
       caption: mappedMoment.caption,
       isVibed: false,
