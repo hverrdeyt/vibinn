@@ -4382,7 +4382,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         guard let token = authToken else { return }
 
         do {
-            let response = try await api.getFeed(token: token)
+            let response = try await (usesV2Session ? api.getV2Feed(token: token) : api.getFeed(token: token))
             followedTravelers = response.followedTravelers
             suggestedTravelers = response.suggestedTravelers
             func mapFeedItem(_ item: NativeServerFeedItem) -> NativeFeedItem? {
@@ -4896,7 +4896,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw URLError(.userAuthenticationRequired)
         }
 
-        let result = try await api.toggleFollow(token: token, targetUserId: traveler.id)
+        let result = try await (usesV2Session
+            ? api.toggleV2Follow(token: token, targetUserId: traveler.id)
+            : api.toggleFollow(token: token, targetUserId: traveler.id))
         followStateOverrides[traveler.id] = result.active
         return result
     }
@@ -4907,7 +4909,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw URLError(.userAuthenticationRequired)
         }
 
-        let result = try await api.toggleFollow(token: token, targetUserId: traveler.id)
+        let result = try await (usesV2Session
+            ? api.toggleV2Follow(token: token, targetUserId: traveler.id)
+            : api.toggleFollow(token: token, targetUserId: traveler.id))
 
         if result.active {
             if !followedTravelers.contains(where: { $0.id == traveler.id }) {
@@ -6517,6 +6521,10 @@ private struct NativeAPIClient {
         try await request(path: "/api/feed", method: "GET", token: token)
     }
 
+    func getV2Feed(token: String) async throws -> NativeFeedResponse {
+        try await request(path: "/api/v2/feed", method: "GET", token: token)
+    }
+
     private struct MatchContactsBody: Encodable {
         let phoneNumbers: [String]
     }
@@ -6820,6 +6828,15 @@ private struct NativeAPIClient {
     func toggleFollow(token: String, targetUserId: String) async throws -> NativeToggleFollowResponse {
         try await request(
             path: "/api/follows/toggle",
+            method: "POST",
+            token: token,
+            body: NativeToggleFollowBody(targetUserId: targetUserId)
+        )
+    }
+
+    func toggleV2Follow(token: String, targetUserId: String) async throws -> NativeToggleFollowResponse {
+        try await request(
+            path: "/api/v2/follows/toggle",
             method: "POST",
             token: token,
             body: NativeToggleFollowBody(targetUserId: targetUserId)
@@ -8641,6 +8658,7 @@ private struct NativeHomepageShellScreen: View {
             Task {
                 await appState.refreshHomepageOverview()
                 await appState.refreshHomepageRecentMemories()
+                await appState.refreshFeed()
                 await appState.refreshNotificationUnreadCount()
             }
         }
@@ -8845,25 +8863,160 @@ private struct NativeHomepageShellScreen: View {
         }
     }
 
+    private var homepageCircleFeedItems: [NativeFeedItem] {
+        appState.feedItems
+            .filter { $0.type == .visited && $0.place != nil }
+            .prefix(2)
+            .map { $0 }
+    }
+
     private var feedPreview: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("What’s next")
-                .font(nativeAppFont(size: 18, weight: .black))
-                .foregroundStyle(.white)
+            HStack(alignment: .center) {
+                Text("From your circle")
+                    .font(nativeAppFont(size: 18, weight: .black))
+                    .foregroundStyle(.white)
 
+                Spacer()
+
+                Button {
+                    appState.activeTab = .feed
+                } label: {
+                    Text("Open feed")
+                        .font(nativeAppFont(size: 13, weight: .bold))
+                        .foregroundStyle(nativeAccent)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if homepageCircleFeedItems.isEmpty {
+                NativeSurfaceCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(appState.followedTravelers.isEmpty ? "Follow a couple of friends first." : "No fresh updates from your circle yet.")
+                            .font(nativeAppFont(size: 16, weight: .black))
+                            .foregroundStyle(.white)
+                        Text(appState.followedTravelers.isEmpty
+                             ? "Once you follow people on Vibinn, their latest memories will show up here."
+                             : "Open feed to catch up on older posts or find more people to follow.")
+                            .font(nativeAppFont(size: 13, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.62))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            } else {
+                VStack(spacing: 12) {
+                    ForEach(homepageCircleFeedItems) { item in
+                        homepageCircleFeedCard(item)
+                    }
+                }
+            }
+        }
+    }
+
+    private func homepageCircleFeedCard(_ item: NativeFeedItem) -> some View {
+        let displayName = item.traveler.displayName ?? item.traveler.username
+        let username = "@\(item.traveler.username)"
+        let placeName = item.place?.name ?? "Recent place"
+        let placeMeta = item.place.map { homepagePlaceMetaLine(for: $0, shortAddress: homepageShortAddress(for: $0)) } ?? ""
+        let previewCaption = item.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let mediaURL = item.uploadedMediaUrls?.first
+            ?? item.place?.userMediaUrls?.first
+            ?? item.place?.momentMedia?.first?.url
+            ?? item.place?.image
+
+        return Button {
+            appState.activeTab = .feed
+        } label: {
             NativeSurfaceCard {
-                VStack(alignment: .leading, spacing: 14) {
-                    homepageListRow(
-                        title: "Feed is coming next",
-                        subtitle: "We’ll wire this tab to the new social feed shell after homepage."
-                    )
-                    homepageListRow(
-                        title: "Profile is still a shell",
-                        subtitle: "Footer navigation is ready, now we can build each tab one by one."
+                HStack(alignment: .top, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(alignment: .center, spacing: 10) {
+                            NativeAvatarCircle(
+                                url: item.traveler.avatar,
+                                fallbackText: displayName,
+                                size: 40,
+                                fontSize: 14
+                            )
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(displayName)
+                                    .font(nativeAppFont(size: 14, weight: .black))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+
+                                Text("\(username) • \(item.timestampLabel)")
+                                    .font(nativeAppFont(size: 11, weight: .bold))
+                                    .foregroundStyle(.white.opacity(0.45))
+                                    .lineLimit(1)
+                            }
+                        }
+
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(placeName)
+                                .font(nativeAppFont(size: 16, weight: .black))
+                                .foregroundStyle(.white)
+                                .lineLimit(2)
+
+                            if !placeMeta.isEmpty {
+                                Text(placeMeta)
+                                    .font(nativeAppFont(size: 12, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.56))
+                                    .lineLimit(2)
+                            }
+                        }
+
+                        if !previewCaption.isEmpty {
+                            Text(previewCaption)
+                                .font(nativeAppFont(size: 13, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.8))
+                                .lineLimit(2)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+
+                        HStack(spacing: 10) {
+                            homepageCircleMetaPill(icon: "heart.fill", value: "\(item.vibinCount)")
+                            homepageCircleMetaPill(icon: "arrow.right", value: "Open")
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                    Group {
+                        if let mediaURL, !mediaURL.isEmpty {
+                            NativeRemoteImage(url: mediaURL)
+                        } else {
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .fill(Color.white.opacity(0.06))
+                                .overlay(
+                                    Image(systemName: "photo")
+                                        .font(nativeAppFont(size: 18, weight: .black))
+                                        .foregroundStyle(.white.opacity(0.28))
+                                )
+                        }
+                    }
+                    .frame(width: 112, height: 142)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
                     )
                 }
             }
         }
+        .buttonStyle(.plain)
+    }
+
+    private func homepageCircleMetaPill(icon: String, value: String) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(nativeAppFont(size: 11, weight: .black))
+            Text(value)
+                .font(nativeAppFont(size: 11, weight: .bold))
+        }
+        .foregroundStyle(.white.opacity(0.76))
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Color.white.opacity(0.06))
+        .clipShape(Capsule())
     }
 
     private func heroPill(label: String, icon: String) -> some View {
@@ -23841,21 +23994,20 @@ private struct NativeFeedScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @State private var showShareSheet = false
     @State private var inviteSMSContact: NativeInviteContact?
-    @State private var friendCount: Int?
-    @State private var isLoadingFriendCount = false
     @State private var contactsAuthorizationStatus: CNAuthorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
     @State private var matchedContacts: [(contact: NativeInviteContact, match: NativeMatchedFeedContact)] = []
     @State private var unmatchedContacts: [NativeInviteContact] = []
     @State private var isLoadingContacts = false
     @State private var isMatchingContacts = false
     @State private var contactsSearchText = ""
+    @State private var updatingFollowContactIds = Set<String>()
 
     private let contactsPageSize = 20
     private let contactsMatchBatchSize = 200
 
     private var hasNoFriendsFeedState: Bool {
         guard appState.currentUser != nil else { return false }
-        return (friendCount ?? 0) == 0
+        return appState.followedTravelers.isEmpty
     }
 
     private var hasContactsPermission: Bool {
@@ -23951,13 +24103,12 @@ private struct NativeFeedScreen: View {
         .onAppear {
             appState.trackAnalytics(.viewFeed)
             Task {
-                await loadFriendCountIfNeeded()
+                await appState.refreshFeed()
                 await refreshFeedContactsIfPossible(force: false)
             }
         }
         .refreshable {
             await appState.refreshFeed()
-            await refreshFriendCount()
             await refreshFeedContactsIfPossible(force: true)
         }
         .sheet(isPresented: $showShareSheet) {
@@ -24160,24 +24311,6 @@ private struct NativeFeedScreen: View {
         }
     }
 
-    private func loadFriendCountIfNeeded() async {
-        guard friendCount == nil else { return }
-        await refreshFriendCount()
-    }
-
-    private func refreshFriendCount() async {
-        guard !isLoadingFriendCount, let currentUser = appState.currentUser else { return }
-        isLoadingFriendCount = true
-        defer { isLoadingFriendCount = false }
-
-        do {
-            let friends = try await appState.fetchTravelerFriends(id: currentUser.id)
-            friendCount = friends.count
-        } catch {
-            return
-        }
-    }
-
     private func requestContactsForFeed() async {
         let status = CNContactStore.authorizationStatus(for: .contacts)
         await MainActor.run {
@@ -24215,6 +24348,7 @@ private struct NativeFeedScreen: View {
             isLoadingContacts = true
             matchedContacts = []
             unmatchedContacts = []
+            updatingFollowContactIds = []
             resetVisibleContactCounts()
         }
 
@@ -24364,6 +24498,8 @@ private struct NativeFeedScreen: View {
     }
 
     private func feedMatchedContactRow(contact: NativeInviteContact, match: NativeMatchedFeedContact) -> some View {
+        let isFollowing = appState.isFollowing(match.traveler.id)
+        let isUpdating = updatingFollowContactIds.contains(contact.id)
         NativeSurfaceCard {
             HStack(spacing: 12) {
                 if let avatarData = contact.avatarData, let image = UIImage(data: avatarData) {
@@ -24398,22 +24534,39 @@ private struct NativeFeedScreen: View {
 
                 Button {
                     Task {
-                        do {
-                            try await appState.toggleFollow(for: match.traveler, refreshFeedAfter: true)
-                            await refreshFriendCount()
-                        } catch {}
+                        await handleMatchedContactFollowTap(contact: contact, traveler: match.traveler)
                     }
                 } label: {
-                    Text(appState.isFollowing(match.traveler.id) ? "Following" : "Follow")
+                    Text(isFollowing ? "Following" : "Follow")
                         .font(nativeAppFont(size: 13, weight: .black))
-                        .foregroundStyle(appState.isFollowing(match.traveler.id) ? .white : .black)
+                        .foregroundStyle(isFollowing ? .white : .black)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .background(appState.isFollowing(match.traveler.id) ? Color.white.opacity(0.08) : nativeAccent)
+                        .background(isFollowing ? Color.white.opacity(0.08) : nativeAccent)
                         .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)
+                .disabled(isUpdating)
             }
+        }
+    }
+
+    private func handleMatchedContactFollowTap(contact: NativeInviteContact, traveler: NativeTravelerSummary) async {
+        guard !updatingFollowContactIds.contains(contact.id) else { return }
+
+        await MainActor.run {
+            updatingFollowContactIds.insert(contact.id)
+        }
+        defer {
+            Task { @MainActor in
+                updatingFollowContactIds.remove(contact.id)
+            }
+        }
+
+        do {
+            _ = try await appState.toggleFollow(for: traveler, refreshFeedAfter: true)
+        } catch {
+            return
         }
     }
 
@@ -24456,10 +24609,14 @@ private struct NativeFeedScreen: View {
                 } label: {
                     Text("Invite")
                         .font(nativeAppFont(size: 13, weight: .black))
-                        .foregroundStyle(.black)
+                        .foregroundStyle(nativeAccent)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 10)
-                        .background(nativeAccent)
+                        .background(Color.clear)
+                        .overlay(
+                            Capsule()
+                                .stroke(nativeAccent.opacity(0.92), lineWidth: 1.5)
+                        )
                         .clipShape(Capsule())
                 }
                 .buttonStyle(.plain)

@@ -73,6 +73,8 @@ model User {
   inviteRedemption    InviteRedemption?
   onboardingState     UserOnboardingState?
   moments             Moment[]
+  following           Follow[]          @relation("V2FollowSource")
+  followers           Follow[]          @relation("V2FollowTarget")
 }
 
 model Session {
@@ -210,6 +212,21 @@ model Place {
   lastGoogleFetchedAt        DateTime?
   createdAt                  DateTime  @default(now())
   updatedAt                  DateTime  @updatedAt
+}
+
+model Follow {
+  id            String   @id @default(cuid())
+  sourceUserId  String
+  targetUserId  String
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  sourceUser    User     @relation("V2FollowSource", fields: [sourceUserId], references: [id], onDelete: Cascade)
+  targetUser    User     @relation("V2FollowTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceUserId, targetUserId])
+  @@index([sourceUserId, createdAt])
+  @@index([targetUserId, createdAt])
 }
 
 model Moment {

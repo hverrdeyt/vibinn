@@ -632,6 +632,150 @@ function mapV2MomentForClient(moment: {
   };
 }
 
+function formatRelativeActivityLabelV2(date: Date, now = new Date()) {
+  const diffMs = Math.max(0, now.getTime() - date.getTime());
+  const minuteMs = 60 * 1000;
+  const hourMs = 60 * minuteMs;
+  const dayMs = 24 * hourMs;
+  const weekMs = 7 * dayMs;
+  const monthMs = 30 * dayMs;
+
+  if (diffMs < minuteMs) return 'Just now';
+  if (diffMs < hourMs) return `${Math.floor(diffMs / minuteMs)}m ago`;
+  if (diffMs < dayMs) return `${Math.floor(diffMs / hourMs)}h ago`;
+  if (diffMs < weekMs) return `${Math.floor(diffMs / dayMs)}d ago`;
+  if (diffMs < monthMs) return `${Math.floor(diffMs / weekMs)}w ago`;
+  return `${Math.floor(diffMs / monthMs)}mo ago`;
+}
+
+function buildV2TravelerUsernameFallback(id: string) {
+  const suffix = id.replace(/[^a-z0-9]/gi, '').slice(-4).toLowerCase() || 'user';
+  return `traveler${suffix}`;
+}
+
+function mapV2TravelerSummaryForClient(user: {
+  id: string;
+  username: string | null;
+  displayName: string | null;
+  avatarUrl: string | null;
+  cityLabel: string | null;
+}, counts?: {
+  followersCount?: number;
+  visitedPlacesCount?: number;
+}) {
+  return {
+    id: user.id,
+    username: user.username ?? buildV2TravelerUsernameFallback(user.id),
+    displayName: user.displayName ?? null,
+    avatar: user.avatarUrl ?? null,
+    bio: null,
+    descriptor: user.cityLabel ?? null,
+    matchScore: null,
+    followersCount: counts?.followersCount ?? 0,
+    recentSavedPlaces: [],
+    recentCollections: [],
+    travelHistory: [],
+    visitedPlacesCount: counts?.visitedPlacesCount ?? 0,
+    savedPlacesCount: 0,
+    collectionsCount: 0,
+  };
+}
+
+async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
+  const follows = await prismaV2.follow.findMany({
+    where: { sourceUserId: userId },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      targetUser: {
+        select: {
+          id: true,
+          username: true,
+          displayName: true,
+          avatarUrl: true,
+          cityLabel: true,
+        },
+      },
+    },
+  });
+
+  const followedUserIds = follows.map((follow) => follow.targetUserId);
+  if (followedUserIds.length === 0) {
+    return {
+      followedTravelers: [],
+      suggestedTravelers: [],
+      items: [],
+      fallbackItems: [],
+      suggestedItems: [],
+    };
+  }
+
+  const [followerCounts, visitedCounts, moments] = await Promise.all([
+    prismaV2.follow.groupBy({
+      by: ['targetUserId'],
+      where: { targetUserId: { in: followedUserIds } },
+      _count: { _all: true },
+    }),
+    prismaV2.moment.groupBy({
+      by: ['userId'],
+      where: { userId: { in: followedUserIds } },
+      _count: { _all: true },
+    }),
+    prismaV2.moment.findMany({
+      where: { userId: { in: followedUserIds } },
+      orderBy: [
+        { visitedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
+      take: 40,
+    }),
+  ]);
+
+  const followerCountMap = new Map(followerCounts.map((item) => [item.targetUserId, item._count._all]));
+  const visitedCountMap = new Map(visitedCounts.map((item) => [item.userId, item._count._all]));
+  const travelerMap = new Map(
+    follows.map((follow) => [
+      follow.targetUserId,
+      mapV2TravelerSummaryForClient(follow.targetUser, {
+        followersCount: followerCountMap.get(follow.targetUserId) ?? 0,
+        visitedPlacesCount: visitedCountMap.get(follow.targetUserId) ?? 0,
+      }),
+    ] as const),
+  );
+
+  const followedTravelers = follows
+    .map((follow) => travelerMap.get(follow.targetUserId))
+    .filter((traveler): traveler is ReturnType<typeof mapV2TravelerSummaryForClient> => Boolean(traveler));
+
+  const items = moments.flatMap((moment) => {
+    const traveler = travelerMap.get(moment.userId);
+    if (!traveler) {
+      return [];
+    }
+
+    const mappedMoment = mapV2MomentForClient(moment, requestOrigin);
+    return [{
+      id: `visited-${moment.id}`,
+      type: 'visited',
+      traveler,
+      timestampLabel: formatRelativeActivityLabelV2(moment.visitedAt),
+      sortTimestamp: moment.visitedAt.toISOString(),
+      place: mappedMoment.place,
+      collection: null,
+      caption: mappedMoment.caption,
+      isVibed: false,
+      vibinCount: 0,
+    }];
+  });
+
+  return {
+    followedTravelers,
+    suggestedTravelers: [],
+    items,
+    fallbackItems: [],
+    suggestedItems: [],
+  };
+}
+
 function startOfWeekUtc(date = new Date()) {
   const next = new Date(date);
   next.setUTCHours(0, 0, 0, 0);
@@ -8736,6 +8880,75 @@ app.post('/api/v2/contacts/match', async (req: AuthenticatedRequest, res) => {
       res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
       return;
     }
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/feed', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const payload = await buildV2FollowingFeed(req.authV2UserId!, requestOrigin);
+    res.json(payload);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/follows/toggle', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { targetUserId } = req.body as { targetUserId?: string };
+    if (!targetUserId) {
+      res.status(400).json({ error: 'targetUserId is required' });
+      return;
+    }
+
+    if (targetUserId === req.authV2UserId) {
+      res.status(400).json({ error: 'You cannot follow yourself' });
+      return;
+    }
+
+    const targetUser = await prismaV2.user.findUnique({
+      where: { id: targetUserId },
+      select: { id: true },
+    });
+
+    if (!targetUser) {
+      res.status(404).json({ error: 'Traveler not found' });
+      return;
+    }
+
+    const existing = await prismaV2.follow.findUnique({
+      where: {
+        sourceUserId_targetUserId: {
+          sourceUserId: req.authV2UserId!,
+          targetUserId,
+        },
+      },
+    });
+
+    if (existing) {
+      await prismaV2.follow.delete({
+        where: { id: existing.id },
+      });
+      const followersCount = await prismaV2.follow.count({
+        where: { targetUserId },
+      });
+      res.json({ active: false, followersCount });
+      return;
+    }
+
+    await prismaV2.follow.create({
+      data: {
+        sourceUserId: req.authV2UserId!,
+        targetUserId,
+      },
+    });
+
+    const followersCount = await prismaV2.follow.count({
+      where: { targetUserId },
+    });
+    res.json({ active: true, followersCount });
+  } catch (error) {
     handleError(res, error);
   }
 });
