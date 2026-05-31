@@ -979,6 +979,7 @@ private struct NativeV2UserPayload: Decodable {
     let displayName: String?
     let username: String?
     let avatarUrl: String?
+    let bio: String?
     let cityLabel: String?
     let status: String?
     let onboardingCompleted: Bool?
@@ -3373,12 +3374,14 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         token: String,
         displayName: String,
         username: String,
+        bio: String,
         avatarUrl: String?
     ) async throws -> NativeV2ProfileResponse {
         let response = try await api.updateV2Profile(
             token: token,
             displayName: displayName,
             username: username,
+            bio: bio,
             avatarUrl: avatarUrl
         )
         syncCurrentUserFromV2Payload(response.user)
@@ -3491,7 +3494,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             displayName: payload.displayName ?? currentUser?.displayName,
             username: payload.username ?? fallbackUsername,
             email: currentUser?.email,
-            bio: currentUser?.bio,
+            bio: payload.bio ?? currentUser?.bio,
             avatarUrl: payload.avatarUrl ?? currentUser?.avatarUrl,
             hasCompletedTastePreferences: currentUser?.hasCompletedTastePreferences
         )
@@ -3612,13 +3615,33 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw NSError(domain: "NativeProfileUpdate", code: 1, userInfo: [NSLocalizedDescriptionKey: "Login required"])
         }
 
-        let updatedUser = try await api.updateProfile(
-            token: authToken,
-            displayName: displayName,
-            username: username,
-            bio: bio,
-            avatarUrl: avatarUrl
-        )
+        let updatedUser: NativeAuthUser
+        if usesV2Session, currentUser != nil {
+            let response = try await updateV2Profile(
+                token: authToken,
+                displayName: displayName,
+                username: username,
+                bio: bio,
+                avatarUrl: avatarUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : avatarUrl
+            )
+            updatedUser = NativeAuthUser(
+                id: response.user.id,
+                displayName: response.user.displayName ?? displayName,
+                username: response.user.username ?? username,
+                email: currentUser?.email,
+                bio: response.user.bio ?? bio,
+                avatarUrl: response.user.avatarUrl ?? (avatarUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : avatarUrl),
+                hasCompletedTastePreferences: currentUser?.hasCompletedTastePreferences
+            )
+        } else {
+            updatedUser = try await api.updateProfile(
+                token: authToken,
+                displayName: displayName,
+                username: username,
+                bio: bio,
+                avatarUrl: avatarUrl
+            )
+        }
 
         currentUser = updatedUser
         cachedAuthUser = updatedUser
@@ -3627,6 +3650,10 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     func uploadAvatarImage(_ image: UIImage) async throws -> String {
         guard let authToken else {
             throw NSError(domain: "NativeAvatarUpload", code: 1, userInfo: [NSLocalizedDescriptionKey: "Login required"])
+        }
+
+        if usesV2Session, currentUser != nil {
+            return try await api.uploadV2AvatarImage(token: authToken, image: image)
         }
 
         return try await api.uploadAvatarImage(token: authToken, image: image)
@@ -5905,6 +5932,7 @@ private struct NativeAPIClient {
     private struct V2UpdateProfileBody: Encodable {
         let displayName: String
         let username: String
+        let bio: String
         let avatarUrl: String?
     }
 
@@ -6105,6 +6133,7 @@ private struct NativeAPIClient {
         token: String,
         displayName: String,
         username: String,
+        bio: String,
         avatarUrl: String?
     ) async throws -> NativeV2ProfileResponse {
         try await request(
@@ -6114,6 +6143,7 @@ private struct NativeAPIClient {
             body: V2UpdateProfileBody(
                 displayName: displayName,
                 username: username,
+                bio: bio,
                 avatarUrl: avatarUrl?.isEmpty == true ? nil : avatarUrl
             )
         )
@@ -8086,7 +8116,7 @@ private struct NativeDiaryScreen: View {
                 .font(nativePixelAccentFont(size: 10))
                 .foregroundStyle(nativeAccent.opacity(0.88))
 
-            Text("Your logged memories")
+            Text("Your Memories")
                 .font(nativeAppFont(size: 28, weight: .black))
                 .foregroundStyle(.white)
         }
@@ -13043,6 +13073,7 @@ private struct NativeAuthScreen: View {
                 token: token,
                 displayName: profileDisplayName,
                 username: profileUsername,
+                bio: "",
                 avatarUrl: profileAvatarURL.trimmingCharacters(in: .whitespacesAndNewlines)
             )
             profileDisplayName = response.user.displayName ?? profileDisplayName
@@ -23540,7 +23571,7 @@ private struct NativeEditProfileSheet: View {
     @State private var username: String
     @State private var bio: String
     @State private var avatarUrl: String
-    @State private var pickedAvatarImages: [UIImage] = []
+    @State private var pickedAvatarImage: UIImage?
     @State private var selectedAvatarImage: UIImage?
     @State private var errorMessage: String?
     @State private var isSaving = false
@@ -23737,13 +23768,14 @@ private struct NativeEditProfileSheet: View {
             Text("This will remove your account identity and sign you out on this device.")
         }
         .sheet(isPresented: $showAvatarPicker) {
-            NativeMultiImagePicker(images: $pickedAvatarImages, selectionLimit: 1)
+            NativeSingleImagePicker(image: $pickedAvatarImage, source: .library)
         }
-        .onChange(of: pickedAvatarImages) { images in
-            guard let image = images.first else { return }
-            selectedAvatarImage = image
+        .onChange(of: pickedAvatarImage) { image in
+            guard let image else { return }
+            let normalized = nativeSquareCroppedImage(image)
+            selectedAvatarImage = normalized
             Task {
-                await uploadAvatar(image)
+                await uploadAvatar(normalized)
             }
         }
     }
@@ -23813,7 +23845,7 @@ private struct NativeEditProfileSheet: View {
         isUploadingAvatar = true
         defer {
             isUploadingAvatar = false
-            pickedAvatarImages = []
+            pickedAvatarImage = nil
         }
 
         do {
@@ -24036,10 +24068,14 @@ private struct NativeFeedScreen: View {
                     activeFeedMode = mode
                 } label: {
                     VStack(spacing: 10) {
-                        Text(mode.rawValue)
-                            .font(nativeAppFont(size: 14, weight: .black))
-                            .foregroundStyle(activeFeedMode == mode ? .white : .white.opacity(0.56))
-                            .frame(maxWidth: .infinity)
+                        HStack(spacing: 8) {
+                            Image(systemName: feedModeIconName(for: mode))
+                                .font(nativeAppFont(size: 13, weight: .black))
+                            Text(mode.rawValue)
+                                .font(nativeAppFont(size: 14, weight: .black))
+                        }
+                        .foregroundStyle(activeFeedMode == mode ? .white : .white.opacity(0.56))
+                        .frame(maxWidth: .infinity)
 
                         Rectangle()
                             .fill(activeFeedMode == mode ? nativeAccent : Color.white.opacity(0.12))
@@ -24056,6 +24092,15 @@ private struct NativeFeedScreen: View {
             Rectangle()
                 .fill(Color.white.opacity(0.08))
                 .frame(height: 1)
+        }
+    }
+
+    private func feedModeIconName(for mode: FeedViewMode) -> String {
+        switch mode {
+        case .posts:
+            return "list.bullet.rectangle.fill"
+        case .maps:
+            return "map.fill"
         }
     }
 
@@ -25558,6 +25603,7 @@ private struct NativeFeedCard: View {
             username: item.traveler.username,
             avatarURL: item.traveler.avatar,
             avatarFallback: item.traveler.displayName ?? item.traveler.username,
+            headerLinkTraveler: item.traveler,
             ratingMeta: ratingMeta,
             reviewText: item.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
             mediaURL: mediaURL,
@@ -27163,15 +27209,33 @@ private struct NativeTravelerProfileScreen: View {
     @State private var showModerationAlert = false
     @State private var errorMessage: String?
     @State private var activeMode: NativeTravelerProfileContentMode = .gallery
+    @State private var activeGalleryGrouping: NativeDiaryGalleryGrouping = .byDate
+    @State private var activePostsCityFilter: String = "All cities"
+    @State private var activeMapTimeFilter: NativeTravelerProfileMapTimeFilter = .thisWeek
     @State private var mapRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 40.7128, longitude: -74.0060),
         span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25)
     )
 
+    private struct GallerySection: Identifiable {
+        let id: String
+        let title: String
+        let moments: [NativeMoment]
+    }
+
     private enum NativeTravelerProfileContentMode: String, CaseIterable, Identifiable {
         case gallery = "Gallery"
         case posts = "Posts"
         case map = "Map"
+
+        var id: String { rawValue }
+    }
+
+    private enum NativeTravelerProfileMapTimeFilter: String, CaseIterable, Identifiable {
+        case today = "Today"
+        case thisWeek = "This week"
+        case lastWeek = "Last week"
+        case lastMonth = "Last month"
 
         var id: String { rawValue }
     }
@@ -27190,9 +27254,13 @@ private struct NativeTravelerProfileScreen: View {
                     NativeInlineError(message: errorMessage)
                 }
 
-                followAndProfileActions
+                travelerBioSection
                 travelerStatsSection
+                followAndProfileActions
                 travelerModePicker
+                if hasProfileMoments {
+                    travelerFilterSection
+                }
                 travelerModeContent
             }
             .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
@@ -27280,7 +27348,18 @@ private struct NativeTravelerProfileScreen: View {
             Text(moderationAlertMessage)
         }
         .onChange(of: moments.count) { _ in
+            normalizeProfileFilters()
             updateMapRegion()
+        }
+        .onChange(of: activeMapTimeFilter) { _ in
+            if activeMode == .map {
+                updateMapRegion()
+            }
+        }
+        .onChange(of: activeMode) { _ in
+            if activeMode == .map {
+                updateMapRegion()
+            }
         }
     }
 
@@ -27308,16 +27387,22 @@ private struct NativeTravelerProfileScreen: View {
                         .font(nativeAppFont(size: 13, weight: .bold))
                         .foregroundStyle(nativeAccent)
                 }
-
-                if let bio = traveler.bio?.trimmingCharacters(in: .whitespacesAndNewlines), !bio.isEmpty {
-                    Text(bio)
-                        .font(nativeAppFont(size: 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.72))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
             }
 
             Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private var travelerBioSection: some View {
+        if let bio = traveler.bio?.trimmingCharacters(in: .whitespacesAndNewlines), !bio.isEmpty {
+            NativeSurfaceCard {
+                Text(bio)
+                    .font(nativeAppFont(size: 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
     }
 
@@ -27372,14 +27457,12 @@ private struct NativeTravelerProfileScreen: View {
 
     private var travelerStatsSection: some View {
         let stats = [
-            ("Logs", profileMomentCount),
             ("Places", profileUniquePlaceCount),
-            ("Cities", profileCityCount),
             ("Followers", traveler.followersCount ?? 0),
             ("Following", traveler.followingCount ?? 0),
         ]
 
-        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 2), spacing: 10) {
+        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 3), spacing: 10) {
             ForEach(Array(stats.enumerated()), id: \.offset) { _, stat in
                 NativeProfileMiniStat(label: stat.0, value: "\(stat.1)")
             }
@@ -27420,12 +27503,75 @@ private struct NativeTravelerProfileScreen: View {
     }
 
     @ViewBuilder
+    private var travelerFilterSection: some View {
+        switch activeMode {
+        case .gallery:
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(NativeDiaryGalleryGrouping.allCases) { grouping in
+                        Button {
+                            activeGalleryGrouping = grouping
+                        } label: {
+                            Text(grouping.rawValue)
+                                .font(nativeAppFont(size: 12, weight: .bold))
+                                .foregroundStyle(activeGalleryGrouping == grouping ? .black : .white.opacity(0.72))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(activeGalleryGrouping == grouping ? nativeAccent : Color.white.opacity(0.06))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        case .posts:
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(profileAvailableCities, id: \.self) { city in
+                        Button {
+                            activePostsCityFilter = city
+                        } label: {
+                            Text(city)
+                                .font(nativeAppFont(size: 12, weight: .bold))
+                                .foregroundStyle(activePostsCityFilter == city ? .black : .white.opacity(0.72))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(activePostsCityFilter == city ? nativeAccent : Color.white.opacity(0.06))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        case .map:
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(NativeTravelerProfileMapTimeFilter.allCases) { filter in
+                        Button {
+                            activeMapTimeFilter = filter
+                        } label: {
+                            Text(filter.rawValue)
+                                .font(nativeAppFont(size: 12, weight: .bold))
+                                .foregroundStyle(activeMapTimeFilter == filter ? .black : .white.opacity(0.72))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 9)
+                                .background(activeMapTimeFilter == filter ? nativeAccent : Color.white.opacity(0.06))
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
     private var travelerModeContent: some View {
         switch activeMode {
         case .posts:
             if profileFeedItems.isEmpty {
                 NativeSurfaceCard {
-                    Text("No posts yet.")
+                    Text(hasProfileMoments ? "No posts in this city yet." : "No posts yet.")
                         .font(nativeAppFont(size: 15, weight: .medium))
                         .foregroundStyle(.white.opacity(0.6))
                 }
@@ -27437,29 +27583,38 @@ private struct NativeTravelerProfileScreen: View {
                 }
             }
         case .gallery:
-            if profileMoments.isEmpty {
+            if gallerySections.isEmpty {
                 NativeSurfaceCard {
-                    Text("No gallery yet.")
+                    Text(hasProfileMoments ? "No gallery memories in this section yet." : "No gallery yet.")
                         .font(nativeAppFont(size: 15, weight: .medium))
                         .foregroundStyle(.white.opacity(0.6))
                 }
             } else {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                    ForEach(Array(profileMoments.enumerated()), id: \.element.id) { index, moment in
-                        Button {
-                            guard profileFeedItems.indices.contains(index) else { return }
-                            selectedProfileFeedItem = profileFeedItems[index]
-                        } label: {
-                            profileGalleryThumb(moment)
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(gallerySections) { section in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(section.title)
+                                .font(nativeAppFont(size: 15, weight: .black))
+                                .foregroundStyle(.white)
+
+                            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                                ForEach(section.moments) { moment in
+                                    Button {
+                                        selectedProfileFeedItem = feedItem(for: moment)
+                                    } label: {
+                                        profileGalleryThumb(moment)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
         case .map:
             if profileMappedFeedItems.isEmpty {
                 NativeSurfaceCard {
-                    Text("No mapped posts yet.")
+                    Text(hasProfileMoments ? "No mapped posts in this range yet." : "No mapped posts yet.")
                         .font(nativeAppFont(size: 15, weight: .medium))
                         .foregroundStyle(.white.opacity(0.6))
                 }
@@ -27477,16 +27632,12 @@ private struct NativeTravelerProfileScreen: View {
         }
     }
 
-    private var profileMomentCount: Int {
-        profileMoments.count
-    }
-
     private var profileUniquePlaceCount: Int {
         Set(profileMoments.map(\.place.id)).count
     }
 
-    private var profileCityCount: Int {
-        Set(profileMoments.compactMap { nativeCityKey(for: $0.place) }).count
+    private var hasProfileMoments: Bool {
+        !profileMoments.isEmpty
     }
 
     private var isFollowing: Bool {
@@ -27511,31 +27662,40 @@ private struct NativeTravelerProfileScreen: View {
         }
     }
 
-    private var profileFeedItems: [NativeFeedItem] {
-        profileMoments.map { moment in
-            let timestamp = NativeAppState.feedSortDate(
-                iso: moment.visitedAtIso ?? moment.visitedDate,
-                label: moment.visitedDate
-            ) ?? .distantPast
-            let media = (moment.uploadedMedia?.first).map { [$0] } ?? []
+    private var profileAvailableCities: [String] {
+        ["All cities"] + Array(Set(profileMoments.compactMap(nativeCityKey(for:)))).sorted()
+    }
 
-            return NativeFeedItem(
-                id: moment.id,
-                type: .visited,
-                traveler: traveler,
-                title: moment.place.name,
-                timestampLabel: NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate),
-                sortTimestamp: timestamp,
-                place: nativePlaceApplyingMoment(moment),
-                collection: nil,
-                caption: moment.caption,
-                uploadedMediaUrls: media
-            )
+    private var gallerySections: [GallerySection] {
+        switch activeGalleryGrouping {
+        case .byDate:
+            return profileGallerySectionsByDate()
+        case .byCity:
+            return profileGallerySectionsByCity()
         }
     }
 
+    private var filteredPostMoments: [NativeMoment] {
+        if activePostsCityFilter == "All cities" {
+            return profileMoments
+        }
+        return profileMoments.filter { nativeCityKey(for: $0) == activePostsCityFilter }
+    }
+
+    private var profileFeedItems: [NativeFeedItem] {
+        filteredPostMoments.map(feedItem(for:))
+    }
+
+    private var allProfileFeedItems: [NativeFeedItem] {
+        profileMoments.map(feedItem(for:))
+    }
+
     private var profileMappedFeedItems: [NativeFeedItem] {
-        profileFeedItems.filter { $0.place?.latitude != nil && $0.place?.longitude != nil }
+        allProfileFeedItems.filter { item in
+            item.place?.latitude != nil
+                && item.place?.longitude != nil
+                && profileMatchesMapTimeFilter(item, filter: activeMapTimeFilter)
+        }
     }
 
     private var profileMapCard: some View {
@@ -27624,6 +27784,9 @@ private struct NativeTravelerProfileScreen: View {
             let response = try await appState.fetchTravelerProfile(id: traveler.id)
             traveler = response.traveler
             moments = response.moments
+            errorMessage = nil
+            normalizeProfileFilters()
+            updateMapRegion()
         } catch {
             errorMessage = "Could not load this profile right now."
         }
@@ -27730,6 +27893,152 @@ private struct NativeTravelerProfileScreen: View {
                 longitudeDelta: max((maxLon - minLon) * 1.6, 0.05)
             )
         )
+    }
+
+    private func normalizeProfileFilters() {
+        if !profileAvailableCities.contains(activePostsCityFilter) {
+            activePostsCityFilter = "All cities"
+        }
+    }
+
+    private func feedItem(for moment: NativeMoment) -> NativeFeedItem {
+        let timestamp = NativeAppState.feedSortDate(
+            iso: moment.visitedAtIso ?? moment.visitedDate,
+            label: moment.visitedDate
+        ) ?? .distantPast
+        let media = (moment.uploadedMedia?.first).map { [$0] } ?? []
+
+        return NativeFeedItem(
+            id: moment.id,
+            type: .visited,
+            traveler: traveler,
+            title: moment.place.name,
+            timestampLabel: NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate),
+            sortTimestamp: timestamp,
+            place: nativePlaceApplyingMoment(moment),
+            collection: nil,
+            caption: moment.caption,
+            uploadedMediaUrls: media
+        )
+    }
+
+    private func profileMomentDate(_ moment: NativeMoment) -> Date {
+        NativeAppState.date(from: moment.visitedAtIso ?? moment.visitedDate) ?? .distantPast
+    }
+
+    private func profileMatchesMapTimeFilter(_ item: NativeFeedItem, filter: NativeTravelerProfileMapTimeFilter) -> Bool {
+        let calendar = Calendar.current
+        let now = Date()
+        let date = item.sortTimestamp
+
+        switch filter {
+        case .today:
+            return calendar.isDateInToday(date)
+        case .thisWeek:
+            return calendar.isDate(date, equalTo: now, toGranularity: .weekOfYear)
+                && calendar.isDate(date, equalTo: now, toGranularity: .yearForWeekOfYear)
+        case .lastWeek:
+            guard let startOfThisWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start,
+                  let startOfLastWeek = calendar.date(byAdding: .weekOfYear, value: -1, to: startOfThisWeek) else {
+                return false
+            }
+            return date >= startOfLastWeek && date < startOfThisWeek
+        case .lastMonth:
+            guard let startOfThisMonth = calendar.dateInterval(of: .month, for: now)?.start,
+                  let startOfLastMonth = calendar.date(byAdding: .month, value: -1, to: startOfThisMonth) else {
+                return false
+            }
+            return date >= startOfLastMonth && date < startOfThisMonth
+        }
+    }
+
+    private func profileGallerySectionsByDate() -> [GallerySection] {
+        let calendar = Calendar.current
+        let now = Date()
+        let startOfThisWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+        let startOfLastWeek = calendar.date(byAdding: .weekOfYear, value: -1, to: startOfThisWeek) ?? startOfThisWeek
+        let startOfThisMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        let startOfLastMonth = calendar.date(byAdding: .month, value: -1, to: startOfThisMonth) ?? startOfThisMonth
+
+        let grouped = Dictionary(grouping: profileMoments) { moment -> String in
+            let date = profileMomentDate(moment)
+            if date >= startOfThisWeek {
+                return "This week"
+            }
+            if date >= startOfLastWeek && date < startOfThisWeek {
+                return "Last week"
+            }
+            if date >= startOfLastMonth && date < startOfThisMonth {
+                return "Last month"
+            }
+
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = .current
+            formatter.dateFormat = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+                ? "MMMM"
+                : "MMMM yyyy"
+            return formatter.string(from: date)
+        }
+
+        let orderedTitles = grouped.keys.sorted { lhs, rhs in
+            profileDateClusterSortKey(for: lhs, now: now) > profileDateClusterSortKey(for: rhs, now: now)
+        }
+
+        return orderedTitles.compactMap { title in
+            guard let moments = grouped[title], !moments.isEmpty else { return nil }
+            return GallerySection(
+                id: "traveler-date-\(title)",
+                title: title,
+                moments: moments.sorted { profileMomentDate($0) > profileMomentDate($1) }
+            )
+        }
+    }
+
+    private func profileGallerySectionsByCity() -> [GallerySection] {
+        let grouped = Dictionary(grouping: profileMoments) { moment in
+            nativeCityKey(for: moment) ?? "Unknown location"
+        }
+
+        return grouped.keys.sorted().compactMap { city in
+            guard let moments = grouped[city], !moments.isEmpty else { return nil }
+            return GallerySection(
+                id: "traveler-city-\(city)",
+                title: city,
+                moments: moments.sorted { profileMomentDate($0) > profileMomentDate($1) }
+            )
+        }
+    }
+
+    private func profileDateClusterSortKey(for title: String, now: Date) -> Date {
+        let calendar = Calendar.current
+        switch title {
+        case "This week":
+            return calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+        case "Last week":
+            let startOfThisWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+            return calendar.date(byAdding: .weekOfYear, value: -1, to: startOfThisWeek) ?? now
+        case "Last month":
+            let startOfThisMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
+            return calendar.date(byAdding: .month, value: -1, to: startOfThisMonth) ?? now
+        default:
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = .current
+            formatter.dateFormat = "MMMM yyyy"
+            if let fullDate = formatter.date(from: title) {
+                return fullDate
+            }
+            formatter.dateFormat = "MMMM"
+            if let monthOnly = formatter.date(from: title) {
+                let month = calendar.component(.month, from: monthOnly)
+                var components = calendar.dateComponents([.year], from: now)
+                components.month = month
+                components.day = 1
+                return calendar.date(from: components) ?? .distantPast
+            }
+            return .distantPast
+        }
     }
 }
 
@@ -28047,6 +28356,7 @@ private struct NativePlaceDetailNavigationChromeModifier: ViewModifier {
 private struct NativePlaceDetailScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @Environment(\.openURL) private var openURL
+    @Environment(\.dismiss) private var dismiss
     @State private var place: NativePlace
     let analyticsSource: String
     @State private var travelerMoments: [NativePlaceTravelerMoment] = []
@@ -28099,6 +28409,19 @@ private struct NativePlaceDetailScreen: View {
         .navigationBarHidden(false)
         .modifier(NativePlaceDetailNavigationChromeModifier())
         .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(nativeAppFont(size: 16, weight: .black))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+            }
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 0) {
                     if !compatibilityHeaderPrimary.isEmpty {
@@ -28383,199 +28706,10 @@ private struct NativePlaceDetailScreen: View {
             .frame(height: 430)
             .padding(.horizontal, -20)
 
-            VStack(alignment: .leading, spacing: 12) {
-                Text(place.name)
-                    .font(nativeAppFont(size: 30, weight: .black))
-                    .foregroundStyle(.white)
+            placeIdentitySection
 
-                HStack(spacing: 8) {
-                    Image(systemName: "mappin.and.ellipse")
-                        .font(nativeAppFont(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.7))
-                    Text(locationAndDistanceLine)
-                        .font(nativeAppFont(size: 14, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.76))
-                        .lineLimit(2)
-                }
-
-                if let bestVisitedAtLine {
-                    Text(bestVisitedAtLine)
-                        .font(nativeAppFont(size: 13, weight: .bold))
-                        .foregroundStyle(nativeAccent)
-                }
-
-                if !secondaryTags.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(secondaryTags, id: \.self) { tag in
-                                Text(tag)
-                                    .font(nativeAppFont(size: 11, weight: .black))
-                                    .foregroundStyle(.white.opacity(0.86))
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 7)
-                                    .background(Color.white.opacity(0.08))
-                                    .clipShape(Capsule())
-                            }
-                        }
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 14) {
-                if highlightAboutExists {
-                    VStack(alignment: .leading, spacing: 10) {
-                        if let hook = place.hook, !hook.isEmpty {
-                            HStack(alignment: .top, spacing: 10) {
-                                Image(systemName: "sparkles")
-                                    .font(nativeAppFont(size: 15, weight: .black))
-                                    .foregroundStyle(nativeAccent)
-                                    .padding(.top, 2)
-                                Text(hook)
-                                    .font(nativeAppFont(size: 20, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.92))
-                                    .multilineTextAlignment(.leading)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    }
-                }
-
-                if whyThisShowsUpText != nil {
-                    NativeSurfaceCard(fill: AnyShapeStyle(nativeAccent.opacity(0.12)), stroke: nativeAccent.opacity(0.36)) {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Why this is showing up for you")
-                                .font(nativeAppFont(size: 11, weight: .black))
-                                .foregroundStyle(nativeAccent)
-                                .textCase(.uppercase)
-                            Text(whyThisShowsUpText ?? "")
-                                .font(nativeAppFont(size: 15, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.88))
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                }
-
-                if !similarPlaceTravelers.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        NativeSectionTitle("Similar people")
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 12) {
-                                ForEach(similarPlaceTravelers) { traveler in
-                                    NavigationLink {
-                                        NativeTravelerProfileScreen(
-                                            initialTraveler: NativeTravelerSummary(
-                                                id: traveler.id,
-                                                username: traveler.username,
-                                                displayName: traveler.displayName,
-                                                avatar: traveler.avatar,
-                                                bio: nil,
-                                                descriptor: nil,
-                                                matchScore: traveler.matchScore,
-                                                followersCount: nil,
-                                                followingCount: nil,
-                                                recentSavedPlaces: nil,
-                                                recentCollections: nil,
-                                                travelHistory: [],
-                                                visitedPlacesCount: nil,
-                                                savedPlacesCount: nil,
-                                                collectionsCount: nil
-                                            )
-                                        )
-                                    } label: {
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            HStack(alignment: .top, spacing: 10) {
-                                                NativeAvatarCircle(
-                                                    url: traveler.avatar,
-                                                    fallbackText: traveler.displayName ?? traveler.username,
-                                                    size: 46,
-                                                    fontSize: 16
-                                                )
-                                                Spacer(minLength: 0)
-                                                if let score = traveler.matchScore {
-                                                    Text("\(score)%")
-                                                        .font(nativeAppFont(size: 11, weight: .black))
-                                                        .foregroundStyle(.white.opacity(0.82))
-                                                }
-                                            }
-
-                                            VStack(alignment: .leading, spacing: 4) {
-                                                Text(traveler.displayName ?? traveler.username)
-                                                    .font(nativeAppFont(size: 13, weight: .black))
-                                                    .foregroundStyle(.white)
-                                                    .lineLimit(2)
-                                                Text("@\(traveler.username)")
-                                                    .font(nativeAppFont(size: 11, weight: .semibold))
-                                                    .foregroundStyle(.white.opacity(0.58))
-                                                    .lineLimit(1)
-                                            }
-
-                                            HStack(spacing: 6) {
-                                                if traveler.isFollowing {
-                                                    nativeMiniTag("Following", foreground: nativeAccent, background: nativeAccent.opacity(0.14))
-                                                }
-                                                if traveler.hasVisited {
-                                                    nativeMiniTag("Visited this", foreground: .white.opacity(0.9), background: Color.white.opacity(0.08))
-                                                }
-                                                if traveler.hasSaved {
-                                                    nativeMiniTag("Saved this", foreground: .white.opacity(0.9), background: Color.white.opacity(0.08))
-                                                }
-                                            }
-                                        }
-                                        .frame(width: 154, alignment: .leading)
-                                        .padding(14)
-                                        .background(nativeSurface)
-                                        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                NativeSectionTitle("Place details")
-                NativeSurfaceCard {
-                    VStack(alignment: .leading, spacing: 14) {
-                        if let vibeCheck = place.attitudeLabel, !vibeCheck.isEmpty {
-                            NativePlaceDetailRow(label: "Vibe check", value: vibeCheck)
-                        }
-                        if let category = place.category, !category.isEmpty {
-                            NativePlaceDetailRow(label: "Place category", value: category)
-                        }
-                        if let archetype = place.archetype, !archetype.isEmpty {
-                            NativePlaceDetailRow(
-                                label: "Place archetype",
-                                value: archetype.replacingOccurrences(of: "_", with: " ")
-                            )
-                        }
-                        if let traitSource = place.traitSource, !traitSource.isEmpty {
-                            NativePlaceDetailRow(label: "Trait source", value: traitSource)
-                        }
-                        if let traitConfidence = place.traitConfidence {
-                            NativePlaceDetailRow(
-                                label: "Trait confidence",
-                                value: String(format: "%.0f%%", max(0, min(100, traitConfidence * 100)))
-                            )
-                        }
-                        if let budget = place.priceRange ?? (place.priceLevel.map { String(repeating: "$", count: $0) }), !budget.isEmpty {
-                            NativePlaceDetailRow(label: "Budget", value: budget)
-                        }
-                        if let timeToVisitLabel {
-                            NativePlaceDetailRow(label: "Time to visit", value: timeToVisitLabel)
-                        }
-                        if let address = place.address, !address.isEmpty {
-                            NativePlaceDetailRow(label: "Full address", value: address)
-                        }
-                        if let openingHours = place.openingHours, !openingHours.isEmpty {
-                            NativePlaceOpeningHoursRows(hours: openingHours)
-                        }
-                    }
-                }
-
-            }
+            placeDetailsSection
+            vibinnReviewSection
 
             if includeActions {
                 floatingActionBar(bottomInset: bottomInset)
@@ -28602,9 +28736,19 @@ private struct NativePlaceDetailScreen: View {
     }
 
     private var mediaUrls: [String] {
-        let candidates = (place.images ?? []).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-        if !candidates.isEmpty { return candidates }
-        return [place.image].compactMap { $0 }
+        let googlePhoto = [
+            place.placeMediaUrls?.first,
+            place.image,
+            place.images?.first
+        ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .first(where: { !$0.isEmpty })
+
+        let vibinnPhotos = travelerMoments
+            .compactMap { $0.mediaUrl?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        return Array(NSOrderedSet(array: [googlePhoto].compactMap { $0 } + vibinnPhotos)) as? [String] ?? []
     }
 
     private var compatibilityBadge: NativeCompatibilityBadgeMeta? {
@@ -28624,16 +28768,6 @@ private struct NativePlaceDetailScreen: View {
         return nil
     }
 
-    private var secondaryTags: [String] {
-        [
-            place.servesDessert == true ? "Serves dessert" : nil,
-            place.servesCoffee == true ? "Serves coffee" : nil,
-            place.servesBeer == true ? "Serves beer" : nil,
-            place.servesWine == true ? "Serves wine" : nil,
-            place.servesCocktails == true ? "Serves cocktails" : nil
-        ].compactMap { $0 }
-    }
-
     private var topDiscoverySignal: (rank: Int, queryText: String)? {
         place.discoverySignals?
             .compactMap { signal -> (rank: Int, queryText: String)? in
@@ -28646,67 +28780,6 @@ private struct NativePlaceDetailScreen: View {
             }
             .sorted { lhs, rhs in lhs.rank < rhs.rank }
             .first
-    }
-
-    private var timeToVisitLabel: String? {
-        let values = [
-            place.servesBreakfast == true ? "Breakfast" : nil,
-            place.servesBrunch == true ? "Brunch" : nil,
-            place.servesLunch == true ? "Lunch" : nil,
-            place.servesDinner == true ? "Dinner" : nil
-        ].compactMap { $0 }
-        guard !values.isEmpty else { return nil }
-        return values.joined(separator: ", ")
-    }
-
-    private var whyThisShowsUpText: String? {
-        let genericPrefixes = [
-            "it stands out more than most places nearby",
-            "it is landing as one of the stronger fits",
-            "it lines up with the slower",
-            "it fits the reset-heavy side",
-            "it reads like one of your stronger"
-        ]
-        let recommendation = place.recommendationReason?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if
-            let recommendation,
-            !recommendation.isEmpty,
-            !genericPrefixes.contains(where: { recommendation.lowercased().hasPrefix($0) }),
-            recommendation.lowercased() != place.description?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
-            recommendation.lowercased() != place.hook?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        {
-            return recommendation
-        }
-        return place.whyYoullLikeIt?
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first(where: {
-                !$0.isEmpty
-                && $0.lowercased() != place.description?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                && $0.lowercased() != place.hook?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                && !$0.lowercased().hasPrefix("best at ")
-            })
-    }
-
-    private var shortLocationLine: String {
-        let shortAddress = place.address?
-            .split(separator: ",")
-            .first
-            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
-        return shortAddress?.isEmpty == false ? shortAddress! : place.location
-    }
-
-    private var locationAndDistanceLine: String {
-        if let distanceLabel {
-            return "\(shortLocationLine)  •  \(distanceLabel)"
-        }
-        return shortLocationLine
-    }
-
-    private var bestVisitedAtLine: String? {
-        guard let bestTime = place.bestTime?.trimmingCharacters(in: .whitespacesAndNewlines), !bestTime.isEmpty else {
-            return nil
-        }
-        return "Best visited at \(bestTime)"
     }
 
     private var distanceLabel: String? {
@@ -28724,26 +28797,11 @@ private struct NativePlaceDetailScreen: View {
         return String(format: "%.1f mi away", miles)
     }
 
-    private var highlightAboutExists: Bool {
-        let hasHook = !(place.hook?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
-        return hasHook
-    }
+    private var compatibilityHeaderPrimary: String { "" }
 
-    private var compatibilityHeaderPrimary: String {
-        compatibilityBadge?.label ?? ""
-    }
+    private var compatibilityHeaderSecondary: String? { nil }
 
-    private var compatibilityHeaderSecondary: String? {
-        guard let score = place.similarityStat else { return nil }
-        return "\(score)% match"
-    }
-
-    private var compatibilityHeaderColor: Color {
-        guard let match = place.similarityStat else { return .white }
-        if match >= 85 { return nativeAccent }
-        if match >= 70 { return nativeAccent }
-        return .white
-    }
+    private var compatibilityHeaderColor: Color { .white }
 
     private var placeShareURL: URL? {
         URL(string: "https://vibinn.club/app/place/\(place.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? place.id)")
@@ -28752,6 +28810,115 @@ private struct NativePlaceDetailScreen: View {
     private var mapCoordinate: CLLocationCoordinate2D? {
         guard let latitude = place.latitude, let longitude = place.longitude else { return nil }
         return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    private var placeIdentitySection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            NativeSectionTitle("Place identity")
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text(place.name)
+                        .font(nativeAppFont(size: 30, weight: .black))
+                        .foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    if let neighborhood = place.neighborhood?.trimmingCharacters(in: .whitespacesAndNewlines), !neighborhood.isEmpty {
+                        NativePlaceDetailRow(label: "Neighborhood", value: neighborhood)
+                    }
+                    if let city = nativePrimaryCity(from: place.location), !city.isEmpty {
+                        NativePlaceDetailRow(label: "City", value: city)
+                    }
+                    if let distanceLabel {
+                        NativePlaceDetailRow(label: "Distance", value: distanceLabel)
+                    }
+                }
+            }
+        }
+    }
+
+    private var placeDetailsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            NativeSectionTitle("Place details")
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    if let openingHours = place.openingHours, !openingHours.isEmpty {
+                        NativePlaceOpeningHoursRows(hours: openingHours)
+                    }
+
+                    if !serviceTypeRows.isEmpty {
+                        NativePlaceServiceRows(rows: serviceTypeRows)
+                    }
+
+                    if let address = place.address?.trimmingCharacters(in: .whitespacesAndNewlines), !address.isEmpty {
+                        NativePlaceDetailRow(label: "Full address", value: address)
+                    }
+                }
+            }
+        }
+    }
+
+    private var vibinnReviewSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            NativeSectionTitle("Vibinn review")
+            if travelerMoments.isEmpty {
+                NativeSurfaceCard {
+                    Text("No Vibinn reviews for this place yet.")
+                        .font(nativeAppFont(size: 15, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.6))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                VStack(spacing: 12) {
+                    ForEach(travelerMoments) { moment in
+                        NativeSurfaceCard {
+                            HStack(alignment: .top, spacing: 14) {
+                                NativeAvatarCircle(
+                                    url: moment.travelerAvatar,
+                                    fallbackText: moment.travelerUsername,
+                                    size: 42,
+                                    fontSize: 16
+                                )
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text("@\(moment.travelerUsername)")
+                                        .font(nativeAppFont(size: 13, weight: .black))
+                                        .foregroundStyle(.white)
+
+                                    if let caption = moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines), !caption.isEmpty {
+                                        Text(caption)
+                                            .font(nativeAppFont(size: 14, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.82))
+                                            .fixedSize(horizontal: false, vertical: true)
+                                    }
+
+                                    if let mediaUrl = moment.mediaUrl, !mediaUrl.isEmpty {
+                                        NativeRemoteImage(url: mediaUrl)
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: 180)
+                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                    }
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private var serviceTypeRows: [(String, Bool)] {
+        [
+            ("Breakfast", place.servesBreakfast == true),
+            ("Brunch", place.servesBrunch == true),
+            ("Lunch", place.servesLunch == true),
+            ("Dinner", place.servesDinner == true),
+            ("Coffee", place.servesCoffee == true),
+            ("Dessert", place.servesDessert == true),
+            ("Beer", place.servesBeer == true),
+            ("Wine", place.servesWine == true),
+            ("Cocktails", place.servesCocktails == true),
+        ]
     }
 
     private var displayMapRegion: MKCoordinateRegion? {
@@ -28765,79 +28932,28 @@ private struct NativePlaceDetailScreen: View {
 
     @ViewBuilder
     private func floatingActionBar(bottomInset: CGFloat) -> some View {
-        HStack(spacing: 12) {
-            Button {
-                appState.trackAnalytics(
-                    .clickCheckin,
-                    properties: appState.placeAnalyticsProperties(
-                        place,
-                        source: NativeAnalyticsSource.placeDetails
-                    )
-                )
-                appState.presentCheckInFlow(prefilledPlace: place)
-            } label: {
-                HStack {
-                    Spacer()
-                    HStack(spacing: 8) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(nativeAppFont(size: 15, weight: .bold))
-                        Text("Been Here")
-                            .font(nativeAppFont(size: 15, weight: .black))
-                    }
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(Color.black.opacity(0.86))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-                .foregroundStyle(.white)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        Button {
+            withAnimation(placeSheetTransitionAnimation) {
+                sheetState = .collapsed
+                showDirectionsOptions = true
             }
-            .buttonStyle(.plain)
-            .shadow(color: Color.black.opacity(0.28), radius: 12, y: 8)
-
-            Button {
-                Task {
-                    await toggleBookmark()
-                }
-            } label: {
-                HStack {
-                    Spacer()
-                    HStack(spacing: 8) {
-                        Image(systemName: appState.isBookmarked(place.id) ? "bookmark.fill" : "bookmark")
-                            .font(nativeAppFont(size: 15, weight: .bold))
-                        if isTogglingBookmark {
-                            ProgressView().tint(.black)
-                        } else {
-                            Text(appState.isBookmarked(place.id) ? "Saved" : "Save")
-                                .font(nativeAppFont(size: 15, weight: .black))
-                        }
-                    }
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .background(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(appState.isBookmarked(place.id) ? nativeAccent : Color.black.opacity(0.86))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .stroke(nativeAccent, lineWidth: 1.5)
-                )
-                .foregroundStyle(appState.isBookmarked(place.id) ? .black : nativeAccent)
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                    .font(nativeAppFont(size: 15, weight: .bold))
+                Text("Go here")
+                    .font(nativeAppFont(size: 15, weight: .black))
+                Spacer(minLength: 0)
+                Image(systemName: "map.fill")
+                    .font(nativeAppFont(size: 14, weight: .bold))
             }
-            .buttonStyle(.plain)
-            .disabled(isTogglingBookmark)
-            .shadow(color: Color.black.opacity(0.28), radius: 12, y: 8)
+            .foregroundStyle(.black)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+            .background(nativeAccent)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
+        .buttonStyle(.plain)
         .padding(.horizontal, 10)
         .padding(.top, 10)
         .padding(.bottom, 10)
@@ -29428,6 +29544,36 @@ private struct NativePlaceOpeningHoursRows: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct NativePlaceServiceRows: View {
+    let rows: [(String, Bool)]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Text("Serves type")
+                .font(nativeAppFont(size: 12, weight: .black))
+                .foregroundStyle(.white.opacity(0.42))
+                .frame(width: 96, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: 10) {
+                        Text(row.0)
+                            .font(nativeAppFont(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.86))
+
+                        Image(systemName: row.1 ? "checkmark.circle.fill" : "xmark.circle")
+                            .font(nativeAppFont(size: 13, weight: .bold))
+                            .foregroundStyle(row.1 ? nativeAccent : .white.opacity(0.28))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
             Spacer(minLength: 0)
         }
     }
@@ -30617,6 +30763,7 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
     let username: String?
     let avatarURL: String?
     let avatarFallback: String
+    var headerLinkTraveler: NativeTravelerSummary? = nil
     let ratingMeta: (label: String, icon: String)?
     let reviewText: String?
     let mediaURL: String?
@@ -30631,19 +30778,7 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
         NativeSurfaceCard {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .center, spacing: 10) {
-                    avatarSquare(size: 42)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(displayName)
-                            .font(nativeAppFont(size: 15, weight: .black))
-                            .foregroundStyle(.white)
-
-                        if let username, !username.isEmpty {
-                            Text("@\(username)")
-                                .font(nativeAppFont(size: 12, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.48))
-                        }
-                    }
+                    headerIdentityContent
 
                     Spacer(minLength: 8)
 
@@ -30697,6 +30832,39 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
                 actions()
 
                 commentPreview()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var headerIdentityContent: some View {
+        if let headerLinkTraveler {
+            NavigationLink {
+                NativeTravelerProfileScreen(initialTraveler: headerLinkTraveler)
+            } label: {
+                identityRow
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            identityRow
+        }
+    }
+
+    private var identityRow: some View {
+        HStack(alignment: .center, spacing: 10) {
+            avatarSquare(size: 42)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(displayName)
+                    .font(nativeAppFont(size: 15, weight: .black))
+                    .foregroundStyle(.white)
+
+                if let username, !username.isEmpty {
+                    Text("@\(username)")
+                        .font(nativeAppFont(size: 12, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.48))
+                }
             }
         }
     }

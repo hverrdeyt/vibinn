@@ -8371,12 +8371,10 @@ async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
       console.error(error);
       return [];
     }),
-    userId
-      ? getPlaceTravelerMoments(placeId, userId).catch((error) => {
-          console.error(error);
-          return [];
-        })
-      : Promise.resolve([]),
+    getUnifiedPlaceTravelerMoments(placeId, userId).catch((error) => {
+      console.error(error);
+      return [];
+    }),
     userId
       ? Promise.all([
           prisma.bookmark.findMany({
@@ -8412,6 +8410,67 @@ async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
     travelerMoments,
     interactionState,
   };
+}
+
+async function getUnifiedPlaceTravelerMoments(placeId: string, userId?: string) {
+  const [legacyMoments, v2Moments] = await Promise.all([
+    getPlaceTravelerMoments(placeId, userId).catch((error) => {
+      console.error(error);
+      return [];
+    }),
+    prismaV2.moment.findMany({
+      where: {
+        placeId,
+        ...(userId ? { userId: { not: userId } } : {}),
+      },
+      orderBy: [
+        { visitedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
+      take: 8,
+      include: {
+        user: {
+          select: {
+            username: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    }).then((moments) => moments.map((moment) => ({
+      id: moment.id,
+      travelerUsername: moment.user.username ?? buildV2TravelerUsernameFallback(moment.userId),
+      travelerAvatar: moment.user.avatarUrl ?? null,
+      mediaUrl: resolveMomentMediaUrls(moment.uploadedMedia)[0] ?? null,
+      mediaType: (resolveMomentMediaUrls(moment.uploadedMedia)[0] ?? '').toLowerCase().endsWith('.mp4') ? 'video' : 'image',
+      caption: moment.caption || 'Logged a memory here.',
+      visitedAt: moment.visitedAt,
+      source: 'v2',
+    }))).catch((error) => {
+      console.error(error);
+      return [];
+    }),
+  ]);
+
+  const combined = [
+    ...v2Moments,
+    ...legacyMoments.map((moment) => ({
+      ...moment,
+      visitedAt: null as Date | null,
+      source: 'legacy',
+    })),
+  ];
+
+  return combined
+    .sort((left, right) => {
+      if (left.visitedAt && right.visitedAt) {
+        return right.visitedAt.getTime() - left.visitedAt.getTime();
+      }
+      if (left.visitedAt && !right.visitedAt) return -1;
+      if (!left.visitedAt && right.visitedAt) return 1;
+      return 0;
+    })
+    .slice(0, 8)
+    .map(({ source: _source, visitedAt: _visitedAt, ...moment }) => moment);
 }
 
 type TodayRecommendationFocus = 'coffee' | 'eat' | 'outdoor' | 'fun' | 'cheap';
