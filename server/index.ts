@@ -8414,7 +8414,7 @@ async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
 
 async function getUnifiedPlaceTravelerMoments(
   place: Awaited<ReturnType<typeof getPlaceDetailsByInternalId>>,
-  userId?: string,
+  _userId?: string,
 ) {
   if (!place) return [];
 
@@ -8423,11 +8423,6 @@ async function getUnifiedPlaceTravelerMoments(
 
   const moments = await prismaV2.moment.findMany({
     where: {
-      ...(userId ? { userId: { not: userId } } : {}),
-      user: {
-        status: 'ACTIVE',
-        username: { not: null },
-      },
       OR: [
         { placeId: place.id },
         ...(googlePlaceId ? [{ placeGooglePlaceId: googlePlaceId }] : []),
@@ -8456,7 +8451,7 @@ async function getUnifiedPlaceTravelerMoments(
     return [];
   });
 
-  const socialState = await loadV2MomentSocialState(moments.map((moment) => moment.id), userId);
+  const socialState = await loadV2MomentSocialState(moments.map((moment) => moment.id), undefined);
 
   return moments.slice(0, 8).map((moment) => ({
     ...mapV2MomentForClient(

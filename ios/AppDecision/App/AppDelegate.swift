@@ -1202,6 +1202,14 @@ private struct NativePlaceDetailResponse: Decodable {
     let relatedPlaces: [NativePlace]?
     let travelerMoments: [NativeMoment]?
     let interactionState: NativePlaceInteractionState?
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        place = try container.decode(NativePlace.self, forKey: .place)
+        relatedPlaces = try container.decodeIfPresent([NativePlace].self, forKey: .relatedPlaces)
+        interactionState = try container.decodeIfPresent(NativePlaceInteractionState.self, forKey: .interactionState)
+        travelerMoments = (try? container.decode([NativeMoment].self, forKey: .travelerMoments)) ?? []
+    }
 }
 
 private struct NativeCachedPlaceDetail {
@@ -1219,6 +1227,15 @@ private struct NativePlaceDetailBundleResponse: Decodable {
     let relatedPlaces: [NativePlace]
     let travelerMoments: [NativeMoment]
     let interactionState: NativePlaceInteractionState
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        place = try container.decode(NativePlace.self, forKey: .place)
+        relatedPlaces = try container.decodeIfPresent([NativePlace].self, forKey: .relatedPlaces) ?? []
+        interactionState = try container.decodeIfPresent(NativePlaceInteractionState.self, forKey: .interactionState)
+            ?? NativePlaceInteractionState(bookmarkedPlaceIds: [], beenTherePlaceIds: [])
+        travelerMoments = (try? container.decode([NativeMoment].self, forKey: .travelerMoments)) ?? []
+    }
 }
 
 private struct NativeDiscoveryPlacesResponse: Decodable {
@@ -28410,6 +28427,11 @@ private struct NativePlaceDetailScreen: View {
                         placeDetailDebugOverlay(in: geometry)
                             .zIndex(3)
                     }
+
+                    if showsExplicitBackButton {
+                        explicitBackButton(topInset: geometry.safeAreaInsets.top)
+                            .zIndex(4)
+                    }
                 } else {
                     NativePlaceDetailLoadingView(placeName: place.name)
                 }
@@ -28420,19 +28442,24 @@ private struct NativePlaceDetailScreen: View {
         .navigationBarHidden(false)
         .modifier(NativePlaceDetailNavigationChromeModifier())
         .toolbar {
-            if showsExplicitBackButton {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        dismiss()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(nativeAppFont(size: 16, weight: .black))
-                            .foregroundStyle(.white)
+            ToolbarItem(placement: .topBarLeading) {
+                Group {
+                    if showsExplicitBackButton {
+                        Button {
+                            dismiss()
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(nativeAppFont(size: 16, weight: .black))
+                                .foregroundStyle(.white)
+                                .frame(width: 36, height: 36)
+                                .background(Color.white.opacity(0.08))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        Color.clear
                             .frame(width: 36, height: 36)
-                            .background(Color.white.opacity(0.08))
-                            .clipShape(Circle())
                     }
-                    .buttonStyle(.plain)
                 }
             }
             ToolbarItem(placement: .principal) {
@@ -28490,6 +28517,30 @@ private struct NativePlaceDetailScreen: View {
 
     private var shouldRenderCanonicalContent: Bool {
         hasLoadedCanonicalDetails || errorMessage != nil
+    }
+
+    private func explicitBackButton(topInset: CGFloat) -> some View {
+        VStack {
+            HStack {
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(nativeAppFont(size: 16, weight: .black))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Color.white.opacity(0.08))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, max(topInset, 8))
+
+            Spacer(minLength: 0)
+        }
     }
 
     @ViewBuilder
