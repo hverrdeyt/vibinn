@@ -1001,6 +1001,62 @@ async function searchV2Travelers(userId: string, query: string) {
     });
 }
 
+async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, requestOrigin?: string) {
+  const traveler = await prismaV2.user.findUnique({
+    where: { id: travelerId },
+    include: {
+      _count: {
+        select: {
+          followers: true,
+          following: true,
+          moments: true,
+        },
+      },
+    },
+  });
+
+  if (!traveler || traveler.status !== 'ACTIVE' || !traveler.username) {
+    return null;
+  }
+
+  const moments = await prismaV2.moment.findMany({
+    where: { userId: travelerId },
+    orderBy: [
+      { visitedAt: 'desc' },
+      { createdAt: 'desc' },
+    ],
+    take: 60,
+  });
+  const socialState = await loadV2MomentSocialState(moments.map((moment) => moment.id), viewerUserId);
+
+  return {
+    traveler: {
+      id: traveler.id,
+      username: traveler.username,
+      displayName: traveler.displayName,
+      avatar: traveler.avatarUrl,
+      bio: null,
+      descriptor: traveler.cityLabel,
+      matchScore: null,
+      followersCount: traveler._count.followers,
+      followingCount: traveler._count.following,
+      recentSavedPlaces: null,
+      recentCollections: null,
+      travelHistory: [],
+      visitedPlacesCount: traveler._count.moments,
+      savedPlacesCount: null,
+      collectionsCount: null,
+    },
+    bookmarks: [],
+    collections: [],
+    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
+      commentCount: socialState.commentCounts[moment.id] ?? 0,
+      likeCount: socialState.likeCounts[moment.id] ?? 0,
+    }, socialState.latestCommentByMoment.get(moment.id) ?? null)),
+    inspirationMedia: [],
+  };
+}
+
 function startOfWeekUtc(date = new Date()) {
   const next = new Date(date);
   next.setUTCHours(0, 0, 0, 0);
@@ -9072,6 +9128,20 @@ app.get('/api/v2/travelers/search', requireV2Auth, async (req: AuthenticatedRequ
     const query = String(req.query.q ?? '').trim();
     const travelers = await searchV2Travelers(req.authV2UserId!, query);
     res.json({ travelers });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/travelers/:id', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const payload = await buildV2TravelerProfile(req.params.id, req.authV2UserId!, requestOrigin);
+    if (!payload) {
+      res.status(404).json({ error: 'Traveler not found' });
+      return;
+    }
+    res.json(payload);
   } catch (error) {
     handleError(res, error);
   }

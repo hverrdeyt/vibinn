@@ -658,6 +658,7 @@ function buildProfileUserWithMatch(
     descriptor?: string;
     vibinCount?: number;
     followersCount?: number;
+    followingCount?: number;
     recentSavedPlaces?: Array<{
       place: ReturnType<typeof mapPlaceForClient>;
       savedAtLabel: string;
@@ -682,6 +683,7 @@ function buildProfileUserWithMatch(
     ...(extras?.descriptor ? { descriptor: extras.descriptor } : {}),
     ...(typeof extras?.vibinCount === 'number' ? { vibinCount: extras.vibinCount } : {}),
     ...(typeof extras?.followersCount === 'number' ? { followersCount: extras.followersCount } : {}),
+    ...(typeof extras?.followingCount === 'number' ? { followingCount: extras.followingCount } : {}),
     ...(extras?.recentSavedPlaces?.length ? { recentSavedPlaces: extras.recentSavedPlaces } : {}),
     ...(extras?.recentCollections?.length ? { recentCollections: extras.recentCollections } : {}),
     ...(extras?.latestVisitedAtIso ? { latestVisitedAtIso: extras.latestVisitedAtIso } : {}),
@@ -1371,24 +1373,17 @@ export async function getFollowingFeed(userId?: string) {
   const currentUser = await getCurrentUser(prisma, userId);
   const blockedUserIds = await getBlockedUserIdsSet(currentUser.id);
   const todayCutoff = new Date(Date.now() - (24 * 60 * 60 * 1000));
-  const [acceptedFriendships, profileVibins] = await Promise.all([
-    prisma.friendship.findMany({
+  const [followsByMe, profileVibins] = await Promise.all([
+    prisma.follow.findMany({
       where: {
-        status: 'ACCEPTED',
-        OR: [
-          { requesterId: currentUser.id },
-          { addresseeId: currentUser.id },
-        ],
+        sourceUserId: currentUser.id,
       },
       select: {
-        requesterId: true,
-        addresseeId: true,
-        respondedAt: true,
-        updatedAt: true,
+        targetUserId: true,
+        createdAt: true,
       },
       orderBy: [
-        { respondedAt: 'desc' },
-        { updatedAt: 'desc' },
+        { createdAt: 'desc' },
       ],
     }),
     prisma.vibin.groupBy({
@@ -1399,17 +1394,9 @@ export async function getFollowingFeed(userId?: string) {
       _count: { _all: true },
     }),
   ]);
-  const acceptedFriendIds = Array.from(
-    new Set(
-      acceptedFriendships.map((friendship) =>
-        friendship.requesterId === currentUser.id
-          ? friendship.addresseeId
-          : friendship.requesterId
-      ),
-    ),
-  );
-  const feedParticipantIds = Array.from(new Set([currentUser.id, ...acceptedFriendIds]));
-  const friendSortOrder = new Map(acceptedFriendIds.map((id, index) => [id, index]));
+  const followedIds = Array.from(new Set(followsByMe.map((follow) => follow.targetUserId)));
+  const feedParticipantIds = Array.from(new Set([currentUser.id, ...followedIds]));
+  const followSortOrder = new Map(followedIds.map((id, index) => [id, index]));
   const participantUsers = feedParticipantIds.length
     ? await prisma.user.findMany({
         where: {
@@ -1422,7 +1409,7 @@ export async function getFollowingFeed(userId?: string) {
   const selfUser = participantUsers.find((user) => user.id === currentUser.id);
   const friendUsers = participantUsers.filter((user) => user.id !== currentUser.id);
   const followedUsers = friendUsers
-    .sort((a, b) => (friendSortOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (friendSortOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER))
+    .sort((a, b) => (followSortOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (followSortOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER))
     .map((targetUser) => ({ targetUser }));
   const vibinMap = new Map(profileVibins.map((item) => [item.targetId, item._count._all]));
   const visibleFollowedUsers = followedUsers.filter((item) => !blockedUserIds.has(item.targetUser.id) && isActiveAccount(item.targetUser));
@@ -2081,7 +2068,7 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
 
   const moments = traveler.feedPosts.map(mapFeedPostForClient);
 
-  const [similarity, vibinCount, followersCount, descriptor] = await Promise.all([
+  const [similarity, vibinCount, followersCount, followingCount, descriptor] = await Promise.all([
     prisma.travelerSimilarity.findFirst({
       where: {
         travelerId,
@@ -2098,6 +2085,11 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
     prisma.follow.count({
       where: {
         targetUserId: travelerId,
+      },
+    }),
+    prisma.follow.count({
+      where: {
+        sourceUserId: travelerId,
       },
     }),
     generateTravelerProfileDescriptor({
@@ -2117,6 +2109,7 @@ export async function getTravelerProfile(travelerId: string, viewerUserId?: stri
         relevanceReason: similarity?.relevanceReason,
         vibinCount,
         followersCount,
+        followingCount,
         descriptor,
         recentSavedPlaces: traveler.bookmarks.map((bookmark) => ({
           place: mapPlaceForClient(bookmark.place),

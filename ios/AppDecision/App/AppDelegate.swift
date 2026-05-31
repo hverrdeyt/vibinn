@@ -1856,6 +1856,7 @@ private struct NativeTravelerSummary: Decodable, Identifiable {
     let descriptor: String?
     let matchScore: Int?
     let followersCount: Int?
+    let followingCount: Int?
     let recentSavedPlaces: [NativeTravelerSavedEntry]?
     let recentCollections: [NativeCollection]?
     let travelHistory: [NativeTravelHistoryGroup]
@@ -3471,6 +3472,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     descriptor: user.cityLabel,
                     matchScore: nil,
                     followersCount: nil,
+                    followingCount: nil,
                     recentSavedPlaces: nil,
                     recentCollections: nil,
                     travelHistory: [],
@@ -4661,6 +4663,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         guard let token = authToken else {
             throw URLError(.userAuthenticationRequired)
         }
+        if usesV2Session, currentUser != nil {
+            return try await api.getV2TravelerProfile(id: id, token: token)
+        }
         return try await api.getTravelerProfile(id: id, token: token)
     }
 
@@ -5718,6 +5723,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             descriptor: nil,
             matchScore: nil,
             followersCount: nil,
+            followingCount: nil,
             recentSavedPlaces: savedPlaces.prefix(4).map { place in
                 NativeTravelerSavedEntry(
                     place: place,
@@ -6664,6 +6670,10 @@ private struct NativeAPIClient {
 
     func getTravelerProfile(id: String, token: String) async throws -> NativeTravelerProfileResponse {
         try await request(path: "/api/travelers/\(id)", method: "GET", token: token)
+    }
+
+    func getV2TravelerProfile(id: String, token: String) async throws -> NativeTravelerProfileResponse {
+        try await request(path: "/api/v2/travelers/\(id)", method: "GET", token: token)
     }
 
     func getTravelerFollowers(id: String, token: String) async throws -> [NativeFollowerListItem] {
@@ -10506,6 +10516,7 @@ private struct NativeNotificationRow: View {
                 descriptor: nil,
                 matchScore: nil,
                 followersCount: nil,
+                followingCount: nil,
                 recentSavedPlaces: [],
                 recentCollections: [],
                 travelHistory: [],
@@ -10524,6 +10535,7 @@ private struct NativeNotificationRow: View {
                 descriptor: nil,
                 matchScore: nil,
                 followersCount: nil,
+                followingCount: nil,
                 recentSavedPlaces: [],
                 recentCollections: [],
                 travelHistory: [],
@@ -16636,6 +16648,7 @@ private struct NativeChatConversationScreen: View {
             descriptor: nil,
             matchScore: nil,
             followersCount: nil,
+            followingCount: nil,
             recentSavedPlaces: nil,
             recentCollections: nil,
             travelHistory: [],
@@ -26802,7 +26815,9 @@ private struct NativePeopleSearchScreen: View {
     @FocusState private var isSearchFieldFocused: Bool
 
     private var trimmedQuery: String {
-        query.trimmingCharacters(in: .whitespacesAndNewlines)
+        query
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: #"^@+"#, with: "", options: .regularExpression)
     }
 
     var body: some View {
@@ -26810,7 +26825,7 @@ private struct NativePeopleSearchScreen: View {
             VStack(alignment: .leading, spacing: 18) {
                 NativeSurfaceCard {
                     TextField("Search by name or username", text: $query)
-                        .textInputAutocapitalization(.words)
+                        .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .font(nativeAppFont(size: 17, weight: .medium))
                         .focused($isSearchFieldFocused)
@@ -26856,6 +26871,18 @@ private struct NativePeopleSearchScreen: View {
                             NativeTravelerSearchRow(traveler: traveler)
                         }
                     }
+                } else if trimmedQuery.count >= 3 {
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("No people found")
+                                .font(nativeAppFont(size: 16, weight: .black))
+                                .foregroundStyle(.white)
+                            Text("Try searching with another name or username.")
+                                .font(nativeAppFont(size: 13, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.58))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
             .padding(.horizontal, 20)
@@ -26897,8 +26924,16 @@ private struct NativePeopleSearchScreen: View {
         defer { isSearching = false }
 
         do {
-            results = try await appState.searchTravelers(query: trimmedQuery)
+            nativeLogger.log("feed friend search start query=\(trimmedQuery, privacy: .public)")
+            let fetchedResults = try await appState.searchTravelers(query: trimmedQuery)
+            results = fetchedResults
+            nativeLogger.log(
+                "feed friend search success query=\(trimmedQuery, privacy: .public) results=\(fetchedResults.count, privacy: .public)"
+            )
         } catch {
+            nativeLogger.error(
+                "feed friend search failed query=\(trimmedQuery, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
+            )
             errorMessage = "Could not search people right now."
         }
     }
@@ -27028,6 +27063,7 @@ private struct NativeFollowerRow: View {
                         descriptor: nil,
                         matchScore: follower.matchScore,
                         followersCount: nil,
+                        followingCount: nil,
                         recentSavedPlaces: nil,
                         recentCollections: nil,
                         travelHistory: [],
@@ -27082,6 +27118,7 @@ private struct NativeFollowerRow: View {
                                 descriptor: nil,
                                 matchScore: follower.matchScore,
                                 followersCount: nil,
+                                followingCount: nil,
                                 recentSavedPlaces: nil,
                                 recentCollections: nil,
                                 travelHistory: [],
@@ -27114,53 +27151,49 @@ private struct NativeFollowerRow: View {
 private struct NativeTravelerProfileScreen: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var appState: NativeAppState
-	@State private var traveler: NativeTravelerSummary
-	@State private var bookmarks: [NativePlace] = []
-	@State private var collections: [NativeCollection] = []
+    @State private var traveler: NativeTravelerSummary
     @State private var moments: [NativeMoment] = []
-    @State private var inspirationMedia: [NativeDiscoveryInspirationMedia] = []
-	@State private var isLoading = false
-	@State private var isUpdatingFriendship = false
-    @State private var friendshipStatus: NativeFriendshipStatus = .none
-    @State private var activeConversation: NativeChatConversationSummary?
-    @State private var isStartingConversation = false
-    @State private var showMutualPlacesSheet = false
+    @State private var isLoading = false
+    @State private var isUpdatingFollow = false
     @State private var showShareSheet = false
-    @State private var selectedRecentPostsPresentation: NativeTravelerRecentPostsPresentation?
-    @State private var selectedRecentVisitCity: String?
+    @State private var selectedProfileFeedItem: NativeFeedItem?
     @State private var showReportAccountDialog = false
     @State private var showBlockAccountDialog = false
     @State private var moderationAlertMessage = ""
     @State private var showModerationAlert = false
-    @State private var friendCount: Int?
     @State private var errorMessage: String?
+    @State private var activeMode: NativeTravelerProfileContentMode = .gallery
+    @State private var mapRegion = MKCoordinateRegion(
+        center: CLLocationCoordinate2D(latitude: 40.7128, longitude: -74.0060),
+        span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25)
+    )
 
-    private enum NativeFriendCTAState {
-        case add
-        case requested
-        case unfriend
+    private enum NativeTravelerProfileContentMode: String, CaseIterable, Identifiable {
+        case gallery = "Gallery"
+        case posts = "Posts"
+        case map = "Map"
+
+        var id: String { rawValue }
     }
 
     init(initialTraveler: NativeTravelerSummary) {
         _traveler = State(initialValue: initialTraveler)
-        _bookmarks = State(initialValue: (initialTraveler.recentSavedPlaces ?? []).map(\.place))
-        _collections = State(initialValue: initialTraveler.recentCollections ?? [])
         _moments = State(initialValue: [])
     }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 18) {
-                quickReadIdentity
+                travelerIdentityHeader
 
                 if let errorMessage {
                     NativeInlineError(message: errorMessage)
                 }
 
-                quickVibeSummary
-                mutualPlacesSection
-                addFriendCTA
-                recentPlacesSection
+                followAndProfileActions
+                travelerStatsSection
+                travelerModePicker
+                travelerModeContent
             }
             .padding(.horizontal, nativeTravelerProfileHorizontalPadding)
             .padding(.top, 20)
@@ -27191,8 +27224,7 @@ private struct NativeTravelerProfileScreen: View {
         }
         .task {
             await loadTravelerProfile()
-            await loadFriendshipStatus()
-            await loadFriendCount()
+            updateMapRegion()
         }
         .onAppear {
             appState.trackAnalytics(
@@ -27217,31 +27249,12 @@ private struct NativeTravelerProfileScreen: View {
         .onDisappear {
             appState.popFloatingTabBarHidden()
         }
-        .sheet(isPresented: $showMutualPlacesSheet) {
-            NavigationView {
-                NativeTravelerMutualPlacesSheet(places: mutualPlaces)
-            }
-            .navigationViewStyle(.stack)
-        }
         .sheet(isPresented: $showShareSheet) {
             NativeShareSheet(items: ["https://vibinn.club/u/\(traveler.username)"])
         }
-        .sheet(item: $activeConversation) { conversation in
-            NavigationView {
-                NativeChatConversationScreen(conversationSummary: conversation)
-                    .environmentObject(appState)
-            }
-            .navigationViewStyle(.stack)
-        }
-        .fullScreenCover(item: $selectedRecentPostsPresentation) { presentation in
-            NavigationView {
-                NativeTravelerRecentPostsFullscreen(
-                    items: presentation.items,
-                    startIndex: presentation.startIndex
-                )
+        .fullScreenCover(item: $selectedProfileFeedItem) { item in
+            NativeFeedMomentFullscreen(item: item)
                 .environmentObject(appState)
-            }
-            .navigationViewStyle(.stack)
         }
         .confirmationDialog("Report account", isPresented: $showReportAccountDialog, titleVisibility: .visible) {
             ForEach(NativeReportReason.allCases) { reason in
@@ -27266,9 +27279,12 @@ private struct NativeTravelerProfileScreen: View {
         } message: {
             Text(moderationAlertMessage)
         }
+        .onChange(of: moments.count) { _ in
+            updateMapRegion()
+        }
     }
 
-    private var quickReadIdentity: some View {
+    private var travelerIdentityHeader: some View {
         HStack(alignment: .top, spacing: 14) {
             NativeAvatarCircle(
                 url: traveler.avatar,
@@ -27287,6 +27303,12 @@ private struct NativeTravelerProfileScreen: View {
                     .font(nativeAppFont(size: 14, weight: .bold))
                     .foregroundStyle(.white.opacity(0.55))
 
+                if let cityLabel = travelerCityLabel {
+                    Text(cityLabel)
+                        .font(nativeAppFont(size: 13, weight: .bold))
+                        .foregroundStyle(nativeAccent)
+                }
+
                 if let bio = traveler.bio?.trimmingCharacters(in: .whitespacesAndNewlines), !bio.isEmpty {
                     Text(bio)
                         .font(nativeAppFont(size: 14, weight: .medium))
@@ -27296,147 +27318,35 @@ private struct NativeTravelerProfileScreen: View {
             }
 
             Spacer(minLength: 0)
-
-            NavigationLink {
-                NativeFollowersScreen(traveler: traveler)
-            } label: {
-                NativeProfileMetaPill(
-                    label: "\(friendCount ?? 0) friends",
-                    foreground: .black,
-                    background: nativeAccent
-                )
-            }
-            .buttonStyle(.plain)
         }
     }
 
-    private var quickVibeSummary: some View {
-        NativeSurfaceCard {
-            VStack(alignment: .leading, spacing: 14) {
-                Text("Vibes")
-                    .font(nativeAppFont(size: 10, weight: .black))
-                    .foregroundStyle(nativeAccent)
-                    .textCase(.uppercase)
-
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(topVibeAspects.prefix(3), id: \.id) { aspect in
-                        HStack(spacing: 10) {
-                            Text(aspect.title)
-                                .font(nativeAppFont(size: 15, weight: .bold))
-                                .foregroundStyle(.white)
-                                .frame(width: 68, alignment: .leading)
-
-                            HStack(spacing: 5) {
-                                ForEach(1...5, id: \.self) { index in
-                                    Image(systemName: index <= aspect.score ? "diamond.fill" : "diamond")
-                                        .font(nativeAppFont(size: 10, weight: .black))
-                                        .foregroundStyle(index <= aspect.score ? nativeAccent : .white.opacity(0.18))
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private var mutualPlacesSection: some View {
-        NativeSurfaceCard {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Mutual places")
-                    .font(nativeAppFont(size: 10, weight: .black))
-                    .foregroundStyle(nativeAccent)
-                    .textCase(.uppercase)
-
-                HStack(spacing: 12) {
-                    Text(mutualPlaces.isEmpty ? "No shared spots yet." : "\(mutualPlaces.count) shared \(mutualPlaces.count == 1 ? "spot" : "spots")")
-                        .font(nativeAppFont(size: 13, weight: .bold))
-                        .foregroundStyle(.white)
-                    Spacer(minLength: 0)
-
-                    Button {
-                        showMutualPlacesSheet = true
-                    } label: {
-                        NativeOverlappingPlaceThumbs(places: Array(mutualPlaces.prefix(3)))
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(mutualPlaces.isEmpty)
-                }
-            }
-        }
-    }
-
-    private var addFriendCTA: some View {
+    private var followAndProfileActions: some View {
         HStack(spacing: 10) {
-            if friendshipStatus == .accepted {
+            if !isCurrentUser {
                 Button {
-                    Task { await openConversation() }
+                    Task { await toggleFollow() }
                 } label: {
                     HStack {
                         Spacer()
-                        if isStartingConversation {
-                            ProgressView().tint(.white)
+                        if isUpdatingFollow {
+                            ProgressView().tint(isFollowing ? .white : .black)
                         } else {
-                            Text("Message")
+                            Text(isFollowing ? "Following" : "Follow")
                                 .font(nativeAppFont(size: 15, weight: .black))
                         }
                         Spacer()
                     }
                     .padding(.vertical, 14)
-                    .background(Color.white.opacity(0.08))
-                    .foregroundStyle(.white)
+                    .background(isFollowing ? Color.white.opacity(0.08) : nativeAccent)
+                    .foregroundStyle(isFollowing ? .white : .black)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
                 .buttonStyle(.plain)
-                .disabled(isStartingConversation)
-            } else {
-                Button {
-                    Task { await toggleFriendship() }
-                } label: {
-                    HStack {
-                        Spacer()
-                        if isUpdatingFriendship {
-                            ProgressView().tint(friendCTAState == .add ? .black : .white)
-                        } else {
-                            Text(friendCTATitle)
-                                .font(nativeAppFont(size: 15, weight: .black))
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 14)
-                    .background(friendCTAState == .add ? nativeAccent : Color.white.opacity(0.08))
-                    .foregroundStyle(friendCTAState == .add ? .black : .white)
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                }
-                .buttonStyle(.plain)
-                .disabled(isUpdatingFriendship)
-
-                Button {
-                    Task { await openConversation() }
-                } label: {
-                    if isStartingConversation {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(width: 48, height: 48)
-                    } else {
-                        Image(systemName: "message.fill")
-                            .font(nativeAppFont(size: 16, weight: .black))
-                            .foregroundStyle(.white)
-                            .frame(width: 48, height: 48)
-                    }
-                }
-                .background(Color.white.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                .buttonStyle(.plain)
-                .disabled(isStartingConversation || friendshipStatus == .blocked)
+                .disabled(isUpdatingFollow)
             }
 
             Menu {
-                if friendshipStatus == .accepted {
-                    Button("Unfriend", role: .destructive) {
-                        Task { await toggleFriendship() }
-                    }
-                }
                 if appState.isBlocked(traveler.id) {
                     Button("Unblock") {
                         Task { await unblockAccount() }
@@ -27445,6 +27355,9 @@ private struct NativeTravelerProfileScreen: View {
                     Button("Block", role: .destructive) {
                         showBlockAccountDialog = true
                     }
+                }
+                Button("Report", role: .destructive) {
+                    showReportAccountDialog = true
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -27457,188 +27370,249 @@ private struct NativeTravelerProfileScreen: View {
         }
     }
 
-    private var recentPlacesSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("Recent visit")
-                    .font(nativeAppFont(size: 18, weight: .black))
-                    .foregroundStyle(.white)
-                Spacer()
-                Text("\(recentPlaceItems.count)")
-                    .font(nativeAppFont(size: 12, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.45))
-            }
+    private var travelerStatsSection: some View {
+        let stats = [
+            ("Logs", profileMomentCount),
+            ("Places", profileUniquePlaceCount),
+            ("Cities", profileCityCount),
+            ("Followers", traveler.followersCount ?? 0),
+            ("Following", traveler.followingCount ?? 0),
+        ]
 
-            if !recentVisitCities.isEmpty {
-                NativeCityFilterPills(
-                    selectedCity: Binding(
-                        get: { effectiveSelectedRecentVisitCity },
-                        set: { selectedRecentVisitCity = $0 }
-                    ),
-                    cities: recentVisitCities
-                )
+        return LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 2), spacing: 10) {
+            ForEach(Array(stats.enumerated()), id: \.offset) { _, stat in
+                NativeProfileMiniStat(label: stat.0, value: "\(stat.1)")
             }
+        }
+    }
 
-            if recentPlaceItems.isEmpty {
+    private var travelerModePicker: some View {
+        HStack(spacing: 0) {
+            ForEach(NativeTravelerProfileContentMode.allCases) { mode in
+                Button {
+                    activeMode = mode
+                } label: {
+                    VStack(spacing: 10) {
+                        HStack(spacing: 7) {
+                            Image(systemName: travelerModeIconName(for: mode))
+                                .font(nativeAppFont(size: 13, weight: .black))
+                            Text(mode.rawValue)
+                                .font(nativeAppFont(size: 14, weight: .black))
+                        }
+                        .foregroundStyle(activeMode == mode ? .white : .white.opacity(0.56))
+                        .frame(maxWidth: .infinity)
+
+                        Rectangle()
+                            .fill(activeMode == mode ? nativeAccent : Color.white.opacity(0.12))
+                            .frame(height: 3)
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.plain)
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.white.opacity(0.08))
+                .frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var travelerModeContent: some View {
+        switch activeMode {
+        case .posts:
+            if profileFeedItems.isEmpty {
                 NativeSurfaceCard {
-                    Text("No recent visit yet.")
+                    Text("No posts yet.")
+                        .font(nativeAppFont(size: 15, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+            } else {
+                LazyVStack(spacing: 14) {
+                    ForEach(profileFeedItems) { item in
+                        NativeFeedCard(item: item)
+                    }
+                }
+            }
+        case .gallery:
+            if profileMoments.isEmpty {
+                NativeSurfaceCard {
+                    Text("No gallery yet.")
                         .font(nativeAppFont(size: 15, weight: .medium))
                         .foregroundStyle(.white.opacity(0.6))
                 }
             } else {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
-                    ForEach(Array(recentPlaceItems.enumerated()), id: \.offset) { index, item in
+                    ForEach(Array(profileMoments.enumerated()), id: \.element.id) { index, moment in
                         Button {
-                            guard !recentFeedItems.isEmpty else { return }
-                            selectedRecentPostsPresentation = NativeTravelerRecentPostsPresentation(
-                                items: recentFeedItems,
-                                startIndex: index
-                            )
+                            guard profileFeedItems.indices.contains(index) else { return }
+                            selectedProfileFeedItem = profileFeedItems[index]
                         } label: {
-                            NativeTravelerRecentPlaceThumb(item: item)
+                            profileGalleryThumb(moment)
                         }
                         .buttonStyle(.plain)
                     }
                 }
             }
-        }
-    }
+        case .map:
+            if profileMappedFeedItems.isEmpty {
+                NativeSurfaceCard {
+                    Text("No mapped posts yet.")
+                        .font(nativeAppFont(size: 15, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+            } else {
+                VStack(alignment: .leading, spacing: 12) {
+                    profileMapCard
+                        .padding(.horizontal, -nativeTravelerProfileHorizontalPadding)
 
-    private var recentVisitedPlaces: [NativePlace] {
-        moments
-            .map(nativePlaceApplyingMoment)
-            .sorted {
-                let lhs = NativeAppState.feedSortDate(iso: $0.visitedAtIso ?? $0.visitedDate, label: $0.visitedDate) ?? .distantPast
-                let rhs = NativeAppState.feedSortDate(iso: $1.visitedAtIso ?? $1.visitedDate, label: $1.visitedDate) ?? .distantPast
-                return lhs > rhs
+                    Text("\(profileMappedFeedItems.count) mapped posts")
+                        .font(nativeAppFont(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.58))
+                        .padding(.horizontal, 20)
+                }
             }
-    }
-
-    private var recentPlaceItems: [NativeTravelerRecentPlaceItem] {
-        filteredRecentVisitedPlaces.map { place in
-            NativeTravelerRecentPlaceItem(
-                place: place,
-                imageURL: nativeTravelerPlaceImageURL(place),
-                visitedLabel: NativeAppState.relativeLabel(from: place.visitedAtIso ?? place.visitedDate),
-                moodLabel: place.attitudeLabel ?? nativeTitleCase(place.category ?? "Vibe"),
-                ratingLabel: nativeMomentRatingMeta(label: place.momentRatingLabel, fallbackRating: place.momentRating)?.label,
-                review: place.momentCaption
-            )
         }
     }
 
-    private var recentFeedItems: [NativeFeedItem] {
-        filteredRecentVisitedPlaces.map { place in
+    private var profileMomentCount: Int {
+        profileMoments.count
+    }
+
+    private var profileUniquePlaceCount: Int {
+        Set(profileMoments.map(\.place.id)).count
+    }
+
+    private var profileCityCount: Int {
+        Set(profileMoments.compactMap { nativeCityKey(for: $0.place) }).count
+    }
+
+    private var isFollowing: Bool {
+        appState.isFollowing(traveler.id)
+    }
+
+    private var isCurrentUser: Bool {
+        appState.currentUser?.id == traveler.id
+    }
+
+    private var travelerCityLabel: String? {
+        let raw = traveler.descriptor?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !raw.isEmpty, raw.count <= 32 else { return nil }
+        return raw
+    }
+
+    private var profileMoments: [NativeMoment] {
+        moments.sorted {
+            let lhs = NativeAppState.feedSortDate(iso: $0.visitedAtIso ?? $0.visitedDate, label: $0.visitedDate) ?? .distantPast
+            let rhs = NativeAppState.feedSortDate(iso: $1.visitedAtIso ?? $1.visitedDate, label: $1.visitedDate) ?? .distantPast
+            return lhs > rhs
+        }
+    }
+
+    private var profileFeedItems: [NativeFeedItem] {
+        profileMoments.map { moment in
             let timestamp = NativeAppState.feedSortDate(
-                iso: place.visitedAtIso ?? place.visitedDate,
-                label: place.visitedDate
+                iso: moment.visitedAtIso ?? moment.visitedDate,
+                label: moment.visitedDate
             ) ?? .distantPast
-            let primaryMomentMediaURL = (
-                place.userMediaUrls?.first ??
-                place.momentMedia?.first?.url ??
-                place.image ??
-                place.images?.first
-            )
-            let singleFeedMedia = primaryMomentMediaURL.map { [$0] } ?? []
+            let media = (moment.uploadedMedia?.first).map { [$0] } ?? []
 
             return NativeFeedItem(
-                id: place.momentId ?? place.id,
+                id: moment.id,
                 type: .visited,
                 traveler: traveler,
-                title: place.name,
-                timestampLabel: NativeAppState.relativeLabel(from: place.visitedAtIso ?? place.visitedDate),
+                title: moment.place.name,
+                timestampLabel: NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate),
                 sortTimestamp: timestamp,
-                place: place,
+                place: nativePlaceApplyingMoment(moment),
                 collection: nil,
-                caption: place.momentCaption,
-                uploadedMediaUrls: singleFeedMedia
+                caption: moment.caption,
+                uploadedMediaUrls: media
             )
         }
     }
 
-    private var recentVisitCities: [String] {
-        let cities = Set(recentVisitedPlaces.compactMap(nativeCityKey(for:)))
-        return cities.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    private var profileMappedFeedItems: [NativeFeedItem] {
+        profileFeedItems.filter { $0.place?.latitude != nil && $0.place?.longitude != nil }
     }
 
-    private var effectiveSelectedRecentVisitCity: String? {
-        selectedRecentVisitCity.flatMap { recentVisitCities.contains($0) ? $0 : nil }
-    }
+    private var profileMapCard: some View {
+        Map(coordinateRegion: $mapRegion, annotationItems: profileMappedFeedItems) { item in
+            MapAnnotation(coordinate: CLLocationCoordinate2D(
+                latitude: item.place?.latitude ?? 0,
+                longitude: item.place?.longitude ?? 0
+            )) {
+                Button {
+                    selectedProfileFeedItem = item
+                } label: {
+                    VStack(spacing: 6) {
+                        if let media = item.uploadedMediaUrls?.first ?? item.place?.image {
+                            NativeRemoteImage(url: media)
+                                .frame(width: 54, height: 54)
+                                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                                )
+                        } else {
+                            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                .fill(Color.white.opacity(0.08))
+                                .frame(width: 54, height: 54)
+                        }
 
-    private var filteredRecentVisitedPlaces: [NativePlace] {
-        guard let city = effectiveSelectedRecentVisitCity else { return recentVisitedPlaces }
-        return recentVisitedPlaces.filter { nativeCityKey(for: $0) == city }
-    }
-
-    private var mutualPlaces: [NativePlace] {
-        let myIds = Set(appState.savedPlaces.map(\.id) + appState.myMoments.map { $0.place.id })
-        var seen = Set<String>()
-        let combined = recentVisitedPlaces + bookmarks
-        return combined.filter { place in
-            guard myIds.contains(place.id), !seen.contains(place.id) else { return false }
-            seen.insert(place.id)
-            return true
-        }
-    }
-
-    private var vibeAspectScores: [NativeTravelerVibeAspect] {
-        let textSignals = [
-            traveler.bio ?? "",
-            recentVisitedPlaces.map { [$0.category, $0.neighborhood, $0.hook, $0.description, $0.momentCaption].compactMap { $0 }.joined(separator: " ") }.joined(separator: " ")
-        ].joined(separator: " ").lowercased()
-
-        func score(for keywords: [String], base: Int = 1) -> Int {
-            let hits = keywords.reduce(0) { partialResult, keyword in
-                partialResult + (textSignals.contains(keyword) ? 1 : 0)
+                        Text("@\(traveler.username)")
+                            .font(nativeAppFont(size: 9, weight: .black))
+                            .foregroundStyle(.white.opacity(0.88))
+                            .lineLimit(1)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.black.opacity(0.62))
+                            .clipShape(Capsule())
+                    }
+                }
+                .buttonStyle(.plain)
             }
-            return min(5, max(1, base + hits))
         }
-
-        return [
-            NativeTravelerVibeAspect(id: "chill", title: "Chill", score: score(for: ["chill", "slow", "easy", "soft", "calm"])),
-            NativeTravelerVibeAspect(id: "cozy", title: "Cozy", score: score(for: ["cozy", "warm", "bakery", "coffee", "cafe", "dessert"])),
-            NativeTravelerVibeAspect(id: "lively", title: "Lively", score: score(for: ["lively", "night", "bar", "cocktail", "beer", "fun"])),
-            NativeTravelerVibeAspect(id: "quiet", title: "Quiet", score: score(for: ["quiet", "focus", "book", "library", "tea", "corner"])),
-            NativeTravelerVibeAspect(id: "social", title: "Social", score: score(for: ["social", "friends", "groups", "wine", "brunch", "hang"])),
-        ]
+        .frame(maxWidth: .infinity)
+        .frame(height: max(UIScreen.main.bounds.height * 0.72, 620))
     }
 
-    private var topVibeAspects: [NativeTravelerVibeAspect] {
-        vibeAspectScores.sorted {
-            if $0.score == $1.score {
-                return $0.title < $1.title
+    private func profileGalleryThumb(_ moment: NativeMoment) -> some View {
+        ZStack(alignment: .bottomLeading) {
+            Group {
+                if let media = moment.uploadedMedia?.first {
+                    NativeRemoteImage(url: media)
+                } else {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                        .overlay(
+                            Image(systemName: "photo")
+                                .font(nativeAppFont(size: 22, weight: .black))
+                                .foregroundStyle(.white.opacity(0.3))
+                        )
+                }
             }
-            return $0.score > $1.score
+            .aspectRatio(1, contentMode: .fill)
+
+            LinearGradient(
+                colors: [Color.clear, Color.black.opacity(0.75)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            Text(NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate))
+                .font(nativeAppFont(size: 9, weight: .black))
+                .foregroundStyle(.white.opacity(0.68))
+                .padding(10)
         }
-    }
-
-    private var friendCTAState: NativeFriendCTAState {
-        if friendshipStatus == .pendingSent || friendshipStatus == .pendingReceived {
-            return .requested
-        }
-        return friendshipStatus == .accepted ? .unfriend : .add
-    }
-
-    private var friendCTATitle: String {
-        switch friendCTAState {
-        case .add:
-            return "Add friend"
-        case .requested:
-            return "Requested"
-        case .unfriend:
-            return "Unfriend"
-        }
-    }
-
-    private func nativeTravelerPlaceImageURL(_ place: NativePlace) -> String? {
-        if let uploaded = place.userMediaUrls?.first, !uploaded.isEmpty { return uploaded }
-        if let uploaded = place.momentMedia?.first?.url, !uploaded.isEmpty { return uploaded }
-        if let image = place.image, !image.isEmpty { return image }
-        return place.images?.first
-    }
-
-    private func nativeTitleCase(_ raw: String) -> String {
-        raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().localizedCapitalized
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
     }
 
     private func loadTravelerProfile() async {
@@ -27649,63 +27623,38 @@ private struct NativeTravelerProfileScreen: View {
         do {
             let response = try await appState.fetchTravelerProfile(id: traveler.id)
             traveler = response.traveler
-            bookmarks = response.bookmarks
-            collections = response.collections
             moments = response.moments
-            inspirationMedia = response.inspirationMedia ?? []
         } catch {
             errorMessage = "Could not load this profile right now."
         }
     }
 
-    private func loadFriendshipStatus() async {
-        do {
-            friendshipStatus = try await appState.fetchFriendshipStatus(userId: traveler.id)
-        } catch {
-            if (error as? URLError)?.code != .userAuthenticationRequired {
-                errorMessage = "Could not load friendship status right now."
-            }
-        }
-    }
-
-    private func loadFriendCount() async {
-        do {
-            let friends = try await appState.fetchTravelerFriends(id: traveler.id)
-            friendCount = friends.count
-        } catch {
-            return
-        }
-    }
-
-    private func toggleFriendship() async {
+    private func toggleFollow() async {
         errorMessage = nil
-        isUpdatingFriendship = true
-        defer { isUpdatingFriendship = false }
+        isUpdatingFollow = true
+        defer { isUpdatingFollow = false }
 
         do {
-            switch friendshipStatus {
-            case .none:
-                friendshipStatus = try await appState.requestFriendship(userId: traveler.id)
-            case .accepted:
-                try await appState.removeFriendship(userId: traveler.id)
-                friendshipStatus = .none
-            case .pendingSent, .pendingReceived, .declined, .blocked:
-                return
-            }
+            let response = try await appState.toggleFollow(for: traveler)
+            traveler = NativeTravelerSummary(
+                id: traveler.id,
+                username: traveler.username,
+                displayName: traveler.displayName,
+                avatar: traveler.avatar,
+                bio: traveler.bio,
+                descriptor: traveler.descriptor,
+                matchScore: traveler.matchScore,
+                followersCount: response.followersCount,
+                followingCount: traveler.followingCount,
+                recentSavedPlaces: traveler.recentSavedPlaces,
+                recentCollections: traveler.recentCollections,
+                travelHistory: traveler.travelHistory,
+                visitedPlacesCount: traveler.visitedPlacesCount,
+                savedPlacesCount: traveler.savedPlacesCount,
+                collectionsCount: traveler.collectionsCount
+            )
         } catch {
-            errorMessage = "Could not update friendship right now."
-        }
-    }
-
-    private func openConversation() async {
-        errorMessage = nil
-        isStartingConversation = true
-        defer { isStartingConversation = false }
-
-        do {
-            activeConversation = try await appState.startChatConversation(with: traveler.id)
-        } catch {
-            errorMessage = "Could not open chat right now."
+            errorMessage = "Could not update follow right now."
         }
     }
 
@@ -27744,6 +27693,43 @@ private struct NativeTravelerProfileScreen: View {
             moderationAlertMessage = "Could not unblock this account right now."
             showModerationAlert = true
         }
+    }
+
+    private func travelerModeIconName(for mode: NativeTravelerProfileContentMode) -> String {
+        switch mode {
+        case .posts:
+            return "list.bullet.rectangle.fill"
+        case .gallery:
+            return "square.grid.2x2.fill"
+        case .map:
+            return "map.fill"
+        }
+    }
+
+    private func updateMapRegion() {
+        let coordinates = profileMappedFeedItems.compactMap { item -> CLLocationCoordinate2D? in
+            guard let latitude = item.place?.latitude, let longitude = item.place?.longitude else { return nil }
+            return CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+        }
+        guard !coordinates.isEmpty else { return }
+
+        let latitudes = coordinates.map(\.latitude)
+        let longitudes = coordinates.map(\.longitude)
+        let minLat = latitudes.min() ?? 0
+        let maxLat = latitudes.max() ?? 0
+        let minLon = longitudes.min() ?? 0
+        let maxLon = longitudes.max() ?? 0
+
+        mapRegion = MKCoordinateRegion(
+            center: CLLocationCoordinate2D(
+                latitude: (minLat + maxLat) / 2,
+                longitude: (minLon + maxLon) / 2
+            ),
+            span: MKCoordinateSpan(
+                latitudeDelta: max((maxLat - minLat) * 1.6, 0.05),
+                longitudeDelta: max((maxLon - minLon) * 1.6, 0.05)
+            )
+        )
     }
 }
 
@@ -28487,6 +28473,7 @@ private struct NativePlaceDetailScreen: View {
                                                 descriptor: nil,
                                                 matchScore: traveler.matchScore,
                                                 followersCount: nil,
+                                                followingCount: nil,
                                                 recentSavedPlaces: nil,
                                                 recentCollections: nil,
                                                 travelHistory: [],
