@@ -917,6 +917,87 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
   };
 }
 
+async function searchV2Travelers(userId: string, query: string) {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.length < 2) {
+    return [];
+  }
+
+  const users = await prismaV2.user.findMany({
+    where: {
+      id: { not: userId },
+      status: 'ACTIVE',
+      onboardingCompleted: true,
+      username: { not: null },
+      OR: [
+        {
+          username: {
+            contains: normalizedQuery,
+            mode: 'insensitive',
+          },
+        },
+        {
+          displayName: {
+            contains: normalizedQuery,
+            mode: 'insensitive',
+          },
+        },
+        {
+          cityLabel: {
+            contains: normalizedQuery,
+            mode: 'insensitive',
+          },
+        },
+      ],
+    },
+    include: {
+      _count: {
+        select: {
+          followers: true,
+          moments: true,
+        },
+      },
+    },
+    take: 16,
+  });
+
+  return users
+    .map((user) => ({
+      id: user.id,
+      username: user.username ?? `traveler.${user.phoneNumberE164.replace(/\D+/g, '').slice(-6)}`,
+      displayName: user.displayName,
+      avatar: user.avatarUrl,
+      bio: null,
+      descriptor: user.cityLabel,
+      matchScore: null,
+      followersCount: user._count.followers,
+      recentSavedPlaces: null,
+      recentCollections: null,
+      travelHistory: [],
+      visitedPlacesCount: user._count.moments,
+      savedPlacesCount: null,
+      collectionsCount: null,
+    }))
+    .sort((left, right) => {
+      const leftDisplayName = (left.displayName ?? '').toLowerCase();
+      const rightDisplayName = (right.displayName ?? '').toLowerCase();
+      const leftStarts =
+        left.username.toLowerCase().startsWith(normalizedQuery)
+        || leftDisplayName.startsWith(normalizedQuery);
+      const rightStarts =
+        right.username.toLowerCase().startsWith(normalizedQuery)
+        || rightDisplayName.startsWith(normalizedQuery);
+
+      if (leftStarts !== rightStarts) {
+        return leftStarts ? -1 : 1;
+      }
+      if ((right.visitedPlacesCount ?? 0) !== (left.visitedPlacesCount ?? 0)) {
+        return (right.visitedPlacesCount ?? 0) - (left.visitedPlacesCount ?? 0);
+      }
+      return left.username.localeCompare(right.username);
+    });
+}
+
 function startOfWeekUtc(date = new Date()) {
   const next = new Date(date);
   next.setUTCHours(0, 0, 0, 0);
@@ -8978,6 +9059,16 @@ app.get('/api/v2/feed', requireV2Auth, async (req: AuthenticatedRequest, res) =>
     const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
     const payload = await buildV2FollowingFeed(req.authV2UserId!, requestOrigin);
     res.json(payload);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/travelers/search', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const query = String(req.query.q ?? '').trim();
+    const travelers = await searchV2Travelers(req.authV2UserId!, query);
+    res.json({ travelers });
   } catch (error) {
     handleError(res, error);
   }

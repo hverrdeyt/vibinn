@@ -2161,8 +2161,36 @@ private struct NativeMoment: Decodable, Identifiable {
     let wouldRevisit: String?
     var commentCount: Int? = nil
     var likeCount: Int? = nil
-    let latestComment: NativeComment? = nil
+    let latestComment: NativeComment?
     let place: NativePlace
+
+    init(
+        id: String,
+        visitedDate: String,
+        visitedAtIso: String?,
+        caption: String?,
+        uploadedMedia: [String]?,
+        rating: Int?,
+        ratingLabel: String?,
+        wouldRevisit: String?,
+        commentCount: Int? = nil,
+        likeCount: Int? = nil,
+        latestComment: NativeComment? = nil,
+        place: NativePlace
+    ) {
+        self.id = id
+        self.visitedDate = visitedDate
+        self.visitedAtIso = visitedAtIso
+        self.caption = caption
+        self.uploadedMedia = uploadedMedia
+        self.rating = rating
+        self.ratingLabel = ratingLabel
+        self.wouldRevisit = wouldRevisit
+        self.commentCount = commentCount
+        self.likeCount = likeCount
+        self.latestComment = latestComment
+        self.place = place
+    }
 }
 
 private func nativePlaceApplyingMoment(_ moment: NativeMoment) -> NativePlace {
@@ -4468,7 +4496,10 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func searchTravelers(query: String) async throws -> [NativeTravelerSummary] {
-        try await api.searchPublicTravelers(query: query)
+        if usesV2Session, let token = authToken, currentUser != nil {
+            return try await api.searchV2Travelers(token: token, query: query)
+        }
+        return try await api.searchPublicTravelers(query: query)
     }
 
     func submitCheckIn(
@@ -6621,6 +6652,16 @@ private struct NativeAPIClient {
         return response.travelers
     }
 
+    func searchV2Travelers(token: String, query: String) async throws -> [NativeTravelerSummary] {
+        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? query
+        let response: NativeTravelerSearchResponse = try await request(
+            path: "/api/v2/travelers/search?q=\(encodedQuery)",
+            method: "GET",
+            token: token
+        )
+        return response.travelers
+    }
+
     func getTravelerProfile(id: String, token: String) async throws -> NativeTravelerProfileResponse {
         try await request(path: "/api/travelers/\(id)", method: "GET", token: token)
     }
@@ -8557,6 +8598,7 @@ private struct NativeHomepageShellScreen: View {
     @State private var showAllChallenges = false
     @State private var showNotificationsSheet = false
     @State private var selectedHeroPhoto: NativePickedPhotoAsset?
+    @State private var selectedHomepageMoment: NativeMoment?
 
     private var greetingName: String {
         let username = appState.currentUser?.username.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -8612,6 +8654,10 @@ private struct NativeHomepageShellScreen: View {
             }
             .navigationViewStyle(.stack)
             .environmentObject(appState)
+        }
+        .fullScreenCover(item: $selectedHomepageMoment) { moment in
+            NativeDecisionHistoryMomentFullscreen(moment: moment)
+                .environmentObject(appState)
         }
         .onAppear {
             refreshHomepagePhotoPreviewIfNeeded()
@@ -9396,22 +9442,66 @@ private struct NativeHomepageShellScreen: View {
                     .lineLimit(2)
             }
 
-            NativeMomentEngagementRow(
-                commentCount: moment.commentCount ?? 0,
-                likeCount: moment.likeCount ?? 0
+                homepageRecentMemoryActions(moment)
+                    .padding(.top, 2)
+            }
+            .padding(16)
+            .frame(width: width, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .fill(Color(red: 18 / 255, green: 17 / 255, blue: 15 / 255))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 28, style: .continuous)
+                            .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    )
             )
-            .padding(.top, 2)
+        .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .onTapGesture {
+            selectedHomepageMoment = moment
         }
-        .padding(16)
-        .frame(width: width, alignment: .topLeading)
-        .background(
-            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                .fill(Color(red: 18 / 255, green: 17 / 255, blue: 15 / 255))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-        )
+    }
+
+    private func homepageRecentMemoryActions(_ moment: NativeMoment) -> some View {
+        HStack(spacing: 10) {
+            Spacer(minLength: 0)
+
+            Button {
+                selectedHomepageMoment = moment
+            } label: {
+                homepageRecentMemoryActionChip(icon: "bubble.left", count: moment.commentCount ?? 0)
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                Task {
+                    guard let receiverUserId = appState.currentUser?.id, !receiverUserId.isEmpty else { return }
+                    _ = try? await appState.toggleMomentVibin(
+                        targetId: moment.id,
+                        receiverUserId: receiverUserId,
+                        momentId: moment.id
+                    )
+                }
+            } label: {
+                homepageRecentMemoryActionChip(icon: "heart", count: moment.likeCount ?? 0)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private func homepageRecentMemoryActionChip(icon: String, count: Int) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(nativeAppFont(size: 13, weight: .black))
+            if count > 0 {
+                Text("\(count)")
+                    .font(nativeAppFont(size: 13, weight: .black))
+            }
+        }
+        .foregroundStyle(.white.opacity(0.82))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.06))
+        .clipShape(Capsule())
     }
 
     private func homepageAvatarSquare(name: String?, username: String?, avatarURL: String?, size: CGFloat) -> some View {
