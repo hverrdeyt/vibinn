@@ -931,7 +931,6 @@ async function searchV2Travelers(userId: string, query: string) {
     where: {
       id: { not: userId },
       status: 'ACTIVE',
-      onboardingCompleted: true,
       username: { not: null },
       OR: [
         {
