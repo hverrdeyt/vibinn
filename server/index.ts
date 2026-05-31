@@ -628,6 +628,8 @@ function mapV2MomentForClient(moment: {
       latitude: moment.placeLatitude ?? undefined,
       longitude: moment.placeLongitude ?? undefined,
       mapsUrl: buildPlaceMapsUrl(moment.placeLatitude ?? undefined, moment.placeLongitude ?? undefined) ?? undefined,
+      momentRating: moment.rating ?? undefined,
+      momentRatingLabel: moment.ratingLabel ?? undefined,
     },
   };
 }
