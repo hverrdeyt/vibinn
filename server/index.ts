@@ -8420,20 +8420,10 @@ async function getUnifiedPlaceTravelerMoments(
 
   const normalizedPlaceName = place.name.trim();
   const googlePlaceId = place.googlePlaceId?.trim() || null;
-
-  const moments = await prismaV2.moment.findMany({
-    where: {
-      OR: [
-        { placeId: place.id },
-        ...(googlePlaceId ? [{ placeGooglePlaceId: googlePlaceId }] : []),
-        ...(normalizedPlaceName
-          ? [{ placeName: { equals: normalizedPlaceName, mode: 'insensitive' } }]
-          : []),
-      ],
-    },
+  const baseQuery = {
     orderBy: [
-      { visitedAt: 'desc' },
-      { createdAt: 'desc' },
+      { visitedAt: 'desc' as const },
+      { createdAt: 'desc' as const },
     ],
     take: 12,
     include: {
@@ -8446,10 +8436,32 @@ async function getUnifiedPlaceTravelerMoments(
         },
       },
     },
+  };
+
+  const exactMoments = await prismaV2.moment.findMany({
+    ...baseQuery,
+    where: {
+      OR: [
+        { placeId: place.id },
+        ...(googlePlaceId ? [{ placeGooglePlaceId: googlePlaceId }] : []),
+      ],
+    },
   }).catch((error) => {
     console.error(error);
     return [];
   });
+
+  const moments = exactMoments.length > 0 || !normalizedPlaceName
+    ? exactMoments
+    : await prismaV2.moment.findMany({
+      ...baseQuery,
+      where: {
+        placeName: { equals: normalizedPlaceName, mode: 'insensitive' },
+      },
+    }).catch((error) => {
+      console.error(error);
+      return [];
+    });
 
   const socialState = await loadV2MomentSocialState(moments.map((moment) => moment.id), undefined);
 

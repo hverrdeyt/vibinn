@@ -1203,6 +1203,13 @@ private struct NativePlaceDetailResponse: Decodable {
     let travelerMoments: [NativeMoment]?
     let interactionState: NativePlaceInteractionState?
 
+    private enum CodingKeys: String, CodingKey {
+        case place
+        case relatedPlaces
+        case travelerMoments
+        case interactionState
+    }
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         place = try container.decode(NativePlace.self, forKey: .place)
@@ -1227,6 +1234,13 @@ private struct NativePlaceDetailBundleResponse: Decodable {
     let relatedPlaces: [NativePlace]
     let travelerMoments: [NativeMoment]
     let interactionState: NativePlaceInteractionState
+
+    private enum CodingKeys: String, CodingKey {
+        case place
+        case relatedPlaces
+        case travelerMoments
+        case interactionState
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -29489,7 +29503,6 @@ private struct NativePlaceDetailScreen: View {
         guard !isLoading else { return }
         if let cachedPayload = appState.cachedPlaceDetail(id: place.id) {
             applyDetailPayload(cachedPayload)
-            return
         }
 
         isLoading = true
@@ -29498,7 +29511,7 @@ private struct NativePlaceDetailScreen: View {
             "place detail load start id=\(self.place.id, privacy: .public) initialScore=\(String(describing: self.place.similarityStat), privacy: .public)"
         )
 
-        let resolvedPayload = try? await appState.fetchPlaceDetail(id: place.id)
+        let resolvedPayload = try? await appState.fetchPlaceDetail(id: place.id, useCache: false)
 
         guard let resolvedPayload else {
             nativeLogger.error(
