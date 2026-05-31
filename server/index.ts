@@ -918,7 +918,11 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
 }
 
 async function searchV2Travelers(userId: string, query: string) {
-  const normalizedQuery = query.trim().toLowerCase();
+  const normalizedQuery = query
+    .trim()
+    .replace(/^@+/, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
   if (normalizedQuery.length < 2) {
     return [];
   }
