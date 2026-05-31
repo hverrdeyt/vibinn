@@ -38,6 +38,7 @@ type UpdateProfileInput = {
   displayName: string;
   username: string;
   avatarUrl?: string | null;
+  bio?: string | null;
 };
 
 type UpdateCityInput = {
@@ -103,6 +104,7 @@ type V2UserRecord = {
   displayName: string | null;
   username: string | null;
   avatarUrl?: string | null;
+  bio?: string | null;
   cityLabel?: string | null;
   cityLatitude?: number | null;
   cityLongitude?: number | null;
@@ -184,6 +186,16 @@ function normalizeAvatarUrl(input?: string | null) {
     throw new AuthV2Error('AVATAR_URL_INVALID', 'Avatar URL must be a valid http or https URL');
   }
   return value.slice(0, 500);
+}
+
+function normalizeBio(input?: string | null) {
+  const value = input?.trim();
+  if (!value) return null;
+  const normalized = value.replace(/\s+/g, ' ');
+  if (normalized.length > 280) {
+    throw new AuthV2Error('BIO_INVALID', 'Bio must be 280 characters or fewer');
+  }
+  return normalized;
 }
 
 function normalizeCityLabel(input: string) {
@@ -438,6 +450,7 @@ function mapUser(user: V2UserRecord) {
     displayName: user.displayName ?? undefined,
     username: user.username ?? undefined,
     avatarUrl: user.avatarUrl ?? undefined,
+    bio: user.bio ?? undefined,
     cityLabel: user.cityLabel ?? undefined,
     cityLatitude: user.cityLatitude ?? undefined,
     cityLongitude: user.cityLongitude ?? undefined,
@@ -679,6 +692,7 @@ export async function getMyProfile(userId: string) {
       displayName: true,
       username: true,
       avatarUrl: true,
+      bio: true,
       cityLabel: true,
       cityLatitude: true,
       cityLongitude: true,
@@ -699,6 +713,7 @@ export async function updateMyProfile(input: UpdateProfileInput) {
   const displayName = normalizeDisplayName(input.displayName);
   const username = normalizeUsername(input.username);
   const avatarUrl = normalizeAvatarUrl(input.avatarUrl);
+  const bio = normalizeBio(input.bio);
 
   const existingUser = await prismaV2.user.findFirst({
     where: {
@@ -718,6 +733,7 @@ export async function updateMyProfile(input: UpdateProfileInput) {
       displayName,
       username,
       avatarUrl,
+      bio,
       status: 'ACTIVE',
     },
     select: {
@@ -726,6 +742,7 @@ export async function updateMyProfile(input: UpdateProfileInput) {
       displayName: true,
       username: true,
       avatarUrl: true,
+      bio: true,
       cityLabel: true,
       cityLatitude: true,
       cityLongitude: true,

@@ -1035,7 +1035,7 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
       username: traveler.username,
       displayName: traveler.displayName,
       avatar: traveler.avatarUrl,
-      bio: null,
+      bio: traveler.bio ?? null,
       descriptor: traveler.cityLabel,
       matchScore: null,
       followersCount: traveler._count.followers,
@@ -9003,10 +9003,12 @@ app.patch('/api/v2/profile/me', async (req: AuthenticatedRequest, res) => {
       displayName,
       username,
       avatarUrl,
+      bio,
     } = req.body as {
       displayName?: string;
       username?: string;
       avatarUrl?: string | null;
+      bio?: string | null;
     };
 
     if (!displayName?.trim() || !username?.trim()) {
@@ -9019,6 +9021,7 @@ app.patch('/api/v2/profile/me', async (req: AuthenticatedRequest, res) => {
       displayName,
       username,
       avatarUrl,
+      bio,
     });
 
     const onboarding = await getMyOnboardingState(req.authV2UserId);

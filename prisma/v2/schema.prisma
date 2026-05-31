@@ -64,6 +64,7 @@ model User {
   displayName         String?
   username            String?           @unique
   avatarUrl           String?
+  bio                 String?
   cityLabel           String?
   cityLatitude        Float?
   cityLongitude       Float?
