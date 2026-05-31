@@ -8371,7 +8371,7 @@ async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
       console.error(error);
       return [];
     }),
-    getUnifiedPlaceTravelerMoments(placeId, userId).catch((error) => {
+    getUnifiedPlaceTravelerMoments(place, userId).catch((error) => {
       console.error(error);
       return [];
     }),
@@ -8412,65 +8412,69 @@ async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
   };
 }
 
-async function getUnifiedPlaceTravelerMoments(placeId: string, userId?: string) {
-  const [legacyMoments, v2Moments] = await Promise.all([
-    getPlaceTravelerMoments(placeId, userId).catch((error) => {
-      console.error(error);
-      return [];
-    }),
-    prismaV2.moment.findMany({
-      where: {
-        placeId,
-        ...(userId ? { userId: { not: userId } } : {}),
+async function getUnifiedPlaceTravelerMoments(
+  place: Awaited<ReturnType<typeof getPlaceDetailsByInternalId>>,
+  userId?: string,
+) {
+  if (!place) return [];
+
+  const normalizedPlaceName = place.name.trim();
+  const googlePlaceId = place.googlePlaceId?.trim() || null;
+
+  const moments = await prismaV2.moment.findMany({
+    where: {
+      ...(userId ? { userId: { not: userId } } : {}),
+      user: {
+        status: 'ACTIVE',
+        username: { not: null },
       },
-      orderBy: [
-        { visitedAt: 'desc' },
-        { createdAt: 'desc' },
+      OR: [
+        { placeId: place.id },
+        ...(googlePlaceId ? [{ placeGooglePlaceId: googlePlaceId }] : []),
+        ...(normalizedPlaceName
+          ? [{ placeName: { equals: normalizedPlaceName, mode: 'insensitive' } }]
+          : []),
       ],
-      take: 8,
-      include: {
-        user: {
-          select: {
-            username: true,
-            avatarUrl: true,
-          },
+    },
+    orderBy: [
+      { visitedAt: 'desc' },
+      { createdAt: 'desc' },
+    ],
+    take: 12,
+    include: {
+      user: {
+        select: {
+          id: true,
+          username: true,
+          displayName: true,
+          avatarUrl: true,
         },
       },
-    }).then((moments) => moments.map((moment) => ({
-      id: moment.id,
-      travelerUsername: moment.user.username ?? buildV2TravelerUsernameFallback(moment.userId),
-      travelerAvatar: moment.user.avatarUrl ?? null,
-      mediaUrl: resolveMomentMediaUrls(moment.uploadedMedia)[0] ?? null,
-      mediaType: (resolveMomentMediaUrls(moment.uploadedMedia)[0] ?? '').toLowerCase().endsWith('.mp4') ? 'video' : 'image',
-      caption: moment.caption || 'Logged a memory here.',
-      visitedAt: moment.visitedAt,
-      source: 'v2',
-    }))).catch((error) => {
-      console.error(error);
-      return [];
-    }),
-  ]);
+    },
+  }).catch((error) => {
+    console.error(error);
+    return [];
+  });
 
-  const combined = [
-    ...v2Moments,
-    ...legacyMoments.map((moment) => ({
-      ...moment,
-      visitedAt: null as Date | null,
-      source: 'legacy',
-    })),
-  ];
+  const socialState = await loadV2MomentSocialState(moments.map((moment) => moment.id), userId);
 
-  return combined
-    .sort((left, right) => {
-      if (left.visitedAt && right.visitedAt) {
-        return right.visitedAt.getTime() - left.visitedAt.getTime();
-      }
-      if (left.visitedAt && !right.visitedAt) return -1;
-      if (!left.visitedAt && right.visitedAt) return 1;
-      return 0;
-    })
-    .slice(0, 8)
-    .map(({ source: _source, visitedAt: _visitedAt, ...moment }) => moment);
+  return moments.slice(0, 8).map((moment) => ({
+    ...mapV2MomentForClient(
+      moment,
+      undefined,
+      {
+        commentCount: socialState.commentCounts[moment.id] ?? 0,
+        likeCount: socialState.likeCounts[moment.id] ?? 0,
+      },
+      socialState.latestCommentByMoment.get(moment.id) ?? null,
+    ),
+    traveler: {
+      id: moment.user.id,
+      username: moment.user.username ?? buildV2TravelerUsernameFallback(moment.userId),
+      displayName: moment.user.displayName ?? null,
+      avatar: moment.user.avatarUrl ?? null,
+    },
+  }));
 }
 
 type TodayRecommendationFocus = 'coffee' | 'eat' | 'outdoor' | 'fun' | 'cheap';

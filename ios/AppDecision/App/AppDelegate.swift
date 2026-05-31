@@ -1190,25 +1190,23 @@ private struct NativeMomentMediaItem: Decodable {
     let mediaType: String
 }
 
+private struct NativeMomentTravelerSummary: Decodable {
+    let id: String
+    let username: String
+    let displayName: String?
+    let avatar: String?
+}
+
 private struct NativePlaceDetailResponse: Decodable {
     let place: NativePlace
     let relatedPlaces: [NativePlace]?
-    let travelerMoments: [NativePlaceTravelerMoment]?
+    let travelerMoments: [NativeMoment]?
     let interactionState: NativePlaceInteractionState?
 }
 
 private struct NativeCachedPlaceDetail {
     let payload: NativePlaceDetailResponse
     let expiresAt: Date
-}
-
-private struct NativePlaceTravelerMoment: Decodable, Identifiable {
-    let id: String
-    let travelerUsername: String
-    let travelerAvatar: String?
-    let mediaUrl: String?
-    let mediaType: String
-    let caption: String?
 }
 
 private struct NativePlaceInteractionState: Decodable {
@@ -1219,7 +1217,7 @@ private struct NativePlaceInteractionState: Decodable {
 private struct NativePlaceDetailBundleResponse: Decodable {
     let place: NativePlace
     let relatedPlaces: [NativePlace]
-    let travelerMoments: [NativePlaceTravelerMoment]
+    let travelerMoments: [NativeMoment]
     let interactionState: NativePlaceInteractionState
 }
 
@@ -2164,6 +2162,7 @@ private struct NativeMoment: Decodable, Identifiable {
     var commentCount: Int? = nil
     var likeCount: Int? = nil
     let latestComment: NativeComment?
+    let traveler: NativeMomentTravelerSummary?
     let place: NativePlace
 
     init(
@@ -2178,6 +2177,7 @@ private struct NativeMoment: Decodable, Identifiable {
         commentCount: Int? = nil,
         likeCount: Int? = nil,
         latestComment: NativeComment? = nil,
+        traveler: NativeMomentTravelerSummary? = nil,
         place: NativePlace
     ) {
         self.id = id
@@ -2191,6 +2191,7 @@ private struct NativeMoment: Decodable, Identifiable {
         self.commentCount = commentCount
         self.likeCount = likeCount
         self.latestComment = latestComment
+        self.traveler = traveler
         self.place = place
     }
 }
@@ -19235,7 +19236,11 @@ private struct NativeDecisionHistoryMomentFullscreen: View {
             .environmentObject(appState)
         }
         .fullScreenCover(item: $selectedPlace) { place in
-            NativePlaceDetailScreen(initialPlace: place, source: NativeAnalyticsSource.profile)
+            NativePlaceDetailScreen(
+                initialPlace: place,
+                source: NativeAnalyticsSource.profile,
+                showsExplicitBackButton: true
+            )
         }
     }
 
@@ -28359,7 +28364,8 @@ private struct NativePlaceDetailScreen: View {
     @Environment(\.dismiss) private var dismiss
     @State private var place: NativePlace
     let analyticsSource: String
-    @State private var travelerMoments: [NativePlaceTravelerMoment] = []
+    let showsExplicitBackButton: Bool
+    @State private var travelerMoments: [NativeMoment] = []
     @State private var selectedMediaIndex = 0
     @State private var sheetState: NativePlaceDetailSheetState = .default
     @State private var isLoading = false
@@ -28370,9 +28376,14 @@ private struct NativePlaceDetailScreen: View {
     @State private var hasLoadedCanonicalDetails = true
     @State private var showDirectionsOptions = false
 
-    init(initialPlace: NativePlace, source: String = NativeAnalyticsSource.placeDetails) {
+    init(
+        initialPlace: NativePlace,
+        source: String = NativeAnalyticsSource.placeDetails,
+        showsExplicitBackButton: Bool = false
+    ) {
         _place = State(initialValue: initialPlace)
         self.analyticsSource = source
+        self.showsExplicitBackButton = showsExplicitBackButton
     }
 
     var body: some View {
@@ -28409,18 +28420,20 @@ private struct NativePlaceDetailScreen: View {
         .navigationBarHidden(false)
         .modifier(NativePlaceDetailNavigationChromeModifier())
         .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "chevron.left")
-                        .font(nativeAppFont(size: 16, weight: .black))
-                        .foregroundStyle(.white)
-                        .frame(width: 36, height: 36)
-                        .background(Color.white.opacity(0.08))
-                        .clipShape(Circle())
+            if showsExplicitBackButton {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(nativeAppFont(size: 16, weight: .black))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
             }
             ToolbarItem(placement: .principal) {
                 VStack(spacing: 0) {
@@ -28745,7 +28758,8 @@ private struct NativePlaceDetailScreen: View {
         .first(where: { !$0.isEmpty })
 
         let vibinnPhotos = travelerMoments
-            .compactMap { $0.mediaUrl?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .flatMap { $0.uploadedMedia ?? [] }
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
 
         return Array(NSOrderedSet(array: [googlePhoto].compactMap { $0 } + vibinnPhotos)) as? [String] ?? []
@@ -28815,22 +28829,17 @@ private struct NativePlaceDetailScreen: View {
     private var placeIdentitySection: some View {
         VStack(alignment: .leading, spacing: 12) {
             NativeSectionTitle("Place identity")
-            NativeSurfaceCard {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text(place.name)
-                        .font(nativeAppFont(size: 30, weight: .black))
-                        .foregroundStyle(.white)
-                        .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 6) {
+                Text(place.name)
+                    .font(nativeAppFont(size: 30, weight: .black))
+                    .foregroundStyle(.white)
+                    .fixedSize(horizontal: false, vertical: true)
 
-                    if let neighborhood = place.neighborhood?.trimmingCharacters(in: .whitespacesAndNewlines), !neighborhood.isEmpty {
-                        NativePlaceDetailRow(label: "Neighborhood", value: neighborhood)
-                    }
-                    if let city = nativePrimaryCity(from: place.location), !city.isEmpty {
-                        NativePlaceDetailRow(label: "City", value: city)
-                    }
-                    if let distanceLabel {
-                        NativePlaceDetailRow(label: "Distance", value: distanceLabel)
-                    }
+                if !placeIdentitySubline.isEmpty {
+                    Text(placeIdentitySubline)
+                        .font(nativeAppFont(size: 14, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.68))
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
@@ -28860,7 +28869,7 @@ private struct NativePlaceDetailScreen: View {
     private var vibinnReviewSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             NativeSectionTitle("Vibinn review")
-            if travelerMoments.isEmpty {
+            if placeReviewFeedItems.isEmpty {
                 NativeSurfaceCard {
                     Text("No Vibinn reviews for this place yet.")
                         .font(nativeAppFont(size: 15, weight: .medium))
@@ -28869,56 +28878,82 @@ private struct NativePlaceDetailScreen: View {
                 }
             } else {
                 VStack(spacing: 12) {
-                    ForEach(travelerMoments) { moment in
-                        NativeSurfaceCard {
-                            HStack(alignment: .top, spacing: 14) {
-                                NativeAvatarCircle(
-                                    url: moment.travelerAvatar,
-                                    fallbackText: moment.travelerUsername,
-                                    size: 42,
-                                    fontSize: 16
-                                )
-
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text("@\(moment.travelerUsername)")
-                                        .font(nativeAppFont(size: 13, weight: .black))
-                                        .foregroundStyle(.white)
-
-                                    if let caption = moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines), !caption.isEmpty {
-                                        Text(caption)
-                                            .font(nativeAppFont(size: 14, weight: .medium))
-                                            .foregroundStyle(.white.opacity(0.82))
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-
-                                    if let mediaUrl = moment.mediaUrl, !mediaUrl.isEmpty {
-                                        NativeRemoteImage(url: mediaUrl)
-                                            .frame(maxWidth: .infinity)
-                                            .frame(height: 180)
-                                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                                    }
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
+                    ForEach(placeReviewFeedItems) { item in
+                        NativeFeedCard(item: item)
                     }
                 }
             }
         }
     }
 
-    private var serviceTypeRows: [(String, Bool)] {
+    private var serviceTypeRows: [String] {
         [
-            ("Breakfast", place.servesBreakfast == true),
-            ("Brunch", place.servesBrunch == true),
-            ("Lunch", place.servesLunch == true),
-            ("Dinner", place.servesDinner == true),
-            ("Coffee", place.servesCoffee == true),
-            ("Dessert", place.servesDessert == true),
-            ("Beer", place.servesBeer == true),
-            ("Wine", place.servesWine == true),
-            ("Cocktails", place.servesCocktails == true),
+            place.servesBreakfast == true ? "Breakfast" : nil,
+            place.servesBrunch == true ? "Brunch" : nil,
+            place.servesLunch == true ? "Lunch" : nil,
+            place.servesDinner == true ? "Dinner" : nil,
+            place.servesCoffee == true ? "Coffee" : nil,
+            place.servesDessert == true ? "Dessert" : nil,
+            place.servesBeer == true ? "Beer" : nil,
+            place.servesWine == true ? "Wine" : nil,
+            place.servesCocktails == true ? "Cocktails" : nil,
         ]
+        .compactMap { $0 }
+    }
+
+    private var placeIdentitySubline: String {
+        let shortAddress = place.address?
+            .split(separator: ",")
+            .first
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            ?? place.neighborhood?.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? place.location
+        let base = shortAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let distanceLabel, !base.isEmpty {
+            return "\(base) • \(distanceLabel)"
+        }
+        return base
+    }
+
+    private var placeReviewFeedItems: [NativeFeedItem] {
+        travelerMoments.compactMap { moment in
+            guard let traveler = moment.traveler else { return nil }
+            let sortTimestamp = NativeAppState.feedSortDate(
+                iso: moment.visitedAtIso ?? moment.visitedDate,
+                label: moment.visitedDate
+            ) ?? .distantPast
+            let resolvedPlace = nativePlaceApplyingMoment(moment)
+            return NativeFeedItem(
+                id: "place-review-\(moment.id)",
+                type: .visited,
+                traveler: NativeTravelerSummary(
+                    id: traveler.id,
+                    username: traveler.username,
+                    displayName: traveler.displayName,
+                    avatar: traveler.avatar,
+                    bio: nil,
+                    descriptor: nil,
+                    matchScore: nil,
+                    followersCount: nil,
+                    followingCount: nil,
+                    recentSavedPlaces: nil,
+                    recentCollections: nil,
+                    travelHistory: [],
+                    visitedPlacesCount: nil,
+                    savedPlacesCount: nil,
+                    collectionsCount: nil
+                ),
+                title: resolvedPlace.name,
+                timestampLabel: NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate),
+                sortTimestamp: sortTimestamp,
+                place: resolvedPlace,
+                collection: nil,
+                caption: moment.caption,
+                isVibed: false,
+                vibinCount: moment.likeCount ?? 0,
+                uploadedMediaUrls: moment.uploadedMedia
+            )
+        }
     }
 
     private var displayMapRegion: MKCoordinateRegion? {
@@ -29305,7 +29340,7 @@ private struct NativePlaceDetailScreen: View {
             uniquingKeysWith: { first, _ in first }
         )
 
-        let visitedUsernames = Set(travelerMoments.map { $0.travelerUsername.lowercased() })
+        let visitedUsernames = Set(travelerMoments.compactMap { $0.traveler?.username.lowercased() })
         let savedUsernames = Set(
             followedAndSuggested.compactMap { traveler -> String? in
                 let hasSaved = traveler.recentSavedPlaces?.contains(where: { $0.place.id == place.id }) ?? false
@@ -29320,14 +29355,14 @@ private struct NativePlaceDetailScreen: View {
             let hasVisited = visitedUsernames.contains(username)
             let hasSaved = savedUsernames.contains(username)
             guard hasVisited || hasSaved else { return nil }
-            let rawMoment = travelerMoments.first(where: { $0.travelerUsername.lowercased() == username })
+            let rawMoment = travelerMoments.first(where: { $0.traveler?.username.lowercased() == username })
             let resolvedId = summary?.id ?? "moment-\(username)"
-            let resolvedUsername = summary?.username ?? rawMoment?.travelerUsername ?? username
+            let resolvedUsername = summary?.username ?? rawMoment?.traveler?.username ?? username
             return NativeSimilarPlaceTraveler(
                 id: resolvedId,
                 username: resolvedUsername,
                 displayName: summary?.displayName,
-                avatar: summary?.avatar ?? rawMoment?.travelerAvatar,
+                avatar: summary?.avatar ?? rawMoment?.traveler?.avatar,
                 matchScore: summary?.matchScore,
                 isFollowing: summary.map { appState.isFollowing($0.id) } ?? false,
                 hasVisited: hasVisited,
@@ -29550,7 +29585,7 @@ private struct NativePlaceOpeningHoursRows: View {
 }
 
 private struct NativePlaceServiceRows: View {
-    let rows: [(String, Bool)]
+    let rows: [String]
 
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
@@ -29560,17 +29595,11 @@ private struct NativePlaceServiceRows: View {
                 .frame(width: 96, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 8) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    HStack(spacing: 10) {
-                        Text(row.0)
-                            .font(nativeAppFont(size: 14, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.86))
-
-                        Image(systemName: row.1 ? "checkmark.circle.fill" : "xmark.circle")
-                            .font(nativeAppFont(size: 13, weight: .bold))
-                            .foregroundStyle(row.1 ? nativeAccent : .white.opacity(0.28))
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                ForEach(rows, id: \.self) { row in
+                    Text(row)
+                        .font(nativeAppFont(size: 14, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.86))
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
 
@@ -31363,7 +31392,11 @@ private struct NativeFeedMomentFullscreen: View {
                 Text(moderationAlertMessage)
             }
         .fullScreenCover(item: $selectedPlace) { place in
-            NativePlaceDetailScreen(initialPlace: place, source: NativeAnalyticsSource.feed)
+            NativePlaceDetailScreen(
+                initialPlace: place,
+                source: NativeAnalyticsSource.feed,
+                showsExplicitBackButton: true
+            )
         }
     }
 
