@@ -4839,16 +4839,26 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             presentAuthGate(reason: "Log in to vibin with posts.")
             throw URLError(.userAuthenticationRequired)
         }
-        let response = try await api.toggleVibin(
-            targetType: "MOMENT",
-            targetId: targetId,
-            receiverUserId: receiverUserId,
-            momentId: momentId,
-            token: token
-        )
+        let response = usesV2Session
+            ? try await api.toggleVibinV2(
+                targetType: "MOMENT",
+                targetId: targetId,
+                receiverUserId: receiverUserId,
+                momentId: momentId,
+                token: token
+            )
+            : try await api.toggleVibin(
+                targetType: "MOMENT",
+                targetId: targetId,
+                receiverUserId: receiverUserId,
+                momentId: momentId,
+                token: token
+            )
         if response.active {
             showToast(message: "Post liked", icon: "heart.fill")
         }
+        let resolvedMomentId = momentId ?? targetId
+        updateMomentInteractionState(momentId: resolvedMomentId, likeCount: response.count)
         return response
     }
 
@@ -5060,6 +5070,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     func fetchComments(targetType: String, targetId: String) async throws -> [NativeComment] {
         guard let token = authToken else { return [] }
+        if usesV2Session {
+            return try await api.getCommentsV2(token: token, targetType: targetType, targetId: targetId)
+        }
         return try await api.getComments(token: token, targetType: targetType, targetId: targetId)
     }
 
@@ -5068,15 +5081,55 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             presentAuthGate(reason: "Log in to comment on posts.")
             throw URLError(.userAuthenticationRequired)
         }
-        let response = try await api.postComment(
-            token: token,
-            targetType: targetType,
-            targetId: targetId,
-            body: body,
-            momentId: momentId
-        )
+        let response = usesV2Session
+            ? try await api.postCommentV2(
+                token: token,
+                targetType: targetType,
+                targetId: targetId,
+                body: body,
+                momentId: momentId
+            )
+            : try await api.postComment(
+                token: token,
+                targetType: targetType,
+                targetId: targetId,
+                body: body,
+                momentId: momentId
+            )
         showToast(message: "Comment sent", icon: "paperplane.fill")
+        if let resolvedMomentId = momentId ?? (targetType == "MOMENT" ? targetId : nil) {
+            updateMomentInteractionState(momentId: resolvedMomentId, commentCount: response.count, latestComment: response.comment)
+        }
         return response.comment
+    }
+
+    func updateMomentInteractionState(
+        momentId: String,
+        commentCount: Int? = nil,
+        likeCount: Int? = nil,
+        latestComment: NativeComment? = nil
+    ) {
+        func updatedMoment(_ moment: NativeMoment) -> NativeMoment {
+            guard moment.id == momentId else { return moment }
+            return NativeMoment(
+                id: moment.id,
+                visitedDate: moment.visitedDate,
+                visitedAtIso: moment.visitedAtIso,
+                caption: moment.caption,
+                uploadedMedia: moment.uploadedMedia,
+                rating: moment.rating,
+                ratingLabel: moment.ratingLabel,
+                wouldRevisit: moment.wouldRevisit,
+                commentCount: commentCount ?? moment.commentCount,
+                likeCount: likeCount ?? moment.likeCount,
+                latestComment: latestComment ?? moment.latestComment,
+                place: moment.place
+            )
+        }
+
+        homepageRecentMemories = homepageRecentMemories.map(updatedMoment)
+        diaryMoments = diaryMoments.map(updatedMoment)
+        myMoments = myMoments.map(updatedMoment)
     }
 
     private func buildFeedItems(
@@ -6205,6 +6258,26 @@ private struct NativeAPIClient {
         )
     }
 
+    func toggleVibinV2(
+        targetType: String,
+        targetId: String,
+        receiverUserId: String?,
+        momentId: String?,
+        token: String
+    ) async throws -> NativeVibinToggleResponse {
+        try await request(
+            path: "/api/v2/vibins/toggle",
+            method: "POST",
+            token: token,
+            body: NativeToggleVibinBody(
+                targetType: targetType,
+                targetId: targetId,
+                receiverUserId: receiverUserId,
+                momentId: momentId
+            )
+        )
+    }
+
     func getDiscoveryPlaces(
         location: String,
         page: Int,
@@ -6701,9 +6774,32 @@ private struct NativeAPIClient {
         return response.comments
     }
 
+    func getCommentsV2(token: String, targetType: String, targetId: String) async throws -> [NativeComment] {
+        let response: NativeCommentsResponse = try await request(
+            path: "/api/v2/comments?targetType=\(targetType)&targetId=\(targetId)",
+            method: "GET",
+            token: token
+        )
+        return response.comments
+    }
+
     func postComment(token: String, targetType: String, targetId: String, body: String, momentId: String?) async throws -> NativeCreateCommentResponse {
         try await request(
             path: "/api/comments",
+            method: "POST",
+            token: token,
+            body: NativeCreateCommentBody(
+                targetType: targetType,
+                targetId: targetId,
+                body: body,
+                momentId: momentId
+            )
+        )
+    }
+
+    func postCommentV2(token: String, targetType: String, targetId: String, body: String, momentId: String?) async throws -> NativeCreateCommentResponse {
+        try await request(
+            path: "/api/v2/comments",
             method: "POST",
             token: token,
             body: NativeCreateCommentBody(
@@ -8231,45 +8327,15 @@ private struct NativeDiaryScreen: View {
                 .font(nativeAppFont(size: 12, weight: .bold))
                 .foregroundStyle(.white.opacity(0.58))
         } placeSection: {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(moment.place.name)
-                    .font(nativeAppFont(size: 17, weight: .black))
-                    .foregroundStyle(.white)
-                    .lineLimit(2)
-
-                Text(nativePlaceMetaLine(for: moment.place, shortAddress: shortAddress))
-                    .font(nativeAppFont(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.58))
-                    .lineLimit(2)
-            }
+            NativeMomentPlaceInfoCard(
+                placeName: moment.place.name,
+                metaLine: nativePlaceMetaLine(for: moment.place, shortAddress: shortAddress)
+            )
         } actions: {
-            HStack(spacing: 10) {
-                HStack(spacing: 8) {
-                    Image(systemName: "bubble.left")
-                        .font(nativeAppFont(size: 13, weight: .black))
-                    Text("\(moment.commentCount ?? 0)")
-                        .font(nativeAppFont(size: 13, weight: .black))
-                }
-                .foregroundStyle(.white.opacity(0.82))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color.white.opacity(0.06))
-                .clipShape(Capsule())
-
-                HStack(spacing: 8) {
-                    Image(systemName: "heart")
-                        .font(nativeAppFont(size: 13, weight: .black))
-                    Text("\(moment.likeCount ?? 0)")
-                        .font(nativeAppFont(size: 13, weight: .black))
-                }
-                .foregroundStyle(.white.opacity(0.82))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(Color.white.opacity(0.06))
-                .clipShape(Capsule())
-
-                Spacer(minLength: 0)
-            }
+            NativeMomentEngagementRow(
+                commentCount: moment.commentCount ?? 0,
+                likeCount: moment.likeCount ?? 0
+            )
         } commentPreview: {
             if let latestComment = moment.latestComment,
                !latestComment.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -8760,28 +8826,15 @@ private struct NativeHomepageShellScreen: View {
     private var homepageCircleFeedItems: [NativeFeedItem] {
         appState.feedItems
             .filter { $0.type == .visited && $0.place != nil }
-            .prefix(2)
+            .prefix(3)
             .map { $0 }
     }
 
     private var feedPreview: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .center) {
-                Text("From your circle")
-                    .font(nativeAppFont(size: 18, weight: .black))
-                    .foregroundStyle(.white)
-
-                Spacer()
-
-                Button {
-                    appState.activeTab = .feed
-                } label: {
-                    Text("Open feed")
-                        .font(nativeAppFont(size: 13, weight: .bold))
-                        .foregroundStyle(nativeAccent)
-                }
-                .buttonStyle(.plain)
-            }
+            Text("From your circle")
+                .font(nativeAppFont(size: 18, weight: .black))
+                .foregroundStyle(.white)
 
             if homepageCircleFeedItems.isEmpty {
                 NativeSurfaceCard {
@@ -8798,13 +8851,90 @@ private struct NativeHomepageShellScreen: View {
                     }
                 }
             } else {
-                VStack(spacing: 12) {
-                    ForEach(homepageCircleFeedItems) { item in
-                        homepageCircleFeedCard(item)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        ForEach(0..<3, id: \.self) { index in
+                            if let item = homepageCircleFeedItems[safe: index] {
+                                homepageCircleFeedThumbnail(item)
+                            } else {
+                                homepageCircleFeedThumbnailPlaceholder
+                            }
+                        }
+                    }
+
+                    HStack {
+                        Spacer()
+
+                        Button {
+                            appState.activeTab = .chat
+                        } label: {
+                            Text("See more")
+                                .font(nativeAppFont(size: 13, weight: .bold))
+                                .foregroundStyle(nativeAccent)
+                        }
+                        .buttonStyle(.plain)
                     }
                 }
             }
         }
+    }
+
+    private func homepageCircleFeedThumbnail(_ item: NativeFeedItem) -> some View {
+        let username = "@\(item.traveler.username)"
+        let mediaURL = item.uploadedMediaUrls?.first
+            ?? item.place?.userMediaUrls?.first
+            ?? item.place?.momentMedia?.first?.url
+            ?? item.place?.image
+
+        return Button {
+            appState.activeTab = .chat
+        } label: {
+            ZStack(alignment: .bottomLeading) {
+                Group {
+                    if let mediaURL, !mediaURL.isEmpty {
+                        NativeRemoteImage(url: mediaURL)
+                    } else {
+                        RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .font(nativeAppFont(size: 18, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.28))
+                            )
+                    }
+                }
+                .aspectRatio(1, contentMode: .fill)
+
+                LinearGradient(
+                    colors: [Color.clear, Color.black.opacity(0.75)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+
+                Text(username)
+                    .font(nativeAppFont(size: 10, weight: .black))
+                    .foregroundStyle(.white.opacity(0.88))
+                    .lineLimit(1)
+                    .padding(10)
+            }
+            .frame(maxWidth: .infinity)
+            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var homepageCircleFeedThumbnailPlaceholder: some View {
+        RoundedRectangle(cornerRadius: 22, style: .continuous)
+            .fill(Color.white.opacity(0.04))
+            .aspectRatio(1, contentMode: .fit)
+            .overlay(
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
+            )
     }
 
     private func homepageCircleFeedCard(_ item: NativeFeedItem) -> some View {
@@ -8819,7 +8949,7 @@ private struct NativeHomepageShellScreen: View {
             ?? item.place?.image
 
         return Button {
-            appState.activeTab = .feed
+            appState.activeTab = .chat
         } label: {
             NativeSurfaceCard {
                 HStack(alignment: .top, spacing: 14) {
@@ -9266,41 +9396,10 @@ private struct NativeHomepageShellScreen: View {
                     .lineLimit(2)
             }
 
-            HStack(spacing: 10) {
-                Button {
-                    appState.showToast(message: "Comments are coming next.", icon: "bubble.left.and.bubble.right.fill")
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "bubble.left")
-                            .font(nativeAppFont(size: 14, weight: .black))
-                        Text("Comment")
-                            .font(nativeAppFont(size: 13, weight: .bold))
-                    }
-                    .foregroundStyle(.white.opacity(0.82))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .background(Color.white.opacity(0.06))
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    appState.showToast(message: "Likes are coming next.", icon: "heart.fill")
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: "heart")
-                            .font(nativeAppFont(size: 14, weight: .black))
-                        Text("Like")
-                            .font(nativeAppFont(size: 13, weight: .bold))
-                    }
-                    .foregroundStyle(.white.opacity(0.82))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
-                    .background(Color.white.opacity(0.06))
-                    .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-            }
+            NativeMomentEngagementRow(
+                commentCount: moment.commentCount ?? 0,
+                likeCount: moment.likeCount ?? 0
+            )
             .padding(.top, 2)
         }
         .padding(16)
@@ -15859,7 +15958,7 @@ private struct NativeFloatingTabBar: View {
     private let tabs: [(tab: NativeTab, icon: String, title: String, isPrimary: Bool)] = [
         (.discover, "house.fill", "Home", false),
         (.feed, "book.closed.fill", "Diary", false),
-        (.checkIn, "plus", "Add", true),
+        (.checkIn, "camera.fill", "Add", true),
         (.chat, "rectangle.stack.fill", "Feed", false),
         (.profile, "person.crop.circle.fill", "Profile", false),
     ]
@@ -18860,7 +18959,6 @@ private struct NativeDecisionHistoryMomentFullscreen: View {
     let moment: NativeMoment
     @EnvironmentObject private var appState: NativeAppState
     @Environment(\.dismiss) private var dismiss
-    @FocusState private var isCommentFieldFocused: Bool
     @State private var comments: [NativeComment] = []
     @State private var isCommentsLoading = false
     @State private var commentsErrorMessage: String?
@@ -18933,271 +19031,48 @@ private struct NativeDecisionHistoryMomentFullscreen: View {
     }
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.black.ignoresSafeArea()
-
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 18) {
-                    Color.clear
-                        .frame(height: 36)
-
-                    NativeSurfaceCard {
-                        VStack(alignment: .leading, spacing: 14) {
-                            HStack(alignment: .center, spacing: 10) {
-                                diaryMomentAvatarSquare(size: 42)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(appState.currentUser?.displayName ?? "You")
-                                        .font(nativeAppFont(size: 15, weight: .black))
-                                        .foregroundStyle(.white)
-
-                                    if let username = appState.currentUser?.username, !username.isEmpty {
-                                        Text("@\(username)")
-                                            .font(nativeAppFont(size: 12, weight: .semibold))
-                                            .foregroundStyle(.white.opacity(0.48))
-                                    }
-                                }
-
-                                Spacer(minLength: 8)
-
-                                HStack(spacing: 8) {
-                                    Text(NativeAppState.relativeLabel(from: displayedMoment.visitedAtIso ?? displayedMoment.visitedDate))
-                                        .font(nativeAppFont(size: 12, weight: .bold))
-                                        .foregroundStyle(.white.opacity(0.58))
-
-                                    Menu {
-                                        Button("Edit details") {
-                                            showEditMomentSheet = true
-                                        }
-                                        Button("Delete moment", role: .destructive) {
-                                            showDeletePostDialog = true
-                                        }
-                                    } label: {
-                                        Image(systemName: "ellipsis")
-                                            .font(nativeAppFont(size: 14, weight: .black))
-                                            .foregroundStyle(.white.opacity(0.72))
-                                            .frame(width: 32, height: 32)
-                                            .background(Color.white.opacity(0.06))
-                                            .clipShape(Circle())
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-
-                            if let ratingMeta {
-                                HStack(spacing: 8) {
-                                    Image(systemName: ratingMeta.icon)
-                                        .font(nativeAppFont(size: 12, weight: .black))
-                                    Text(ratingMeta.label)
-                                        .font(nativeAppFont(size: 12, weight: .bold))
-                                }
-                                .foregroundStyle(.black)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(nativeAccent)
-                                .clipShape(Capsule())
-                            }
-
-                            if let review = displayedMoment.caption?.trimmingCharacters(in: .whitespacesAndNewlines), !review.isEmpty {
-                                Text(review)
-                                    .font(nativeAppFont(size: 15, weight: .semibold))
-                                    .foregroundStyle(.white.opacity(0.9))
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Group {
-                                if let mediaUrl {
-                                    NativeRemoteImage(url: mediaUrl)
-                                } else {
-                                    RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                        .fill(Color.white.opacity(0.06))
-                                        .overlay(
-                                            Image(systemName: "photo")
-                                                .font(nativeAppFont(size: 22, weight: .black))
-                                                .foregroundStyle(.white.opacity(0.3))
-                                        )
-                                }
-                            }
-                            .frame(maxWidth: .infinity)
-                            .aspectRatio(1, contentMode: .fit)
-                            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                            )
-
-                            Button {
-                                selectedPlace = displayedMoment.place
-                            } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    Text(displayedMoment.place.name)
-                                        .font(nativeAppFont(size: 17, weight: .black))
-                                        .foregroundStyle(.white)
-                                        .lineLimit(2)
-
-                                    Text(placeMetaLine)
-                                        .font(nativeAppFont(size: 12, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.58))
-                                        .lineLimit(2)
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            }
-                            .buttonStyle(.plain)
-
-                            HStack(spacing: 10) {
-                                Button {
-                                    Task { await toggleVibin() }
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: vibed ? "heart.fill" : "heart")
-                                            .font(nativeAppFont(size: 13, weight: .black))
-                                        Text("\(vibinCount)")
-                                            .font(nativeAppFont(size: 13, weight: .black))
-                                    }
-                                    .foregroundStyle(vibed ? .black : .white)
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 10)
-                                    .background(vibed ? nativeAccent : Color.white.opacity(0.06))
-                                    .clipShape(Capsule())
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(isTogglingVibin)
-
-                                HStack(spacing: 8) {
-                                    Image(systemName: "bubble.left")
-                                        .font(nativeAppFont(size: 13, weight: .black))
-                                    Text("\(comments.count)")
-                                        .font(nativeAppFont(size: 13, weight: .black))
-                                }
-                                .foregroundStyle(.white.opacity(0.82))
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 10)
-                                .background(Color.white.opacity(0.06))
-                                .clipShape(Capsule())
-
-                                Spacer(minLength: 0)
-                            }
-                        }
+        NativeMomentFullscreenScaffold(
+            displayName: appState.currentUser?.displayName ?? "You",
+            username: appState.currentUser?.username,
+            avatarURL: appState.currentUser?.avatarUrl,
+            avatarFallback: appState.currentUser?.displayName ?? appState.currentUser?.username ?? "V",
+            timestampLabel: NativeAppState.relativeLabel(from: displayedMoment.visitedAtIso ?? displayedMoment.visitedDate),
+            ratingMeta: ratingMeta,
+            reviewText: displayedMoment.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
+            mediaUrl: mediaUrl,
+            placeName: displayedMoment.place.name,
+            placeMetaLine: placeMetaLine,
+            isLiked: vibed,
+            likeCount: vibinCount,
+            isLikeBusy: isTogglingVibin,
+            comments: comments,
+            isCommentsLoading: isCommentsLoading,
+            commentsErrorMessage: commentsErrorMessage,
+            commentComposerPlaceholder: commentComposerPlaceholder,
+            menuView: AnyView(
+                Menu {
+                    Button("Edit details") {
+                        showEditMomentSheet = true
                     }
-
-                    NativeSurfaceCard {
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text("Comments")
-                                .font(nativeAppFont(size: 18, weight: .black))
-                                .foregroundStyle(.white)
-
-                            if isCommentsLoading {
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .fill(Color.white.opacity(0.04))
-                                    .overlay {
-                                        ProgressView()
-                                            .tint(nativeAccent)
-                                    }
-                                    .frame(height: 76)
-                            } else if let commentsErrorMessage {
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .fill(Color.white.opacity(0.04))
-                                    .overlay {
-                                        Text(commentsErrorMessage)
-                                            .font(nativeAppFont(size: 14, weight: .medium))
-                                            .foregroundStyle(.white.opacity(0.55))
-                                            .padding(.horizontal, 16)
-                                    }
-                                    .frame(height: 76)
-                            } else if comments.isEmpty {
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .fill(Color.white.opacity(0.04))
-                                    .overlay {
-                                        VStack(spacing: 6) {
-                                            Text("No comment yet")
-                                                .font(nativeAppFont(size: 14, weight: .black))
-                                                .foregroundStyle(.white.opacity(0.72))
-                                            Text("Start the conversation here.")
-                                                .font(nativeAppFont(size: 12, weight: .medium))
-                                                .foregroundStyle(.white.opacity(0.42))
-                                        }
-                                    }
-                                    .frame(height: 76)
-                            } else {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    ForEach(Array(comments.enumerated()), id: \.offset) { _, comment in
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            Text("@\(comment.user)")
-                                                .font(nativeAppFont(size: 12, weight: .black))
-                                                .foregroundStyle(.white)
-                                            Text(comment.body)
-                                                .font(nativeAppFont(size: 14, weight: .medium))
-                                                .foregroundStyle(.white.opacity(0.82))
-                                                .fixedSize(horizontal: false, vertical: true)
-                                            Text(NativeAppState.relativeLabel(from: comment.createdAt))
-                                                .font(nativeAppFont(size: 11, weight: .bold))
-                                                .foregroundStyle(.white.opacity(0.32))
-                                        }
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(.horizontal, 14)
-                                        .padding(.vertical, 12)
-                                        .background(Color.white.opacity(0.05))
-                                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                    }
-                                }
-                            }
-
-                            ZStack(alignment: .topLeading) {
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .fill(Color.white.opacity(0.04))
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                            .stroke(isCommentFieldFocused ? nativeAccent.opacity(0.75) : Color.white.opacity(0.04), lineWidth: 1)
-                                    )
-
-                                if commentDraft.isEmpty {
-                                    Text(commentComposerPlaceholder)
-                                        .font(nativeAppFont(size: 14, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.35))
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 14)
-                                }
-
-                                TextEditor(text: $commentDraft)
-                                    .font(nativeAppFont(size: 15, weight: .medium))
-                                    .foregroundColor(.white)
-                                    .padding(.horizontal, 10)
-                                    .padding(.vertical, 8)
-                                    .frame(minHeight: 72, maxHeight: 72)
-                                    .background(Color.white.opacity(0.04))
-                                    .focused($isCommentFieldFocused)
-                            }
-                            .frame(minHeight: 72, maxHeight: 72)
-
-                            HStack {
-                                Spacer()
-                                Button {
-                                    Task { await postComment() }
-                                } label: {
-                                    Text("Post")
-                                        .font(nativeAppFont(size: 13, weight: .black))
-                                        .foregroundStyle(.black)
-                                        .padding(.horizontal, 16)
-                                        .padding(.vertical, 10)
-                                        .background(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.white.opacity(0.18) : nativeAccent)
-                                        .clipShape(Capsule())
-                                }
-                                .buttonStyle(.plain)
-                                .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCommentsLoading)
-                            }
-                        }
+                    Button("Delete moment", role: .destructive) {
+                        showDeletePostDialog = true
                     }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(nativeAppFont(size: 14, weight: .black))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(width: 32, height: 32)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Circle())
                 }
-                .padding(.horizontal, 20)
-                .padding(.top, 16)
-                .padding(.bottom, 36)
-            }
-            .simultaneousGesture(
-                TapGesture().onEnded {
-                    isCommentFieldFocused = false
-                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
-                }
-            )
+                .buttonStyle(.plain)
+            ),
+            onClose: { dismiss() },
+            onPlaceTap: { selectedPlace = displayedMoment.place },
+            onToggleLike: { Task { await toggleVibin() } },
+            onPostComment: { Task { await postComment() } },
+            commentDraft: $commentDraft
+        )
             .task {
                 vibed = false
                 vibinCount = displayedMoment.likeCount ?? 0
@@ -19218,21 +19093,6 @@ private struct NativeDecisionHistoryMomentFullscreen: View {
             } message: {
                 Text("This will remove this moment from your diary.")
             }
-
-            Button {
-                dismiss()
-            } label: {
-                Image(systemName: "xmark")
-                    .font(nativeAppFont(size: 16, weight: .black))
-                    .foregroundStyle(.white)
-                    .frame(width: 42, height: 42)
-                    .background(nativeSurface)
-                    .clipShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 16)
-            .padding(.trailing, 16)
-        }
         .sheet(isPresented: $showEditMomentSheet) {
             NativeMomentEditSheet(moment: displayedMoment) { updated in
                 editedMoment = updated
@@ -19243,28 +19103,6 @@ private struct NativeDecisionHistoryMomentFullscreen: View {
         .fullScreenCover(item: $selectedPlace) { place in
             NativePlaceDetailScreen(initialPlace: place, source: NativeAnalyticsSource.profile)
         }
-    }
-
-    private func diaryMomentAvatarSquare(size: CGFloat) -> some View {
-        ZStack {
-            if let avatarURL = appState.currentUser?.avatarUrl, !avatarURL.isEmpty {
-                NativeRemoteImage(url: avatarURL)
-            } else {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
-                    .overlay(
-                        Text(nativeAvatarInitials(from: appState.currentUser?.displayName ?? appState.currentUser?.username ?? "V"))
-                            .font(nativeAppFont(size: 15, weight: .black))
-                            .foregroundStyle(.white)
-                    )
-            }
-        }
-        .frame(width: size, height: size)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.white.opacity(0.06), lineWidth: 1)
-        )
     }
 
     private func loadComments() async {
@@ -19291,7 +19129,6 @@ private struct NativeDecisionHistoryMomentFullscreen: View {
             comments.insert(newComment, at: 0)
             commentDraft = ""
             commentsErrorMessage = nil
-            isCommentFieldFocused = false
             UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
         } catch {
             commentsErrorMessage = "Could not post comment right now."
@@ -23913,7 +23750,7 @@ private struct NativeFeedScreen: View {
     @State private var updatingFollowContactIds = Set<String>()
     @State private var activeFeedMode: FeedViewMode = .posts
     @State private var activeFeedMapFilter: FeedMapTimeFilter = .thisWeek
-    @State private var selectedFeedPresentation: NativeTravelerRecentPostsPresentation?
+    @State private var selectedFeedDetailItem: NativeFeedItem?
     @State private var feedMapRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 40.7128, longitude: -74.0060),
         span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25)
@@ -24051,15 +23888,9 @@ private struct NativeFeedScreen: View {
                 inviteSMSContact = nil
             }
         }
-        .fullScreenCover(item: $selectedFeedPresentation) { presentation in
-            NavigationView {
-                NativeTravelerRecentPostsFullscreen(
-                    items: presentation.items,
-                    startIndex: presentation.startIndex
-                )
+        .fullScreenCover(item: $selectedFeedDetailItem) { item in
+            NativeFeedMomentFullscreen(item: item)
                 .environmentObject(appState)
-            }
-            .navigationViewStyle(.stack)
         }
         .onChange(of: contactsSearchText) { _ in
             resetVisibleContactCounts()
@@ -24209,21 +24040,36 @@ private struct NativeFeedScreen: View {
                         longitude: item.place?.longitude ?? 0
                     )) {
                         Button {
-                            if let startIndex = mappedFeedItems.firstIndex(where: { $0.id == item.id }) {
-                                selectedFeedPresentation = NativeTravelerRecentPostsPresentation(
-                                    items: mappedFeedItems,
-                                    startIndex: startIndex
-                                )
-                            }
+                            selectedFeedDetailItem = item
                         } label: {
-                            VStack(spacing: 8) {
-                                ZStack(alignment: .bottomTrailing) {
+                            VStack(spacing: 6) {
+                                ZStack(alignment: .topLeading) {
                                     if let media = item.uploadedMediaUrls?.first ?? item.place?.image {
                                         NativeRemoteImage(url: media)
                                     } else {
                                         RoundedRectangle(cornerRadius: 14, style: .continuous)
                                             .fill(Color.white.opacity(0.08))
                                     }
+                                    
+                                    Group {
+                                        if let avatarURL = item.traveler.avatar, !avatarURL.isEmpty {
+                                            NativeRemoteImage(url: avatarURL)
+                                        } else {
+                                            NativeAvatarPlaceholderSquare(
+                                                fallbackText: item.traveler.displayName ?? item.traveler.username,
+                                                size: 22,
+                                                fontSize: 9,
+                                                stroke: Color.black.opacity(0.92)
+                                            )
+                                        }
+                                    }
+                                    .frame(width: 22, height: 22)
+                                    .clipShape(RoundedRectangle(cornerRadius: nativeAvatarCornerRadius(for: 22), style: .continuous))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: nativeAvatarCornerRadius(for: 22), style: .continuous)
+                                            .stroke(Color.black.opacity(0.92), lineWidth: 2)
+                                    )
+                                    .offset(x: -4, y: -4)
                                 }
                                 .frame(width: 54, height: 54)
                                 .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
@@ -24231,27 +24077,6 @@ private struct NativeFeedScreen: View {
                                     RoundedRectangle(cornerRadius: 14, style: .continuous)
                                         .stroke(Color.white.opacity(0.1), lineWidth: 1)
                                 )
-
-                                NativeAvatarCircle(
-                                    url: item.traveler.avatar,
-                                    fallbackText: item.traveler.displayName ?? item.traveler.username,
-                                    size: 22,
-                                    fontSize: 10
-                                )
-                                .overlay(
-                                    Circle()
-                                        .stroke(Color.black.opacity(0.92), lineWidth: 2)
-                                )
-                                .offset(x: 4, y: 4)
-
-                                Text(item.place?.name ?? "Post")
-                                    .font(nativeAppFont(size: 10, weight: .black))
-                                    .foregroundStyle(.white)
-                                    .lineLimit(1)
-                                    .padding(.horizontal, 8)
-                                    .padding(.vertical, 4)
-                                    .background(Color.black.opacity(0.78))
-                                    .clipShape(Capsule())
 
                                 Text("@\(item.traveler.username)")
                                     .font(nativeAppFont(size: 9, weight: .black))
@@ -25375,6 +25200,7 @@ private struct NativeFeedCard: View {
     @State private var comments: [NativeComment] = []
     @State private var showCommentSheet = false
     @State private var commentDraft = ""
+    @FocusState private var isCommentComposerFocused: Bool
     @State private var isCommentsLoading = false
 	    @State private var commentsErrorMessage: String?
     @State private var showReportPostDialog = false
@@ -25536,6 +25362,12 @@ private struct NativeFeedCard: View {
                 Task { await loadComments() }
             }
         }
+        .contentShape(Rectangle())
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                dismissCommentComposerFocus()
+            }
+        )
     }
 
     private var activityLabel: String? {
@@ -25642,18 +25474,10 @@ private struct NativeFeedCard: View {
             NavigationLink {
                 NativePlaceDetailScreen(initialPlace: place, source: NativeAnalyticsSource.feed)
             } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(place.name)
-                        .font(nativeAppFont(size: 17, weight: .black))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-
-                    Text(nativePlaceMetaLine(for: place, shortAddress: shortAddress))
-                        .font(nativeAppFont(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.58))
-                        .lineLimit(2)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
+                NativeMomentPlaceInfoCard(
+                    placeName: place.name,
+                    metaLine: nativePlaceMetaLine(for: place, shortAddress: shortAddress)
+                )
             }
             .buttonStyle(.plain)
         } actions: {
@@ -25664,6 +25488,7 @@ private struct NativeFeedCard: View {
                         .foregroundColor(.white)
                         .textInputAutocapitalization(.sentences)
                         .disableAutocorrection(false)
+                        .focused($isCommentComposerFocused)
 
                     Button {
                         Task { await postComment() }
@@ -25702,8 +25527,10 @@ private struct NativeFeedCard: View {
                     HStack(spacing: 8) {
                         Image(systemName: "bubble.left")
                             .font(nativeAppFont(size: 13, weight: .black))
-                        Text("\(comments.count)")
-                            .font(nativeAppFont(size: 13, weight: .black))
+                        if comments.count > 0 {
+                            Text("\(comments.count)")
+                                .font(nativeAppFont(size: 13, weight: .black))
+                        }
                     }
                     .foregroundStyle(.white.opacity(0.82))
                     .padding(.horizontal, 14)
@@ -25735,9 +25562,11 @@ private struct NativeFeedCard: View {
                                 .font(nativeAppFont(size: 13, weight: .black))
                                 .foregroundStyle(vibed ? .black : .white.opacity(0.82))
                         }
-                        Text("\(vibinCount)")
-                            .font(nativeAppFont(size: 13, weight: .black))
-                            .foregroundStyle(vibed ? .black : .white.opacity(0.82))
+                        if vibinCount > 0 {
+                            Text("\(vibinCount)")
+                                .font(nativeAppFont(size: 13, weight: .black))
+                                .foregroundStyle(vibed ? .black : .white.opacity(0.82))
+                        }
                     }
                     .padding(.horizontal, 14)
                     .padding(.vertical, 10)
@@ -25806,9 +25635,15 @@ private struct NativeFeedCard: View {
             comments.insert(newComment, at: 0)
             commentDraft = ""
             commentsErrorMessage = nil
+            dismissCommentComposerFocus()
         } catch {
             commentsErrorMessage = "Could not post comment right now."
         }
+    }
+
+    private func dismissCommentComposerFocus() {
+        isCommentComposerFocused = false
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
     }
 
     private var reportPostTargetType: String? {
@@ -30626,6 +30461,80 @@ private func nativePlaceMetaLine(for place: NativePlace, shortAddress: String? =
     return segments.joined(separator: " • ")
 }
 
+private struct NativeMomentPlaceInfoCard: View {
+    let placeName: String
+    let metaLine: String
+    var showsChevron = true
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "mappin.circle.fill")
+                .font(nativeAppFont(size: 18, weight: .black))
+                .foregroundStyle(nativeAccent)
+                .frame(width: 28, height: 28)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(placeName)
+                    .font(nativeAppFont(size: 16, weight: .black))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                Text(metaLine)
+                    .font(nativeAppFont(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.58))
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 8)
+
+            if showsChevron {
+                Image(systemName: "chevron.right")
+                    .font(nativeAppFont(size: 11, weight: .black))
+                    .foregroundStyle(.white.opacity(0.28))
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(Color.white.opacity(0.05))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
+private struct NativeMomentEngagementRow: View {
+    let commentCount: Int
+    let likeCount: Int
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Spacer(minLength: 0)
+
+            metricChip(icon: "bubble.left", count: commentCount)
+            metricChip(icon: "heart", count: likeCount)
+        }
+    }
+
+    private func metricChip(icon: String, count: Int) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .font(nativeAppFont(size: 13, weight: .black))
+            if count > 0 {
+                Text("\(count)")
+                    .font(nativeAppFont(size: 13, weight: .black))
+            }
+        }
+        .foregroundStyle(.white.opacity(0.82))
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(Color.white.opacity(0.06))
+        .clipShape(Capsule())
+    }
+}
+
 private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: View, Actions: View, CommentPreview: View>: View {
     let displayName: String
     let username: String?
@@ -30735,6 +30644,611 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.white.opacity(0.06), lineWidth: 1)
         )
+    }
+}
+
+private struct NativeMomentFullscreenScaffold: View {
+    let displayName: String
+    let username: String?
+    let avatarURL: String?
+    let avatarFallback: String
+    let timestampLabel: String
+    let ratingMeta: (label: String, icon: String)?
+    let reviewText: String?
+    let mediaUrl: String?
+    let placeName: String?
+    let placeMetaLine: String?
+    let isLiked: Bool
+    let likeCount: Int
+    let isLikeBusy: Bool
+    let comments: [NativeComment]
+    let isCommentsLoading: Bool
+    let commentsErrorMessage: String?
+    let commentComposerPlaceholder: String
+    let menuView: AnyView?
+    let onClose: () -> Void
+    let onPlaceTap: (() -> Void)?
+    let onToggleLike: () -> Void
+    let onPostComment: () -> Void
+    @Binding var commentDraft: String
+
+    @FocusState private var isCommentFieldFocused: Bool
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+
+            ScrollView(showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 18) {
+                    Color.clear
+                        .frame(height: 36)
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            HStack(alignment: .center, spacing: 10) {
+                                avatarSquare(size: 42)
+
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(displayName)
+                                        .font(nativeAppFont(size: 15, weight: .black))
+                                        .foregroundStyle(.white)
+
+                                    if let username, !username.isEmpty {
+                                        Text("@\(username)")
+                                            .font(nativeAppFont(size: 12, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.48))
+                                    }
+                                }
+
+                                Spacer(minLength: 8)
+
+                                HStack(spacing: 8) {
+                                    Text(timestampLabel)
+                                        .font(nativeAppFont(size: 12, weight: .bold))
+                                        .foregroundStyle(.white.opacity(0.58))
+
+                                    if let menuView {
+                                        menuView
+                                    }
+                                }
+                            }
+
+                            if let ratingMeta {
+                                HStack(spacing: 8) {
+                                    Image(systemName: ratingMeta.icon)
+                                        .font(nativeAppFont(size: 12, weight: .black))
+                                    Text(ratingMeta.label)
+                                        .font(nativeAppFont(size: 12, weight: .bold))
+                                }
+                                .foregroundStyle(.black)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(nativeAccent)
+                                .clipShape(Capsule())
+                            }
+
+                            if let reviewText, !reviewText.isEmpty {
+                                Text(reviewText)
+                                    .font(nativeAppFont(size: 15, weight: .semibold))
+                                    .foregroundStyle(.white.opacity(0.9))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+
+                            Group {
+                                if let mediaUrl, !mediaUrl.isEmpty {
+                                    NativeRemoteImage(url: mediaUrl)
+                                } else {
+                                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                        .fill(Color.white.opacity(0.06))
+                                        .overlay(
+                                            Image(systemName: "photo")
+                                                .font(nativeAppFont(size: 22, weight: .black))
+                                                .foregroundStyle(.white.opacity(0.3))
+                                        )
+                                }
+                            }
+                            .frame(maxWidth: .infinity)
+                            .aspectRatio(1, contentMode: .fit)
+                            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                            )
+
+                            if let placeName, let placeMetaLine, !placeName.isEmpty, !placeMetaLine.isEmpty {
+                                if let onPlaceTap {
+                                    Button(action: onPlaceTap) {
+                                        NativeMomentPlaceInfoCard(
+                                            placeName: placeName,
+                                            metaLine: placeMetaLine
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
+                                } else {
+                                    NativeMomentPlaceInfoCard(
+                                        placeName: placeName,
+                                        metaLine: placeMetaLine,
+                                        showsChevron: false
+                                    )
+                                }
+                            }
+
+                            HStack(spacing: 10) {
+                                Button(action: onToggleLike) {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: isLiked ? "heart.fill" : "heart")
+                                            .font(nativeAppFont(size: 13, weight: .black))
+                                        Text("\(likeCount)")
+                                            .font(nativeAppFont(size: 13, weight: .black))
+                                    }
+                                    .foregroundStyle(isLiked ? .black : .white)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 10)
+                                    .background(isLiked ? nativeAccent : Color.white.opacity(0.06))
+                                    .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(isLikeBusy)
+
+                                HStack(spacing: 8) {
+                                    Image(systemName: "bubble.left")
+                                        .font(nativeAppFont(size: 13, weight: .black))
+                                    Text("\(comments.count)")
+                                        .font(nativeAppFont(size: 13, weight: .black))
+                                }
+                                .foregroundStyle(.white.opacity(0.82))
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 10)
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(Capsule())
+
+                                Spacer(minLength: 0)
+                            }
+                        }
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Comments")
+                                .font(nativeAppFont(size: 18, weight: .black))
+                                .foregroundStyle(.white)
+
+                            if isCommentsLoading {
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(Color.white.opacity(0.04))
+                                    .overlay {
+                                        ProgressView()
+                                            .tint(nativeAccent)
+                                    }
+                                    .frame(height: 76)
+                            } else if let commentsErrorMessage {
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(Color.white.opacity(0.04))
+                                    .overlay {
+                                        Text(commentsErrorMessage)
+                                            .font(nativeAppFont(size: 14, weight: .medium))
+                                            .foregroundStyle(.white.opacity(0.55))
+                                            .padding(.horizontal, 16)
+                                    }
+                                    .frame(height: 76)
+                            } else if comments.isEmpty {
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(Color.white.opacity(0.04))
+                                    .overlay {
+                                        VStack(spacing: 6) {
+                                            Text("No comment yet")
+                                                .font(nativeAppFont(size: 14, weight: .black))
+                                                .foregroundStyle(.white.opacity(0.72))
+                                            Text("Start the conversation here.")
+                                                .font(nativeAppFont(size: 12, weight: .medium))
+                                                .foregroundStyle(.white.opacity(0.42))
+                                        }
+                                    }
+                                    .frame(height: 76)
+                            } else {
+                                VStack(alignment: .leading, spacing: 10) {
+                                    ForEach(Array(comments.enumerated()), id: \.offset) { _, comment in
+                                        VStack(alignment: .leading, spacing: 6) {
+                                            Text("@\(comment.user)")
+                                                .font(nativeAppFont(size: 12, weight: .black))
+                                                .foregroundStyle(.white)
+                                            Text(comment.body)
+                                                .font(nativeAppFont(size: 14, weight: .medium))
+                                                .foregroundStyle(.white.opacity(0.82))
+                                                .fixedSize(horizontal: false, vertical: true)
+                                            Text(NativeAppState.relativeLabel(from: comment.createdAt))
+                                                .font(nativeAppFont(size: 11, weight: .bold))
+                                                .foregroundStyle(.white.opacity(0.32))
+                                        }
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 14)
+                                        .padding(.vertical, 12)
+                                        .background(Color.white.opacity(0.05))
+                                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                    }
+                                }
+                            }
+
+                            ZStack(alignment: .topLeading) {
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .fill(Color.white.opacity(0.04))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                            .stroke(isCommentFieldFocused ? nativeAccent.opacity(0.75) : Color.white.opacity(0.04), lineWidth: 1)
+                                    )
+
+                                if commentDraft.isEmpty {
+                                    Text(commentComposerPlaceholder)
+                                        .font(nativeAppFont(size: 14, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.35))
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 14)
+                                }
+
+                                TextEditor(text: $commentDraft)
+                                    .font(nativeAppFont(size: 15, weight: .medium))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 8)
+                                    .frame(minHeight: 72, maxHeight: 72)
+                                    .background(Color.white.opacity(0.04))
+                                    .focused($isCommentFieldFocused)
+                            }
+                            .frame(minHeight: 72, maxHeight: 72)
+
+                            HStack {
+                                Spacer()
+                                Button(action: onPostComment) {
+                                    Text("Post")
+                                        .font(nativeAppFont(size: 13, weight: .black))
+                                        .foregroundStyle(.black)
+                                        .padding(.horizontal, 16)
+                                        .padding(.vertical, 10)
+                                        .background(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.white.opacity(0.18) : nativeAccent)
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isCommentsLoading)
+                            }
+                        }
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+                .padding(.bottom, 36)
+            }
+            .simultaneousGesture(
+                TapGesture().onEnded {
+                    isCommentFieldFocused = false
+                    UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+                }
+            )
+
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(nativeAppFont(size: 16, weight: .black))
+                    .foregroundStyle(.white)
+                    .frame(width: 42, height: 42)
+                    .background(nativeSurface)
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 16)
+            .padding(.trailing, 16)
+        }
+    }
+
+    private func avatarSquare(size: CGFloat) -> some View {
+        ZStack {
+            if let avatarURL, !avatarURL.isEmpty {
+                NativeRemoteImage(url: avatarURL)
+            } else {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        Text(nativeAvatarInitials(from: avatarFallback))
+                            .font(nativeAppFont(size: 15, weight: .black))
+                            .foregroundStyle(.white)
+                    )
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.06), lineWidth: 1)
+        )
+    }
+}
+
+private struct NativeFeedMomentFullscreen: View {
+    @EnvironmentObject private var appState: NativeAppState
+    @Environment(\.dismiss) private var dismiss
+    let item: NativeFeedItem
+    @State private var comments: [NativeComment] = []
+    @State private var isCommentsLoading = false
+    @State private var commentsErrorMessage: String?
+    @State private var commentDraft = ""
+    @State private var vibed = false
+    @State private var vibinCount = 0
+    @State private var isTogglingVibin = false
+    @State private var selectedPlace: NativePlace? = nil
+    @State private var showReportPostDialog = false
+    @State private var showReportAccountDialog = false
+    @State private var showBlockAccountDialog = false
+    @State private var showDeletePostDialog = false
+    @State private var moderationAlertMessage = ""
+    @State private var showModerationAlert = false
+
+    private var mediaUrl: String? {
+        if let uploaded = item.uploadedMediaUrls?.first, !uploaded.isEmpty {
+            return uploaded
+        }
+        if let uploaded = item.place?.userMediaUrls?.first, !uploaded.isEmpty {
+            return uploaded
+        }
+        if let uploaded = item.place?.momentMedia?.first?.url, !uploaded.isEmpty {
+            return uploaded
+        }
+        if let image = item.place?.image, !image.isEmpty {
+            return image
+        }
+        if let image = item.place?.images?.first, !image.isEmpty {
+            return image
+        }
+        return nil
+    }
+
+    private var commentTargetType: String? {
+        guard let place = item.place else { return nil }
+        return place.momentId != nil ? "MOMENT" : "PLACE"
+    }
+
+    private var commentTargetId: String? {
+        guard let place = item.place else { return nil }
+        return place.momentId ?? place.id
+    }
+
+    private var ratingMeta: (label: String, icon: String)? {
+        guard let place = item.place else { return nil }
+        return nativeMomentRatingMeta(label: place.momentRatingLabel, fallbackRating: place.momentRating)
+    }
+
+    private var shortAddress: String {
+        guard let place = item.place else { return "" }
+        return nativeShortAddress(for: place)
+    }
+
+    private var placeMetaLine: String {
+        guard let place = item.place else { return "" }
+        return nativePlaceMetaLine(for: place, shortAddress: shortAddress)
+    }
+
+    private var commentComposerPlaceholder: String {
+        "Write a comment"
+    }
+
+    private var isOwnPost: Bool {
+        appState.currentUser?.id == item.traveler.id
+    }
+
+    private var shouldShowPostMenu: Bool {
+        item.place?.momentId != nil
+    }
+
+    var body: some View {
+        NativeMomentFullscreenScaffold(
+            displayName: item.traveler.displayName ?? item.traveler.username,
+            username: item.traveler.username,
+            avatarURL: item.traveler.avatar,
+            avatarFallback: item.traveler.displayName ?? item.traveler.username,
+            timestampLabel: item.timestampLabel.replacingOccurrences(of: ". ago", with: " ago"),
+            ratingMeta: ratingMeta,
+            reviewText: item.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
+            mediaUrl: mediaUrl,
+            placeName: item.place?.name,
+            placeMetaLine: placeMetaLine.isEmpty ? nil : placeMetaLine,
+            isLiked: vibed,
+            likeCount: vibinCount,
+            isLikeBusy: isTogglingVibin,
+            comments: comments,
+            isCommentsLoading: isCommentsLoading,
+            commentsErrorMessage: commentsErrorMessage,
+            commentComposerPlaceholder: commentComposerPlaceholder,
+            menuView: shouldShowPostMenu ? AnyView(feedPostMoreMenu) : nil,
+            onClose: { dismiss() },
+            onPlaceTap: item.place.map { place in { selectedPlace = place } },
+            onToggleLike: { Task { await toggleVibin() } },
+            onPostComment: { Task { await postComment() } },
+            commentDraft: $commentDraft
+        )
+            .task {
+                vibed = item.isVibed
+                vibinCount = item.vibinCount
+                await loadComments()
+            }
+            .confirmationDialog("Delete post?", isPresented: $showDeletePostDialog, titleVisibility: .visible) {
+                Button("Delete post", role: .destructive) {
+                    Task {
+                        do {
+                            if let momentId = item.place?.momentId {
+                                try await appState.deleteMoment(id: momentId)
+                            }
+                            dismiss()
+                        } catch {
+                            commentsErrorMessage = "Could not delete this post right now."
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This will remove this post from your profile.")
+            }
+            .confirmationDialog("Report post", isPresented: $showReportPostDialog, titleVisibility: .visible) {
+                ForEach(NativeReportReason.allCases) { reason in
+                    Button(reason.rawValue) {
+                        Task { await reportPost(reason) }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Choose the reason that best describes this content.")
+            }
+            .confirmationDialog("Report account", isPresented: $showReportAccountDialog, titleVisibility: .visible) {
+                ForEach(NativeReportReason.allCases) { reason in
+                    Button(reason.rawValue) {
+                        Task { await reportAccount(reason) }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Choose the reason that best describes this account.")
+            }
+            .confirmationDialog("Block account?", isPresented: $showBlockAccountDialog, titleVisibility: .visible) {
+                Button("Block \(item.traveler.username)", role: .destructive) {
+                    Task { await blockAccount() }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("You will no longer see posts or profile activity from this account.")
+            }
+            .alert("Done", isPresented: $showModerationAlert) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(moderationAlertMessage)
+            }
+        .fullScreenCover(item: $selectedPlace) { place in
+            NativePlaceDetailScreen(initialPlace: place, source: NativeAnalyticsSource.feed)
+        }
+    }
+
+    private var feedPostMoreMenu: some View {
+        Menu {
+            if isOwnPost {
+                Button(role: .destructive) {
+                    showDeletePostDialog = true
+                } label: {
+                    Text("Delete post")
+                }
+            } else {
+                Button("Report post") {
+                    showReportPostDialog = true
+                }
+                Button("Report account") {
+                    showReportAccountDialog = true
+                }
+                Button(role: .destructive) {
+                    showBlockAccountDialog = true
+                } label: {
+                    Text("Block account")
+                }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(nativeAppFont(size: 14, weight: .black))
+                .foregroundStyle(.white.opacity(0.72))
+                .frame(width: 32, height: 32)
+                .background(Color.white.opacity(0.06))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func loadComments() async {
+        guard let targetType = commentTargetType, let targetId = commentTargetId else { return }
+        isCommentsLoading = true
+        commentsErrorMessage = nil
+        do {
+            comments = try await appState.fetchComments(targetType: targetType, targetId: targetId)
+        } catch {
+            commentsErrorMessage = "Could not load comments right now."
+        }
+        isCommentsLoading = false
+    }
+
+    private func postComment() async {
+        guard let targetType = commentTargetType, let targetId = commentTargetId else { return }
+        let trimmed = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            let newComment = try await appState.createComment(
+                targetType: targetType,
+                targetId: targetId,
+                body: trimmed,
+                momentId: item.place?.momentId
+            )
+            comments.insert(newComment, at: 0)
+            commentDraft = ""
+            commentsErrorMessage = nil
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        } catch {
+            commentsErrorMessage = "Could not post comment right now."
+        }
+    }
+
+    private func toggleVibin() async {
+        guard !isTogglingVibin else { return }
+        guard let targetId = item.place?.momentId ?? item.place?.id, !targetId.isEmpty else { return }
+
+        isTogglingVibin = true
+        defer { isTogglingVibin = false }
+
+        do {
+            let response = try await appState.toggleMomentVibin(
+                targetId: targetId,
+                receiverUserId: item.traveler.id,
+                momentId: item.place?.momentId
+            )
+            vibed = response.active
+            vibinCount = response.count
+            appState.updateFeedItemVibinState(itemId: item.id, isVibed: response.active, vibinCount: response.count)
+        } catch {
+            commentsErrorMessage = "Could not update this like right now."
+        }
+    }
+
+    private func reportPost(_ reason: NativeReportReason) async {
+        guard let targetType = commentTargetType, let targetId = commentTargetId else { return }
+        do {
+            try await appState.reportTarget(
+                targetType: targetType,
+                targetId: targetId,
+                targetUserId: item.traveler.id,
+                reason: reason
+            )
+            moderationAlertMessage = "Thanks. This post has been reported."
+            showModerationAlert = true
+        } catch {
+            moderationAlertMessage = "Could not report this post right now."
+            showModerationAlert = true
+        }
+    }
+
+    private func reportAccount(_ reason: NativeReportReason) async {
+        do {
+            try await appState.reportTarget(
+                targetType: "PROFILE",
+                targetId: item.traveler.id,
+                targetUserId: item.traveler.id,
+                reason: reason
+            )
+            moderationAlertMessage = "Thanks. This account has been reported."
+            showModerationAlert = true
+        } catch {
+            moderationAlertMessage = "Could not report this account right now."
+            showModerationAlert = true
+        }
+    }
+
+    private func blockAccount() async {
+        do {
+            try await appState.blockTraveler(item.traveler)
+            moderationAlertMessage = "This account has been blocked."
+            showModerationAlert = true
+        } catch {
+            moderationAlertMessage = "Could not block this account right now."
+            showModerationAlert = true
+        }
     }
 }
 

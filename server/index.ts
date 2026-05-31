@@ -562,6 +562,7 @@ function resolveMomentMediaUrls(urls: string[], requestOrigin?: string) {
 
 function mapV2MomentForClient(moment: {
   id: string;
+  userId: string;
   placeId: string;
   visitedAt: Date;
   caption: string;
@@ -579,7 +580,8 @@ function mapV2MomentForClient(moment: {
   placeLongitude: number | null;
 }, requestOrigin?: string, counts?: { commentCount?: number; likeCount?: number }, latestComment: {
   id: string;
-  user: { username: string };
+  userId: string;
+  user: { username: string | null };
   body: string;
   createdAt: Date;
 } | null = null) {
@@ -600,7 +602,7 @@ function mapV2MomentForClient(moment: {
     latestComment: latestComment
       ? {
           id: latestComment.id,
-          user: latestComment.user.username,
+          user: latestComment.user.username ?? buildV2TravelerUsernameFallback(latestComment.userId),
           body: latestComment.body,
           createdAt: latestComment.createdAt.toISOString(),
         }
@@ -628,9 +630,101 @@ function mapV2MomentForClient(moment: {
       latitude: moment.placeLatitude ?? undefined,
       longitude: moment.placeLongitude ?? undefined,
       mapsUrl: buildPlaceMapsUrl(moment.placeLatitude ?? undefined, moment.placeLongitude ?? undefined) ?? undefined,
+      momentId: moment.id,
+      ownerUserId: moment.userId,
+      visitedDate: moment.visitedAt.toISOString().split('T')[0],
+      visitedAtIso: moment.visitedAt.toISOString(),
+      momentCaption: moment.caption || undefined,
       momentRating: moment.rating ?? undefined,
       momentRatingLabel: moment.ratingLabel ?? undefined,
     },
+  };
+}
+
+async function loadV2MomentSocialState(momentIds: string[], viewerUserId?: string) {
+  if (momentIds.length === 0) {
+    return {
+      commentCounts: {} as Record<string, number>,
+      likeCounts: {} as Record<string, number>,
+      latestCommentByMoment: new Map<string, {
+        id: string;
+        user: { username: string };
+        body: string;
+        createdAt: Date;
+      }>(),
+      vibedMomentIds: new Set<string>(),
+    };
+  }
+
+  const [commentsByMoment, vibinsByMoment, latestComments, viewerVibins] = await Promise.all([
+    prismaV2.comment.groupBy({
+      by: ['targetId'],
+      where: {
+        targetType: 'MOMENT',
+        targetId: { in: momentIds },
+      },
+      _count: { _all: true },
+    }).catch((error) => {
+      console.error('loadV2MomentSocialState comment counts failed', error);
+      return [];
+    }),
+    prismaV2.vibin.groupBy({
+      by: ['targetId'],
+      where: {
+        targetType: 'MOMENT',
+        targetId: { in: momentIds },
+      },
+      _count: { _all: true },
+    }).catch((error) => {
+      console.error('loadV2MomentSocialState like counts failed', error);
+      return [];
+    }),
+    prismaV2.comment.findMany({
+      where: {
+        targetType: 'MOMENT',
+        targetId: { in: momentIds },
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: {
+          select: {
+            username: true,
+          },
+        },
+      },
+    }).catch((error) => {
+      console.error('loadV2MomentSocialState latest comments failed', error);
+      return [];
+    }),
+    viewerUserId
+      ? prismaV2.vibin.findMany({
+          where: {
+            senderUserId: viewerUserId,
+            targetType: 'MOMENT',
+            targetId: { in: momentIds },
+          },
+          select: { targetId: true },
+        }).catch((error) => {
+          console.error('loadV2MomentSocialState viewer vibins failed', error);
+          return [];
+        })
+      : Promise.resolve([]),
+  ]);
+
+  const commentCounts = Object.fromEntries(commentsByMoment.map((item) => [item.targetId, item._count._all]));
+  const likeCounts = Object.fromEntries(vibinsByMoment.map((item) => [item.targetId, item._count._all]));
+  const latestCommentByMoment = new Map<string, (typeof latestComments)[number]>();
+  for (const comment of latestComments) {
+    if (!latestCommentByMoment.has(comment.targetId)) {
+      latestCommentByMoment.set(comment.targetId, comment);
+    }
+  }
+
+  return {
+    commentCounts,
+    likeCounts,
+    latestCommentByMoment,
+    vibedMomentIds: new Set(viewerVibins.map((item) => item.targetId)),
   };
 }
 
@@ -731,6 +825,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
       take: 40,
     }),
   ]);
+  const social = await loadV2MomentSocialState(moments.map((moment) => moment.id), userId);
 
   const placeIdsNeedingFallback = Array.from(new Set(
     moments
@@ -808,8 +903,8 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
       place: mergedPlace,
       collection: null,
       caption: mappedMoment.caption,
-      isVibed: false,
-      vibinCount: 0,
+      isVibed: social.vibedMomentIds.has(moment.id),
+      vibinCount: social.likeCounts[moment.id] ?? 0,
     }];
   });
 
@@ -948,8 +1043,13 @@ async function buildV2HomepageRecentMemories(userId: string, requestOrigin?: str
     take: 5,
   });
 
+  const social = await loadV2MomentSocialState(moments.map((moment) => moment.id), userId);
+
   return {
-    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin)),
+    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
+      commentCount: social.commentCounts[moment.id] ?? 0,
+      likeCount: social.likeCounts[moment.id] ?? 0,
+    }, social.latestCommentByMoment.get(moment.id) ?? null)),
   };
 }
 
@@ -961,70 +1061,13 @@ async function buildV2DiaryMoments(userId: string, requestOrigin?: string) {
       { createdAt: 'desc' },
     ],
   });
-
-  const momentIds = moments.map((moment) => moment.id);
-  const [commentsByMoment, vibinsByMoment, latestComments] = await Promise.all([
-    momentIds.length
-      ? prisma.comment.groupBy({
-          by: ['targetId'],
-          where: {
-            targetType: 'MOMENT',
-            targetId: { in: momentIds },
-          },
-          _count: { _all: true },
-        }).catch((error) => {
-          console.error('buildV2DiaryMoments comment counts failed', error);
-          return [];
-        })
-      : Promise.resolve([]),
-    momentIds.length
-      ? prisma.vibin.groupBy({
-          by: ['targetId'],
-          where: {
-            targetType: 'MOMENT',
-            targetId: { in: momentIds },
-          },
-          _count: { _all: true },
-        }).catch((error) => {
-          console.error('buildV2DiaryMoments like counts failed', error);
-          return [];
-        })
-      : Promise.resolve([]),
-    momentIds.length
-      ? prisma.comment.findMany({
-          where: {
-            targetType: 'MOMENT',
-            targetId: { in: momentIds },
-          },
-          orderBy: { createdAt: 'desc' },
-          include: {
-            user: {
-              select: {
-                username: true,
-              },
-            },
-          },
-        }).catch((error) => {
-          console.error('buildV2DiaryMoments latest comments failed', error);
-          return [];
-        })
-      : Promise.resolve([]),
-  ]);
-
-  const commentCounts = Object.fromEntries(commentsByMoment.map((item) => [item.targetId, item._count._all]));
-  const likeCounts = Object.fromEntries(vibinsByMoment.map((item) => [item.targetId, item._count._all]));
-  const latestCommentByMoment = new Map<string, (typeof latestComments)[number]>();
-  for (const comment of latestComments) {
-    if (!latestCommentByMoment.has(comment.targetId)) {
-      latestCommentByMoment.set(comment.targetId, comment);
-    }
-  }
+  const social = await loadV2MomentSocialState(moments.map((moment) => moment.id), userId);
 
   return {
     moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
-      commentCount: commentCounts[moment.id] ?? 0,
-      likeCount: likeCounts[moment.id] ?? 0,
-    }, latestCommentByMoment.get(moment.id) ?? null)),
+      commentCount: social.commentCounts[moment.id] ?? 0,
+      likeCount: social.likeCounts[moment.id] ?? 0,
+    }, social.latestCommentByMoment.get(moment.id) ?? null)),
   };
 }
 
@@ -8940,6 +8983,24 @@ app.get('/api/v2/feed', requireV2Auth, async (req: AuthenticatedRequest, res) =>
   }
 });
 
+async function resolveV2TargetOwner(targetType: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION', targetId: string) {
+  if (targetType === 'PROFILE') {
+    return targetId;
+  }
+  if (targetType === 'MOMENT') {
+    const moment = await prismaV2.moment.findUnique({
+      where: { id: targetId },
+      select: { userId: true },
+    });
+    return moment?.userId ?? null;
+  }
+  return null;
+}
+
+async function resolveV2TargetMomentId(targetType: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION', targetId: string) {
+  return targetType === 'MOMENT' ? targetId : null;
+}
+
 app.post('/api/v2/follows/toggle', requireV2Auth, async (req: AuthenticatedRequest, res) => {
   try {
     const { targetUserId } = req.body as { targetUserId?: string };
@@ -8994,6 +9055,163 @@ app.post('/api/v2/follows/toggle', requireV2Auth, async (req: AuthenticatedReque
       where: { targetUserId },
     });
     res.json({ active: true, followersCount });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/vibins/toggle', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const {
+      targetType,
+      targetId,
+      receiverUserId,
+      momentId,
+    } = req.body as {
+      targetType?: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
+      targetId?: string;
+      receiverUserId?: string;
+      momentId?: string;
+    };
+
+    if (!targetType || !targetId) {
+      res.status(400).json({ error: 'targetType and targetId are required' });
+      return;
+    }
+
+    const resolvedReceiverUserId = receiverUserId ?? await resolveV2TargetOwner(targetType, targetId);
+    const resolvedMomentId = momentId ?? await resolveV2TargetMomentId(targetType, targetId);
+
+    const existing = await prismaV2.vibin.findUnique({
+      where: {
+        senderUserId_targetType_targetId: {
+          senderUserId: req.authV2UserId!,
+          targetType,
+          targetId,
+        },
+      },
+    });
+
+    if (existing) {
+      await prismaV2.vibin.delete({
+        where: { id: existing.id },
+      });
+      const count = await prismaV2.vibin.count({
+        where: { targetType, targetId },
+      });
+      res.json({ active: false, count });
+      return;
+    }
+
+    await prismaV2.vibin.create({
+      data: {
+        senderUserId: req.authV2UserId!,
+        receiverUserId: resolvedReceiverUserId ?? null,
+        momentId: resolvedMomentId ?? null,
+        targetType,
+        targetId,
+      },
+    });
+
+    const count = await prismaV2.vibin.count({
+      where: { targetType, targetId },
+    });
+
+    res.json({ active: true, count });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const targetType = String(req.query.targetType ?? '');
+    const targetId = String(req.query.targetId ?? '');
+
+    if (!targetType || !targetId) {
+      res.status(400).json({ error: 'targetType and targetId are required' });
+      return;
+    }
+
+    const comments = await prismaV2.comment.findMany({
+      where: {
+        targetType: targetType as 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION',
+        targetId,
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        user: {
+          select: {
+            username: true,
+          },
+        },
+      },
+    });
+
+    res.json({
+      comments: comments.map((comment) => ({
+        id: comment.id,
+        user: comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId),
+        body: comment.body,
+        createdAt: comment.createdAt.toISOString(),
+      })),
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const {
+      targetType,
+      targetId,
+      body,
+      momentId,
+    } = req.body as {
+      targetType?: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
+      targetId?: string;
+      body?: string;
+      momentId?: string;
+    };
+
+    if (!targetType || !targetId || !body?.trim()) {
+      res.status(400).json({ error: 'targetType, targetId, and body are required' });
+      return;
+    }
+
+    const resolvedMomentId = momentId ?? await resolveV2TargetMomentId(targetType, targetId);
+
+    const comment = await prismaV2.comment.create({
+      data: {
+        userId: req.authV2UserId!,
+        targetType,
+        targetId,
+        body: body.trim(),
+        momentId: resolvedMomentId ?? null,
+      },
+      include: {
+        user: {
+          select: {
+            username: true,
+          },
+        },
+      },
+    });
+
+    const count = await prismaV2.comment.count({
+      where: { targetType, targetId },
+    });
+
+    res.json({
+      comment: {
+        id: comment.id,
+        user: comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId),
+        body: comment.body,
+        createdAt: comment.createdAt.toISOString(),
+      },
+      count,
+    });
   } catch (error) {
     handleError(res, error);
   }
