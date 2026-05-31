@@ -7965,32 +7965,15 @@ async function queueOwnTravelerDescriptorRefresh(userId: string) {
   });
 }
 
-async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
-  let place = await prisma.place.findUnique({
+async function getPlaceDetailsByInternalId(placeId: string, _userId?: string) {
+  const v2Place = await prismaV2.place.findUnique({
     where: { id: placeId },
-    include: {
-      aiEnrichment: true,
-      media: {
-        orderBy: { sortOrder: 'asc' },
-      },
-      discoverySignals: {
-        orderBy: [
-          { bestResultRank: 'asc' },
-          { resultRank: 'asc' },
-          { lastSeenAt: 'desc' },
-        ],
-        take: 30,
-      },
-    },
+  }).catch((error) => {
+    console.error('getPlaceDetailsByInternalId v2 place lookup failed', error);
+    return null;
   });
 
-  if (!place) {
-    const v2Place = await prismaV2.place.findUnique({
-      where: { id: placeId },
-    });
-
-    if (!v2Place) return null;
-
+  if (v2Place) {
     return {
       id: v2Place.id,
       googlePlaceId: v2Place.googlePlaceId ?? undefined,
@@ -7999,6 +7982,7 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       description: '',
       hook: '',
       address: v2Place.address ?? undefined,
+      neighborhood: v2Place.neighborhood ?? undefined,
       image: v2Place.primaryImageUrl ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
       images: v2Place.primaryImageUrl
         ? [v2Place.primaryImageUrl]
@@ -8027,388 +8011,26 @@ async function getPlaceDetailsByInternalId(placeId: string, userId?: string) {
       category: v2Place.category,
     };
   }
-
-  const persistedScore = userId
-    ? await prisma.userPlaceScore.findUnique({
-        where: {
-          userId_placeId: {
-            userId,
-            placeId,
-          },
-        },
-      })
-    : null;
-  const recommendationContext = userId ? await getUserRecommendationContext(userId) : null;
-  const persistedSimilarityStat = persistedScore?.similarityPercentage ?? persistedScore?.matchScore ?? null;
-  const similarityStat = typeof persistedSimilarityStat === 'number' && recommendationContext
-    ? applyDiscoverySignalBoostToScore(
-        persistedSimilarityStat,
-        place.discoverySignals,
-        { selectedInterests: recommendationContext.selectedInterests },
-      )
-    : (
-      recommendationContext
-        ? computeDiscoveryAlignedPlaceScore(
-            {
-              id: place.id,
-              tags: place.aiEnrichment?.vibeTags ?? [place.category].filter(Boolean),
-              category: place.category,
-              similarityStat: undefined,
-              rating: typeof place.rating === 'number' ? place.rating : null,
-              hook: place.aiEnrichment?.hook ?? null,
-              description: place.aiEnrichment?.description ?? null,
-              whyYoullLikeIt: place.aiEnrichment?.description ? [place.aiEnrichment.description] : [],
-              discoverySignals: place.discoverySignals,
-            },
-            recommendationContext,
-          )
-        : undefined
-    );
-  const recommendationReason = resolvePlaceDetailRecommendationReason({
-    persistedReason: persistedScore?.recommendationReason,
-    placeName: place.name,
-    category: place.category,
-    tags: place.aiEnrichment?.vibeTags ?? [place.category],
-    attitudeLabel: place.aiEnrichment?.attitudeLabel ?? null,
-    bestTime: place.aiEnrichment?.bestTime ?? null,
-    hook: place.aiEnrichment?.hook ?? null,
-    description: place.aiEnrichment?.description ?? null,
-  });
-
-  if (!place.aiEnrichment) {
-    // Do not block the detail page on enrichment generation. Return the stored
-    // Google/database payload immediately and let enrichment fill in later.
-    void ensurePlaceAiEnrichment(place.id).catch((error) => {
-      console.error('Background place detail enrichment failed', error);
-    });
-  }
-
-  if (!place.googlePlaceId) {
-    return {
-      id: place.id,
-      name: place.name,
-      location: [place.city, place.country].filter(Boolean).join(', ') || place.address || 'Unknown location',
-      description: place.aiEnrichment?.description ?? '',
-      hook: resolveGoogleSummaryHook(place),
-      address: place.address ?? undefined,
-      image: place.primaryImageUrl ?? place.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
-      images: place.media.length > 0 ? place.media.map((item) => item.url) : ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
-      tags: place.aiEnrichment?.vibeTags.length ? place.aiEnrichment.vibeTags : [place.category].filter(Boolean),
-      attitudeLabel: place.aiEnrichment?.attitudeLabel ?? undefined,
-      bestTime: place.aiEnrichment?.bestTime ?? undefined,
-      similarityStat,
-      whyYoullLikeIt: place.aiEnrichment?.description ? [place.aiEnrichment.description] : [],
-      recommendationReason,
-      rating: place.rating ?? undefined,
-      priceLevel: place.priceLevel ?? undefined,
-      openingHours: place.openingHours.length > 0 ? place.openingHours : undefined,
-      servesBreakfast: place.servesBreakfast ?? undefined,
-      servesLunch: place.servesLunch ?? undefined,
-      servesDinner: place.servesDinner ?? undefined,
-      servesBeer: place.servesBeer ?? undefined,
-      servesWine: place.servesWine ?? undefined,
-      servesBrunch: place.servesBrunch ?? undefined,
-      servesDessert: place.servesDessert ?? undefined,
-      servesCoffee: place.servesCoffee ?? undefined,
-      servesCocktails: place.servesCocktails ?? undefined,
-      goodForGroups: place.goodForGroups ?? undefined,
-      goodForWatchingSports: place.goodForWatchingSports ?? undefined,
-      timeZone: place.timeZoneId ?? undefined,
-      utcOffsetMinutes: place.utcOffsetMinutes ?? undefined,
-      outdoors: place.outdoorSeating ?? undefined,
-      outdoorSeating: place.outdoorSeating ?? undefined,
-      mapsUrl: place.latitude && place.longitude
-        ? `https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}`
-        : place.address
-          ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.address)}`
-          : undefined,
-	      latitude: place.latitude ?? undefined,
-	      longitude: place.longitude ?? undefined,
-	      priceRange: formatStoredGooglePriceRange({
-	        startAmount: place.googlePriceRangeStart,
-	        endAmount: place.googlePriceRangeEnd,
-	        currencyCode: place.googlePriceRangeCurrency,
-	      }) ?? undefined,
-      priceRangeLabel: formatStoredGooglePriceRange({
-        startAmount: place.googlePriceRangeStart,
-        endAmount: place.googlePriceRangeEnd,
-        currencyCode: place.googlePriceRangeCurrency,
-      }) ?? undefined,
-      category: place.category,
-      topBadgeLabel: buildDiscoveryTopBadgeLabel(place.discoverySignals),
-      discoveryTopRank: buildDiscoveryTopRank(place.discoverySignals),
-      discoverySignals: mapDiscoverySignalsForClient(place.discoverySignals),
-    };
-  }
-
-  // Place acquisition now stores the full Google payload from Text Search. Avoid
-  // per-place Place Details calls here so opening a detail page does not create
-  // an extra Google request for data we already persist.
-  const details = null as Awaited<ReturnType<typeof fetchGooglePlaceDetails>>;
-
-  if (details) {
-    const photoUris = details.photos?.length
-      ? await fetchGooglePhotoUris(details.photos.map((photo) => photo.name)).catch((error) => {
-          console.error(error);
-          return [];
-        })
-      : [];
-	    const photoUri = photoUris[0] ?? null;
-	    const locationBits = parseLocationBits(details.formattedAddress);
-	    const neighborhoodBits = extractNeighborhoodFromAddressComponents(details.addressComponents);
-	    const googlePriceRange = normalizeGooglePriceRange(details.priceRange);
-	    const googleDetailColumns = mapGooglePlaceDetailColumns(details);
-	    const updated = await prisma.place.update({
-      where: { id: place.id },
-      data: {
-        name: details.displayName?.text ?? place.name,
-        address: details.formattedAddress ?? place.address,
-        city: locationBits.city,
-        country: locationBits.country,
-        neighborhood: neighborhoodBits.neighborhood ?? undefined,
-        adminAreaLevel4: neighborhoodBits.adminAreaLevel4 ?? undefined,
-        latitude: details.location?.latitude ?? place.latitude,
-        longitude: details.location?.longitude ?? place.longitude,
-        category: details.primaryType?.replace(/_/g, ' ') ?? place.category,
-        ...googleDetailColumns,
-	        rating: details.rating ?? place.rating,
-	        priceLevel: mapGooglePriceLevel(details.priceLevel) ?? place.priceLevel,
-	        googlePriceRangeStart: googlePriceRange?.startAmount ?? null,
-	        googlePriceRangeEnd: googlePriceRange?.endAmount ?? null,
-	        googlePriceRangeCurrency: googlePriceRange?.currencyCode ?? null,
-	        primaryImageUrl: photoUri ?? place.primaryImageUrl,
-        media: photoUris.length > 0
-          ? {
-              deleteMany: {},
-              create: photoUris.map((uri, index) => ({
-                  mediaType: 'image',
-                  url: uri,
-                  sortOrder: index,
-                })),
-            }
-          : undefined,
-      },
-      include: {
-        aiEnrichment: true,
-        media: {
-          orderBy: { sortOrder: 'asc' },
-        },
-        discoverySignals: {
-          orderBy: [
-            { bestResultRank: 'asc' },
-            { resultRank: 'asc' },
-            { lastSeenAt: 'desc' },
-          ],
-          take: 30,
-        },
-      },
-    });
-
-    await persistGooglePlaceSnapshot({
-      placeId: updated.id,
-      googlePlaceId: details.id,
-      source: 'PLACE_DETAILS',
-      payload: details,
-    });
-
-    await ensurePlaceAiEnrichment(updated.id);
-    const enriched = await prisma.place.findUnique({
-      where: { id: updated.id },
-      include: {
-        aiEnrichment: true,
-        media: {
-          orderBy: { sortOrder: 'asc' },
-        },
-        discoverySignals: {
-          orderBy: [
-            { bestResultRank: 'asc' },
-            { resultRank: 'asc' },
-            { lastSeenAt: 'desc' },
-          ],
-          take: 30,
-        },
-      },
-    });
-    const finalPlace = enriched ?? updated;
-
-    return {
-      id: finalPlace.id,
-      name: finalPlace.name,
-      location: [finalPlace.city, finalPlace.country].filter(Boolean).join(', ') || finalPlace.address || 'Unknown location',
-      description: finalPlace.aiEnrichment?.description ?? '',
-      hook: resolveGoogleSummaryHook(finalPlace),
-      address: finalPlace.address ?? undefined,
-      image: finalPlace.primaryImageUrl ?? finalPlace.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
-      images: finalPlace.media.length > 0 ? finalPlace.media.map((item) => item.url) : ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
-      tags: buildDiscoveryDisplayTags(
-        finalPlace.aiEnrichment?.attitudeLabel,
-        finalPlace.aiEnrichment?.vibeTags ?? [],
-        finalPlace.category,
-      ),
-      attitudeLabel: finalPlace.aiEnrichment?.attitudeLabel ?? undefined,
-      bestTime: finalPlace.aiEnrichment?.bestTime ?? undefined,
-      similarityStat,
-      whyYoullLikeIt: finalPlace.aiEnrichment?.description ? [finalPlace.aiEnrichment.description] : [],
-      recommendationReason: resolvePlaceDetailRecommendationReason({
-        persistedReason: persistedScore?.recommendationReason,
-        placeName: finalPlace.name,
-        category: finalPlace.category,
-        tags: finalPlace.aiEnrichment?.vibeTags ?? [finalPlace.category],
-        attitudeLabel: finalPlace.aiEnrichment?.attitudeLabel ?? null,
-        bestTime: finalPlace.aiEnrichment?.bestTime ?? null,
-        hook: finalPlace.aiEnrichment?.hook ?? null,
-        description: finalPlace.aiEnrichment?.description ?? null,
-      }),
-      rating: finalPlace.rating ?? undefined,
-      priceLevel: finalPlace.priceLevel ?? undefined,
-      openingHours: finalPlace.openingHours.length > 0 ? finalPlace.openingHours : undefined,
-      servesBreakfast: finalPlace.servesBreakfast ?? undefined,
-      servesLunch: finalPlace.servesLunch ?? undefined,
-      servesDinner: finalPlace.servesDinner ?? undefined,
-      servesBeer: finalPlace.servesBeer ?? undefined,
-      servesWine: finalPlace.servesWine ?? undefined,
-      servesBrunch: finalPlace.servesBrunch ?? undefined,
-      servesDessert: finalPlace.servesDessert ?? undefined,
-      servesCoffee: finalPlace.servesCoffee ?? undefined,
-      servesCocktails: finalPlace.servesCocktails ?? undefined,
-      goodForGroups: finalPlace.goodForGroups ?? undefined,
-      goodForWatchingSports: finalPlace.goodForWatchingSports ?? undefined,
-      timeZone: finalPlace.timeZoneId ?? undefined,
-      utcOffsetMinutes: finalPlace.utcOffsetMinutes ?? undefined,
-      outdoors: finalPlace.outdoorSeating ?? undefined,
-      outdoorSeating: finalPlace.outdoorSeating ?? undefined,
-      mapsUrl: details.googleMapsUri ?? (finalPlace.latitude && finalPlace.longitude
-        ? `https://www.google.com/maps/search/?api=1&query=${finalPlace.latitude},${finalPlace.longitude}`
-        : finalPlace.address
-          ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(finalPlace.address)}`
-          : undefined),
-      latitude: finalPlace.latitude ?? undefined,
-      longitude: finalPlace.longitude ?? undefined,
-	      priceRange: formatStoredGooglePriceRange({
-	        startAmount: finalPlace.googlePriceRangeStart,
-	        endAmount: finalPlace.googlePriceRangeEnd,
-	        currencyCode: finalPlace.googlePriceRangeCurrency,
-	      }) ?? undefined,
-      priceRangeLabel: formatStoredGooglePriceRange({
-        startAmount: finalPlace.googlePriceRangeStart,
-        endAmount: finalPlace.googlePriceRangeEnd,
-        currencyCode: finalPlace.googlePriceRangeCurrency,
-      }) ?? undefined,
-      category: finalPlace.category,
-      topBadgeLabel: buildDiscoveryTopBadgeLabel(finalPlace.discoverySignals),
-      discoveryTopRank: buildDiscoveryTopRank(finalPlace.discoverySignals),
-      discoverySignals: mapDiscoverySignalsForClient(finalPlace.discoverySignals),
-    };
-  }
-
-  return {
-    id: place.id,
-    name: place.name,
-    location: [place.city, place.country].filter(Boolean).join(', ') || place.address || 'Unknown location',
-    description: place.aiEnrichment?.description ?? '',
-    hook: resolveGoogleSummaryHook(place),
-    address: place.address ?? undefined,
-    image: place.primaryImageUrl ?? place.media[0]?.url ?? 'https://placehold.co/800x1000/111111/ffffff?text=Place',
-    images: place.media.length > 0 ? place.media.map((item) => item.url) : ['https://placehold.co/800x1000/111111/ffffff?text=Place'],
-    tags: buildDiscoveryDisplayTags(
-      place.aiEnrichment?.attitudeLabel,
-      place.aiEnrichment?.vibeTags ?? [],
-      place.category,
-    ),
-    attitudeLabel: place.aiEnrichment?.attitudeLabel ?? undefined,
-    bestTime: place.aiEnrichment?.bestTime ?? undefined,
-    similarityStat,
-    whyYoullLikeIt: place.aiEnrichment?.description ? [place.aiEnrichment.description] : [],
-    recommendationReason,
-    rating: place.rating ?? undefined,
-    priceLevel: place.priceLevel ?? undefined,
-    openingHours: place.openingHours.length > 0 ? place.openingHours : undefined,
-    servesBreakfast: place.servesBreakfast ?? undefined,
-    servesLunch: place.servesLunch ?? undefined,
-    servesDinner: place.servesDinner ?? undefined,
-    servesBeer: place.servesBeer ?? undefined,
-    servesWine: place.servesWine ?? undefined,
-    servesBrunch: place.servesBrunch ?? undefined,
-    servesDessert: place.servesDessert ?? undefined,
-    servesCoffee: place.servesCoffee ?? undefined,
-    servesCocktails: place.servesCocktails ?? undefined,
-    goodForGroups: place.goodForGroups ?? undefined,
-    goodForWatchingSports: place.goodForWatchingSports ?? undefined,
-    timeZone: place.timeZoneId ?? undefined,
-    utcOffsetMinutes: place.utcOffsetMinutes ?? undefined,
-    outdoors: place.outdoorSeating ?? undefined,
-    outdoorSeating: place.outdoorSeating ?? undefined,
-    mapsUrl: place.latitude && place.longitude
-      ? `https://www.google.com/maps/search/?api=1&query=${place.latitude},${place.longitude}`
-      : place.address
-        ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(place.address)}`
-        : undefined,
-    latitude: place.latitude ?? undefined,
-    longitude: place.longitude ?? undefined,
-	    priceRange: formatStoredGooglePriceRange({
-	      startAmount: place.googlePriceRangeStart,
-	      endAmount: place.googlePriceRangeEnd,
-	      currencyCode: place.googlePriceRangeCurrency,
-	    }) ?? undefined,
-    priceRangeLabel: formatStoredGooglePriceRange({
-      startAmount: place.googlePriceRangeStart,
-      endAmount: place.googlePriceRangeEnd,
-      currencyCode: place.googlePriceRangeCurrency,
-    }) ?? undefined,
-    category: place.category,
-    topBadgeLabel: buildDiscoveryTopBadgeLabel(place.discoverySignals),
-    discoveryTopRank: buildDiscoveryTopRank(place.discoverySignals),
-    discoverySignals: mapDiscoverySignalsForClient(place.discoverySignals),
-	  };
+  return null;
 }
 
 async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
   const place = await getPlaceDetailsByInternalId(placeId, userId);
   if (!place) return null;
 
-  const [relatedPlaces, travelerMoments, interactionState] = await Promise.all([
-    getRelatedPlaces(placeId).catch((error) => {
+  const travelerMoments = await getUnifiedPlaceTravelerMoments(place, userId).catch((error) => {
       console.error(error);
       return [];
-    }),
-    getUnifiedPlaceTravelerMoments(place, userId).catch((error) => {
-      console.error(error);
-      return [];
-    }),
-    userId
-      ? Promise.all([
-          prisma.bookmark.findMany({
-            where: { userId, placeId: { in: [placeId] } },
-            select: { placeId: true },
-          }),
-          prisma.moment.findMany({
-            where: { userId, placeId: { in: [placeId] } },
-            distinct: ['placeId'],
-            select: { placeId: true },
-          }),
-        ])
-          .then(([bookmarked, beenThereMoments]) => ({
-            bookmarkedPlaceIds: bookmarked.map((item) => item.placeId),
-            beenTherePlaceIds: beenThereMoments.map((item) => item.placeId),
-          }))
-          .catch((error) => {
-            console.error(error);
-            return {
-              bookmarkedPlaceIds: [] as string[],
-              beenTherePlaceIds: [] as string[],
-            };
-          })
-      : Promise.resolve({
-          bookmarkedPlaceIds: [] as string[],
-          beenTherePlaceIds: [] as string[],
-        }),
-  ]);
+  });
 
   return {
     place,
-    relatedPlaces,
+    relatedPlaces: [],
     travelerMoments,
-    interactionState,
+    interactionState: {
+      bookmarkedPlaceIds: [],
+      beenTherePlaceIds: [],
+    },
   };
 }
 
