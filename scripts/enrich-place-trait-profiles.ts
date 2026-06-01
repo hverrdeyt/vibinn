@@ -1,8 +1,6 @@
-import dotenv from 'dotenv';
+import '../server/env';
 import { prisma } from '../server/prisma';
 import { enrichAndStorePlaceTraitsBatch } from '../server/placeTraitEnrichment';
-
-dotenv.config();
 
 const cityArg = process.argv.find((arg) => arg.startsWith('--city='));
 const city = cityArg ? cityArg.split('=')[1]?.trim() : null;

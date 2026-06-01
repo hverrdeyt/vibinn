@@ -1,8 +1,6 @@
-import dotenv from 'dotenv';
+import './env';
 import { Prisma } from '@prisma/client';
 import { prisma } from './prisma';
-
-dotenv.config();
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5-mini';

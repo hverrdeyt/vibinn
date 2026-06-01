@@ -1,8 +1,6 @@
-import dotenv from 'dotenv';
+import '../server/env';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../server/prisma';
-
-dotenv.config();
 
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 

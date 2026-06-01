@@ -8984,35 +8984,45 @@ async function createV2Notification(input: {
   title: string;
   body: string;
 }) {
-  await prismaV2.notification.create({
-    data: {
-      userId: input.userId,
-      actorUserId: input.actorUserId ?? null,
-      type: input.type,
-      targetType: input.targetType ?? null,
-      targetId: input.targetId ?? null,
-      title: input.title,
-      body: input.body,
-    },
-  });
+  try {
+    await prismaV2.notification.create({
+      data: {
+        userId: input.userId,
+        actorUserId: input.actorUserId ?? null,
+        type: input.type,
+        targetType: input.targetType ?? null,
+        targetId: input.targetId ?? null,
+        title: input.title,
+        body: input.body,
+      },
+    });
+  } catch (error) {
+    console.error('createV2Notification failed', error);
+  }
 }
 
 async function listV2Notifications(userId: string) {
-  const notifications = await prismaV2.notification.findMany({
-    where: { userId },
-    orderBy: { createdAt: 'desc' },
-    include: {
-      actorUser: {
-        select: {
-          id: true,
-          username: true,
-          displayName: true,
-          avatarUrl: true,
+  let notifications: Awaited<ReturnType<typeof prismaV2.notification.findMany>>;
+  try {
+    notifications = await prismaV2.notification.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        actorUser: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+          },
         },
       },
-    },
-    take: 100,
-  });
+      take: 100,
+    });
+  } catch (error) {
+    console.error('listV2Notifications notification lookup failed', error);
+    return [];
+  }
 
   const targetMomentIds = notifications
     .filter((item) => item.targetType === 'MOMENT' && item.targetId)
@@ -9047,6 +9057,9 @@ async function listV2Notifications(userId: string) {
             },
           },
         },
+      }).catch((error) => {
+        console.error('listV2Notifications moment lookup failed', error);
+        return [];
       })
     : [];
 
@@ -9395,15 +9408,19 @@ app.get('/api/v2/notifications', requireV2Auth, async (req: AuthenticatedRequest
 
 app.post('/api/v2/notifications/read-all', requireV2Auth, async (req: AuthenticatedRequest, res) => {
   try {
-    await prismaV2.notification.updateMany({
-      where: {
-        userId: req.authV2UserId!,
-        readAt: null,
-      },
-      data: {
-        readAt: new Date(),
-      },
-    });
+    try {
+      await prismaV2.notification.updateMany({
+        where: {
+          userId: req.authV2UserId!,
+          readAt: null,
+        },
+        data: {
+          readAt: new Date(),
+        },
+      });
+    } catch (error) {
+      console.error('v2 notifications read-all failed', error);
+    }
     res.json({ ok: true });
   } catch (error) {
     handleError(res, error);

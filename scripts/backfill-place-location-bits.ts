@@ -1,7 +1,5 @@
-import dotenv from 'dotenv';
+import '../server/env';
 import { prisma } from '../server/prisma';
-
-dotenv.config();
 
 const namesArg = process.argv.find((arg) => arg.startsWith('--names='));
 

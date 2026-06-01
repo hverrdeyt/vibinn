@@ -1,7 +1,5 @@
 import crypto from 'node:crypto';
-import dotenv from 'dotenv';
-
-dotenv.config();
+import './env';
 
 const descriptorCache = new Map<string, { signature: string; summary: string; pendingSignature?: string }>();
 

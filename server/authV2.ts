@@ -1061,6 +1061,18 @@ export async function verifyOtp(input: VerifyOtpInput) {
           status: nextStatus,
         },
       });
+
+      await tx.notification.create({
+        data: {
+          userId: inviteCode.ownerUserId,
+          actorUserId: user.id,
+          type: 'INVITE_REDEEMED',
+          targetType: 'PROFILE',
+          targetId: user.id,
+          title: 'Someone joined with your invite',
+          body: 'Your invite brought a new person into Vibinn.',
+        },
+      });
     } else {
       if (!user) {
         throw new AuthV2Error('PHONE_NOT_REGISTERED', 'Phone number is not registered');

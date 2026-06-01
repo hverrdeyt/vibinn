@@ -1,10 +1,8 @@
-import dotenv from 'dotenv';
+import '../server/env';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { prisma } from '../server/prisma';
 import { generatePlaceAiEnrichment } from '../server/placeEnrichment';
-
-dotenv.config();
 
 const limitArg = process.argv.find((arg) => arg.startsWith('--limit='));
 const limit = limitArg ? Number(limitArg.split('=')[1]) : null;

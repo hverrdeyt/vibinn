@@ -1,8 +1,6 @@
-import dotenv from 'dotenv';
+import '../server/env';
 import { prisma } from '../server/prisma';
 import { generatePlaceAiEnrichment } from '../server/placeEnrichment';
-
-dotenv.config();
 
 const namesArg = process.argv.find((arg) => arg.startsWith('--names='));
 const idsArg = process.argv.find((arg) => arg.startsWith('--ids='));
