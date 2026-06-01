@@ -58,6 +58,19 @@ enum InviteCodeStatus {
   EXHAUSTED
 }
 
+enum NotificationType {
+  FOLLOW
+  COMMENT
+  VIBIN
+  INVITE_REDEEMED
+}
+
+enum MomentVisibility {
+  PUBLIC
+  FRIENDS
+  PRIVATE
+}
+
 model User {
   id                  String            @id @default(cuid())
   phoneNumberE164     String            @unique
@@ -87,6 +100,8 @@ model User {
   comments            Comment[]
   sentVibins          Vibin[]           @relation("V2VibinSender")
   receivedVibins      Vibin[]           @relation("V2VibinReceiver")
+  notifications       Notification[]    @relation("V2NotificationRecipient")
+  sentNotifications   Notification[]    @relation("V2NotificationActor")
 }
 
 model Session {
@@ -224,6 +239,8 @@ model Place {
   lastGoogleFetchedAt        DateTime?
   createdAt                  DateTime  @default(now())
   updatedAt                  DateTime  @updatedAt
+
+  moments                    Moment[]
 }
 
 model Follow {
@@ -260,11 +277,13 @@ model Moment {
   rating                   Int?
   ratingLabel              String?
   wouldRevisit             String?
+  visibility               MomentVisibility @default(PUBLIC)
   vibeTags                 String[]  @default([])
   createdAt                DateTime  @default(now())
   updatedAt                DateTime  @updatedAt
 
   user                     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  placeRecord              Place     @relation(fields: [placeId], references: [id], onDelete: Cascade)
   comments                 Comment[]
   vibins                   Vibin[]
 
@@ -306,4 +325,26 @@ model Vibin {
   @@index([targetType, targetId, createdAt])
   @@index([receiverUserId, createdAt])
   @@index([momentId])
+}
+
+model Notification {
+  id          String            @id @default(cuid())
+  userId      String
+  actorUserId String?
+  type        NotificationType
+  targetType  TargetType?
+  targetId    String?
+  title       String
+  body        String
+  readAt      DateTime?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  user        User              @relation("V2NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actorUser   User?             @relation("V2NotificationActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt, createdAt])
+  @@index([actorUserId, createdAt])
+  @@index([targetType, targetId, createdAt])
 }

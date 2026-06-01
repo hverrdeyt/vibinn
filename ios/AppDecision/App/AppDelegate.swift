@@ -2178,6 +2178,8 @@ private struct NativeCreatedMoment: Decodable {
     let uploadedMedia: [String]?
     let rating: Int?
     let ratingLabel: String?
+    let wouldRevisit: String?
+    let visibility: String?
     let place: NativePlace?
 }
 
@@ -2190,6 +2192,7 @@ private struct NativeMoment: Decodable, Identifiable {
     let rating: Int?
     let ratingLabel: String?
     let wouldRevisit: String?
+    let visibility: String?
     var commentCount: Int? = nil
     var likeCount: Int? = nil
     let latestComment: NativeComment?
@@ -2205,6 +2208,7 @@ private struct NativeMoment: Decodable, Identifiable {
         rating: Int?,
         ratingLabel: String?,
         wouldRevisit: String?,
+        visibility: String? = "public",
         commentCount: Int? = nil,
         likeCount: Int? = nil,
         latestComment: NativeComment? = nil,
@@ -2219,6 +2223,7 @@ private struct NativeMoment: Decodable, Identifiable {
         self.rating = rating
         self.ratingLabel = ratingLabel
         self.wouldRevisit = wouldRevisit
+        self.visibility = visibility
         self.commentCount = commentCount
         self.likeCount = likeCount
         self.latestComment = latestComment
@@ -4437,7 +4442,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         visitedDate: String,
         caption: String,
         ratingLabel: String,
-        wouldRevisit: String
+        wouldRevisit: String,
+        visibility: String
     ) async throws -> NativeMoment {
         guard let token = authToken else {
             throw URLError(.userAuthenticationRequired)
@@ -4449,7 +4455,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             visitedDate: visitedDate,
             caption: caption,
             ratingLabel: ratingLabel,
-            wouldRevisit: wouldRevisit
+            wouldRevisit: wouldRevisit,
+            visibility: visibility
         )
 
         if let index = myMoments.firstIndex(where: { $0.id == id }) {
@@ -4568,6 +4575,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         visitedDate: String,
         ratingLabel: String,
         wouldRevisit: String,
+        visibility: String,
         note: String,
         uploadedMedia: [String]
     ) async throws {
@@ -4593,6 +4601,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             caption: note,
             ratingLabel: ratingLabel,
             wouldRevisit: wouldRevisit,
+            visibility: visibility,
             uploadedMedia: uploadedMedia
         )
 
@@ -4653,7 +4662,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             visitedDate: resolvedVisitedDate,
             visitedAtIso: createdMoment.visitedAtIso,
             momentCaption: createdMoment.caption,
-            momentWouldRevisit: wouldRevisit,
+            momentWouldRevisit: createdMoment.wouldRevisit ?? wouldRevisit,
             momentRating: createdMoment.rating ?? nativeMomentRatingScore(for: ratingLabel),
             momentRatingLabel: createdMoment.ratingLabel ?? ratingLabel
         )
@@ -4666,7 +4675,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 uploadedMedia: resolvedUploadedMedia,
                 rating: createdMoment.rating ?? nativeMomentRatingScore(for: ratingLabel),
                 ratingLabel: createdMoment.ratingLabel ?? ratingLabel,
-                wouldRevisit: wouldRevisit,
+                wouldRevisit: createdMoment.wouldRevisit ?? wouldRevisit,
+                visibility: createdMoment.visibility ?? visibility,
                 place: resolvedPlace
             ),
             at: 0
@@ -4750,6 +4760,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func fetchFriendRequests() async throws -> [NativeFriendRequestItem] {
+        guard usesV2Session == false else { return [] }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to see friend requests.")
             throw URLError(.userAuthenticationRequired)
@@ -5134,18 +5145,33 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func fetchNotifications() async throws -> [NativeNotificationItem] {
-        guard usesV2Session == false else { return [] }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to see your notifications.")
             throw URLError(.userAuthenticationRequired)
         }
-        let notifications = try await api.getNotifications(token: token)
+        let notifications = usesV2Session
+            ? try await api.getV2Notifications(token: token)
+            : try await api.getNotifications(token: token)
         syncNotificationUnreadCount(notifications)
         return notifications
     }
 
+    func markAllNotificationsRead() async {
+        guard let token = authToken else { return }
+        do {
+            if usesV2Session {
+                try await api.markAllV2NotificationsRead(token: token)
+            } else {
+                try await api.markAllNotificationsRead(token: token)
+            }
+            notificationUnreadCount = 0
+        } catch {
+            nativeLogger.error("markAllNotificationsRead failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     func refreshNotificationUnreadCount() async {
-        guard usesV2Session == false, currentUser != nil else {
+        guard currentUser != nil else {
             notificationUnreadCount = 0
             return
         }
@@ -5215,6 +5241,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 rating: moment.rating,
                 ratingLabel: moment.ratingLabel,
                 wouldRevisit: moment.wouldRevisit,
+                visibility: moment.visibility,
                 commentCount: commentCount ?? moment.commentCount,
                 likeCount: likeCount ?? moment.likeCount,
                 latestComment: latestComment ?? moment.latestComment,
@@ -6555,6 +6582,19 @@ private struct NativeAPIClient {
         return response.notifications
     }
 
+    func getV2Notifications(token: String) async throws -> [NativeNotificationItem] {
+        let response: NativeNotificationsResponse = try await request(path: "/api/v2/notifications", method: "GET", token: token)
+        return response.notifications
+    }
+
+    func markAllNotificationsRead(token: String) async throws {
+        let _: NativeEmptyResponse = try await request(path: "/api/notifications/read-all", method: "POST", token: token)
+    }
+
+    func markAllV2NotificationsRead(token: String) async throws {
+        let _: NativeEmptyResponse = try await request(path: "/api/v2/notifications/read-all", method: "POST", token: token)
+    }
+
     func getNotificationSettings(token: String) async throws -> NativeNotificationSettings {
         try await request(path: "/api/settings/notifications", method: "GET", token: token)
     }
@@ -6635,6 +6675,7 @@ private struct NativeAPIClient {
         let rating: Int
         let ratingLabel: String
         let wouldRevisit: String
+        let visibility: String
     }
 
     func updateV2Moment(
@@ -6643,7 +6684,8 @@ private struct NativeAPIClient {
         visitedDate: String,
         caption: String,
         ratingLabel: String,
-        wouldRevisit: String
+        wouldRevisit: String,
+        visibility: String
     ) async throws -> NativeMoment {
         let normalizedRatingLabel = nativeNormalizedMomentRatingLabel(ratingLabel)
         let response: NativeMomentDetailResponse = try await request(
@@ -6655,7 +6697,8 @@ private struct NativeAPIClient {
                 caption: caption,
                 rating: nativeMomentRatingScore(for: normalizedRatingLabel),
                 ratingLabel: normalizedRatingLabel,
-                wouldRevisit: wouldRevisit
+                wouldRevisit: wouldRevisit,
+                visibility: visibility
             )
         )
         return response.moment
@@ -7120,7 +7163,7 @@ private struct NativeAPIClient {
         let budgetLevel: String
         let visitType: String
         let timeOfDay: String
-        let privacy: String
+        let visibility: String
         let wouldRevisit: String
         let vibeTags: [String]
     }
@@ -7144,6 +7187,7 @@ private struct NativeAPIClient {
         caption: String,
         ratingLabel: String,
         wouldRevisit: String,
+        visibility: String,
         uploadedMedia: [String]
     ) async throws -> NativeCreatedMoment {
         let normalizedRatingLabel = nativeNormalizedMomentRatingLabel(ratingLabel)
@@ -7169,7 +7213,7 @@ private struct NativeAPIClient {
                 budgetLevel: "$$",
                 visitType: "solo",
                 timeOfDay: "afternoon",
-                privacy: "public",
+                visibility: visibility,
                 wouldRevisit: wouldRevisit,
                 vibeTags: []
             )
@@ -10480,6 +10524,30 @@ private struct NativeNotificationsSheet: View {
             async let requestsTask = appState.fetchFriendRequests()
             notifications = try await notificationsTask
             friendRequests = try await requestsTask
+            if notifications.contains(where: { $0.readAt == nil }) {
+                await appState.markAllNotificationsRead()
+                let nowIso = Date().ISO8601Format()
+                notifications = notifications.map { item in
+                    guard item.readAt == nil else { return item }
+                    return NativeNotificationItem(
+                        id: item.id,
+                        notificationType: item.notificationType,
+                        messageKind: item.messageKind,
+                        targetType: item.targetType,
+                        targetId: item.targetId,
+                        placeTitle: item.placeTitle,
+                        placeContext: item.placeContext,
+                        title: item.title,
+                        body: item.body,
+                        time: item.time,
+                        createdAt: item.createdAt,
+                        readAt: nowIso,
+                        actor: item.actor,
+                        place: item.place,
+                        traveler: item.traveler
+                    )
+                }
+            }
             errorMessage = nil
         } catch is CancellationError {
         } catch {
@@ -10639,6 +10707,8 @@ private struct NativeNotificationRow: View {
             return "commented on a place you visited"
         case "comment":
             return "commented on your activity"
+        case "invite_redeemed":
+            return "joined with your invite"
         case "system":
             return notification.body
         default:
@@ -10661,6 +10731,8 @@ private struct NativeNotificationRow: View {
                     return "commented on a place you visited"
                 }
                 return "commented on your activity"
+            case "INVITE_REDEEMED":
+                return "joined with your invite"
             case "SYSTEM":
                 return notification.body
             default:
@@ -12350,10 +12422,10 @@ private struct NativeAuthScreen: View {
                         NativeAuthLandingButton(
                             title: "Looks good",
                             icon: .system("checkmark.circle.fill"),
-                            isLoading: false,
+                            isLoading: isSubmitting,
                             style: .light
                         ) {
-                            completeFirstDiaryOnboarding()
+                            Task { await submitFirstDiaryOnboarding() }
                         }
                     }
                 }
@@ -13446,6 +13518,48 @@ private struct NativeAuthScreen: View {
         withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
             Task { await loadInviteShareSummaryIfNeeded() }
             step = .inviteShareEntry
+        }
+    }
+
+    private func submitFirstDiaryOnboarding() async {
+        guard let place = firstPlaceSelectedPlace else {
+            presentTransientErrorMessage("Choose a place first.")
+            return
+        }
+
+        errorMessage = nil
+        isSubmitting = true
+        defer { isSubmitting = false }
+
+        do {
+            let images = firstPlacePhoto.map { [$0.image] } ?? []
+            nativeLogger.log(
+                "first diary onboarding submit start place=\(place.id, privacy: .public) images=\(images.count, privacy: .public)"
+            )
+            let uploadedMedia = try await appState.uploadCheckInImages(images)
+            nativeLogger.log(
+                "first diary onboarding upload success media=\(uploadedMedia.count, privacy: .public)"
+            )
+            try await appState.submitCheckIn(
+                place: place,
+                visitedDate: firstPlaceVisitedDateValue,
+                ratingLabel: firstPlaceRatingLabel,
+                wouldRevisit: "yes",
+                visibility: "public",
+                note: firstPlaceReviewText,
+                uploadedMedia: uploadedMedia
+            )
+            nativeHaptic(.success)
+            nativeLogger.log("first diary onboarding moment saved")
+            completeFirstDiaryOnboarding()
+        } catch {
+            nativeLogger.error("first diary onboarding submit failed \(nativeDescribeError(error), privacy: .public)")
+            let nsError = error as NSError
+            if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorUserAuthenticationRequired {
+                errorMessage = nil
+            } else {
+                presentTransientErrorMessage("Could not save your first memory right now.")
+            }
         }
     }
 
@@ -19336,6 +19450,7 @@ private struct NativeMomentEditSheet: View {
     @State private var visitedDate: Date
     @State private var ratingLabel: String
     @State private var wouldRevisit: String
+    @State private var visibility: String
     @State private var reviewText: String
     @State private var isSaving = false
     @State private var errorMessage: String?
@@ -19346,7 +19461,8 @@ private struct NativeMomentEditSheet: View {
         let resolvedDate = NativeAppState.date(from: moment.visitedAtIso ?? moment.visitedDate) ?? Date()
         _visitedDate = State(initialValue: resolvedDate)
         _ratingLabel = State(initialValue: nativeNormalizedMomentRatingLabel(moment.ratingLabel))
-        _wouldRevisit = State(initialValue: moment.wouldRevisit ?? "yes")
+        _wouldRevisit = State(initialValue: nativeNormalizedWouldRevisit(moment.wouldRevisit))
+        _visibility = State(initialValue: nativeNormalizedMomentVisibility(moment.visibility))
         _reviewText = State(initialValue: moment.caption ?? "")
     }
 
@@ -19414,9 +19530,25 @@ private struct NativeMomentEditSheet: View {
                                 .textCase(.uppercase)
 
                             HStack(spacing: 10) {
-                                revisitChip("Would revisit", value: "yes")
-                                revisitChip("Maybe", value: "not_sure")
-                                revisitChip("No", value: "not_interested")
+                                revisitChip("Yes", value: "yes")
+                                revisitChip("Maybe", value: "maybe")
+                                revisitChip("No", value: "no")
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Post visibility")
+                                .font(nativeAppFont(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.45))
+                                .textCase(.uppercase)
+
+                            VStack(spacing: 10) {
+                                visibilityChip(title: "Public", subtitle: "Visible to everyone", value: "public")
+                                visibilityChip(title: "Friends", subtitle: "Only mutual follows can see it", value: "friends")
+                                visibilityChip(title: "Private", subtitle: "Only visible in your diary", value: "private")
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -19501,6 +19633,32 @@ private struct NativeMomentEditSheet: View {
         .buttonStyle(.plain)
     }
 
+    private func visibilityChip(title: String, subtitle: String, value: String) -> some View {
+        Button {
+            visibility = value
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(nativeAppFont(size: 14, weight: .black))
+                        .foregroundStyle(visibility == value ? .black : .white)
+                    Text(subtitle)
+                        .font(nativeAppFont(size: 12, weight: .semibold))
+                        .foregroundStyle(visibility == value ? .black.opacity(0.72) : .white.opacity(0.56))
+                }
+                Spacer()
+                Image(systemName: visibility == value ? "checkmark.circle.fill" : "circle")
+                    .font(nativeAppFont(size: 16, weight: .black))
+                    .foregroundStyle(visibility == value ? .black : .white.opacity(0.4))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .background(visibility == value ? nativeAccent : Color.white.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+
     private func save() async {
         isSaving = true
         errorMessage = nil
@@ -19512,7 +19670,8 @@ private struct NativeMomentEditSheet: View {
                 visitedDate: NativeCheckInScreen.isoDayString(from: visitedDate),
                 caption: reviewText.trimmingCharacters(in: .whitespacesAndNewlines),
                 ratingLabel: ratingLabel,
-                wouldRevisit: wouldRevisit
+                wouldRevisit: wouldRevisit,
+                visibility: visibility
             )
             onSaved(updated)
             dismiss()
@@ -23229,9 +23388,9 @@ private struct NativeOwnVisitedMomentCard: View {
         switch value {
         case "yes":
             return "Would revisit"
-        case "not_sure":
+        case "maybe", "not_sure":
             return "Maybe revisit"
-        case "not_interested":
+        case "no", "not_interested":
             return "No revisit"
         default:
             return value.replacingOccurrences(of: "_", with: " ").capitalized
@@ -25773,9 +25932,9 @@ private struct NativeFeedCard: View {
         switch value {
         case "yes":
             return "Would revisit"
-        case "not_sure":
+        case "maybe", "not_sure":
             return "Maybe revisit"
-        case "not_interested":
+        case "no", "not_interested":
             return "No revisit"
         default:
             return value.replacingOccurrences(of: "_", with: " ").capitalized
@@ -25946,6 +26105,139 @@ private struct NativeFeedMetaPill: View {
         .padding(.vertical, 7)
         .background(background)
         .clipShape(Capsule())
+    }
+}
+
+private struct NativePlaceReviewCompactCard: View {
+    let moment: NativeMoment
+
+    private var travelerDisplayName: String {
+        let fallback = moment.traveler?.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let displayName = moment.traveler?.displayName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let displayName, !displayName.isEmpty {
+            return displayName
+        }
+        if let fallback, !fallback.isEmpty {
+            return fallback
+        }
+        return "Traveler"
+    }
+
+    private var travelerUsername: String? {
+        guard let username = moment.traveler?.username.trimmingCharacters(in: .whitespacesAndNewlines), !username.isEmpty else {
+            return nil
+        }
+        return username
+    }
+
+    private var avatarFallback: String {
+        travelerDisplayName
+    }
+
+    private var timestampLabel: String {
+        NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate)
+    }
+
+    private var ratingMeta: (label: String, icon: String)? {
+        nativeMomentRatingMeta(label: moment.ratingLabel, fallbackRating: moment.rating)
+    }
+
+    private var reviewText: String? {
+        let trimmed = moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (trimmed?.isEmpty == false) ? trimmed : nil
+    }
+
+    private var mediaURL: String? {
+        moment.uploadedMedia?
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .first(where: { !$0.isEmpty })
+    }
+
+    private var commentCount: Int {
+        max(moment.commentCount ?? 0, 0)
+    }
+
+    private var likeCount: Int {
+        max(moment.likeCount ?? 0, 0)
+    }
+
+    var body: some View {
+        NativeSurfaceCard {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 10) {
+                    NativeAvatarCircle(
+                        url: moment.traveler?.avatar,
+                        fallbackText: avatarFallback,
+                        size: 38,
+                        fontSize: 14
+                    )
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(travelerDisplayName)
+                            .font(nativeAppFont(size: 15, weight: .black))
+                            .foregroundStyle(.white)
+
+                        if let travelerUsername {
+                            Text("@\(travelerUsername)")
+                                .font(nativeAppFont(size: 12, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.48))
+                        }
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Text(timestampLabel)
+                        .font(nativeAppFont(size: 12, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.58))
+                }
+
+                if let ratingMeta {
+                    NativeFeedMetaPill(
+                        label: ratingMeta.label,
+                        icon: ratingMeta.icon,
+                        foreground: .black,
+                        background: nativeAccent
+                    )
+                }
+
+                if let reviewText {
+                    Text(reviewText)
+                        .font(nativeAppFont(size: 14, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.88))
+                        .lineLimit(4)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let mediaURL, !mediaURL.isEmpty {
+                    NativeRemoteImage(url: mediaURL)
+                        .frame(maxWidth: .infinity)
+                        .aspectRatio(1.35, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+                }
+
+                HStack(spacing: 14) {
+                    compactMetric(icon: "bubble.left", count: commentCount)
+                    compactMetric(icon: "heart", count: likeCount)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+    }
+
+    private func compactMetric(icon: String, count: Int) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: icon)
+                .font(nativeAppFont(size: 12, weight: .black))
+            if count > 0 {
+                Text("\(count)")
+                    .font(nativeAppFont(size: 12, weight: .black))
+            }
+        }
+        .foregroundStyle(.white.opacity(0.72))
     }
 }
 
@@ -28934,7 +29226,7 @@ private struct NativePlaceDetailScreen: View {
     private var vibinnReviewSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             NativeSectionTitle("Vibinn review")
-            if placeReviewFeedItems.isEmpty {
+            if travelerMoments.isEmpty {
                 NativeSurfaceCard {
                     Text("No Vibinn reviews for this place yet.")
                         .font(nativeAppFont(size: 15, weight: .medium))
@@ -28943,8 +29235,8 @@ private struct NativePlaceDetailScreen: View {
                 }
             } else {
                 VStack(spacing: 12) {
-                    ForEach(placeReviewFeedItems) { item in
-                        NativeFeedCard(item: item)
+                    ForEach(travelerMoments) { moment in
+                        NativePlaceReviewCompactCard(moment: moment)
                     }
                 }
             }
@@ -28978,47 +29270,6 @@ private struct NativePlaceDetailScreen: View {
             return "\(base) • \(distanceLabel)"
         }
         return base
-    }
-
-    private var placeReviewFeedItems: [NativeFeedItem] {
-        travelerMoments.compactMap { moment in
-            guard let traveler = moment.traveler else { return nil }
-            let sortTimestamp = NativeAppState.feedSortDate(
-                iso: moment.visitedAtIso ?? moment.visitedDate,
-                label: moment.visitedDate
-            ) ?? .distantPast
-            let resolvedPlace = nativePlaceApplyingMoment(moment)
-            return NativeFeedItem(
-                id: "place-review-\(moment.id)",
-                type: .visited,
-                traveler: NativeTravelerSummary(
-                    id: traveler.id,
-                    username: traveler.username,
-                    displayName: traveler.displayName,
-                    avatar: traveler.avatar,
-                    bio: nil,
-                    descriptor: nil,
-                    matchScore: nil,
-                    followersCount: nil,
-                    followingCount: nil,
-                    recentSavedPlaces: nil,
-                    recentCollections: nil,
-                    travelHistory: [],
-                    visitedPlacesCount: nil,
-                    savedPlacesCount: nil,
-                    collectionsCount: nil
-                ),
-                title: resolvedPlace.name,
-                timestampLabel: NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate),
-                sortTimestamp: sortTimestamp,
-                place: resolvedPlace,
-                collection: nil,
-                caption: moment.caption,
-                isVibed: false,
-                vibinCount: moment.likeCount ?? 0,
-                uploadedMediaUrls: moment.uploadedMedia
-            )
-        }
     }
 
     private var displayMapRegion: MKCoordinateRegion? {
@@ -30709,6 +30960,30 @@ private func nativeMomentRatingChoice(for value: String?) -> NativeMomentRatingC
     NativeMomentRatingChoice(rawValue: nativeNormalizedMomentRatingLabel(value)) ?? .liked
 }
 
+private func nativeNormalizedWouldRevisit(_ value: String?) -> String {
+    switch value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "yes":
+        return "yes"
+    case "maybe", "not_sure":
+        return "maybe"
+    case "no", "not_interested":
+        return "no"
+    default:
+        return "yes"
+    }
+}
+
+private func nativeNormalizedMomentVisibility(_ value: String?) -> String {
+    switch value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "friends":
+        return "friends"
+    case "private":
+        return "private"
+    default:
+        return "public"
+    }
+}
+
 private func nativeAvatarInitials(from raw: String) -> String {
     let tokens = raw
         .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
@@ -31625,6 +31900,7 @@ private struct NativeCheckInScreen: View {
     @State private var reviewText = ""
     @State private var ratingLabel = NativeMomentRatingChoice.liked.rawValue
     @State private var wouldRevisit = "yes"
+    @State private var visibility = "public"
     @State private var selectedImage: UIImage?
     @State private var selectedPhotoAsset: NativePickedPhotoAsset?
     @State private var activeMediaPicker: NativeCheckInMediaPickerSource?
@@ -32298,6 +32574,38 @@ private struct NativeCheckInScreen: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Would revisit")
+                        .font(nativeAppFont(size: 12, weight: .black))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .textCase(.uppercase)
+
+                    HStack(spacing: 10) {
+                        revisitChoiceChip("Yes", value: "yes")
+                        revisitChoiceChip("Maybe", value: "maybe")
+                        revisitChoiceChip("No", value: "no")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            NativeSurfaceCard {
+                VStack(alignment: .leading, spacing: 14) {
+                    Text("Post visibility")
+                        .font(nativeAppFont(size: 12, weight: .black))
+                        .foregroundStyle(.white.opacity(0.45))
+                        .textCase(.uppercase)
+
+                    VStack(spacing: 10) {
+                        visibilityChoiceChip(title: "Public", subtitle: "Visible to everyone", value: "public")
+                        visibilityChoiceChip(title: "Friends", subtitle: "Only users who mutually follow can see it", value: "friends")
+                        visibilityChoiceChip(title: "Private", subtitle: "Only visible in your diary", value: "private")
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(.bottom, 96)
     }
@@ -32388,6 +32696,47 @@ private struct NativeCheckInScreen: View {
         isSearchFieldFocused = false
         isReviewFieldFocused = false
         UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+    }
+
+    private func revisitChoiceChip(_ label: String, value: String) -> some View {
+        Button {
+            wouldRevisit = value
+        } label: {
+            Text(label)
+                .font(nativeAppFont(size: 13, weight: .black))
+                .foregroundStyle(wouldRevisit == value ? .black : .white.opacity(0.78))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(wouldRevisit == value ? nativeAccent : Color.white.opacity(0.06))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func visibilityChoiceChip(title: String, subtitle: String, value: String) -> some View {
+        Button {
+            visibility = value
+        } label: {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(nativeAppFont(size: 14, weight: .black))
+                        .foregroundStyle(visibility == value ? .black : .white)
+                    Text(subtitle)
+                        .font(nativeAppFont(size: 12, weight: .semibold))
+                        .foregroundStyle(visibility == value ? .black.opacity(0.72) : .white.opacity(0.56))
+                }
+                Spacer()
+                Image(systemName: visibility == value ? "checkmark.circle.fill" : "circle")
+                    .font(nativeAppFont(size: 16, weight: .black))
+                    .foregroundStyle(visibility == value ? .black : .white.opacity(0.4))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 13)
+            .background(visibility == value ? nativeAccent : Color.white.opacity(0.06))
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     private func performSearch() async {
@@ -32558,6 +32907,7 @@ private struct NativeCheckInScreen: View {
                 visitedDate: resolvedVisitedDate,
                 ratingLabel: ratingLabel,
                 wouldRevisit: wouldRevisit,
+                visibility: visibility,
                 note: reviewText,
                 uploadedMedia: uploadedMedia
             )
@@ -33181,7 +33531,9 @@ private struct NativeSingleMetadataImagePicker: UIViewControllerRepresentable {
     @Binding var selection: NativePickedPhotoAsset?
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(selection: $selection)
+        Coordinator(selection: $selection) {
+            self.dismiss()
+        }
     }
 
     func makeUIViewController(context: Context) -> PHPickerViewController {
@@ -33197,16 +33549,30 @@ private struct NativeSingleMetadataImagePicker: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, PHPickerViewControllerDelegate {
         @Binding private var selection: NativePickedPhotoAsset?
+        private let onFinish: @MainActor () -> Void
         private let maxImportedPixelSize: CGFloat = 1800
 
-        init(selection: Binding<NativePickedPhotoAsset?>) {
+        init(
+            selection: Binding<NativePickedPhotoAsset?>,
+            onFinish: @escaping @MainActor () -> Void
+        ) {
             self._selection = selection
+            self.onFinish = onFinish
         }
 
         func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
-            picker.dismiss(animated: true)
-            guard let result = results.first else { return }
-            guard result.itemProvider.hasItemConformingToTypeIdentifier("public.image") else { return }
+            guard let result = results.first else {
+                Task { @MainActor in
+                    self.onFinish()
+                }
+                return
+            }
+            guard result.itemProvider.hasItemConformingToTypeIdentifier("public.image") else {
+                Task { @MainActor in
+                    self.onFinish()
+                }
+                return
+            }
 
             Task {
                 let pickedPhoto = try? await withCheckedThrowingContinuation { (continuation: CheckedContinuation<NativePickedPhotoAsset, Error>) in
@@ -33249,6 +33615,11 @@ private struct NativeSingleMetadataImagePicker: UIViewControllerRepresentable {
                 if let pickedPhoto {
                     await MainActor.run {
                         self.selection = pickedPhoto
+                        self.onFinish()
+                    }
+                } else {
+                    await MainActor.run {
+                        self.onFinish()
                     }
                 }
             }

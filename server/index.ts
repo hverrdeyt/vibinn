@@ -569,6 +569,8 @@ function mapV2MomentForClient(moment: {
   uploadedMedia: string[];
   rating: number | null;
   ratingLabel: string | null;
+  wouldRevisit?: string | null;
+  visibility?: 'PUBLIC' | 'FRIENDS' | 'PRIVATE' | null;
   placeName: string;
   placeLocation: string;
   placeAddress: string | null;
@@ -597,6 +599,8 @@ function mapV2MomentForClient(moment: {
     uploadedMedia: resolvedMedia,
     rating: moment.rating ?? undefined,
     ratingLabel: moment.ratingLabel ?? undefined,
+    wouldRevisit: moment.wouldRevisit ?? undefined,
+    visibility: (moment.visibility ?? 'PUBLIC').toLowerCase(),
     commentCount: counts?.commentCount ?? 0,
     likeCount: counts?.likeCount ?? 0,
     latestComment: latestComment
@@ -639,6 +643,77 @@ function mapV2MomentForClient(moment: {
       momentRatingLabel: moment.ratingLabel ?? undefined,
     },
   };
+}
+
+function normalizeV2MomentVisibility(value: unknown): 'PUBLIC' | 'FRIENDS' | 'PRIVATE' {
+  if (typeof value !== 'string') {
+    return 'PUBLIC';
+  }
+  switch (value.trim().toUpperCase()) {
+    case 'FRIENDS':
+      return 'FRIENDS';
+    case 'PRIVATE':
+      return 'PRIVATE';
+    default:
+      return 'PUBLIC';
+  }
+}
+
+function normalizeV2WouldRevisit(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+
+  switch (value.trim().toLowerCase()) {
+    case 'yes':
+      return 'yes';
+    case 'maybe':
+    case 'not_sure':
+      return 'maybe';
+    case 'no':
+    case 'not_interested':
+      return 'no';
+    default:
+      return null;
+  }
+}
+
+async function loadV2MutualFollowUserIds(viewerUserId: string, candidateUserIds: string[]) {
+  const uniqueCandidateUserIds = Array.from(new Set(candidateUserIds.filter((candidateId) => candidateId !== viewerUserId)));
+  if (uniqueCandidateUserIds.length === 0) {
+    return new Set<string>();
+  }
+
+  const reverseFollows = await prismaV2.follow.findMany({
+    where: {
+      sourceUserId: { in: uniqueCandidateUserIds },
+      targetUserId: viewerUserId,
+    },
+    select: {
+      sourceUserId: true,
+    },
+  });
+
+  return new Set(reverseFollows.map((follow) => follow.sourceUserId));
+}
+
+function canViewerSeeV2Moment(
+  moment: { userId: string; visibility?: 'PUBLIC' | 'FRIENDS' | 'PRIVATE' | null },
+  viewerUserId: string | undefined,
+  mutualFollowUserIds: Set<string>,
+) {
+  if (viewerUserId && moment.userId === viewerUserId) {
+    return true;
+  }
+
+  switch (moment.visibility ?? 'PUBLIC') {
+    case 'PRIVATE':
+      return false;
+    case 'FRIENDS':
+      return viewerUserId ? mutualFollowUserIds.has(moment.userId) : false;
+    default:
+      return true;
+  }
 }
 
 async function loadV2MomentSocialState(momentIds: string[], viewerUserId?: string) {
@@ -805,6 +880,8 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
     };
   }
 
+  const mutualFollowUserIds = await loadV2MutualFollowUserIds(userId, followedUserIds);
+
   const [followerCounts, visitedCounts, moments] = await Promise.all([
     prismaV2.follow.groupBy({
       by: ['targetUserId'],
@@ -813,11 +890,23 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
     }),
     prismaV2.moment.groupBy({
       by: ['userId'],
-      where: { userId: { in: followedUserIds } },
+      where: {
+        userId: { in: followedUserIds },
+        OR: [
+          { visibility: 'PUBLIC' },
+          { visibility: 'FRIENDS', userId: { in: Array.from(mutualFollowUserIds) } },
+        ],
+      },
       _count: { _all: true },
     }),
     prismaV2.moment.findMany({
-      where: { userId: { in: followedUserIds } },
+      where: {
+        userId: { in: followedUserIds },
+        OR: [
+          { visibility: 'PUBLIC' },
+          { visibility: 'FRIENDS', userId: { in: Array.from(mutualFollowUserIds) } },
+        ],
+      },
       orderBy: [
         { visitedAt: 'desc' },
         { createdAt: 'desc' },
@@ -1019,14 +1108,35 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
     return null;
   }
 
-  const moments = await prismaV2.moment.findMany({
-    where: { userId: travelerId },
-    orderBy: [
-      { visitedAt: 'desc' },
-      { createdAt: 'desc' },
-    ],
-    take: 60,
-  });
+  const viewerIsOwner = travelerId === viewerUserId;
+  const mutualFollowUserIds = viewerIsOwner ? new Set<string>() : await loadV2MutualFollowUserIds(viewerUserId, [travelerId]);
+  const visibilityWhere = viewerIsOwner
+    ? {}
+    : {
+        OR: [
+          { visibility: 'PUBLIC' as const },
+          ...(mutualFollowUserIds.has(travelerId) ? [{ visibility: 'FRIENDS' as const }] : []),
+        ],
+      };
+  const [visibleMomentCount, moments] = await Promise.all([
+    prismaV2.moment.count({
+      where: {
+        userId: travelerId,
+        ...visibilityWhere,
+      },
+    }),
+    prismaV2.moment.findMany({
+      where: {
+        userId: travelerId,
+        ...visibilityWhere,
+      },
+      orderBy: [
+        { visitedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
+      take: 60,
+    }),
+  ]);
   const socialState = await loadV2MomentSocialState(moments.map((moment) => moment.id), viewerUserId);
 
   return {
@@ -1043,7 +1153,7 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
       recentSavedPlaces: null,
       recentCollections: null,
       travelHistory: [],
-      visitedPlacesCount: traveler._count.moments,
+      visitedPlacesCount: visibleMomentCount,
       savedPlacesCount: null,
       collectionsCount: null,
     },
@@ -8036,7 +8146,7 @@ async function getUnifiedPlaceDetailPayload(placeId: string, userId?: string) {
 
 async function getUnifiedPlaceTravelerMoments(
   place: Awaited<ReturnType<typeof getPlaceDetailsByInternalId>>,
-  _userId?: string,
+  userId?: string,
 ) {
   if (!place) return [];
 
@@ -8047,7 +8157,7 @@ async function getUnifiedPlaceTravelerMoments(
       { visitedAt: 'desc' as const },
       { createdAt: 'desc' as const },
     ],
-    take: 12,
+    take: 24,
     include: {
       user: {
         select: {
@@ -8085,9 +8195,14 @@ async function getUnifiedPlaceTravelerMoments(
       return [];
     });
 
-  const socialState = await loadV2MomentSocialState(moments.map((moment) => moment.id), undefined);
+  const mutualFollowUserIds = userId
+    ? await loadV2MutualFollowUserIds(userId, moments.map((moment) => moment.userId))
+    : new Set<string>();
+  const visibleMoments = moments.filter((moment) => canViewerSeeV2Moment(moment, userId, mutualFollowUserIds));
 
-  return moments.slice(0, 8).map((moment) => ({
+  const socialState = await loadV2MomentSocialState(visibleMoments.map((moment) => moment.id), undefined);
+
+  return visibleMoments.slice(0, 8).map((moment) => ({
     ...mapV2MomentForClient(
       moment,
       undefined,
@@ -8860,6 +8975,147 @@ async function resolveV2TargetMomentId(targetType: 'PROFILE' | 'MOMENT' | 'PLACE
   return targetType === 'MOMENT' ? targetId : null;
 }
 
+async function createV2Notification(input: {
+  userId: string;
+  actorUserId?: string | null;
+  type: 'FOLLOW' | 'COMMENT' | 'VIBIN' | 'INVITE_REDEEMED';
+  targetType?: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION' | null;
+  targetId?: string | null;
+  title: string;
+  body: string;
+}) {
+  await prismaV2.notification.create({
+    data: {
+      userId: input.userId,
+      actorUserId: input.actorUserId ?? null,
+      type: input.type,
+      targetType: input.targetType ?? null,
+      targetId: input.targetId ?? null,
+      title: input.title,
+      body: input.body,
+    },
+  });
+}
+
+async function listV2Notifications(userId: string) {
+  const notifications = await prismaV2.notification.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      actorUser: {
+        select: {
+          id: true,
+          username: true,
+          displayName: true,
+          avatarUrl: true,
+        },
+      },
+    },
+    take: 100,
+  });
+
+  const targetMomentIds = notifications
+    .filter((item) => item.targetType === 'MOMENT' && item.targetId)
+    .map((item) => item.targetId!) as string[];
+
+  const moments = targetMomentIds.length > 0
+    ? await prismaV2.moment.findMany({
+        where: { id: { in: Array.from(new Set(targetMomentIds)) } },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              avatarUrl: true,
+            },
+          },
+          placeRecord: {
+            select: {
+              id: true,
+              googlePlaceId: true,
+              name: true,
+              address: true,
+              city: true,
+              country: true,
+              neighborhood: true,
+              category: true,
+              primaryImageUrl: true,
+              latitude: true,
+              longitude: true,
+              mapsUrl: true,
+            },
+          },
+        },
+      })
+    : [];
+
+  const placeByMomentId = new Map(
+    moments
+      .filter((moment) => moment.placeRecord)
+      .map((moment) => [moment.id, mapStoredV2PlaceForClient(moment.placeRecord!)] as const),
+  );
+
+  return notifications.map((item) => {
+    const place = item.targetType === 'MOMENT' && item.targetId
+      ? placeByMomentId.get(item.targetId) ?? null
+      : null;
+
+    let messageKind: string;
+    switch (item.type) {
+      case 'FOLLOW':
+        messageKind = 'follow';
+        break;
+      case 'COMMENT':
+        messageKind = 'comment_visited';
+        break;
+      case 'VIBIN':
+        messageKind = 'vibin_visited';
+        break;
+      case 'INVITE_REDEEMED':
+        messageKind = 'invite_redeemed';
+        break;
+      default:
+        messageKind = 'generic';
+        break;
+    }
+
+    return {
+      id: item.id,
+      notificationType: item.type,
+      messageKind,
+      targetType: item.targetType ?? null,
+      targetId: item.targetId ?? null,
+      type: item.targetType === 'PROFILE' ? 'traveler' : 'place',
+      avatar: item.actorUser?.avatarUrl ?? null,
+      title: item.title,
+      body: item.body,
+      time: item.createdAt.toISOString(),
+      createdAt: item.createdAt.toISOString(),
+      readAt: item.readAt?.toISOString() ?? null,
+      actor: item.actorUser
+        ? {
+            id: item.actorUser.id,
+            username: item.actorUser.username ?? buildV2TravelerUsernameFallback(item.actorUser.id),
+            displayName: item.actorUser.displayName ?? item.actorUser.username ?? buildV2TravelerUsernameFallback(item.actorUser.id),
+            avatar: item.actorUser.avatarUrl ?? null,
+          }
+        : null,
+      placeTitle: place?.name ?? null,
+      placeContext: item.targetType === 'MOMENT' ? 'visited' : null,
+      place: place ?? undefined,
+      traveler: item.targetType === 'PROFILE' && item.actorUser
+        ? {
+            id: item.actorUser.id,
+            username: item.actorUser.username ?? buildV2TravelerUsernameFallback(item.actorUser.id),
+            displayName: item.actorUser.displayName ?? item.actorUser.username ?? buildV2TravelerUsernameFallback(item.actorUser.id),
+            avatar: item.actorUser.avatarUrl ?? null,
+          }
+        : null,
+    };
+  });
+}
+
 app.post('/api/v2/follows/toggle', requireV2Auth, async (req: AuthenticatedRequest, res) => {
   try {
     const { targetUserId } = req.body as { targetUserId?: string };
@@ -8909,6 +9165,23 @@ app.post('/api/v2/follows/toggle', requireV2Auth, async (req: AuthenticatedReque
         targetUserId,
       },
     });
+
+    const actor = await prismaV2.user.findUnique({
+      where: { id: req.authV2UserId! },
+      select: { id: true, username: true, displayName: true },
+    });
+
+    if (actor) {
+      await createV2Notification({
+        userId: targetUserId,
+        actorUserId: actor.id,
+        type: 'FOLLOW',
+        targetType: 'PROFILE',
+        targetId: actor.id,
+        title: `${actor.displayName ?? actor.username ?? buildV2TravelerUsernameFallback(actor.id)} followed you`,
+        body: 'Your circle just got bigger.',
+      });
+    }
 
     const followersCount = await prismaV2.follow.count({
       where: { targetUserId },
@@ -8971,6 +9244,24 @@ app.post('/api/v2/vibins/toggle', requireV2Auth, async (req: AuthenticatedReques
         targetId,
       },
     });
+
+    if (resolvedReceiverUserId && resolvedReceiverUserId !== req.authV2UserId) {
+      const actor = await prismaV2.user.findUnique({
+        where: { id: req.authV2UserId! },
+        select: { id: true, username: true, displayName: true },
+      });
+      if (actor) {
+        await createV2Notification({
+          userId: resolvedReceiverUserId,
+          actorUserId: actor.id,
+          type: 'VIBIN',
+          targetType,
+          targetId,
+          title: `${actor.displayName ?? actor.username ?? buildV2TravelerUsernameFallback(actor.id)} liked your moment`,
+          body: 'Your moment got a new like.',
+        });
+      }
+    }
 
     const count = await prismaV2.vibin.count({
       where: { targetType, targetId },
@@ -9062,6 +9353,23 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
       where: { targetType, targetId },
     });
 
+    const notificationUserId = targetType === 'PROFILE'
+      ? (targetId !== req.authV2UserId ? targetId : null)
+      : await resolveV2TargetOwner(targetType, targetId);
+
+    if (notificationUserId && notificationUserId !== req.authV2UserId) {
+      const actorName = comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId);
+      await createV2Notification({
+        userId: notificationUserId,
+        actorUserId: req.authV2UserId!,
+        type: 'COMMENT',
+        targetType,
+        targetId,
+        title: `${actorName} commented on your moment`,
+        body: comment.body,
+      });
+    }
+
     res.json({
       comment: {
         id: comment.id,
@@ -9071,6 +9379,32 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
       },
       count,
     });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/notifications', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const notifications = await listV2Notifications(req.authV2UserId!);
+    res.json({ notifications });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/notifications/read-all', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    await prismaV2.notification.updateMany({
+      where: {
+        userId: req.authV2UserId!,
+        readAt: null,
+      },
+      data: {
+        readAt: new Date(),
+      },
+    });
+    res.json({ ok: true });
   } catch (error) {
     handleError(res, error);
   }
@@ -10213,6 +10547,8 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
     const autocompleteSessionToken = typeof payload.autocompleteSessionToken === 'string'
       ? payload.autocompleteSessionToken.trim() || null
       : null;
+    const visibility = normalizeV2MomentVisibility(payload.visibility ?? payload.privacy);
+    const wouldRevisit = normalizeV2WouldRevisit(payload.wouldRevisit);
 
     let resolvedPlaceId = placeId;
     let resolvedPlaceName = placeName;
@@ -10315,7 +10651,8 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
         uploadedMedia,
         rating: typeof payload.rating === 'number' ? payload.rating : null,
         ratingLabel: typeof payload.ratingLabel === 'string' ? payload.ratingLabel.trim() || null : null,
-        wouldRevisit: typeof payload.wouldRevisit === 'string' ? payload.wouldRevisit.trim() || null : null,
+        wouldRevisit,
+        visibility,
         vibeTags: Array.isArray(payload.vibeTags)
           ? payload.vibeTags.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
           : [],
@@ -10356,6 +10693,12 @@ app.patch('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest
   try {
     const payload = req.body ?? {};
     const ratingLabel = typeof payload.ratingLabel === 'string' ? payload.ratingLabel.trim() : null;
+    const visibility = payload.visibility === undefined && payload.privacy === undefined
+      ? undefined
+      : normalizeV2MomentVisibility(payload.visibility ?? payload.privacy);
+    const wouldRevisit = payload.wouldRevisit === undefined
+      ? undefined
+      : normalizeV2WouldRevisit(payload.wouldRevisit);
     if (ratingLabel && !['disliked', 'not_bad', 'liked', 'recommended'].includes(ratingLabel)) {
       res.status(400).json({ error: 'ratingLabel is invalid' });
       return;
@@ -10382,7 +10725,8 @@ app.patch('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest
         caption: typeof payload.caption === 'string' ? payload.caption.trim() : undefined,
         rating: typeof payload.rating === 'number' ? payload.rating : undefined,
         ratingLabel,
-        wouldRevisit: typeof payload.wouldRevisit === 'string' ? payload.wouldRevisit.trim() || null : undefined,
+        wouldRevisit,
+        visibility,
       },
     });
 
