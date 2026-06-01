@@ -8475,6 +8475,7 @@ private struct NativeDiaryScreen: View {
             avatarURL: appState.currentUser?.avatarUrl,
             avatarFallback: appState.currentUser?.displayName ?? appState.currentUser?.username ?? "You",
             ratingMeta: ratingMeta,
+            wouldRevisit: moment.wouldRevisit,
             reviewText: moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
             mediaURL: nativeDiaryMediaURL(for: moment),
             placeName: moment.place.name,
@@ -8799,13 +8800,9 @@ private struct NativeHomepageShellScreen: View {
 
     private var homepageHeader: some View {
         HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("HOMEPAGE")
-                    .font(nativePixelAccentFont(size: 10))
-                    .foregroundStyle(nativeAccent.opacity(0.88))
-
+            VStack(alignment: .leading, spacing: 2) {
                 Text("\(greetingPrefix),\n\(greetingName).")
-                    .font(nativeAppFont(size: 28, weight: .black))
+                    .font(nativeAppFont(size: 21, weight: .black))
                     .foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -8857,22 +8854,22 @@ private struct NativeHomepageShellScreen: View {
                 ),
                 stroke: nativeAccent.opacity(0.22)
             ) {
-                HStack(alignment: .center, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("What did you today?")
-                            .font(nativeAppFont(size: 24, weight: .black))
+                HStack(alignment: .center, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Add today’s memory")
+                            .font(nativeAppFont(size: 20, weight: .black))
                             .foregroundStyle(.white)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("Drop a photo from your latest place")
-                            .font(nativeAppFont(size: 14, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.68))
+                        Text("Your latest photos are ready")
+                            .font(nativeAppFont(size: 12, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.58))
                             .fixedSize(horizontal: false, vertical: true)
                     }
-
-                    Spacer(minLength: 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
                     heroPhotoPreviewStack
+                        .padding(.trailing, 2)
                 }
             }
         }
@@ -9221,16 +9218,35 @@ private struct NativeHomepageShellScreen: View {
 
     private var heroPhotoPreviewStack: some View {
         ZStack {
-            ForEach(Array((0..<3).enumerated()), id: \.offset) { offset, index in
-                heroPreviewTile(for: index)
-                    .offset(x: CGFloat(offset) * 18, y: CGFloat(offset) * 10)
-            }
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .fill(nativeAccent.opacity(0.12))
+                .frame(width: 122, height: 120)
+                .blur(radius: 18)
+                .offset(x: 8, y: 20)
+
+            heroPreviewTile(for: 2, size: CGSize(width: 60, height: 60), cornerRadius: 19)
+                .rotationEffect(.degrees(-9))
+                .shadow(color: Color.black.opacity(0.18), radius: 10, x: 0, y: 6)
+                .offset(x: -30, y: -10)
+
+            heroPreviewTile(for: 1, size: CGSize(width: 70, height: 70), cornerRadius: 22)
+                .rotationEffect(.degrees(8))
+                .shadow(color: Color.black.opacity(0.2), radius: 12, x: 0, y: 7)
+                .offset(x: 22, y: -22)
+
+            heroPreviewTile(for: 0, size: CGSize(width: 98, height: 110), cornerRadius: 26)
+                .shadow(color: Color.black.opacity(0.28), radius: 18, x: 0, y: 12)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 26, style: .continuous)
+                        .stroke(nativeAccent.opacity(0.18), lineWidth: 1)
+                )
+                .offset(x: 0, y: 8)
         }
-        .frame(width: 108, height: 92, alignment: .center)
+        .frame(width: 148, height: 132, alignment: .center)
     }
 
     @ViewBuilder
-    private func heroPreviewTile(for index: Int) -> some View {
+    private func heroPreviewTile(for index: Int, size: CGSize, cornerRadius: CGFloat) -> some View {
         let image = recentPhotoPreviews[safe: index]
         let shouldBlur = !hasHomepagePhotoAccess
 
@@ -9249,16 +9265,16 @@ private struct NativeHomepageShellScreen: View {
                     )
             }
         }
-        .frame(width: 64, height: 64)
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .frame(width: size.width, height: size.height)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
         )
         .blur(radius: shouldBlur ? 10 : 0)
         .overlay {
             if shouldBlur {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .fill(Color.black.opacity(0.18))
             }
         }
@@ -9500,18 +9516,30 @@ private struct NativeHomepageShellScreen: View {
                     .foregroundStyle(.white.opacity(0.58))
             }
 
-            if let ratingMeta {
+            if ratingMeta != nil || moment.wouldRevisit != nil {
                 HStack(spacing: 8) {
-                    Image(systemName: ratingMeta.icon)
-                        .font(nativeAppFont(size: 12, weight: .black))
-                    Text(ratingMeta.label)
-                        .font(nativeAppFont(size: 12, weight: .bold))
+                    if let ratingMeta {
+                        HStack(spacing: 8) {
+                            Image(systemName: ratingMeta.icon)
+                                .font(nativeAppFont(size: 12, weight: .black))
+                            Text(ratingMeta.label)
+                                .font(nativeAppFont(size: 12, weight: .bold))
+                        }
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(nativeAccent)
+                        .clipShape(Capsule())
+                    }
+
+                    if let wouldRevisit = moment.wouldRevisit {
+                        NativeFeedMetaPill(
+                            label: homepageRevisitLabel(wouldRevisit),
+                            foreground: wouldRevisit == "yes" ? nativeAccent : .white.opacity(0.82),
+                            background: wouldRevisit == "yes" ? nativeAccent.opacity(0.16) : Color.white.opacity(0.08)
+                        )
+                    }
                 }
-                .foregroundStyle(.black)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
-                .background(nativeAccent)
-                .clipShape(Capsule())
             }
 
             if !review.isEmpty {
@@ -9618,6 +9646,19 @@ private struct NativeHomepageShellScreen: View {
         .padding(.vertical, 10)
         .background(Color.white.opacity(0.06))
         .clipShape(Capsule())
+    }
+
+    private func homepageRevisitLabel(_ value: String) -> String {
+        switch value {
+        case "yes":
+            return "Would revisit"
+        case "maybe", "not_sure":
+            return "Maybe"
+        case "no", "not_interested":
+            return "No revisit"
+        default:
+            return value.replacingOccurrences(of: "_", with: " ").capitalized
+        }
     }
 
     private func homepageAvatarSquare(name: String?, username: String?, avatarURL: String?, size: CGFloat) -> some View {
@@ -10409,7 +10450,23 @@ private struct NativeNotificationsSheet: View {
             ScrollView(showsIndicators: false) {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if let errorMessage {
-                        NativeInlineError(message: errorMessage)
+                        NativeSurfaceCard {
+                            VStack(alignment: .leading, spacing: 12) {
+                                NativeInlineError(message: errorMessage)
+                                Button {
+                                    Task { await loadNotifications() }
+                                } label: {
+                                    Text("Try again")
+                                        .font(nativeAppFont(size: 14, weight: .black))
+                                        .foregroundStyle(.black)
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 12)
+                                        .background(nativeAccent)
+                                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
 
                     if appState.currentUser == nil {
@@ -10445,9 +10502,16 @@ private struct NativeNotificationsSheet: View {
                         }
                     } else if notifications.isEmpty && friendRequests.isEmpty {
                         NativeSurfaceCard {
-                            Text("No notifications yet.")
-                                .font(nativeAppFont(size: 15, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.72))
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text("No notifications yet.")
+                                    .font(nativeAppFont(size: 18, weight: .black))
+                                    .foregroundStyle(.white)
+                                Text("Likes, comments, follows, and invite activity will show up here.")
+                                    .font(nativeAppFont(size: 14, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.62))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     } else {
                         if !friendRequests.isEmpty {
@@ -10551,6 +10615,8 @@ private struct NativeNotificationsSheet: View {
             errorMessage = nil
         } catch is CancellationError {
         } catch {
+            notifications = []
+            friendRequests = []
             errorMessage = "Could not load notifications right now."
         }
     }
@@ -23389,7 +23455,7 @@ private struct NativeOwnVisitedMomentCard: View {
         case "yes":
             return "Would revisit"
         case "maybe", "not_sure":
-            return "Maybe revisit"
+            return "Maybe"
         case "no", "not_interested":
             return "No revisit"
         default:
@@ -25800,6 +25866,7 @@ private struct NativeFeedCard: View {
             avatarFallback: item.traveler.displayName ?? item.traveler.username,
             headerLinkTraveler: item.traveler,
             ratingMeta: ratingMeta,
+            wouldRevisit: place.momentWouldRevisit,
             reviewText: item.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
             mediaURL: mediaURL,
             placeName: place.name,
@@ -25933,7 +26000,7 @@ private struct NativeFeedCard: View {
         case "yes":
             return "Would revisit"
         case "maybe", "not_sure":
-            return "Maybe revisit"
+            return "Maybe"
         case "no", "not_interested":
             return "No revisit"
         default:
@@ -26123,23 +26190,8 @@ private struct NativePlaceReviewCompactCard: View {
         return "Traveler"
     }
 
-    private var travelerUsername: String? {
-        guard let username = moment.traveler?.username.trimmingCharacters(in: .whitespacesAndNewlines), !username.isEmpty else {
-            return nil
-        }
-        return username
-    }
-
-    private var avatarFallback: String {
-        travelerDisplayName
-    }
-
     private var timestampLabel: String {
-        NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate)
-    }
-
-    private var ratingMeta: (label: String, icon: String)? {
-        nativeMomentRatingMeta(label: moment.ratingLabel, fallbackRating: moment.rating)
+        compactRelativeTimestamp(from: moment.visitedAtIso ?? moment.visitedDate)
     }
 
     private var reviewText: String? {
@@ -26153,91 +26205,95 @@ private struct NativePlaceReviewCompactCard: View {
             .first(where: { !$0.isEmpty })
     }
 
-    private var commentCount: Int {
-        max(moment.commentCount ?? 0, 0)
-    }
-
-    private var likeCount: Int {
-        max(moment.likeCount ?? 0, 0)
+    private var microSignals: [(label: String, foreground: Color, background: Color)] {
+        var signals: [(label: String, foreground: Color, background: Color)] = []
+        if let rating = moment.rating, rating >= 4 {
+            signals.append(("Recommended", .black, nativeAccent.opacity(0.92)))
+        } else if let ratingLabel = moment.ratingLabel?.lowercased(), ratingLabel.contains("recommend") || ratingLabel.contains("like") {
+            signals.append(("Recommended", .black, nativeAccent.opacity(0.92)))
+        }
+        if moment.wouldRevisit?.lowercased() == "yes" {
+            signals.append(("Would come back", nativeAccent, nativeAccent.opacity(0.14)))
+        }
+        return signals
     }
 
     var body: some View {
         NativeSurfaceCard {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .center, spacing: 10) {
-                    NativeAvatarCircle(
-                        url: moment.traveler?.avatar,
-                        fallbackText: avatarFallback,
-                        size: 38,
-                        fontSize: 14
-                    )
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(travelerDisplayName)
-                            .font(nativeAppFont(size: 15, weight: .black))
-                            .foregroundStyle(.white)
-
-                        if let travelerUsername {
-                            Text("@\(travelerUsername)")
-                                .font(nativeAppFont(size: 12, weight: .semibold))
-                                .foregroundStyle(.white.opacity(0.48))
-                        }
-                    }
-
-                    Spacer(minLength: 8)
-
-                    Text(timestampLabel)
-                        .font(nativeAppFont(size: 12, weight: .bold))
-                        .foregroundStyle(.white.opacity(0.58))
-                }
-
-                if let ratingMeta {
-                    NativeFeedMetaPill(
-                        label: ratingMeta.label,
-                        icon: ratingMeta.icon,
-                        foreground: .black,
-                        background: nativeAccent
-                    )
-                }
-
-                if let reviewText {
-                    Text(reviewText)
-                        .font(nativeAppFont(size: 14, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.88))
-                        .lineLimit(4)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
+            VStack(alignment: .leading, spacing: 11) {
                 if let mediaURL, !mediaURL.isEmpty {
                     NativeRemoteImage(url: mediaURL)
                         .frame(maxWidth: .infinity)
-                        .aspectRatio(1.35, contentMode: .fit)
-                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                        .aspectRatio(1.1, contentMode: .fit)
+                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
                         .overlay(
-                            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                            RoundedRectangle(cornerRadius: 24, style: .continuous)
                                 .stroke(Color.white.opacity(0.08), lineWidth: 1)
                         )
                 }
 
-                HStack(spacing: 14) {
-                    compactMetric(icon: "bubble.left", count: commentCount)
-                    compactMetric(icon: "heart", count: likeCount)
+                if let reviewText {
+                    Text(reviewText)
+                        .font(nativeAppFont(size: 15, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .lineLimit(3)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 6) {
+                    Text(travelerDisplayName)
+                        .font(nativeAppFont(size: 13, weight: .black))
+                        .foregroundStyle(.white.opacity(0.88))
+
+                    Text("·")
+                        .font(nativeAppFont(size: 13, weight: .black))
+                        .foregroundStyle(.white.opacity(0.34))
+
+                    Text(timestampLabel)
+                        .font(nativeAppFont(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.54))
+
                     Spacer(minLength: 0)
+                }
+
+                if !microSignals.isEmpty {
+                    HStack(spacing: 8) {
+                        ForEach(Array(microSignals.enumerated()), id: \.offset) { _, signal in
+                            NativeFeedMetaPill(
+                                label: signal.label,
+                                foreground: signal.foreground,
+                                background: signal.background
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 
-    private func compactMetric(icon: String, count: Int) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: icon)
-                .font(nativeAppFont(size: 12, weight: .black))
-            if count > 0 {
-                Text("\(count)")
-                    .font(nativeAppFont(size: 12, weight: .black))
-            }
+    private func compactRelativeTimestamp(from rawValue: String) -> String {
+        guard let date = NativeAppState.date(from: rawValue) else {
+            return rawValue
         }
-        .foregroundStyle(.white.opacity(0.72))
+
+        let diff = max(0, Date().timeIntervalSince(date))
+        let hour: TimeInterval = 60 * 60
+        let day: TimeInterval = 24 * hour
+        let week: TimeInterval = 7 * day
+
+        if diff < day {
+            let hours = max(Int(diff / hour), 1)
+            return "\(hours)h ago"
+        }
+        if diff < (2 * day) {
+            return "Yesterday"
+        }
+        if diff < week {
+            let days = max(Int(diff / day), 1)
+            return "\(days)d ago"
+        }
+        let weeks = max(Int(diff / week), 1)
+        return "\(weeks)w ago"
     }
 }
 
@@ -28698,6 +28754,7 @@ private struct NativePlaceDetailScreen: View {
     @State private var sheetContentAtTop = true
     @State private var hasLoadedCanonicalDetails = true
     @State private var showDirectionsOptions = false
+    @State private var isSavingFromCircleEmptyState = false
 
     init(
         initialPlace: NativePlace,
@@ -29225,13 +29282,57 @@ private struct NativePlaceDetailScreen: View {
 
     private var vibinnReviewSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            NativeSectionTitle("Vibinn review")
+            NativeSectionTitle("From your circle")
             if travelerMoments.isEmpty {
                 NativeSurfaceCard {
-                    Text("No Vibinn reviews for this place yet.")
-                        .font(nativeAppFont(size: 15, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.6))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text("No one in your circle has posted here yet.")
+                            .font(nativeAppFont(size: 15, weight: .black))
+                            .foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
+
+                        HStack(spacing: 10) {
+                            Button {
+                                appState.presentCheckInFlow(prefilledPlace: place)
+                            } label: {
+                                Text("Post a moment")
+                                    .font(nativeAppFont(size: 13, weight: .black))
+                                    .foregroundStyle(.black)
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 13)
+                                    .background(nativeAccent)
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+
+                            Button {
+                                Task { await savePlaceFromCircleEmptyState() }
+                            } label: {
+                                Group {
+                                    if isSavingFromCircleEmptyState {
+                                        ProgressView()
+                                            .tint(nativeAccent)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 13)
+                                    } else {
+                                        Text(appState.isBookmarked(place.id) ? "Saved" : "Save place")
+                                            .font(nativeAppFont(size: 13, weight: .black))
+                                            .foregroundStyle(nativeAccent)
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 13)
+                                    }
+                                }
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(nativeAccent.opacity(0.28), lineWidth: 1)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(isSavingFromCircleEmptyState || appState.isBookmarked(place.id))
+                        }
+                    }
                 }
             } else {
                 VStack(spacing: 12) {
@@ -29811,6 +29912,20 @@ private struct NativePlaceDetailScreen: View {
             if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorUserAuthenticationRequired {
                 errorMessage = nil
             } else {
+                errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    private func savePlaceFromCircleEmptyState() async {
+        guard !isSavingFromCircleEmptyState else { return }
+        isSavingFromCircleEmptyState = true
+        defer { isSavingFromCircleEmptyState = false }
+        do {
+            try await appState.toggleBookmark(for: place, source: analyticsSource)
+        } catch {
+            let nsError = error as NSError
+            if !(nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorUserAuthenticationRequired) {
                 errorMessage = error.localizedDescription
             }
         }
@@ -31133,6 +31248,7 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
     let avatarFallback: String
     var headerLinkTraveler: NativeTravelerSummary? = nil
     let ratingMeta: (label: String, icon: String)?
+    let wouldRevisit: String?
     let reviewText: String?
     let mediaURL: String?
     let placeName: String
@@ -31153,18 +31269,30 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
                     headerTrailing()
                 }
 
-                if let ratingMeta {
+                if ratingMeta != nil || wouldRevisit != nil {
                     HStack(spacing: 8) {
-                        Image(systemName: ratingMeta.icon)
-                            .font(nativeAppFont(size: 12, weight: .black))
-                        Text(ratingMeta.label)
-                            .font(nativeAppFont(size: 12, weight: .bold))
+                        if let ratingMeta {
+                            HStack(spacing: 8) {
+                                Image(systemName: ratingMeta.icon)
+                                    .font(nativeAppFont(size: 12, weight: .black))
+                                Text(ratingMeta.label)
+                                    .font(nativeAppFont(size: 12, weight: .bold))
+                            }
+                            .foregroundStyle(.black)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(nativeAccent)
+                            .clipShape(Capsule())
+                        }
+
+                        if let wouldRevisit {
+                            NativeFeedMetaPill(
+                                label: revisitLabel(for: wouldRevisit),
+                                foreground: wouldRevisit == "yes" ? nativeAccent : .white.opacity(0.82),
+                                background: wouldRevisit == "yes" ? nativeAccent.opacity(0.16) : Color.white.opacity(0.08)
+                            )
+                        }
                     }
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(nativeAccent)
-                    .clipShape(Capsule())
                 }
 
                 if let reviewText, !reviewText.isEmpty {
@@ -31257,6 +31385,19 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(Color.white.opacity(0.06), lineWidth: 1)
         )
+    }
+
+    private func revisitLabel(for value: String) -> String {
+        switch value.lowercased() {
+        case "yes":
+            return "Would revisit"
+        case "maybe":
+            return "Maybe"
+        case "no":
+            return "No revisit"
+        default:
+            return value
+        }
     }
 }
 
@@ -31867,6 +32008,19 @@ private struct NativeFeedMomentFullscreen: View {
             showModerationAlert = true
         }
     }
+
+    private func revisitLabel(for value: String) -> String {
+        switch value.lowercased() {
+        case "yes":
+            return "Would revisit"
+        case "maybe":
+            return "Maybe"
+        case "no":
+            return "No revisit"
+        default:
+            return value
+        }
+    }
 }
 
 private func nativeDebugListLabel(_ values: [String]) -> String {
@@ -31904,6 +32058,7 @@ private struct NativeCheckInScreen: View {
     @State private var selectedImage: UIImage?
     @State private var selectedPhotoAsset: NativePickedPhotoAsset?
     @State private var activeMediaPicker: NativeCheckInMediaPickerSource?
+    @State private var pendingLibrarySelectionAnalysis = false
     @StateObject private var inlineCamera = NativeInlineCameraController()
     @State private var reviewWordLimitMessage: String?
     @State private var isSearching = false
@@ -32085,7 +32240,8 @@ private struct NativeCheckInScreen: View {
                 inlineCamera.stopSession()
             }
             guard let _ = newValue else { return }
-            if activeMediaPicker == .library {
+            if pendingLibrarySelectionAnalysis || activeMediaPicker == .library {
+                pendingLibrarySelectionAnalysis = false
                 activeMediaPicker = nil
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 180_000_000)
@@ -32388,6 +32544,7 @@ private struct NativeCheckInScreen: View {
                         ZStack {
                             HStack {
                                 Button {
+                                    pendingLibrarySelectionAnalysis = true
                                     activeMediaPicker = .library
                                 } label: {
                                     checkInGalleryPreviewStack
@@ -32461,6 +32618,7 @@ private struct NativeCheckInScreen: View {
                             .buttonStyle(.plain)
 
                             Button {
+                                pendingLibrarySelectionAnalysis = true
                                 activeMediaPicker = .library
                             } label: {
                                 HStack(spacing: 8) {

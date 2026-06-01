@@ -639,6 +639,7 @@ function mapV2MomentForClient(moment: {
       visitedDate: moment.visitedAt.toISOString().split('T')[0],
       visitedAtIso: moment.visitedAt.toISOString(),
       momentCaption: moment.caption || undefined,
+      momentWouldRevisit: moment.wouldRevisit ?? undefined,
       momentRating: moment.rating ?? undefined,
       momentRatingLabel: moment.ratingLabel ?? undefined,
     },
@@ -8148,10 +8149,25 @@ async function getUnifiedPlaceTravelerMoments(
   place: Awaited<ReturnType<typeof getPlaceDetailsByInternalId>>,
   userId?: string,
 ) {
-  if (!place) return [];
+  if (!place || !userId) return [];
 
   const normalizedPlaceName = place.name.trim();
   const googlePlaceId = place.googlePlaceId?.trim() || null;
+  const follows = await prismaV2.follow.findMany({
+    where: { sourceUserId: userId },
+    select: { targetUserId: true },
+  }).catch((error) => {
+    console.error(error);
+    return [];
+  });
+  const followedUserIds = Array.from(new Set(follows.map((follow) => follow.targetUserId)));
+  const mutualFollowUserIds = await loadV2MutualFollowUserIds(userId, followedUserIds);
+  const trustedUserIds = Array.from(new Set([userId, ...followedUserIds]));
+
+  if (trustedUserIds.length === 0) {
+    return [];
+  }
+
   const baseQuery = {
     orderBy: [
       { visitedAt: 'desc' as const },
@@ -8173,6 +8189,7 @@ async function getUnifiedPlaceTravelerMoments(
   const exactMoments = await prismaV2.moment.findMany({
     ...baseQuery,
     where: {
+      userId: { in: trustedUserIds },
       OR: [
         { placeId: place.id },
         ...(googlePlaceId ? [{ placeGooglePlaceId: googlePlaceId }] : []),
@@ -8188,6 +8205,7 @@ async function getUnifiedPlaceTravelerMoments(
     : await prismaV2.moment.findMany({
       ...baseQuery,
       where: {
+        userId: { in: trustedUserIds },
         placeName: { equals: normalizedPlaceName, mode: 'insensitive' },
       },
     }).catch((error) => {
@@ -8195,10 +8213,38 @@ async function getUnifiedPlaceTravelerMoments(
       return [];
     });
 
-  const mutualFollowUserIds = userId
-    ? await loadV2MutualFollowUserIds(userId, moments.map((moment) => moment.userId))
-    : new Set<string>();
-  const visibleMoments = moments.filter((moment) => canViewerSeeV2Moment(moment, userId, mutualFollowUserIds));
+  const visibleMoments = moments
+    .filter((moment) => canViewerSeeV2Moment(moment, userId, mutualFollowUserIds))
+    .filter((moment) => (moment.uploadedMedia ?? []).some((url) => url.trim().length > 0))
+    .sort((left, right) => {
+      const leftRelationshipStrength =
+        left.userId === userId
+          ? 3
+          : mutualFollowUserIds.has(left.userId)
+            ? 2
+            : followedUserIds.includes(left.userId)
+              ? 1
+              : 0;
+      const rightRelationshipStrength =
+        right.userId === userId
+          ? 3
+          : mutualFollowUserIds.has(right.userId)
+            ? 2
+            : followedUserIds.includes(right.userId)
+              ? 1
+              : 0;
+
+      if (leftRelationshipStrength !== rightRelationshipStrength) {
+        return rightRelationshipStrength - leftRelationshipStrength;
+      }
+
+      const visitedDiff = right.visitedAt.getTime() - left.visitedAt.getTime();
+      if (visitedDiff !== 0) {
+        return visitedDiff;
+      }
+
+      return right.createdAt.getTime() - left.createdAt.getTime();
+    });
 
   const socialState = await loadV2MomentSocialState(visibleMoments.map((moment) => moment.id), undefined);
 
