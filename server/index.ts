@@ -2476,7 +2476,7 @@ async function fetchGooglePlaceSuggestions(input: string, options?: {
   return data.suggestions
     ?.map((item) => item.placePrediction)
     .filter(Boolean)
-    .slice(0, 6) ?? [];
+    .slice(0, 10) ?? [];
 }
 
 async function fetchGoogleNearbyPlaceCandidates(latitude: number, longitude: number, options?: {
@@ -3018,19 +3018,114 @@ async function mapGoogleNearbyCandidateForClient(rawPlace: GooglePlaceDetailsRes
 async function getCheckInPlaceSuggestions(input: string, options: {
   sessionToken: string;
   locationLabel: string;
+  origin?: { latitude: number; longitude: number } | null;
 }) {
+  return searchUnifiedCheckInPlaces(input, {
+    sessionToken: options.sessionToken,
+    origin: options.origin,
+  });
+}
+
+function distanceMetersBetween(
+  from: { latitude: number; longitude: number },
+  to: { latitude: number; longitude: number },
+) {
+  const earthRadius = 6371000;
+  const dLat = ((to.latitude - from.latitude) * Math.PI) / 180;
+  const dLon = ((to.longitude - from.longitude) * Math.PI) / 180;
+  const fromLat = (from.latitude * Math.PI) / 180;
+  const toLat = (to.latitude * Math.PI) / 180;
+  const a = Math.sin(dLat / 2) ** 2
+    + Math.cos(fromLat) * Math.cos(toLat) * Math.sin(dLon / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadius * c;
+}
+
+function scorePlaceKeywordMatch(
+  query: string,
+  place: { name?: string | null; address?: string | null; location?: string | null },
+) {
+  const normalizedQuery = query.toLowerCase().trim();
+  const name = String(place.name ?? '').toLowerCase();
+  const address = String(place.address ?? '').toLowerCase();
+  const location = String(place.location ?? '').toLowerCase();
+
+  if (name === normalizedQuery) return 500;
+  if (name.startsWith(normalizedQuery)) return 380;
+  if (name.includes(normalizedQuery)) return 280;
+  if (address.includes(normalizedQuery)) return 180;
+  if (location.includes(normalizedQuery)) return 120;
+  return 0;
+}
+
+async function searchUnifiedCheckInPlaces(
+  input: string,
+  options: {
+    sessionToken: string;
+    origin?: { latitude: number; longitude: number } | null;
+  },
+) {
   const normalizedInput = input.trim();
-  if (normalizedInput.length < 3) return [];
+  if (normalizedInput.length < 2) return [];
 
   const predictions = await fetchGooglePlaceSuggestions(normalizedInput, {
     sessionToken: options.sessionToken,
-    locationLabel: options.locationLabel,
+    origin: options.origin,
   }).catch((error) => {
     console.error(error);
     return null;
   });
 
-  return (predictions ?? []).map((prediction) => mapGoogleAutocompleteSuggestionForClient(prediction, options));
+  const autocompletePlaces = (predictions ?? []).map((prediction) =>
+    mapGoogleAutocompleteSuggestionForClient(prediction, {
+      sessionToken: options.sessionToken,
+    })
+  );
+
+  const textSearchPlaces = autocompletePlaces.length >= 10
+    ? []
+    : await fetchGoogleTextSearch(normalizedInput)
+        .then((result) =>
+          Promise.all(
+            (result.places ?? [])
+              .slice(0, 12)
+              .map(async (place) => {
+                const mapped = await mapGoogleSearchPlaceToInternalPlace(place, { queryContext: normalizedInput });
+                if (
+                  options.origin &&
+                  typeof mapped.latitude === 'number' &&
+                  typeof mapped.longitude === 'number' &&
+                  !mapped.distanceMeters
+                ) {
+                  mapped.distanceMeters = distanceMetersBetween(options.origin, {
+                    latitude: mapped.latitude,
+                    longitude: mapped.longitude,
+                  });
+                }
+                return mapped;
+              }),
+          ),
+        )
+        .catch((error) => {
+          console.error(error);
+          return [];
+        });
+
+  return dedupeNativePlacesById([
+    ...autocompletePlaces,
+    ...textSearchPlaces,
+  ])
+    .sort((left, right) => {
+      const scoreDelta = scorePlaceKeywordMatch(normalizedInput, right) - scorePlaceKeywordMatch(normalizedInput, left);
+      if (scoreDelta !== 0) return scoreDelta;
+
+      const leftDistance = typeof left.distanceMeters === 'number' ? left.distanceMeters : Number.POSITIVE_INFINITY;
+      const rightDistance = typeof right.distanceMeters === 'number' ? right.distanceMeters : Number.POSITIVE_INFINITY;
+      if (leftDistance !== rightDistance) return leftDistance - rightDistance;
+
+      return String(left.name ?? '').localeCompare(String(right.name ?? ''));
+    })
+    .slice(0, 20);
 }
 
 const INITIAL_LOCATION_FALLBACKS = [
@@ -11055,89 +11150,10 @@ app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
     const origin = Number.isFinite(originLat) && Number.isFinite(originLon)
       ? { latitude: originLat, longitude: originLon }
       : null;
-
-    const distanceMetersBetween = (
-      from: { latitude: number; longitude: number },
-      to: { latitude: number; longitude: number },
-    ) => {
-      const earthRadius = 6371000;
-      const dLat = ((to.latitude - from.latitude) * Math.PI) / 180;
-      const dLon = ((to.longitude - from.longitude) * Math.PI) / 180;
-      const fromLat = (from.latitude * Math.PI) / 180;
-      const toLat = (to.latitude * Math.PI) / 180;
-      const a = Math.sin(dLat / 2) ** 2
-        + Math.cos(fromLat) * Math.cos(toLat) * Math.sin(dLon / 2) ** 2;
-      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-      return earthRadius * c;
-    };
-
-    const queryMatchScore = (place: { name?: string | null; address?: string | null; location?: string | null }) => {
-      const normalizedQuery = query.toLowerCase();
-      const name = String(place.name ?? '').toLowerCase();
-      const address = String(place.address ?? '').toLowerCase();
-      const location = String(place.location ?? '').toLowerCase();
-
-      if (name === normalizedQuery) return 500;
-      if (name.startsWith(normalizedQuery)) return 360;
-      if (name.includes(normalizedQuery)) return 260;
-      if (address.includes(normalizedQuery)) return 180;
-      if (location.includes(normalizedQuery)) return 120;
-      return 0;
-    };
-
-    const predictions = await fetchGooglePlaceSuggestions(query, {
+    const places = await searchUnifiedCheckInPlaces(query, {
       sessionToken,
-      locationLabel: typeof req.query.location === 'string' ? req.query.location : null,
       origin,
     });
-    const autocompletePlaces = (predictions ?? []).map((prediction) =>
-      mapGoogleAutocompleteSuggestionForClient(prediction, { sessionToken })
-    );
-
-    const textSearchPlaces = autocompletePlaces.length >= 5
-      ? []
-      : await fetchGoogleTextSearch(query)
-          .then((result) =>
-            Promise.all(
-              (result.places ?? [])
-                .slice(0, 6)
-                .map(async (place) => {
-                  const mapped = await mapGoogleSearchPlaceToInternalPlace(place, { queryContext: query });
-                  if (
-                    origin &&
-                    typeof mapped.latitude === 'number' &&
-                    typeof mapped.longitude === 'number' &&
-                    !mapped.distanceMeters
-                  ) {
-                    mapped.distanceMeters = distanceMetersBetween(origin, {
-                      latitude: mapped.latitude,
-                      longitude: mapped.longitude,
-                    });
-                  }
-                  return mapped;
-                }),
-            ),
-          )
-          .catch((error) => {
-            console.error(error);
-            return [];
-          });
-
-    const places = dedupeNativePlacesById([
-      ...autocompletePlaces,
-      ...textSearchPlaces,
-    ])
-      .sort((left, right) => {
-        const scoreDelta = queryMatchScore(right) - queryMatchScore(left);
-        if (scoreDelta !== 0) return scoreDelta;
-
-        const leftDistance = typeof left.distanceMeters === 'number' ? left.distanceMeters : Number.POSITIVE_INFINITY;
-        const rightDistance = typeof right.distanceMeters === 'number' ? right.distanceMeters : Number.POSITIVE_INFINITY;
-        if (leftDistance !== rightDistance) return leftDistance - rightDistance;
-
-        return String(left.name ?? '').localeCompare(String(right.name ?? ''));
-      })
-      .slice(0, 8);
 
     res.json({ places });
   } catch (error) {
@@ -11159,20 +11175,24 @@ app.get('/api/lookups/places', (req, res) => {
 
 app.get('/api/lookups/places/autocomplete', optionalAuth, (req: AuthenticatedRequest, res) => {
   const q = String(req.query.q || '').trim();
-  const locationLabel = String(req.query.location || '').trim();
   const sessionToken = String(req.query.sessionToken || crypto.randomUUID()).trim();
+  const originLat = Number(req.query.originLat);
+  const originLon = Number(req.query.originLon);
 
   if (q.length < 3) {
     res.json({ places: [], sessionToken });
     return;
   }
 
-  if (!normalizeCheckInAutocompleteCity(locationLabel)) {
-    res.status(400).json({ error: 'Unsupported check-in city' });
-    return;
-  }
+  const origin = Number.isFinite(originLat) && Number.isFinite(originLon)
+    ? { latitude: originLat, longitude: originLon }
+    : null;
 
-  void getCheckInPlaceSuggestions(q, { sessionToken, locationLabel })
+  void getCheckInPlaceSuggestions(q, {
+    sessionToken,
+    locationLabel: typeof req.query.location === 'string' ? req.query.location : '',
+    origin,
+  })
     .then((places) => res.json({ places, sessionToken }))
     .catch((error) => handleError(res, error));
 });
@@ -11362,13 +11382,15 @@ app.patch('/api/saved-locations/:locationId/default', requireAuth, async (req: A
 });
 
 app.get('/api/lookups/places/:id', optionalAuth, (req: AuthenticatedRequest, res) => {
+  const resolvedUserId = req.authV2UserId ?? req.authUserId;
+
   if (req.authUserId) {
     void refreshUserPlaceScores(req.authUserId, [req.params.id]).catch((error) => {
       console.error('Background place detail score refresh failed', error);
     });
   }
 
-  void getUnifiedPlaceDetailPayload(req.params.id, req.authUserId)
+  void getUnifiedPlaceDetailPayload(req.params.id, resolvedUserId)
     .then((payload) => {
       if (!payload) {
         res.status(404).json({ error: 'Place not found' });
@@ -11380,13 +11402,15 @@ app.get('/api/lookups/places/:id', optionalAuth, (req: AuthenticatedRequest, res
 });
 
 app.get('/api/lookups/places/:id/bundle', optionalAuth, (req: AuthenticatedRequest, res) => {
+  const resolvedUserId = req.authV2UserId ?? req.authUserId;
+
   if (req.authUserId) {
     void refreshUserPlaceScores(req.authUserId, [req.params.id]).catch((error) => {
       console.error('Background place detail bundle score refresh failed', error);
     });
   }
 
-  void getUnifiedPlaceDetailPayload(req.params.id, req.authUserId)
+  void getUnifiedPlaceDetailPayload(req.params.id, resolvedUserId)
     .then((payload) => {
       if (!payload) {
         res.status(404).json({ error: 'Place not found' });
