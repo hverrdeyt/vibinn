@@ -934,7 +934,9 @@ private struct NativeWaitlistResponse: Decodable {
 }
 
 private struct NativeV2InviterPreview: Decodable {
+    let id: String?
     let name: String?
+    let username: String?
     let avatarUrl: String?
 }
 
@@ -3544,7 +3546,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func searchV2PhotoPlaces(query: String) async throws -> [NativePlace] {
-        try await api.searchV2PhotoPlaces(query: query, token: authToken, origin: nil)
+        try await api.searchV2PhotoPlaces(query: query, token: authToken, origin: currentCoordinate)
     }
 
     func resetV2OnboardingForDebug(token: String) async throws -> NativeV2OnboardingPayload {
@@ -10996,11 +10998,14 @@ private struct NativeAuthScreen: View {
     @State private var awaitingContactsPermission = false
     @State private var contactsAuthorizationStatus: CNAuthorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
     @State private var inviteContacts: [NativeInviteContact] = []
+    @State private var inviteMatchedContacts: [NativeMatchedFeedContact] = []
     @State private var inviteAddedContacts: [NativeInviteContact] = []
     @State private var inviteSearchQuery = ""
     @State private var isLoadingInviteContacts = false
     @State private var showInviteCodeShareSheet = false
     @State private var inviteSMSContact: NativeInviteContact?
+    @State private var inviteShareSkippedContacts = false
+    @State private var isInviterFollowLoading = false
     @State private var photoLibraryAuthorizationStatus: PHAuthorizationStatus = PHPhotoLibrary.authorizationStatus(for: .readWrite)
     @State private var firstPlaceStage: FirstPlaceStage = .consent
     @State private var showFirstPlacePicker = false
@@ -11009,7 +11014,6 @@ private struct NativeAuthScreen: View {
     @State private var firstPlaceManualQuery = ""
     @State private var firstPlaceManualResults: [NativePlace] = []
     @State private var firstPlaceSelectedPlace: NativePlace?
-    @State private var showFirstPlaceLocationSheet = false
     @State private var firstPlaceRatingLabel = NativeMomentRatingChoice.liked.rawValue
     @State private var firstPlaceReviewText = ""
     @State private var firstPlaceReviewWordLimitMessage: String?
@@ -11065,6 +11069,12 @@ private struct NativeAuthScreen: View {
         case exifCandidates
         case noLocation
         case review
+    }
+
+    private enum InviteCircleState {
+        case prePermission
+        case contactsGranted
+        case contactsDeniedOrSkipped
     }
 
     private enum DebugJumpStep: String, CaseIterable, Identifiable {
@@ -11262,10 +11272,6 @@ private struct NativeAuthScreen: View {
         .sheet(isPresented: $showFirstPlacePicker) {
             NativeSingleMetadataImagePicker(selection: $firstPlacePhoto)
         }
-        .sheet(isPresented: $showFirstPlaceLocationSheet) {
-            firstPlaceLocationSheet
-                .environmentObject(appState)
-        }
         .sheet(isPresented: $showOnboardingDebugSheet) {
             onboardingDebugSheet
         }
@@ -11299,7 +11305,8 @@ private struct NativeAuthScreen: View {
         .onChange(of: firstPlaceManualQuery) { value in
             firstPlaceSearchTask?.cancel()
             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard showFirstPlaceLocationSheet else { return }
+            guard firstPlaceStage == .noLocation else { return }
+            firstPlaceSelectedPlace = nil
             guard trimmed.count >= 2 else {
                 firstPlaceManualResults = []
                 return
@@ -11314,8 +11321,6 @@ private struct NativeAuthScreen: View {
             if value == .noLocation && step == .firstPlaceEntry {
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 150_000_000)
-                    openFirstPlaceLocationChooser()
-                    try? await Task.sleep(nanoseconds: 220_000_000)
                     focusedField = .firstPlaceSearch
                 }
             }
@@ -11481,13 +11486,8 @@ private struct NativeAuthScreen: View {
 
     private var onboardingTopBar: some View {
         HStack(alignment: .center) {
-            if step != .inviteShareEntry {
-                backButton()
-            }
+            backButton()
             Spacer(minLength: 12)
-            if step == .inviteShareEntry {
-                doneButton()
-            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -11525,15 +11525,14 @@ private struct NativeAuthScreen: View {
 
     private var inviteShareHeader: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("INVITE YOUR\nFRIENDS")
-                .font(nativePixelAccentFont(size: 28))
+            Text("Build your circle")
+                .font(nativeAppFont(size: 28, weight: .black))
                 .foregroundStyle(nativeAccent)
-                .lineSpacing(2)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text("Vibinn is invite-only. You have 5 invitation slots.")
+            Text("Follow people already on Vibinn and invite up to 5 more by text.")
                 .font(nativeAppFont(size: 15, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.68))
                 .fixedSize(horizontal: false, vertical: true)
@@ -11555,17 +11554,78 @@ private struct NativeAuthScreen: View {
     }
 
     private var inviteShareMessage: String {
-        "You’re invited to Vibinn. Use my code \(inviteShareCodeString) to join: https://vibinn.club"
+        "Join me on Vibinn. Use my code \(inviteShareCodeString) to join my circle."
     }
 
     private var waitlistShareMessage: String {
         "I’m on the Vibinn waitlist. Join me here: https://vibinn.club"
     }
 
-    private var inviteShareVisibleContacts: [NativeInviteContact] {
+    private var inviteShareSlotCount: Int {
+        5
+    }
+
+    private var inviteCircleState: InviteCircleState {
+        if contactsPermissionGranted || contactsAuthorizationStatus == .authorized {
+            return .contactsGranted
+        }
+        if inviteShareSkippedContacts || contactsAuthorizationStatus == .denied || contactsAuthorizationStatus == .restricted {
+            return .contactsDeniedOrSkipped
+        }
+        return .prePermission
+    }
+
+    private var inviterTraveler: NativeTravelerSummary? {
+        guard let inviter = validatedInvite?.inviter, let id = inviter.id else { return nil }
+        return NativeTravelerSummary(
+            id: id,
+            username: inviter.username ?? nativeFallbackUsername(from: nil),
+            displayName: inviter.name,
+            avatar: inviter.avatarUrl,
+            bio: nil,
+            descriptor: nil,
+            matchScore: nil,
+            followersCount: nil,
+            followingCount: nil,
+            recentSavedPlaces: nil,
+            recentCollections: nil,
+            travelHistory: [],
+            visitedPlacesCount: nil,
+            savedPlacesCount: nil,
+            collectionsCount: nil
+        )
+    }
+
+    private var matchedInviteContactItems: [(contact: NativeInviteContact, match: NativeMatchedFeedContact)] {
+        let inviterId = inviterTraveler?.id
+        let base = inviteContacts.compactMap { contact -> (NativeInviteContact, NativeMatchedFeedContact)? in
+            guard let match = inviteMatchedContacts.first(where: { candidate in
+                contact.phoneNumbers.contains(candidate.phoneNumber)
+            }) else {
+                return nil
+            }
+            if let inviterId, match.traveler.id == inviterId {
+                return nil
+            }
+            return (contact, match)
+        }
+
+        let query = inviteSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !query.isEmpty else { return base }
+        return base.filter { item in
+            item.contact.displayName.lowercased().contains(query)
+            || item.match.traveler.username.lowercased().contains(query)
+            || item.contact.phoneNumber.lowercased().contains(query)
+        }
+    }
+
+    private var unmatchedInviteContacts: [NativeInviteContact] {
+        let matchedPhoneNumbers = Set(inviteMatchedContacts.map(\.phoneNumber))
         let base = inviteContacts.filter { contact in
             !inviteAddedContacts.contains(where: { $0.id == contact.id })
+            && !contact.phoneNumbers.contains(where: { matchedPhoneNumbers.contains($0) })
         }
+
         let query = inviteSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return base }
         return base.filter {
@@ -11574,8 +11634,12 @@ private struct NativeAuthScreen: View {
         }
     }
 
-    private var inviteShareSlotCount: Int {
-        min(max(inviteShareSummary?.usageLimit ?? 5, 1), 5)
+    private var inviteSlotsUsedCount: Int {
+        min(inviteAddedContacts.count, inviteShareSlotCount)
+    }
+
+    private var allInviteSlotsUsed: Bool {
+        inviteSlotsUsedCount >= inviteShareSlotCount
     }
 
     private var inviteAvatarSize: CGFloat { 56 }
@@ -12344,22 +12408,96 @@ private struct NativeAuthScreen: View {
                         firstPlaceCardSubtitle(firstPlaceSubtitle)
                     }
 
-                    if let image = firstPlacePhoto?.image {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: firstPlaceResolvedImageSize, height: firstPlaceResolvedImageSize)
-                            .clipShape(RoundedRectangle(cornerRadius: firstPlaceResolvedImageCornerRadius, style: .continuous))
-                            .frame(maxWidth: .infinity, alignment: .center)
+                    if let photo = firstPlacePhoto {
+                        NativeSurfaceCard {
+                            HStack(spacing: 14) {
+                                Image(uiImage: photo.image)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 64, height: 64)
+                                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(firstPlaceCapturedDateLabel)
+                                        .font(nativeAppFont(size: 15, weight: .black))
+                                        .foregroundStyle(.white)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
                     }
 
-                    NativeAuthLandingButton(
-                        title: "Search places",
-                        icon: .system("magnifyingglass"),
-                        isLoading: false,
-                        style: .dark
-                    ) {
-                        openFirstPlaceLocationChooser()
+                    NativeSurfaceCard {
+                        VStack(alignment: .leading, spacing: 12) {
+                            TextField("Search places", text: $firstPlaceManualQuery)
+                                .textInputAutocapitalization(.words)
+                                .autocorrectionDisabled()
+                                .font(nativeAppFont(size: 17, weight: .medium))
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 15)
+                                .background(nativeSurfaceStrong)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                        .stroke(nativeBorder, lineWidth: 1)
+                                )
+                                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                                .focused($focusedField, equals: .firstPlaceSearch)
+
+                            if firstPlaceManualQuery.trimmingCharacters(in: .whitespacesAndNewlines).count > 0 &&
+                                firstPlaceManualQuery.trimmingCharacters(in: .whitespacesAndNewlines).count < 3 {
+                                Text("Type at least 3 letters to search places.")
+                                    .font(nativeAppFont(size: 14, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.58))
+                            }
+                        }
+                    }
+
+                    if isFirstPlaceSearching {
+                        NativeSurfaceCard {
+                            HStack(spacing: 12) {
+                                ProgressView().tint(nativeAccent)
+                                Text("Searching places...")
+                                    .font(nativeAppFont(size: 15, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.72))
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } else if firstPlaceManualQuery.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3 && firstPlaceManualResults.isEmpty {
+                        Text("No places found.")
+                            .font(nativeAppFont(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.58))
+                    }
+
+                    if !firstPlaceManualResults.isEmpty {
+                        NativeSectionTitle("Results")
+                        LazyVStack(spacing: 12) {
+                            ForEach(firstPlaceManualResults.prefix(8)) { place in
+                                Button {
+                                    firstPlaceSelectedPlace = place
+                                } label: {
+                                    NativeCheckInPlaceRow(
+                                        place: place,
+                                        isSelected: firstPlaceSelectedPlace?.id == place.id
+                                    )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
+                    Spacer(minLength: 0)
+
+                    if firstPlaceSelectedPlace != nil {
+                        NativeAuthLandingButton(
+                            title: "Looks good",
+                            icon: .system("checkmark.circle.fill"),
+                            isLoading: false,
+                            style: .light
+                        ) {
+                            confirmSelectedFirstPlacePlace()
+                        }
+                        .padding(.top, 8)
                     }
                 }
 
@@ -12503,76 +12641,6 @@ private struct NativeAuthScreen: View {
         }
     }
 
-    private var firstPlaceLocationSheet: some View {
-        NavigationView {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(spacing: 12) {
-                    TextField("Search for a place...", text: $firstPlaceManualQuery)
-                        .textInputAutocapitalization(.words)
-                        .autocorrectionDisabled()
-                        .font(nativeAppFont(size: 16, weight: .medium))
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .background(nativeSurfaceStrong)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                        .focused($focusedField, equals: .firstPlaceSearch)
-
-                    Button("Done") {
-                        showFirstPlaceLocationSheet = false
-                    }
-                    .buttonStyle(.plain)
-                    .font(nativeAppFont(size: 14, weight: .bold))
-                    .foregroundStyle(.white.opacity(0.72))
-                }
-
-                if isFirstPlaceSearching {
-                    HStack(spacing: 10) {
-                        ProgressView().tint(nativeAccent)
-                        Text("Searching places...")
-                            .font(nativeAppFont(size: 14, weight: .semibold))
-                            .foregroundStyle(.white.opacity(0.72))
-                    }
-                }
-
-                if !firstPlaceManualResults.isEmpty {
-                    ScrollView(showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 10) {
-                            ForEach(firstPlaceManualResults.prefix(8)) { place in
-                                Button {
-                                    showFirstPlaceLocationSheet = false
-                                    selectFirstPlacePlace(place)
-                                } label: {
-                                    NativeCheckInPlaceRow(place: place, isSelected: false)
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                    }
-                } else {
-                    Spacer()
-                    Text("Search by place name or use nearby results when available.")
-                        .font(nativeAppFont(size: 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.5))
-                        .frame(maxWidth: .infinity, alignment: .center)
-                    Spacer()
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 20)
-            .padding(.bottom, 18)
-            .background(Color.black.ignoresSafeArea())
-            .navigationBarHidden(true)
-        }
-        .navigationViewStyle(.stack)
-        .modifier(NativeTallBottomSheetPresentationModifier())
-        .onAppear {
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 180_000_000)
-                focusedField = .firstPlaceSearch
-            }
-        }
-    }
-
     private var onboardingDebugAvailable: Bool {
         nativeResolvedAPIBaseURL().absoluteString.contains("staging")
     }
@@ -12622,196 +12690,301 @@ private struct NativeAuthScreen: View {
     }
 
     private var inviteShareEntryCard: some View {
-        GeometryReader { proxy in
-            let cardWidth = max(proxy.size.width, 0)
-            let contentWidth = max(cardWidth - 36, 0)
-            let shareButtonWidth = min(178, max(cardWidth * 0.42, 150))
+        ScrollView(showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 16) {
+                inviteCircleInviterCard
 
-            NativeSurfaceCard(
-                fill: AnyShapeStyle(Color.white.opacity(0.06)),
-                stroke: Color.white.opacity(0.08)
-            ) {
-                VStack(alignment: .leading, spacing: 12) {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 10) {
-                            ForEach(0..<inviteShareSlotCount, id: \.self) { index in
-                                if index < inviteAddedContacts.count {
-                                    let contact = inviteAddedContacts[index]
-                                    VStack(spacing: 6) {
-                                        inviteContactAvatar(contact: contact, filled: true)
-                                        Text(contact.shortLabel)
-                                            .font(nativeAppFont(size: 11, weight: .bold))
-                                            .foregroundStyle(.white)
-                                            .multilineTextAlignment(.center)
-                                            .lineLimit(2)
-                                            .frame(width: inviteAvatarSize)
-                                    }
-                                } else {
-                                    VStack(spacing: 6) {
-                                        inviteContactAvatar(contact: nil, filled: false)
-                                        Text("Invite \(index + 1)")
-                                            .font(nativeAppFont(size: 11, weight: .bold))
-                                            .foregroundStyle(.white.opacity(0.42))
-                                            .frame(width: inviteAvatarSize)
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    .frame(width: contentWidth, alignment: .leading)
-                    .clipped()
-
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 12) {
-                            Image(systemName: "magnifyingglass")
-                                .font(nativeAppFont(size: 15, weight: .bold))
-                                .foregroundStyle(.white.opacity(0.45))
-                            TextField("Search by name", text: $inviteSearchQuery)
-                                .textInputAutocapitalization(.words)
-                                .autocorrectionDisabled()
-                                .font(nativeAppFont(size: 16, weight: .medium))
-                                .foregroundStyle(.white)
-                        }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 13)
-                        .background(nativeSurfaceStrong)
-                        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-
-                        ZStack {
-                            Group {
-                                if isLoadingInviteContacts {
-                                    HStack(spacing: 10) {
-                                        ProgressView().tint(nativeAccent)
-                                        Text("Loading contacts...")
-                                            .font(nativeAppFont(size: 14, weight: .semibold))
-                                            .foregroundStyle(.white.opacity(0.7))
-                                    }
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(.top, 6)
-                                    .frame(height: 292, alignment: .topLeading)
-                                } else if !contactsPermissionGranted {
-                                    ScrollView(showsIndicators: false) {
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            ForEach(0..<4, id: \.self) { index in
-                                                inviteContactGhostRow(index: index)
-                                            }
-                                        }
-                                        .padding(.trailing, 6)
-                                    }
-                                    .frame(height: 292)
-                                } else if inviteShareVisibleContacts.isEmpty {
-                                    Text(contactsPermissionGranted ? "No contacts ready for invite yet." : "Grant contact access to invite people faster.")
-                                        .font(nativeAppFont(size: 14, weight: .medium))
-                                        .foregroundStyle(.white.opacity(0.5))
-                                        .frame(maxWidth: .infinity, alignment: .center)
-                                        .frame(height: 292)
-                                } else {
-                                    ScrollView(showsIndicators: true) {
-                                        VStack(alignment: .leading, spacing: 10) {
-                                            ForEach(inviteShareVisibleContacts) { contact in
-                                                inviteContactRow(contact: contact)
-                                            }
-                                        }
-                                        .padding(.trailing, 6)
-                                    }
-                                    .frame(height: 292)
-                                }
-                            }
-                            .blur(radius: contactsPermissionGranted ? 0 : 8)
-                            .opacity(contactsPermissionGranted ? 1 : 0.55)
-                        }
-                        .overlay(alignment: .center) {
-                            if !contactsPermissionGranted {
-                                ZStack {
-                                    RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                        .fill(Color.black.opacity(0.26))
-                                        .padding(.vertical, 4)
-
-                                    VStack(spacing: 10) {
-                                        Text("Allow contact access to invite your friends directly from contact list")
-                                            .font(nativeAppFont(size: 14, weight: .semibold))
-                                            .foregroundStyle(.white.opacity(0.94))
-                                            .multilineTextAlignment(.center)
-                                            .fixedSize(horizontal: false, vertical: true)
-
-                                        NativeAuthLandingButton(
-                                            title: contactsAuthorizationStatus == .denied || contactsAuthorizationStatus == .restricted ? "Open settings" : "Allow contacts",
-                                            icon: .system("person.crop.circle.badge.checkmark"),
-                                            isLoading: awaitingContactsPermission,
-                                            style: .dark
-                                        ) {
-                                            requestInviteShareContactsPermission()
-                                        }
-                                    }
-                                    .padding(.horizontal, 14)
-                                    .padding(.vertical, 18)
-                                    .background(
-                                        LinearGradient(
-                                            colors: [
-                                                Color.white.opacity(0.14),
-                                                Color.white.opacity(0.09)
-                                            ],
-                                            startPoint: .topLeading,
-                                            endPoint: .bottomTrailing
-                                        )
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                                            .stroke(Color.white.opacity(0.18), lineWidth: 1)
-                                    )
-                                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-                                    .frame(maxWidth: contentWidth - 20)
-                                }
-                                .frame(width: contentWidth, height: 292, alignment: .center)
-                                .clipped()
-                            }
-                        }
-                    }
-                    .frame(width: contentWidth, alignment: .center)
-                    .frame(maxWidth: .infinity, alignment: .center)
-
-                    HStack(spacing: 12) {
-                        Rectangle()
-                            .fill(Color.white.opacity(0.2))
-                            .frame(height: 1)
-
-                        Text("OR")
-                            .font(nativeAppFont(size: 12, weight: .black))
-                            .foregroundStyle(.white.opacity(0.45))
-
-                        Rectangle()
-                            .fill(Color.white.opacity(0.2))
-                            .frame(height: 1)
-                    }
-                    .frame(width: contentWidth, alignment: .leading)
-
-                    HStack(spacing: 14) {
-                        Text(inviteShareCodeString)
-                            .font(nativeAppFont(size: 18, weight: .regular))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 12)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(nativeSurfaceStrong)
-                            .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
-
-                        NativeAuthLandingButton(
-                            title: "Share code",
-                            icon: .system("paperplane.fill"),
-                            isLoading: false,
-                            style: .light
-                        ) {
-                            showInviteCodeShareSheet = true
-                        }
-                        .frame(width: shareButtonWidth)
-                    }
-                    .frame(width: contentWidth, alignment: .leading)
+                switch inviteCircleState {
+                case .prePermission:
+                    inviteCirclePrePermissionContent
+                case .contactsGranted:
+                    inviteCircleGrantedContent
+                case .contactsDeniedOrSkipped:
+                    inviteCircleDeniedContent
                 }
-                .frame(width: contentWidth, alignment: .leading)
             }
-            .frame(width: cardWidth, alignment: .leading)
         }
-        .frame(height: 572)
+    }
+
+    private var inviteCircleInviterCard: some View {
+        NativeSurfaceCard {
+            HStack(spacing: 12) {
+                NativeAvatarCircle(
+                    url: validatedInvite?.inviter?.avatarUrl,
+                    fallbackText: validatedInvite?.inviter?.name ?? "V",
+                    size: 56,
+                    fontSize: 22
+                )
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(validatedInvite?.inviter?.name ?? "Vibinn member")
+                        .font(nativeAppFont(size: 16, weight: .black))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    Text("@\(validatedInvite?.inviter?.username ?? "vibinn")")
+                        .font(nativeAppFont(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.58))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+
+                if let inviterTraveler {
+                    Button {
+                        Task { await toggleInviterFollow(inviterTraveler) }
+                    } label: {
+                        Text(appState.isFollowing(inviterTraveler.id) ? "Following" : "Follow")
+                            .font(nativeAppFont(size: 13, weight: .black))
+                            .foregroundStyle(appState.isFollowing(inviterTraveler.id) ? nativeAccent : .black)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
+                            .background(appState.isFollowing(inviterTraveler.id) ? Color.clear : nativeAccent)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(appState.isFollowing(inviterTraveler.id) ? nativeAccent : Color.clear, lineWidth: 1.5)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isInviterFollowLoading)
+                } else {
+                    Text("Following")
+                        .font(nativeAppFont(size: 13, weight: .black))
+                        .foregroundStyle(nativeAccent)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 10)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .stroke(nativeAccent, lineWidth: 1.5)
+                        )
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                }
+            }
+        }
+    }
+
+    private var inviteCirclePrePermissionContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            NativeSurfaceCard {
+                Text("Contacts help you find friends already on Vibinn and invite others by text.")
+                    .font(nativeAppFont(size: 15, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            NativeAuthLandingButton(
+                title: "Continue with contacts",
+                icon: .system("person.2.fill"),
+                isLoading: awaitingContactsPermission,
+                style: .light
+            ) {
+                requestInviteShareContactsPermission()
+            }
+
+            Button {
+                inviteShareSkippedContacts = true
+            } label: {
+                Text("Skip and invite manually")
+                    .font(nativeAppFont(size: 15, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.76))
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.vertical, 8)
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var inviteCircleGrantedContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if isLoadingInviteContacts {
+                NativeSurfaceCard {
+                    HStack(spacing: 12) {
+                        ProgressView().tint(nativeAccent)
+                        Text("Loading contacts...")
+                            .font(nativeAppFont(size: 15, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
+                }
+            } else {
+                NativeSurfaceCard {
+                    HStack(spacing: 12) {
+                        Image(systemName: "magnifyingglass")
+                            .font(nativeAppFont(size: 15, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.45))
+                        TextField("Search by name", text: $inviteSearchQuery)
+                            .textInputAutocapitalization(.words)
+                            .autocorrectionDisabled()
+                            .font(nativeAppFont(size: 16, weight: .medium))
+                            .foregroundStyle(.white)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 13)
+                    .background(nativeSurfaceStrong)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                }
+
+                VStack(alignment: .leading, spacing: 10) {
+                    NativeSectionTitle("Already on Vibinn")
+                    if matchedInviteContactItems.isEmpty {
+                        NativeSurfaceCard {
+                            Text("No one from your contacts is on Vibinn yet.")
+                                .font(nativeAppFont(size: 14, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.56))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else {
+                        LazyVStack(spacing: 10) {
+                            ForEach(matchedInviteContactItems, id: \.match.id) { item in
+                                inviteMatchedContactRow(contact: item.contact, match: item.match)
+                            }
+                        }
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 12) {
+                    NativeSectionTitle("Invite 5 friends")
+                    inviteCircleSlotsRow
+
+                    Text(allInviteSlotsUsed ? "All 5 invites used" : "Invite up to 5 friends by text.")
+                        .font(nativeAppFont(size: 13, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.56))
+
+                    if unmatchedInviteContacts.isEmpty {
+                        NativeSurfaceCard {
+                            Text(allInviteSlotsUsed ? "All 5 invites used" : "No more contacts ready to invite.")
+                                .font(nativeAppFont(size: 14, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.56))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    } else {
+                        LazyVStack(spacing: 10) {
+                            ForEach(unmatchedInviteContacts.prefix(12)) { contact in
+                                inviteContactRow(contact: contact)
+                            }
+                        }
+                    }
+                }
+
+                if matchedInviteContactItems.isEmpty {
+                    inviteManualShareModule
+                }
+            }
+
+            NativeAuthLandingButton(
+                title: "Continue",
+                icon: .system("arrow.right.circle.fill"),
+                isLoading: false,
+                style: .light
+            ) {
+                finishInviteCircleOnboarding()
+            }
+        }
+    }
+
+    private var inviteCircleDeniedContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            NativeSurfaceCard {
+                Text("No contacts access? You can still invite friends with your code.")
+                    .font(nativeAppFont(size: 15, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            inviteManualShareModule
+
+            if contactsAuthorizationStatus == .denied || contactsAuthorizationStatus == .restricted || inviteShareSkippedContacts {
+                Button {
+                    requestInviteShareContactsPermission()
+                } label: {
+                    Text("Turn on contacts")
+                        .font(nativeAppFont(size: 15, weight: .bold))
+                        .foregroundStyle(.white.opacity(0.76))
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+            }
+
+            NativeAuthLandingButton(
+                title: "Continue",
+                icon: .system("arrow.right.circle.fill"),
+                isLoading: false,
+                style: .light
+            ) {
+                finishInviteCircleOnboarding()
+            }
+        }
+    }
+
+    private var inviteManualShareModule: some View {
+        NativeSurfaceCard {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("Your invite code")
+                    .font(nativeAppFont(size: 12, weight: .black))
+                    .foregroundStyle(.white.opacity(0.45))
+                    .textCase(.uppercase)
+
+                Text(inviteShareCodeString)
+                    .font(nativeAppFont(size: 22, weight: .black))
+                    .foregroundStyle(.white)
+
+                VStack(spacing: 10) {
+                    NativeAuthLandingButton(
+                        title: "Share invite",
+                        icon: .system("paperplane.fill"),
+                        isLoading: false,
+                        style: .light
+                    ) {
+                        showInviteCodeShareSheet = true
+                    }
+
+                    Button {
+                        UIPasteboard.general.string = inviteShareMessage
+                        appState.showToast(message: "Invite text copied", icon: "doc.on.doc.fill")
+                    } label: {
+                        Text("Copy invite text")
+                            .font(nativeAppFont(size: 15, weight: .black))
+                            .foregroundStyle(.white)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                            .padding(.vertical, 14)
+                            .background(nativeSurfaceStrong)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                    .stroke(nativeBorder, lineWidth: 1)
+                            )
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var inviteCircleSlotsRow: some View {
+        HStack(spacing: 10) {
+            ForEach(0..<inviteShareSlotCount, id: \.self) { index in
+                let isUsed = index < inviteSlotsUsedCount
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isUsed ? nativeAccent : Color.white.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(isUsed ? nativeAccent : Color.white.opacity(0.12), lineWidth: 1)
+                    )
+                    .frame(width: 40, height: 40)
+                    .overlay {
+                        if isUsed {
+                            Image(systemName: "checkmark")
+                                .font(nativeAppFont(size: 14, weight: .black))
+                                .foregroundStyle(.black)
+                        } else {
+                            Text("\(index + 1)")
+                                .font(nativeAppFont(size: 12, weight: .black))
+                                .foregroundStyle(.white.opacity(0.42))
+                        }
+                    }
+            }
+        }
     }
 
     private func backButton() -> some View {
@@ -13514,12 +13687,19 @@ private struct NativeAuthScreen: View {
     }
 
     private func openFirstPlaceLocationChooser() {
-        showFirstPlaceLocationSheet = true
+        if firstPlaceStage != .noLocation {
+            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                firstPlaceStage = .noLocation
+            }
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            focusedField = .firstPlaceSearch
+        }
     }
 
     private func selectFirstPlacePlace(_ place: NativePlace) {
         firstPlaceSelectedPlace = place
-        confirmSelectedFirstPlacePlace()
     }
 
     private func confirmSelectedFirstPlacePlace() {
@@ -13559,6 +13739,17 @@ private struct NativeAuthScreen: View {
         withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
             Task { await loadInviteShareSummaryIfNeeded() }
             step = .inviteShareEntry
+        }
+    }
+
+    private func finishInviteCircleOnboarding() {
+        Task {
+            await appState.completeOnboarding(
+                with: appState.effectiveDecisionLocation,
+                selectedInterests: appState.selectedInterests,
+                selectedVibe: appState.selectedVibe,
+                preserveExistingPreferences: true
+            )
         }
     }
 
@@ -13652,22 +13843,78 @@ private struct NativeAuthScreen: View {
             Spacer(minLength: 0)
 
             Button {
+                guard !allInviteSlotsUsed else { return }
                 startInviteSMS(for: contact)
             } label: {
-                Text(inviteAddedContacts.contains(where: { $0.id == contact.id }) ? "Added" : "Add")
+                let isInvited = inviteAddedContacts.contains(where: { $0.id == contact.id })
+                Text(isInvited ? "Invited" : "Invite")
                     .font(nativeAppFont(size: 13, weight: .black))
-                    .foregroundStyle(inviteAddedContacts.contains(where: { $0.id == contact.id }) ? nativeAccent : .black)
+                    .foregroundStyle(allInviteSlotsUsed && !isInvited ? .white.opacity(0.38) : nativeAccent)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    .background(inviteAddedContacts.contains(where: { $0.id == contact.id }) ? Color.clear : nativeAccent)
+                    .background(allInviteSlotsUsed && !isInvited ? Color.white.opacity(0.06) : Color.clear)
                     .overlay(
                         RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(inviteAddedContacts.contains(where: { $0.id == contact.id }) ? nativeAccent : Color.clear, lineWidth: 1.5)
+                            .stroke(
+                                allInviteSlotsUsed && !isInvited ? Color.white.opacity(0.14) : nativeAccent,
+                                lineWidth: 1.5
+                            )
                     )
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             }
             .buttonStyle(.plain)
-            .disabled(inviteAddedContacts.contains(where: { $0.id == contact.id }))
+            .disabled(inviteAddedContacts.contains(where: { $0.id == contact.id }) || allInviteSlotsUsed)
+        }
+        .padding(12)
+        .background(nativeSurfaceStrong)
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func inviteMatchedContactRow(contact: NativeInviteContact, match: NativeMatchedFeedContact) -> some View {
+        let traveler = match.traveler
+        let isFollowing = appState.isFollowing(traveler.id)
+
+        return HStack(spacing: 12) {
+            NativeAvatarCircle(
+                url: traveler.avatar,
+                fallbackText: traveler.displayName ?? traveler.username,
+                size: inviteAvatarSize,
+                fontSize: 22
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(contact.displayName)
+                    .font(nativeAppFont(size: 15, weight: .black))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                Text("@\(traveler.username)")
+                    .font(nativeAppFont(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .lineLimit(1)
+                Text("In your contacts")
+                    .font(nativeAppFont(size: 11, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.38))
+                    .textCase(.uppercase)
+            }
+
+            Spacer(minLength: 0)
+
+            Button {
+                Task { _ = try? await appState.toggleFollowQuietly(for: traveler) }
+            } label: {
+                Text(isFollowing ? "Following" : "Follow")
+                    .font(nativeAppFont(size: 13, weight: .black))
+                    .foregroundStyle(isFollowing ? nativeAccent : .black)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
+                    .background(isFollowing ? Color.clear : nativeAccent)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(isFollowing ? nativeAccent : Color.clear, lineWidth: 1.5)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+            .buttonStyle(.plain)
         }
         .padding(12)
         .background(nativeSurfaceStrong)
@@ -13707,6 +13954,7 @@ private struct NativeAuthScreen: View {
         switch status {
         case .authorized:
             contactsPermissionGranted = true
+            inviteShareSkippedContacts = false
             Task { await loadInviteContactsIfNeeded(force: true) }
         case .notDetermined:
             awaitingContactsPermission = true
@@ -13716,20 +13964,25 @@ private struct NativeAuthScreen: View {
                     contactsAuthorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
                     contactsPermissionGranted = granted
                     if granted {
+                        inviteShareSkippedContacts = false
                         await loadInviteContactsIfNeeded(force: true)
+                    } else {
+                        inviteShareSkippedContacts = false
                     }
                 }
             }
         case .denied, .restricted:
+            inviteShareSkippedContacts = false
             appState.openSystemSettings()
         @unknown default:
+            inviteShareSkippedContacts = false
             appState.openSystemSettings()
         }
     }
 
     private func loadInviteContactsIfNeeded(force: Bool = false) async {
         guard contactsPermissionGranted else { return }
-        if !force && !inviteContacts.isEmpty { return }
+        if !force && (!inviteContacts.isEmpty || !inviteMatchedContacts.isEmpty) { return }
 
         isLoadingInviteContacts = true
         defer { isLoadingInviteContacts = false }
@@ -13764,15 +14017,28 @@ private struct NativeAuthScreen: View {
                     NativeInviteContact(
                         id: digits,
                         displayName: displayName,
-                        phoneNumbers: [digits],
+                        phoneNumbers: contact.phoneNumbers
+                            .map(\.value.stringValue)
+                            .map { $0.filter { $0.isNumber || $0 == "+" } }
+                            .filter { !$0.isEmpty },
                         avatarData: contact.thumbnailImageData
                     )
                 )
             }
-            inviteContacts = loaded.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            let sortedContacts = loaded.sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+            let allPhoneNumbers = Array(Set(sortedContacts.flatMap(\.phoneNumbers)))
+            let matches = try await appState.matchContactsForFeed(phoneNumbers: allPhoneNumbers)
+            inviteMatchedContacts = matches
+            inviteContacts = sortedContacts
         } catch {
             presentTransientErrorMessage("Could not load contacts right now.")
         }
+    }
+
+    private func toggleInviterFollow(_ traveler: NativeTravelerSummary) async {
+        isInviterFollowLoading = true
+        defer { isInviterFollowLoading = false }
+        _ = try? await appState.toggleFollowQuietly(for: traveler)
     }
 
     private func startInviteSMS(for contact: NativeInviteContact) {
@@ -13815,7 +14081,6 @@ private struct NativeAuthScreen: View {
         inviteSMSContact = nil
         firstPlaceStage = .consent
         showFirstPlacePicker = false
-        showFirstPlaceLocationSheet = false
         isSubmitting = false
         isDebugActionRunning = false
     }

@@ -296,13 +296,16 @@ function buildInviteCodeSummary(inviteCode: {
 
 function buildInviterPreview(inviteCode: {
   owner: {
+    id: string;
     displayName: string | null;
     username: string | null;
     avatarUrl: string | null;
   };
 }) {
   return {
+    id: inviteCode.owner.id,
     name: inviteCode.owner.displayName ?? inviteCode.owner.username ?? 'Vibinn member',
+    username: inviteCode.owner.username ?? undefined,
     avatarUrl: inviteCode.owner.avatarUrl ?? undefined,
   };
 }
@@ -315,6 +318,7 @@ export async function validateInviteCode(rawCode: string) {
     include: {
       owner: {
         select: {
+          id: true,
           displayName: true,
           username: true,
           avatarUrl: true,
