@@ -9995,15 +9995,25 @@ function requireV2Auth(req: AuthenticatedRequest, res: express.Response, next: e
 }
 
 async function optionalAuth(req: AuthenticatedRequest, _res: express.Response, next: express.NextFunction) {
+  const header = req.header('Authorization');
+  const token = header?.startsWith('Bearer ') ? header.slice(7).trim() : null;
+
+  if (!token) {
+    next();
+    return;
+  }
+
   try {
-    const header = req.header('Authorization');
-    const token = header?.startsWith('Bearer ') ? header.slice(7).trim() : null;
-
-    if (!token) {
-      next();
-      return;
+    const v2Session = await getV2SessionFromToken(token);
+    if (v2Session) {
+      req.authV2UserId = v2Session.userId;
+      req.authV2Token = token;
     }
+  } catch (error) {
+    console.error(error);
+  }
 
+  try {
     const session = await prisma.session.findFirst({
       where: {
         token,
@@ -10015,16 +10025,6 @@ async function optionalAuth(req: AuthenticatedRequest, _res: express.Response, n
 
     if (session) {
       req.authUserId = session.userId;
-    }
-
-    const v2Session = await getV2SessionFromToken(token).catch((error) => {
-      console.error(error);
-      return null;
-    });
-
-    if (v2Session) {
-      req.authV2UserId = v2Session.userId;
-      req.authV2Token = token;
     }
   } catch (error) {
     console.error(error);
