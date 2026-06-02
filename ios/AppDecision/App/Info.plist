@@ -73,6 +73,8 @@
 	<string>Vibinn uses your photo library so you can pick a moment photo for your check-in and share your visit.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>Vibinn may save edited check-in photos back to your library when you choose to use them for your post.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Vibinn uses your contacts to help you find friends who are already on Vibinn. We never store your full contact list.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Vibinn uses your location to show how far places are and personalize discovery around where you are.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>

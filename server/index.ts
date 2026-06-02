@@ -11052,12 +11052,43 @@ app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
       return;
     }
 
+    const origin = Number.isFinite(originLat) && Number.isFinite(originLon)
+      ? { latitude: originLat, longitude: originLon }
+      : null;
+
+    const distanceMetersBetween = (
+      from: { latitude: number; longitude: number },
+      to: { latitude: number; longitude: number },
+    ) => {
+      const earthRadius = 6371000;
+      const dLat = ((to.latitude - from.latitude) * Math.PI) / 180;
+      const dLon = ((to.longitude - from.longitude) * Math.PI) / 180;
+      const fromLat = (from.latitude * Math.PI) / 180;
+      const toLat = (to.latitude * Math.PI) / 180;
+      const a = Math.sin(dLat / 2) ** 2
+        + Math.cos(fromLat) * Math.cos(toLat) * Math.sin(dLon / 2) ** 2;
+      const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+      return earthRadius * c;
+    };
+
+    const queryMatchScore = (place: { name?: string | null; address?: string | null; location?: string | null }) => {
+      const normalizedQuery = query.toLowerCase();
+      const name = String(place.name ?? '').toLowerCase();
+      const address = String(place.address ?? '').toLowerCase();
+      const location = String(place.location ?? '').toLowerCase();
+
+      if (name === normalizedQuery) return 500;
+      if (name.startsWith(normalizedQuery)) return 360;
+      if (name.includes(normalizedQuery)) return 260;
+      if (address.includes(normalizedQuery)) return 180;
+      if (location.includes(normalizedQuery)) return 120;
+      return 0;
+    };
+
     const predictions = await fetchGooglePlaceSuggestions(query, {
       sessionToken,
       locationLabel: typeof req.query.location === 'string' ? req.query.location : null,
-      origin: Number.isFinite(originLat) && Number.isFinite(originLon)
-        ? { latitude: originLat, longitude: originLon }
-        : null,
+      origin,
     });
     const autocompletePlaces = (predictions ?? []).map((prediction) =>
       mapGoogleAutocompleteSuggestionForClient(prediction, { sessionToken })
@@ -11070,7 +11101,21 @@ app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
             Promise.all(
               (result.places ?? [])
                 .slice(0, 6)
-                .map((place) => mapGoogleSearchPlaceToInternalPlace(place, { queryContext: query })),
+                .map(async (place) => {
+                  const mapped = await mapGoogleSearchPlaceToInternalPlace(place, { queryContext: query });
+                  if (
+                    origin &&
+                    typeof mapped.latitude === 'number' &&
+                    typeof mapped.longitude === 'number' &&
+                    !mapped.distanceMeters
+                  ) {
+                    mapped.distanceMeters = distanceMetersBetween(origin, {
+                      latitude: mapped.latitude,
+                      longitude: mapped.longitude,
+                    });
+                  }
+                  return mapped;
+                }),
             ),
           )
           .catch((error) => {
@@ -11081,7 +11126,18 @@ app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
     const places = dedupeNativePlacesById([
       ...autocompletePlaces,
       ...textSearchPlaces,
-    ]).slice(0, 8);
+    ])
+      .sort((left, right) => {
+        const scoreDelta = queryMatchScore(right) - queryMatchScore(left);
+        if (scoreDelta !== 0) return scoreDelta;
+
+        const leftDistance = typeof left.distanceMeters === 'number' ? left.distanceMeters : Number.POSITIVE_INFINITY;
+        const rightDistance = typeof right.distanceMeters === 'number' ? right.distanceMeters : Number.POSITIVE_INFINITY;
+        if (leftDistance !== rightDistance) return leftDistance - rightDistance;
+
+        return String(left.name ?? '').localeCompare(String(right.name ?? ''));
+      })
+      .slice(0, 8);
 
     res.json({ places });
   } catch (error) {
