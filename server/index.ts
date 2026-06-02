@@ -8259,7 +8259,21 @@ async function getUnifiedPlaceTravelerMoments(
   const mutualFollowUserIds = await loadV2MutualFollowUserIds(userId, followedUserIds);
   const trustedUserIds = Array.from(new Set([userId, ...followedUserIds]));
 
+  console.log('[place-circle] start', {
+    placeId: place.id,
+    placeName: place.name,
+    googlePlaceId,
+    viewerUserId: userId,
+    followedUserIds,
+    mutualFollowUserIds: Array.from(mutualFollowUserIds),
+    trustedUserIds,
+  });
+
   if (trustedUserIds.length === 0) {
+    console.log('[place-circle] no-trusted-users', {
+      placeId: place.id,
+      viewerUserId: userId,
+    });
     return [];
   }
 
@@ -8295,6 +8309,23 @@ async function getUnifiedPlaceTravelerMoments(
     return [];
   });
 
+  console.log('[place-circle] exact-moments', {
+    placeId: place.id,
+    viewerUserId: userId,
+    count: exactMoments.length,
+    moments: exactMoments.map((moment) => ({
+      id: moment.id,
+      userId: moment.userId,
+      placeId: moment.placeId,
+      placeGooglePlaceId: moment.placeGooglePlaceId,
+      placeName: moment.placeName,
+      visibility: moment.visibility,
+      uploadedMediaCount: (moment.uploadedMedia ?? []).filter((url) => url.trim().length > 0).length,
+    })),
+  });
+
+  const usedNameFallback = exactMoments.length === 0 && Boolean(normalizedPlaceName);
+
   const moments = exactMoments.length > 0 || !normalizedPlaceName
     ? exactMoments
     : await prismaV2.moment.findMany({
@@ -8307,6 +8338,23 @@ async function getUnifiedPlaceTravelerMoments(
       console.error(error);
       return [];
     });
+
+  if (usedNameFallback) {
+    console.log('[place-circle] name-fallback-moments', {
+      placeId: place.id,
+      viewerUserId: userId,
+      count: moments.length,
+      moments: moments.map((moment) => ({
+        id: moment.id,
+        userId: moment.userId,
+        placeId: moment.placeId,
+        placeGooglePlaceId: moment.placeGooglePlaceId,
+        placeName: moment.placeName,
+        visibility: moment.visibility,
+        uploadedMediaCount: (moment.uploadedMedia ?? []).filter((url) => url.trim().length > 0).length,
+      })),
+    });
+  }
 
   const visibleMoments = moments
     .filter((moment) => canViewerSeeV2Moment(moment, userId, mutualFollowUserIds))
@@ -8340,6 +8388,26 @@ async function getUnifiedPlaceTravelerMoments(
 
       return right.createdAt.getTime() - left.createdAt.getTime();
     });
+
+  console.log('[place-circle] visible-moments', {
+    placeId: place.id,
+    viewerUserId: userId,
+    count: visibleMoments.length,
+    moments: visibleMoments.map((moment) => ({
+      id: moment.id,
+      userId: moment.userId,
+      visibility: moment.visibility,
+      uploadedMediaCount: (moment.uploadedMedia ?? []).filter((url) => url.trim().length > 0).length,
+      relationshipStrength:
+        moment.userId === userId
+          ? 3
+          : mutualFollowUserIds.has(moment.userId)
+            ? 2
+            : followedUserIds.includes(moment.userId)
+              ? 1
+              : 0,
+    })),
+  });
 
   const socialState = await loadV2MomentSocialState(visibleMoments.map((moment) => moment.id), undefined);
 
