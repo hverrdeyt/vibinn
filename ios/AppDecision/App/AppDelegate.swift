@@ -3544,7 +3544,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     func searchV2PhotoPlaces(query: String) async throws -> [NativePlace] {
-        try await api.searchV2PhotoPlaces(query: query, token: authToken, origin: currentCoordinate)
+        try await api.searchV2PhotoPlaces(query: query, token: authToken, origin: nil)
     }
 
     func resetV2OnboardingForDebug(token: String) async throws -> NativeV2OnboardingPayload {
@@ -11314,7 +11314,9 @@ private struct NativeAuthScreen: View {
             if value == .noLocation && step == .firstPlaceEntry {
                 Task { @MainActor in
                     try? await Task.sleep(nanoseconds: 150_000_000)
-                    focusedField = nil
+                    openFirstPlaceLocationChooser()
+                    try? await Task.sleep(nanoseconds: 220_000_000)
+                    focusedField = .firstPlaceSearch
                 }
             }
         }
@@ -11350,7 +11352,7 @@ private struct NativeAuthScreen: View {
         visibleStickerCount = 0
         showsActions = false
 
-        let fullText = "Less thinking.\nMore going."
+        let fullText = "Your food diary,\nnot another feed"
         for character in fullText {
             typedTagline.append(character)
             if character == "\n" {
@@ -11587,14 +11589,14 @@ private struct NativeAuthScreen: View {
         case .exifCandidates, .noLocation:
             "PICK LOCATION"
         default:
-            "BEEN SOMEWHERE?"
+            "START YOUR FOOD DIARY"
         }
     }
 
     private var firstPlaceSubtitle: String? {
         switch firstPlaceStage {
         case .consent:
-            "Drop a photo from your last visit. Your diary starts just like that."
+            "Add one photo from your last meal, café, or spot. This is how your food diary begins."
         case .exifCandidates, .noLocation:
             nil
         case .photoPermission:
@@ -11646,18 +11648,10 @@ private struct NativeAuthScreen: View {
     }
 
     private func firstPlaceSkipLink() -> some View {
-        Button {
-            withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                Task { await loadInviteShareSummaryIfNeeded() }
-                step = .inviteShareEntry
-            }
-        } label: {
-            Text("Skip for now")
-                .font(nativeAppFont(size: 14, weight: .bold))
-                .foregroundStyle(.white.opacity(0.5))
-                .frame(maxWidth: .infinity, alignment: .center)
-        }
-        .buttonStyle(.plain)
+        Text("This only takes a minute")
+            .font(nativeAppFont(size: 14, weight: .bold))
+            .foregroundStyle(.white.opacity(0.5))
+            .frame(maxWidth: .infinity, alignment: .center)
     }
 
     private var stepTitle: String {
@@ -12125,7 +12119,7 @@ private struct NativeAuthScreen: View {
                     .foregroundStyle(nativeAccent)
                     .fixedSize(horizontal: false, vertical: true)
 
-                Text("Location helps Vibinn show nearby places and more relevant recommendations.")
+                Text("Location helps Vibinn show nearby places, accurate distance, and better place suggestions when you log a memory.")
                     .font(nativeAppFont(size: 20, weight: .bold))
                     .foregroundStyle(.white.opacity(0.84))
                     .fixedSize(horizontal: false, vertical: true)
@@ -12232,9 +12226,21 @@ private struct NativeAuthScreen: View {
                             .frame(maxWidth: .infinity)
                             .frame(height: 320)
                             .overlay {
-                                Image(systemName: "photo.badge.plus")
-                                    .font(nativeAppFont(size: 40, weight: .bold))
-                                    .foregroundStyle(.white.opacity(0.9))
+                                VStack(spacing: 10) {
+                                    Image(systemName: "photo.badge.plus")
+                                        .font(nativeAppFont(size: 40, weight: .bold))
+                                        .foregroundStyle(.white.opacity(0.9))
+
+                                    VStack(spacing: 4) {
+                                        Text("Choose a photo")
+                                            .font(nativeAppFont(size: 18, weight: .black))
+                                            .foregroundStyle(.white)
+
+                                        Text("Last food, café, or food spot")
+                                            .font(nativeAppFont(size: 13, weight: .semibold))
+                                            .foregroundStyle(.white.opacity(0.5))
+                                    }
+                                }
                             }
                     }
                     .buttonStyle(.plain)
@@ -12347,36 +12353,14 @@ private struct NativeAuthScreen: View {
                             .frame(maxWidth: .infinity, alignment: .center)
                     }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("No location on the photo")
-                            .font(nativeAppFont(size: 18, weight: .bold))
-                            .foregroundStyle(.white)
-
-                        Text("This photo doesn’t include location data. It usually happens when location access was turned off when the photo was taken.")
-                            .font(nativeAppFont(size: 14, weight: .medium))
-                            .foregroundStyle(.white.opacity(0.5))
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 18)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(red: 44 / 255, green: 0 / 255, blue: 0 / 255))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 24, style: .continuous)
-                            .stroke(Color.red, lineWidth: 1.5)
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-
                     NativeAuthLandingButton(
-                        title: "Choose location",
+                        title: "Search places",
                         icon: .system("magnifyingglass"),
                         isLoading: false,
                         style: .dark
                     ) {
                         openFirstPlaceLocationChooser()
                     }
-
-                    firstPlaceSkipLink()
                 }
 
             case .review:
@@ -12531,6 +12515,7 @@ private struct NativeAuthScreen: View {
                         .padding(.vertical, 10)
                         .background(nativeSurfaceStrong)
                         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .focused($focusedField, equals: .firstPlaceSearch)
 
                     Button("Done") {
                         showFirstPlaceLocationSheet = false
@@ -12580,6 +12565,12 @@ private struct NativeAuthScreen: View {
         }
         .navigationViewStyle(.stack)
         .modifier(NativeTallBottomSheetPresentationModifier())
+        .onAppear {
+            Task { @MainActor in
+                try? await Task.sleep(nanoseconds: 180_000_000)
+                focusedField = .firstPlaceSearch
+            }
+        }
     }
 
     private var onboardingDebugAvailable: Bool {
@@ -13524,22 +13515,6 @@ private struct NativeAuthScreen: View {
 
     private func openFirstPlaceLocationChooser() {
         showFirstPlaceLocationSheet = true
-        if
-            firstPlaceManualResults.isEmpty,
-            appState.locationPermissionState == .authorized,
-            let coordinate = appState.currentCoordinate
-        {
-            Task {
-                do {
-                    firstPlaceManualResults = try await appState.reverseV2PhotoPlaces(
-                        latitude: coordinate.latitude,
-                        longitude: coordinate.longitude
-                    ).places
-                } catch {
-                    presentTransientErrorMessage("Could not load nearby places right now.")
-                }
-            }
-        }
     }
 
     private func selectFirstPlacePlace(_ place: NativePlace) {
@@ -14886,7 +14861,7 @@ private struct NativeOnboardingScreen: View {
         case .locationPermission:
             permissionPage(
                 title: "Enable location",
-                subtitle: "Location helps Vibinn show nearby places and more relevant recommendations.",
+                subtitle: "Location helps Vibinn show nearby places, accurate distance, and better place suggestions when you log a memory.",
                 buttonTitle: "Continue",
                 iconName: "location.fill"
             ) {
@@ -32337,14 +32312,9 @@ private struct NativeCheckInScreen: View {
                             .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
                         VStack(alignment: .leading, spacing: 6) {
-                            Text(placeCandidates.isEmpty ? "No location found on this photo yet." : "We found a few likely places from this photo.")
+                            Text(selectedMomentDateLabel)
                                 .font(nativeAppFont(size: 15, weight: .black))
                                 .foregroundStyle(.white)
-                                .fixedSize(horizontal: false, vertical: true)
-
-                            Text(placeCandidates.isEmpty ? "Search manually to pick the place." : "Pick the place that matches your latest log.")
-                                .font(nativeAppFont(size: 13, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.62))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -33524,14 +33494,24 @@ private struct NativeCheckInPlaceRow: View {
     }
 
     private var tertiaryLine: String? {
-        if let distanceLabel {
-            return distanceLabel
+        let resolvedShortAddress: String? = {
+            if let shortAddressLabel, !shortAddressLabel.isEmpty {
+                return shortAddressLabel
+            }
+            let fallbackLocation = place.location.trimmingCharacters(in: .whitespacesAndNewlines)
+            return fallbackLocation.isEmpty ? nil : fallbackLocation
+        }()
+
+        switch (distanceLabel, resolvedShortAddress) {
+        case let (distance?, address?) where !address.isEmpty:
+            return "\(distance) • \(address)"
+        case let (distance?, _):
+            return distance
+        case let (_, address?) where !address.isEmpty:
+            return address
+        default:
+            return nil
         }
-        if let shortAddressLabel, !shortAddressLabel.isEmpty {
-            return shortAddressLabel
-        }
-        let fallbackLocation = place.location.trimmingCharacters(in: .whitespacesAndNewlines)
-        return fallbackLocation.isEmpty ? nil : fallbackLocation
     }
 
     private var distanceLabel: String? {

@@ -11059,11 +11059,29 @@ app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
         ? { latitude: originLat, longitude: originLon }
         : null,
     });
-    const places = dedupeNativePlacesById(
-      (predictions ?? []).map((prediction) =>
-        mapGoogleAutocompleteSuggestionForClient(prediction, { sessionToken })
-      )
-    ).slice(0, 8);
+    const autocompletePlaces = (predictions ?? []).map((prediction) =>
+      mapGoogleAutocompleteSuggestionForClient(prediction, { sessionToken })
+    );
+
+    const textSearchPlaces = autocompletePlaces.length >= 5
+      ? []
+      : await fetchGoogleTextSearch(query)
+          .then((result) =>
+            Promise.all(
+              (result.places ?? [])
+                .slice(0, 6)
+                .map((place) => mapGoogleSearchPlaceToInternalPlace(place, { queryContext: query })),
+            ),
+          )
+          .catch((error) => {
+            console.error(error);
+            return [];
+          });
+
+    const places = dedupeNativePlacesById([
+      ...autocompletePlaces,
+      ...textSearchPlaces,
+    ]).slice(0, 8);
 
     res.json({ places });
   } catch (error) {
