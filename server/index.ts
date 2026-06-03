@@ -2876,6 +2876,122 @@ async function fetchGoogleTextSearch(textQuery: string) {
   }>;
 }
 
+async function fetchGoogleTextSearchWithOptions(input: {
+  textQuery: string;
+  origin?: { latitude: number; longitude: number } | null;
+  pageSize?: number;
+}) {
+  if (!GOOGLE_MAPS_API_KEY) return null;
+
+  const placeFieldMask = [
+    'places.id',
+    'places.displayName',
+    'places.formattedAddress',
+    'places.shortFormattedAddress',
+    'places.location',
+    'places.primaryType',
+    'places.primaryTypeDisplayName',
+    'places.googleMapsTypeLabel',
+    'places.types',
+    'places.businessStatus',
+    'places.openingDate',
+    'places.rating',
+    'places.userRatingCount',
+    'places.priceLevel',
+    'places.priceRange',
+    'places.googleMapsUri',
+    'places.googleMapsLinks',
+    'places.websiteUri',
+    'places.regularOpeningHours.weekdayDescriptions',
+    'places.currentOpeningHours.weekdayDescriptions',
+    'places.photos',
+    'places.addressComponents',
+    'places.servesBreakfast',
+    'places.servesLunch',
+    'places.servesDinner',
+    'places.servesBeer',
+    'places.servesWine',
+    'places.servesBrunch',
+    'places.servesDessert',
+    'places.servesCoffee',
+    'places.servesCocktails',
+    'places.servesVegetarianFood',
+    'places.takeout',
+    'places.delivery',
+    'places.dineIn',
+    'places.curbsidePickup',
+    'places.reservable',
+    'places.liveMusic',
+    'places.menuForChildren',
+    'places.goodForChildren',
+    'places.allowsDogs',
+    'places.restroom',
+    'places.goodForGroups',
+    'places.goodForWatchingSports',
+    'places.timeZone',
+    'places.utcOffsetMinutes',
+    'places.outdoorSeating',
+    'places.paymentOptions',
+    'places.parkingOptions',
+    'places.accessibilityOptions',
+    'places.editorialSummary',
+    'places.reviewSummary',
+    'places.generativeSummary',
+    'places.containingPlaces',
+    'places.reviews',
+  ];
+
+  const response = await fetch('https://places.googleapis.com/v1/places:searchText', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Goog-Api-Key': GOOGLE_MAPS_API_KEY,
+      'X-Goog-FieldMask': placeFieldMask.join(','),
+    },
+    body: JSON.stringify({
+      textQuery: input.textQuery,
+      pageSize: input.pageSize ?? 20,
+      ...(input.origin ? {
+        locationBias: {
+          circle: {
+            center: input.origin,
+            radius: 15000,
+          },
+        },
+      } : {}),
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Google Places text search failed with ${response.status}`);
+  }
+
+  return response.json() as Promise<{
+    places?: GoogleTextSearchPlace[];
+  }>;
+}
+
+function inferSupportedCityBiasLabel(origin?: { latitude: number; longitude: number } | null) {
+  if (!origin) return null;
+
+  const cityCenters = [
+    { label: 'Boston', latitude: 42.3601, longitude: -71.0589 },
+    { label: 'New York', latitude: 40.7128, longitude: -74.0060 },
+    { label: 'Jakarta', latitude: -6.2088, longitude: 106.8456 },
+    { label: 'Bandung', latitude: -6.9175, longitude: 107.6191 },
+  ];
+
+  const withDistances = cityCenters.map((city) => ({
+    label: city.label,
+    distanceMeters: distanceMetersBetween(origin, {
+      latitude: city.latitude,
+      longitude: city.longitude,
+    }),
+  })).sort((left, right) => left.distanceMeters - right.distanceMeters);
+
+  return withDistances[0]?.distanceMeters <= 100_000 ? withDistances[0].label : null;
+}
+
 async function getPlaceSuggestions(input: string) {
   try {
     const googlePredictions = await fetchGooglePlaceSuggestions(input).catch((error) => {
@@ -3043,19 +3159,48 @@ function distanceMetersBetween(
 
 function scorePlaceKeywordMatch(
   query: string,
-  place: { name?: string | null; address?: string | null; location?: string | null },
+  place: { name?: string | null; address?: string | null; location?: string | null; category?: string | null },
+  options?: {
+    preferredCityLabel?: string | null;
+  },
 ) {
   const normalizedQuery = query.toLowerCase().trim();
   const name = String(place.name ?? '').toLowerCase();
   const address = String(place.address ?? '').toLowerCase();
   const location = String(place.location ?? '').toLowerCase();
+  const category = String(place.category ?? '').toLowerCase();
+  const preferredCity = String(options?.preferredCityLabel ?? '').toLowerCase().trim();
 
-  if (name === normalizedQuery) return 500;
-  if (name.startsWith(normalizedQuery)) return 380;
-  if (name.includes(normalizedQuery)) return 280;
-  if (address.includes(normalizedQuery)) return 180;
-  if (location.includes(normalizedQuery)) return 120;
-  return 0;
+  let score = 0;
+
+  if (name === normalizedQuery) score += 500;
+  else if (name.startsWith(normalizedQuery)) score += 380;
+  else if (name.includes(normalizedQuery)) score += 280;
+  else if (address.includes(normalizedQuery)) score += 180;
+  else if (location.includes(normalizedQuery)) score += 120;
+  else score += 0;
+
+  const queryTerms = normalizedQuery.split(/\s+/).filter(Boolean);
+  const nameTerms = name.split(/\s+/).filter(Boolean);
+  const prefixTermMatches = queryTerms.filter((term) => nameTerms.some((candidate) => candidate.startsWith(term))).length;
+  const containsTermMatches = queryTerms.filter((term) => `${name} ${address} ${location}`.includes(term)).length;
+  score += prefixTermMatches * 45;
+  score += containsTermMatches * 18;
+
+  if (preferredCity) {
+    const inPreferredCity = address.includes(preferredCity) || location.includes(preferredCity);
+    if (inPreferredCity) {
+      score += 220;
+    } else {
+      score -= 30;
+    }
+  }
+
+  if (category === 'route') {
+    score -= 220;
+  }
+
+  return score;
 }
 
 async function searchUnifiedCheckInPlaces(
@@ -3082,13 +3227,19 @@ async function searchUnifiedCheckInPlaces(
     })
   );
 
-  const textSearchPlaces = autocompletePlaces.length >= 10
+  const preferredCityLabel = inferSupportedCityBiasLabel(options.origin);
+
+  const rawTextSearchPlaces = autocompletePlaces.length >= 10
     ? []
-    : await fetchGoogleTextSearch(normalizedInput)
+    : await fetchGoogleTextSearchWithOptions({
+        textQuery: normalizedInput,
+        origin: options.origin,
+        pageSize: 20,
+      })
         .then((result) =>
           Promise.all(
             (result.places ?? [])
-              .slice(0, 12)
+              .slice(0, 20)
               .map(async (place) => {
                 const mapped = await mapGoogleSearchPlaceToInternalPlace(place, { queryContext: normalizedInput });
                 if (
@@ -3111,12 +3262,50 @@ async function searchUnifiedCheckInPlaces(
           return [];
         });
 
+  const cityBiasedTextSearchPlaces = autocompletePlaces.length >= 10 || !preferredCityLabel
+    ? []
+    : await fetchGoogleTextSearchWithOptions({
+        textQuery: `${normalizedInput} ${preferredCityLabel}`,
+        origin: options.origin,
+        pageSize: 20,
+      })
+        .then((result) =>
+          Promise.all(
+            (result.places ?? [])
+              .slice(0, 20)
+              .map(async (place) => {
+                const mapped = await mapGoogleSearchPlaceToInternalPlace(place, {
+                  queryContext: `${normalizedInput} ${preferredCityLabel}`,
+                });
+                if (
+                  options.origin &&
+                  typeof mapped.latitude === 'number' &&
+                  typeof mapped.longitude === 'number' &&
+                  !mapped.distanceMeters
+                ) {
+                  mapped.distanceMeters = distanceMetersBetween(options.origin, {
+                    latitude: mapped.latitude,
+                    longitude: mapped.longitude,
+                  });
+                }
+                return mapped;
+              }),
+          ),
+        )
+        .catch((error) => {
+          console.error(error);
+          return [];
+        });
+
   return dedupeNativePlacesById([
     ...autocompletePlaces,
-    ...textSearchPlaces,
+    ...rawTextSearchPlaces,
+    ...cityBiasedTextSearchPlaces,
   ])
     .sort((left, right) => {
-      const scoreDelta = scorePlaceKeywordMatch(normalizedInput, right) - scorePlaceKeywordMatch(normalizedInput, left);
+      const scoreDelta =
+        scorePlaceKeywordMatch(normalizedInput, right, { preferredCityLabel })
+        - scorePlaceKeywordMatch(normalizedInput, left, { preferredCityLabel });
       if (scoreDelta !== 0) return scoreDelta;
 
       const leftDistance = typeof left.distanceMeters === 'number' ? left.distanceMeters : Number.POSITIVE_INFINITY;
