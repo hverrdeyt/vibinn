@@ -2880,6 +2880,8 @@ async function fetchGoogleTextSearchWithOptions(input: {
   textQuery: string;
   origin?: { latitude: number; longitude: number } | null;
   pageSize?: number;
+  locationRestriction?: { rectangle: { low: { latitude: number; longitude: number }; high: { latitude: number; longitude: number } } } | null;
+  rankPreference?: 'DISTANCE' | 'RELEVANCE';
 }) {
   if (!GOOGLE_MAPS_API_KEY) return null;
 
@@ -2951,6 +2953,8 @@ async function fetchGoogleTextSearchWithOptions(input: {
     body: JSON.stringify({
       textQuery: input.textQuery,
       pageSize: input.pageSize ?? 20,
+      ...(input.rankPreference ? { rankPreference: input.rankPreference } : {}),
+      ...(input.locationRestriction ? { locationRestriction: input.locationRestriction } : {}),
       ...(input.origin ? {
         locationBias: {
           circle: {
@@ -3164,7 +3168,7 @@ function scorePlaceKeywordMatch(
     preferredCityLabel?: string | null;
   },
 ) {
-  const normalizedQuery = query.toLowerCase().trim();
+  const normalizedQuery = normalizePlaceSearchQuery(query);
   const name = String(place.name ?? '').toLowerCase();
   const address = String(place.address ?? '').toLowerCase();
   const location = String(place.location ?? '').toLowerCase();
@@ -3203,6 +3207,36 @@ function scorePlaceKeywordMatch(
   return score;
 }
 
+function normalizePlaceSearchQuery(query: string) {
+  return query
+    .toLowerCase()
+    .trim()
+    .replace(/\bstr\b/g, 'street')
+    .replace(/\bst\b/g, 'street')
+    .replace(/\bave\b/g, 'avenue')
+    .replace(/\bav\b/g, 'avenue')
+    .replace(/\brd\b/g, 'road')
+    .replace(/\bblvd\b/g, 'boulevard')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function buildPlaceSearchQueryVariants(query: string, preferredCityLabel?: string | null) {
+  const base = query.trim();
+  const normalized = normalizePlaceSearchQuery(query);
+  const variants = new Set<string>();
+
+  if (base) variants.add(base);
+  if (normalized && normalized !== base.toLowerCase()) variants.add(normalized);
+
+  if (preferredCityLabel) {
+    if (base) variants.add(`${base} ${preferredCityLabel}`);
+    if (normalized) variants.add(`${normalized} ${preferredCityLabel}`);
+  }
+
+  return Array.from(variants).filter(Boolean);
+}
+
 async function searchUnifiedCheckInPlaces(
   input: string,
   options: {
@@ -3228,79 +3262,94 @@ async function searchUnifiedCheckInPlaces(
   );
 
   const preferredCityLabel = inferSupportedCityBiasLabel(options.origin);
-
-  const rawTextSearchPlaces = autocompletePlaces.length >= 10
+  const preferredCityKey = normalizeCheckInAutocompleteCity(preferredCityLabel);
+  const textSearchQueryVariants = autocompletePlaces.length >= 10
     ? []
-    : await fetchGoogleTextSearchWithOptions({
-        textQuery: normalizedInput,
-        origin: options.origin,
-        pageSize: 20,
-      })
-        .then((result) =>
-          Promise.all(
-            (result.places ?? [])
-              .slice(0, 20)
-              .map(async (place) => {
-                const mapped = await mapGoogleSearchPlaceToInternalPlace(place, { queryContext: normalizedInput });
-                if (
-                  options.origin &&
-                  typeof mapped.latitude === 'number' &&
-                  typeof mapped.longitude === 'number' &&
-                  !mapped.distanceMeters
-                ) {
-                  mapped.distanceMeters = distanceMetersBetween(options.origin, {
-                    latitude: mapped.latitude,
-                    longitude: mapped.longitude,
-                  });
-                }
-                return mapped;
-              }),
-          ),
-        )
-        .catch((error) => {
-          console.error(error);
-          return [];
-        });
+    : buildPlaceSearchQueryVariants(normalizedInput, preferredCityLabel);
 
-  const cityBiasedTextSearchPlaces = autocompletePlaces.length >= 10 || !preferredCityLabel
+  const cityRestrictedTextSearchPlaces = textSearchQueryVariants.length === 0 || !preferredCityKey
     ? []
-    : await fetchGoogleTextSearchWithOptions({
-        textQuery: `${normalizedInput} ${preferredCityLabel}`,
-        origin: options.origin,
-        pageSize: 20,
-      })
-        .then((result) =>
-          Promise.all(
-            (result.places ?? [])
-              .slice(0, 20)
-              .map(async (place) => {
-                const mapped = await mapGoogleSearchPlaceToInternalPlace(place, {
-                  queryContext: `${normalizedInput} ${preferredCityLabel}`,
-                });
-                if (
-                  options.origin &&
-                  typeof mapped.latitude === 'number' &&
-                  typeof mapped.longitude === 'number' &&
-                  !mapped.distanceMeters
-                ) {
-                  mapped.distanceMeters = distanceMetersBetween(options.origin, {
-                    latitude: mapped.latitude,
-                    longitude: mapped.longitude,
-                  });
-                }
-                return mapped;
-              }),
-          ),
-        )
-        .catch((error) => {
-          console.error(error);
-          return [];
-        });
+    : await Promise.all(
+        textSearchQueryVariants.map(async (textQuery) =>
+          fetchGoogleTextSearchWithOptions({
+            textQuery,
+            origin: options.origin,
+            pageSize: 20,
+            locationRestriction: {
+              rectangle: CHECK_IN_AUTOCOMPLETE_CITY_BOUNDS[preferredCityKey],
+            },
+            rankPreference: options.origin ? 'DISTANCE' : 'RELEVANCE',
+          })
+            .then((result) =>
+              Promise.all(
+                (result.places ?? [])
+                  .slice(0, 20)
+                  .map(async (place) => {
+                    const mapped = await mapGoogleSearchPlaceToInternalPlace(place, { queryContext: textQuery });
+                    if (
+                      options.origin &&
+                      typeof mapped.latitude === 'number' &&
+                      typeof mapped.longitude === 'number' &&
+                      !mapped.distanceMeters
+                    ) {
+                      mapped.distanceMeters = distanceMetersBetween(options.origin, {
+                        latitude: mapped.latitude,
+                        longitude: mapped.longitude,
+                      });
+                    }
+                    return mapped;
+                  }),
+              ),
+            )
+            .catch((error) => {
+              console.error(error);
+              return [];
+            })
+        ),
+      ).then((results) => results.flat());
+
+  const globalTextSearchPlaces = textSearchQueryVariants.length === 0
+    ? []
+    : await Promise.all(
+        textSearchQueryVariants.map(async (textQuery) =>
+          fetchGoogleTextSearchWithOptions({
+            textQuery,
+            origin: options.origin,
+            pageSize: 20,
+            rankPreference: options.origin ? 'DISTANCE' : 'RELEVANCE',
+          })
+            .then((result) =>
+              Promise.all(
+                (result.places ?? [])
+                  .slice(0, 20)
+                  .map(async (place) => {
+                    const mapped = await mapGoogleSearchPlaceToInternalPlace(place, { queryContext: textQuery });
+                    if (
+                      options.origin &&
+                      typeof mapped.latitude === 'number' &&
+                      typeof mapped.longitude === 'number' &&
+                      !mapped.distanceMeters
+                    ) {
+                      mapped.distanceMeters = distanceMetersBetween(options.origin, {
+                        latitude: mapped.latitude,
+                        longitude: mapped.longitude,
+                      });
+                    }
+                    return mapped;
+                  }),
+              ),
+            )
+            .catch((error) => {
+              console.error(error);
+              return [];
+            })
+        ),
+      ).then((results) => results.flat());
 
   return dedupeNativePlacesById([
     ...autocompletePlaces,
-    ...rawTextSearchPlaces,
-    ...cityBiasedTextSearchPlaces,
+    ...cityRestrictedTextSearchPlaces,
+    ...globalTextSearchPlaces,
   ])
     .sort((left, right) => {
       const scoreDelta =
