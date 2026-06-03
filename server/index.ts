@@ -1189,17 +1189,17 @@ async function buildV2HomepageOverview(userId: string) {
   const weekStart = startOfWeekUtc(now);
   const monthStart = startOfMonthUtc(now);
 
-  const [weekCount, monthCount, distinctMonthPlaces, inviteCode] = await Promise.all([
+  const [weekLoggedCount, monthLoggedCount, distinctMonthPlaces, inviteCode] = await Promise.all([
     prismaV2.moment.count({
       where: {
         userId,
-        visitedAt: { gte: weekStart },
+        createdAt: { gte: weekStart },
       },
     }),
     prismaV2.moment.count({
       where: {
         userId,
-        visitedAt: { gte: monthStart },
+        createdAt: { gte: monthStart },
       },
     }),
     prismaV2.moment.findMany({
@@ -1222,8 +1222,8 @@ async function buildV2HomepageOverview(userId: string) {
   ]);
 
   const uniqueMonthCount = distinctMonthPlaces.length;
-  const primaryPeriodValue = weekCount > 0 ? weekCount : monthCount;
-  const primaryPeriodLabel = weekCount > 0 ? 'places this week' : 'places this month';
+  const primaryPeriodValue = weekLoggedCount > 0 ? weekLoggedCount : monthLoggedCount;
+  const primaryPeriodLabel = weekLoggedCount > 0 ? 'memories added this week' : 'memories added this month';
   const inviteProgress = inviteCode?.redeemedCount ?? 0;
 
   const stats = [
@@ -1243,13 +1243,13 @@ async function buildV2HomepageOverview(userId: string) {
     {
       id: 'weekly-logger',
       icon: 'flame.fill',
-      title: weekCount >= 3 ? 'Food memory goal done' : 'Add 3 food memories',
-      subtitle: weekCount >= 3
-        ? `You already logged ${weekCount} places this week.`
-        : `${weekCount}/3 places logged so far this week.`,
-      cta: weekCount >= 3 ? 'Keep going' : 'Add a memory',
+      title: weekLoggedCount >= 3 ? 'Food memory goal done' : 'Add 3 food memories',
+      subtitle: weekLoggedCount >= 3
+        ? `You already added ${weekLoggedCount} food memories this week.`
+        : `${weekLoggedCount}/3 food memories added so far this week.`,
+      cta: weekLoggedCount >= 3 ? 'Keep going' : 'Add a memory',
       action: 'add_log',
-      current: weekCount,
+      current: weekLoggedCount,
       target: 3,
     },
     {
