@@ -1190,7 +1190,7 @@ async function buildV2TravelerConnectionList(
       where: { targetUserId: travelerId },
       orderBy: { createdAt: 'desc' },
       include: {
-        follower: {
+        sourceUser: {
           select: {
             id: true,
             username: true,
@@ -1203,7 +1203,7 @@ async function buildV2TravelerConnectionList(
     });
 
     return followers
-      .map((entry) => entry.follower)
+      .map((entry) => entry.sourceUser)
       .filter((user) => user.status === 'ACTIVE' && Boolean(user.username))
       .map((user) => ({
         id: user.id,
@@ -1215,7 +1215,7 @@ async function buildV2TravelerConnectionList(
   }
 
   const following = await prismaV2.follow.findMany({
-    where: { followerId: travelerId },
+    where: { sourceUserId: travelerId },
     orderBy: { createdAt: 'desc' },
     include: {
       targetUser: {
