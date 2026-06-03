@@ -2481,6 +2481,7 @@ async function fetchGooglePlaceSuggestions(input: string, options?: {
 
 async function fetchGoogleNearbyPlaceCandidates(latitude: number, longitude: number, options?: {
   maxResultCount?: number;
+  radiusMeters?: number;
 }) {
   if (!GOOGLE_MAPS_API_KEY) return null;
 
@@ -2507,7 +2508,7 @@ async function fetchGoogleNearbyPlaceCandidates(latitude: number, longitude: num
       locationRestriction: {
         circle: {
           center: { latitude, longitude },
-          radius: 120,
+          radius: options?.radiusMeters ?? 120,
         },
       },
     }),
@@ -3207,6 +3208,27 @@ function scorePlaceKeywordMatch(
   return score;
 }
 
+function placeLooselyMatchesQueryTerms(
+  query: string,
+  place: { name?: string | null; address?: string | null; location?: string | null },
+) {
+  const normalizedQuery = normalizePlaceSearchQuery(query);
+  const queryTerms = normalizedQuery.split(/\s+/).filter((term) => term.length >= 2);
+  if (queryTerms.length === 0) return false;
+
+  const name = String(place.name ?? '').toLowerCase();
+  const address = String(place.address ?? '').toLowerCase();
+  const location = String(place.location ?? '').toLowerCase();
+  const haystack = `${name} ${address} ${location}`;
+  const nameTerms = name.split(/\s+/).filter(Boolean);
+
+  const matchedTerms = queryTerms.filter((term) =>
+    nameTerms.some((candidate) => candidate.startsWith(term)) || haystack.includes(term)
+  );
+
+  return matchedTerms.length >= Math.min(queryTerms.length, 2);
+}
+
 function normalizePlaceSearchQuery(query: string) {
   return query
     .toLowerCase()
@@ -3247,109 +3269,47 @@ async function searchUnifiedCheckInPlaces(
   const normalizedInput = input.trim();
   if (normalizedInput.length < 2) return [];
 
-  const predictions = await fetchGooglePlaceSuggestions(normalizedInput, {
+  const preferredCityLabel = inferSupportedCityBiasLabel(options.origin);
+  const restrictedPredictionsPromise = fetchGooglePlaceSuggestions(normalizedInput, {
     sessionToken: options.sessionToken,
     origin: options.origin,
+    locationLabel: preferredCityLabel,
   }).catch((error) => {
     console.error(error);
     return null;
   });
 
-  const autocompletePlaces = (predictions ?? []).map((prediction) =>
+  const globalPredictionsPromise = preferredCityLabel
+    ? fetchGooglePlaceSuggestions(normalizedInput, {
+        sessionToken: options.sessionToken,
+        origin: options.origin,
+      }).catch((error) => {
+        console.error(error);
+        return null;
+      })
+    : Promise.resolve(null);
+
+  const [restrictedPredictions, globalPredictions] = await Promise.all([
+    restrictedPredictionsPromise,
+    globalPredictionsPromise,
+  ]);
+
+  const restrictedAutocompletePlaces = (restrictedPredictions ?? []).map((prediction) =>
+    mapGoogleAutocompleteSuggestionForClient(prediction, {
+      sessionToken: options.sessionToken,
+      locationLabel: preferredCityLabel,
+    })
+  );
+
+  const globalAutocompletePlaces = (globalPredictions ?? []).map((prediction) =>
     mapGoogleAutocompleteSuggestionForClient(prediction, {
       sessionToken: options.sessionToken,
     })
   );
 
-  const preferredCityLabel = inferSupportedCityBiasLabel(options.origin);
-  const preferredCityKey = normalizeCheckInAutocompleteCity(preferredCityLabel);
-  const textSearchQueryVariants = autocompletePlaces.length >= 10
-    ? []
-    : buildPlaceSearchQueryVariants(normalizedInput, preferredCityLabel);
-
-  const cityRestrictedTextSearchPlaces = textSearchQueryVariants.length === 0 || !preferredCityKey
-    ? []
-    : await Promise.all(
-        textSearchQueryVariants.map(async (textQuery) =>
-          fetchGoogleTextSearchWithOptions({
-            textQuery,
-            origin: options.origin,
-            pageSize: 20,
-            locationRestriction: {
-              rectangle: CHECK_IN_AUTOCOMPLETE_CITY_BOUNDS[preferredCityKey],
-            },
-            rankPreference: options.origin ? 'DISTANCE' : 'RELEVANCE',
-          })
-            .then((result) =>
-              Promise.all(
-                (result.places ?? [])
-                  .slice(0, 20)
-                  .map(async (place) => {
-                    const mapped = await mapGoogleSearchPlaceToInternalPlace(place, { queryContext: textQuery });
-                    if (
-                      options.origin &&
-                      typeof mapped.latitude === 'number' &&
-                      typeof mapped.longitude === 'number' &&
-                      !mapped.distanceMeters
-                    ) {
-                      mapped.distanceMeters = distanceMetersBetween(options.origin, {
-                        latitude: mapped.latitude,
-                        longitude: mapped.longitude,
-                      });
-                    }
-                    return mapped;
-                  }),
-              ),
-            )
-            .catch((error) => {
-              console.error(error);
-              return [];
-            })
-        ),
-      ).then((results) => results.flat());
-
-  const globalTextSearchPlaces = textSearchQueryVariants.length === 0
-    ? []
-    : await Promise.all(
-        textSearchQueryVariants.map(async (textQuery) =>
-          fetchGoogleTextSearchWithOptions({
-            textQuery,
-            origin: options.origin,
-            pageSize: 20,
-            rankPreference: options.origin ? 'DISTANCE' : 'RELEVANCE',
-          })
-            .then((result) =>
-              Promise.all(
-                (result.places ?? [])
-                  .slice(0, 20)
-                  .map(async (place) => {
-                    const mapped = await mapGoogleSearchPlaceToInternalPlace(place, { queryContext: textQuery });
-                    if (
-                      options.origin &&
-                      typeof mapped.latitude === 'number' &&
-                      typeof mapped.longitude === 'number' &&
-                      !mapped.distanceMeters
-                    ) {
-                      mapped.distanceMeters = distanceMetersBetween(options.origin, {
-                        latitude: mapped.latitude,
-                        longitude: mapped.longitude,
-                      });
-                    }
-                    return mapped;
-                  }),
-              ),
-            )
-            .catch((error) => {
-              console.error(error);
-              return [];
-            })
-        ),
-      ).then((results) => results.flat());
-
   return dedupeNativePlacesById([
-    ...autocompletePlaces,
-    ...cityRestrictedTextSearchPlaces,
-    ...globalTextSearchPlaces,
+    ...restrictedAutocompletePlaces,
+    ...globalAutocompletePlaces,
   ])
     .sort((left, right) => {
       const scoreDelta =
