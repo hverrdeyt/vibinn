@@ -172,7 +172,7 @@ private func nativeResolvedAPIBaseURL() -> URL {
         return url
     }
 
-    return URL(string: "https://vibinn-api-staging.onrender.com")!
+    return URL(string: "https://api.vibinn.club")!
 }
 
 private func nativeNearestSupportedLocation(

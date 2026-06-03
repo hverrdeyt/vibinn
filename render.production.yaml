@@ -1,12 +1,12 @@
 databases:
-  - name: vibecheck-db
-    databaseName: vibecheck_travel
-    user: vibecheck_travel
+  - name: vibecheck-db-production
+    databaseName: vibecheck_travel_production
+    user: vibecheck_travel_production
     plan: free
 
 services:
   - type: web
-    name: vibecheck-api
+    name: vibecheck-api-production
     runtime: node
     plan: free
     buildCommand: npm install && npm run prisma:generate:production && npm run prisma:v2:generate:production && npm run prisma:migrate:deploy:production && npm run prisma:v2:migrate:deploy:production
@@ -17,7 +17,7 @@ services:
         value: production
       - key: DATABASE_URL
         fromDatabase:
-          name: vibecheck-db
+          name: vibecheck-db-production
           property: connectionString
       - key: DATABASE_URL_V2
         sync: false
@@ -79,19 +79,3 @@ services:
         sync: false
       - key: UNSUPPORTED_CITY_GATE_ENABLED
         value: "false"
-
-  - type: web
-    name: vibecheck-web
-    runtime: static
-    buildCommand: npm install && npm run build
-    staticPublishPath: dist
-    pullRequestPreviewsEnabled: false
-    routes:
-      - type: rewrite
-        source: /*
-        destination: /index.html
-    envVars:
-      - key: VITE_API_BASE_URL
-        value: https://api.vibinn.club
-      - key: VITE_GOOGLE_CLIENT_ID
-        sync: false
