@@ -1243,11 +1243,11 @@ async function buildV2HomepageOverview(userId: string) {
     {
       id: 'weekly-logger',
       icon: 'flame.fill',
-      title: weekCount >= 3 ? 'Weekly logging done' : 'Log 3 places this week',
+      title: weekCount >= 3 ? 'Food memory goal done' : 'Add 3 food memories',
       subtitle: weekCount >= 3
         ? `You already logged ${weekCount} places this week.`
         : `${weekCount}/3 places logged so far this week.`,
-      cta: weekCount >= 3 ? 'Keep going' : 'Add a log',
+      cta: weekCount >= 3 ? 'Keep going' : 'Add a memory',
       action: 'add_log',
       current: weekCount,
       target: 3,
@@ -1946,6 +1946,60 @@ async function ensureDefaultUserRelations(userId: string) {
       console.error('ensureDefaultUserRelations failed', task.reason);
     }
   }
+}
+
+async function getV2NotificationSettings(userId: string) {
+  const settings = await prismaV2.userNotificationSettings.upsert({
+    where: { userId },
+    update: {},
+    create: {
+      userId,
+      pushEnabled: true,
+      emailEnabled: true,
+      recommendationEnabled: true,
+    },
+  });
+
+  return {
+    pushEnabled: settings.pushEnabled,
+    emailEnabled: settings.emailEnabled,
+    recommendationEnabled: settings.recommendationEnabled,
+  };
+}
+
+async function updateV2NotificationSettings(
+  userId: string,
+  input: {
+    pushEnabled?: boolean;
+    emailEnabled?: boolean;
+    recommendationEnabled?: boolean;
+  },
+) {
+  const existing = await prismaV2.userNotificationSettings.upsert({
+    where: { userId },
+    update: {},
+    create: {
+      userId,
+      pushEnabled: true,
+      emailEnabled: true,
+      recommendationEnabled: true,
+    },
+  });
+
+  const settings = await prismaV2.userNotificationSettings.update({
+    where: { userId },
+    data: {
+      pushEnabled: typeof input.pushEnabled === 'boolean' ? input.pushEnabled : existing.pushEnabled,
+      emailEnabled: typeof input.emailEnabled === 'boolean' ? input.emailEnabled : existing.emailEnabled,
+      recommendationEnabled: typeof input.recommendationEnabled === 'boolean' ? input.recommendationEnabled : existing.recommendationEnabled,
+    },
+  });
+
+  return {
+    pushEnabled: settings.pushEnabled,
+    emailEnabled: settings.emailEnabled,
+    recommendationEnabled: settings.recommendationEnabled,
+  };
 }
 
 async function eraseAccount(userId: string) {
@@ -9191,6 +9245,95 @@ app.get('/api/v2/home/recent-memories', async (req: AuthenticatedRequest, res) =
   }
 });
 
+app.get('/api/v2/settings/notifications', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = await getV2NotificationSettings(req.authV2UserId!);
+    res.json(payload);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.patch('/api/v2/settings/notifications', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const payload = await updateV2NotificationSettings(req.authV2UserId!, req.body ?? {});
+    res.json(payload);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/me/push-devices', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const {
+      fcmToken,
+      platform,
+      appVersion,
+    } = req.body as {
+      fcmToken?: string;
+      platform?: string;
+      appVersion?: string | null;
+    };
+
+    const normalizedToken = fcmToken?.trim();
+    const normalizedPlatform = platform?.trim().toLowerCase() || 'ios';
+
+    if (!normalizedToken) {
+      res.status(400).json({ error: 'fcmToken is required' });
+      return;
+    }
+
+    await prismaV2.userPushDevice.upsert({
+      where: { fcmToken: normalizedToken },
+      update: {
+        userId: req.authV2UserId!,
+        platform: normalizedPlatform,
+        appVersion: appVersion?.trim() || null,
+        isActive: true,
+        lastSeenAt: new Date(),
+      },
+      create: {
+        userId: req.authV2UserId!,
+        fcmToken: normalizedToken,
+        platform: normalizedPlatform,
+        appVersion: appVersion?.trim() || null,
+        isActive: true,
+      },
+    });
+
+    res.status(201).json({ ok: true });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.delete('/api/v2/me/push-devices', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const { fcmToken } = req.body as { fcmToken?: string };
+    const normalizedToken = fcmToken?.trim();
+
+    if (!normalizedToken) {
+      res.status(400).json({ error: 'fcmToken is required' });
+      return;
+    }
+
+    await prismaV2.userPushDevice.updateMany({
+      where: {
+        userId: req.authV2UserId!,
+        fcmToken: normalizedToken,
+      },
+      data: {
+        isActive: false,
+        lastSeenAt: new Date(),
+      },
+    });
+
+    res.json({ ok: true });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.get('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
   try {
     if (!req.authV2UserId) {
@@ -9798,6 +9941,147 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         createdAt: comment.createdAt.toISOString(),
       },
       count,
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/reports', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const {
+      targetType,
+      targetId,
+      targetUserId,
+      reason,
+      details,
+    } = req.body as {
+      targetType?: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
+      targetId?: string;
+      targetUserId?: string;
+      reason?: string;
+      details?: string;
+    };
+
+    const allowedTargetTypes = new Set(['PROFILE', 'MOMENT', 'PLACE', 'PLACE_VISIT', 'COLLECTION']);
+    if (!targetType || !allowedTargetTypes.has(targetType) || !targetId || !reason?.trim()) {
+      res.status(400).json({ error: 'targetType, targetId, and reason are required' });
+      return;
+    }
+
+    const report = await prismaV2.userReport.create({
+      data: {
+        reporterId: req.authV2UserId!,
+        targetType,
+        targetId,
+        targetUserId: targetUserId ?? null,
+        reason: reason.trim(),
+        details: details?.trim() || null,
+      },
+    });
+
+    res.status(201).json({ ok: true, reportId: report.id });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/users/:id/block', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const targetUserId = req.params.id;
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : null;
+
+    if (!targetUserId || targetUserId === req.authV2UserId) {
+      res.status(400).json({ error: 'A different target user is required' });
+      return;
+    }
+
+    await prismaV2.userBlock.upsert({
+      where: {
+        sourceUserId_targetUserId: {
+          sourceUserId: req.authV2UserId!,
+          targetUserId,
+        },
+      },
+      update: { reason },
+      create: {
+        sourceUserId: req.authV2UserId!,
+        targetUserId,
+        reason,
+      },
+    });
+
+    await prismaV2.follow.deleteMany({
+      where: {
+        OR: [
+          {
+            sourceUserId: req.authV2UserId!,
+            targetUserId,
+          },
+          {
+            sourceUserId: targetUserId,
+            targetUserId: req.authV2UserId!,
+          },
+        ],
+      },
+    });
+
+    res.json({ ok: true, blockedUserId: targetUserId });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.delete('/api/v2/users/:id/block', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const targetUserId = req.params.id;
+
+    if (!targetUserId || targetUserId === req.authV2UserId) {
+      res.status(400).json({ error: 'A different target user is required' });
+      return;
+    }
+
+    await prismaV2.userBlock.deleteMany({
+      where: {
+        sourceUserId: req.authV2UserId!,
+        targetUserId,
+      },
+    });
+
+    res.json({ ok: true, blockedUserId: targetUserId });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/users/blocks', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const blocks = await prismaV2.userBlock.findMany({
+      where: {
+        sourceUserId: req.authV2UserId!,
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        targetUser: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    });
+
+    res.json({
+      users: blocks.map((block) => ({
+        id: block.targetUser.id,
+        username: block.targetUser.username ?? buildV2TravelerUsernameFallback(block.targetUser.id),
+        displayName: block.targetUser.displayName ?? block.targetUser.username ?? buildV2TravelerUsernameFallback(block.targetUser.id),
+        avatar: block.targetUser.avatarUrl ?? null,
+        blockedAt: block.createdAt.toISOString(),
+        reason: block.reason ?? null,
+      })),
     });
   } catch (error) {
     handleError(res, error);

@@ -38,7 +38,7 @@ private let nativeScoreDebugToolsEnabled = false
 private let nativePlaceDetailLayoutDebugMode = false
 private let nativePreferenceLayoutDebugMode = false
 private let nativeAuthLayoutDebugMode = false
-private let nativeAuthPositionDebugMode = true
+private let nativeAuthPositionDebugMode = false
 private let nativeAuthHeroImageDebugMode = false
 private let nativeDecisionLayoutDebugMode = false
 private let nativeMyProfileDebugMode = false
@@ -66,6 +66,7 @@ private let nativeWidgetSnapshotFileName = "vibinn-widget-snapshot.json"
 private let nativeWidgetImageCacheDirectoryName = "widget-image-cache"
 private let nativePendingWidgetDeepLinkUserDefaultsKey = "vibinn_native_pending_widget_deep_link"
 private let nativeWidgetDeepLinkNotification = Notification.Name("NativeWidgetDeepLinkOpened")
+private let nativeForegroundPushNotification = Notification.Name("NativeForegroundPushReceived")
 private let nativeLocationOptions = [
     NativeLocationOption(id: "boston", label: "Boston"),
     NativeLocationOption(id: "new-york", label: "New York"),
@@ -93,6 +94,13 @@ private let nativePushTokenNotification = Notification.Name("NativePushTokenDidU
 private let nativePushTokenUserDefaultsKey = "vibinn_native_push_token"
 private let nativeAPIBaseURLUserDefaultsKey = "vibinn_native_api_base_url"
 private let nativeAppStoreURL = "https://apps.apple.com/us/app/vibinn/id6762061149"
+
+private func nativeInviteShareMessage(code: String?) -> String {
+    if let code, !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return "Join me on Vibinn. Use my code \(code) to join my circle. Download it here: \(nativeAppStoreURL)"
+    }
+    return "Join me on Vibinn. Download it here: \(nativeAppStoreURL)"
+}
 
 #if canImport(FirebaseMessaging)
 private typealias NativeMessagingDelegateProtocol = MessagingDelegate
@@ -379,7 +387,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .badge, .sound])
+        let content = notification.request.content
+        NotificationCenter.default.post(
+            name: nativeForegroundPushNotification,
+            object: nil,
+            userInfo: [
+                "title": content.title,
+                "body": content.body,
+            ]
+        )
+        completionHandler([.badge, .sound])
     }
 
     func application(
@@ -2905,6 +2922,12 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             name: nativeWidgetDeepLinkNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleForegroundPushNotification(_:)),
+            name: nativeForegroundPushNotification,
+            object: nil
+        )
         handlePendingWidgetDeepLinkIfNeeded()
         nativeLogger.log("NativeAppState init. location=\(self.selectedLocation.label, privacy: .public) onboarding=\(self.hasCompletedOnboarding, privacy: .public)")
     }
@@ -3260,12 +3283,12 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         await refreshCurrentPushTokenFromFirebase()
         await refreshHomepageOverview()
         await refreshHomepageRecentMemories()
+        await syncPushTokenIfPossible()
         guard usesV2Session == false else {
             chatUnreadCount = 0
             notificationUnreadCount = 0
             return
         }
-        await syncPushTokenIfPossible()
         await refreshChatUnreadCount()
     }
 
@@ -3572,6 +3595,14 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         throw NSError(domain: "NativeV2InviteCode", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to prepare invite code"])
     }
 
+    func loadCurrentInviteShareMessage() async throws -> String {
+        guard let token = authToken else {
+            throw URLError(.userAuthenticationRequired)
+        }
+        let summary = try await loadOrCreateMyInviteCode(token: token)
+        return nativeInviteShareMessage(code: summary.code)
+    }
+
     func loadPlaceScoreDebug(for placeId: String) async throws -> NativePlaceScoreDebugResponse {
         try await api.getPlaceScoreDebug(
             placeId: placeId,
@@ -3603,12 +3634,20 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     func logout(unregisterPushDevice: Bool = true) {
         let tokenToUnregister = currentPushToken
         let authTokenToUse = authToken
+        let shouldUseV2Session = usesV2Session
         if unregisterPushDevice, let tokenToUnregister, let authTokenToUse {
             Task {
-                try? await api.unregisterPushDevice(
-                    fcmToken: tokenToUnregister,
-                    token: authTokenToUse
-                )
+                if shouldUseV2Session {
+                    try? await api.unregisterV2PushDevice(
+                        fcmToken: tokenToUnregister,
+                        token: authTokenToUse
+                    )
+                } else {
+                    try? await api.unregisterPushDevice(
+                        fcmToken: tokenToUnregister,
+                        token: authTokenToUse
+                    )
+                }
             }
         }
         NativeGoogleSignInCoordinator.signOut()
@@ -5062,13 +5101,21 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw URLError(.userAuthenticationRequired)
         }
 
-        _ = try await api.reportTarget(
-            token: token,
-            targetType: targetType,
-            targetId: targetId,
-            targetUserId: targetUserId,
-            reason: reason.rawValue
-        )
+        _ = try await (usesV2Session
+            ? api.reportV2Target(
+                token: token,
+                targetType: targetType,
+                targetId: targetId,
+                targetUserId: targetUserId,
+                reason: reason.rawValue
+            )
+            : api.reportTarget(
+                token: token,
+                targetType: targetType,
+                targetId: targetId,
+                targetUserId: targetUserId,
+                reason: reason.rawValue
+            ))
     }
 
     func blockTraveler(_ traveler: NativeTravelerSummary) async throws {
@@ -5077,7 +5124,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw URLError(.userAuthenticationRequired)
         }
 
-        _ = try await api.blockUser(token: token, targetUserId: traveler.id)
+        _ = try await (usesV2Session
+            ? api.blockV2User(token: token, targetUserId: traveler.id)
+            : api.blockUser(token: token, targetUserId: traveler.id))
         blockedTravelerIds.insert(traveler.id)
         followStateOverrides[traveler.id] = false
         followedTravelers.removeAll { $0.id == traveler.id }
@@ -5091,7 +5140,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw URLError(.userAuthenticationRequired)
         }
 
-        return try await api.getBlockedUsers(token: token)
+        return try await (usesV2Session
+            ? api.getV2BlockedUsers(token: token)
+            : api.getBlockedUsers(token: token))
     }
 
     func unblockUser(_ userId: String) async throws {
@@ -5100,38 +5151,45 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw URLError(.userAuthenticationRequired)
         }
 
-        _ = try await api.unblockUser(token: token, targetUserId: userId)
+        _ = try await (usesV2Session
+            ? api.unblockV2User(token: token, targetUserId: userId)
+            : api.unblockUser(token: token, targetUserId: userId))
         blockedTravelerIds.remove(userId)
     }
 
     func fetchNotificationSettings() async throws -> NativeNotificationSettings {
-        guard usesV2Session == false else {
-            return NativeNotificationSettings(pushEnabled: false, emailEnabled: false, recommendationEnabled: false)
-        }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to manage notifications.")
             throw URLError(.userAuthenticationRequired)
         }
 
-        return try await api.getNotificationSettings(token: token)
+        return try await (usesV2Session
+            ? api.getV2NotificationSettings(token: token)
+            : api.getNotificationSettings(token: token))
     }
 
     func setPushNotificationsEnabled(
         _ enabled: Bool,
         currentSettings: NativeNotificationSettings
     ) async throws {
-        guard usesV2Session == false else { return }
         guard let token = authToken else {
             presentAuthGate(reason: "Log in to manage notifications.")
             throw URLError(.userAuthenticationRequired)
         }
 
-        let updatedSettings = try await api.updateNotificationSettings(
-            token: token,
-            pushEnabled: enabled,
-            emailEnabled: currentSettings.emailEnabled,
-            recommendationEnabled: currentSettings.recommendationEnabled
-        )
+        let updatedSettings = try await (usesV2Session
+            ? api.updateV2NotificationSettings(
+                token: token,
+                pushEnabled: enabled,
+                emailEnabled: currentSettings.emailEnabled,
+                recommendationEnabled: currentSettings.recommendationEnabled
+            )
+            : api.updateNotificationSettings(
+                token: token,
+                pushEnabled: enabled,
+                emailEnabled: currentSettings.emailEnabled,
+                recommendationEnabled: currentSettings.recommendationEnabled
+            ))
 
         if enabled {
             await requestPushNotifications()
@@ -5141,7 +5199,11 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 nativeLogger.log("push toggle enabled: waiting for APNS/FCM token before sync")
             }
         } else if let currentPushToken, !currentPushToken.isEmpty {
-            try? await api.unregisterPushDevice(fcmToken: currentPushToken, token: token)
+            if usesV2Session {
+                try? await api.unregisterV2PushDevice(fcmToken: currentPushToken, token: token)
+            } else {
+                try? await api.unregisterPushDevice(fcmToken: currentPushToken, token: token)
+            }
             lastSyncedPushToken = nil
         }
 
@@ -5546,6 +5608,30 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         handleWidgetDeepLink(notification.object as? URL)
     }
 
+    @objc
+    private func handleForegroundPushNotification(_ notification: Notification) {
+        let title = (notification.userInfo?["title"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let body = (notification.userInfo?["body"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        let message: String
+        if !title.isEmpty && !body.isEmpty {
+            message = "\(title): \(body)"
+        } else if !body.isEmpty {
+            message = body
+        } else if !title.isEmpty {
+            message = title
+        } else {
+            message = "New activity on Vibinn"
+        }
+
+        showToast(message: message, icon: "bell.badge.fill")
+        Task { [weak self] in
+            await self?.refreshNotificationUnreadCount()
+        }
+    }
+
     private func handlePendingWidgetDeepLinkIfNeeded() {
         guard let rawValue = UserDefaults.standard.string(forKey: nativePendingWidgetDeepLinkUserDefaultsKey),
               let url = URL(string: rawValue) else { return }
@@ -5606,18 +5692,27 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     private func syncPushTokenIfPossible(force: Bool = false) async {
-        guard usesV2Session == false, let authToken, currentUser != nil, let currentPushToken, !currentPushToken.isEmpty else { return }
+        guard let authToken, currentUser != nil, let currentPushToken, !currentPushToken.isEmpty else { return }
         if !force && lastSyncedPushToken == currentPushToken {
             return
         }
 
         do {
-            try await api.registerPushDevice(
-                fcmToken: currentPushToken,
-                platform: "ios",
-                appVersion: nativeAppVersionString(),
-                token: authToken
-            )
+            if usesV2Session {
+                try await api.registerV2PushDevice(
+                    fcmToken: currentPushToken,
+                    platform: "ios",
+                    appVersion: nativeAppVersionString(),
+                    token: authToken
+                )
+            } else {
+                try await api.registerPushDevice(
+                    fcmToken: currentPushToken,
+                    platform: "ios",
+                    appVersion: nativeAppVersionString(),
+                    token: authToken
+                )
+            }
             lastSyncedPushToken = currentPushToken
             nativeLogger.log("push token sync success")
         } catch {
@@ -6123,12 +6218,46 @@ private struct NativeAPIClient {
         )
     }
 
+    func registerV2PushDevice(
+        fcmToken: String,
+        platform: String,
+        appVersion: String?,
+        token: String
+    ) async throws {
+        let _: NativeEmptyResponse = try await request(
+            path: "/api/v2/me/push-devices",
+            method: "POST",
+            token: token,
+            body: PushDeviceBody(
+                fcmToken: fcmToken,
+                platform: platform,
+                appVersion: appVersion
+            )
+        )
+    }
+
     func unregisterPushDevice(
         fcmToken: String,
         token: String
     ) async throws {
         let _: NativeEmptyResponse = try await request(
             path: "/api/me/push-devices",
+            method: "DELETE",
+            token: token,
+            body: PushDeviceBody(
+                fcmToken: fcmToken,
+                platform: "ios",
+                appVersion: nil
+            )
+        )
+    }
+
+    func unregisterV2PushDevice(
+        fcmToken: String,
+        token: String
+    ) async throws {
+        let _: NativeEmptyResponse = try await request(
+            path: "/api/v2/me/push-devices",
             method: "DELETE",
             token: token,
             body: PushDeviceBody(
@@ -6581,6 +6710,11 @@ private struct NativeAPIClient {
         return response.users
     }
 
+    func getV2BlockedUsers(token: String) async throws -> [NativeBlockedUser] {
+        let response: NativeBlockedUsersResponse = try await request(path: "/api/v2/users/blocks", method: "GET", token: token)
+        return response.users
+    }
+
     func getNotifications(token: String) async throws -> [NativeNotificationItem] {
         let response: NativeNotificationsResponse = try await request(path: "/api/notifications", method: "GET", token: token)
         return response.notifications
@@ -6603,6 +6737,10 @@ private struct NativeAPIClient {
         try await request(path: "/api/settings/notifications", method: "GET", token: token)
     }
 
+    func getV2NotificationSettings(token: String) async throws -> NativeNotificationSettings {
+        try await request(path: "/api/v2/settings/notifications", method: "GET", token: token)
+    }
+
     private struct UpdateNotificationSettingsBody: Encodable {
         let pushEnabled: Bool
         let emailEnabled: Bool
@@ -6617,6 +6755,24 @@ private struct NativeAPIClient {
     ) async throws -> NativeNotificationSettings {
         try await request(
             path: "/api/settings/notifications",
+            method: "PATCH",
+            token: token,
+            body: UpdateNotificationSettingsBody(
+                pushEnabled: pushEnabled,
+                emailEnabled: emailEnabled,
+                recommendationEnabled: recommendationEnabled
+            )
+        )
+    }
+
+    func updateV2NotificationSettings(
+        token: String,
+        pushEnabled: Bool,
+        emailEnabled: Bool,
+        recommendationEnabled: Bool
+    ) async throws -> NativeNotificationSettings {
+        try await request(
+            path: "/api/v2/settings/notifications",
             method: "PATCH",
             token: token,
             body: UpdateNotificationSettingsBody(
@@ -7133,6 +7289,27 @@ private struct NativeAPIClient {
         )
     }
 
+    func reportV2Target(
+        token: String,
+        targetType: String,
+        targetId: String,
+        targetUserId: String?,
+        reason: String
+    ) async throws -> NativeModerationActionResponse {
+        try await request(
+            path: "/api/v2/reports",
+            method: "POST",
+            token: token,
+            body: NativeReportBody(
+                targetType: targetType,
+                targetId: targetId,
+                targetUserId: targetUserId,
+                reason: reason,
+                details: nil
+            )
+        )
+    }
+
     private struct NativeBlockBody: Encodable {
         let reason: String?
     }
@@ -7146,9 +7323,26 @@ private struct NativeAPIClient {
         )
     }
 
+    func blockV2User(token: String, targetUserId: String) async throws -> NativeModerationActionResponse {
+        try await request(
+            path: "/api/v2/users/\(targetUserId)/block",
+            method: "POST",
+            token: token,
+            body: NativeBlockBody(reason: "Blocked from native iOS app")
+        )
+    }
+
     func unblockUser(token: String, targetUserId: String) async throws -> NativeModerationActionResponse {
         try await request(
             path: "/api/users/\(targetUserId)/block",
+            method: "DELETE",
+            token: token
+        )
+    }
+
+    func unblockV2User(token: String, targetUserId: String) async throws -> NativeModerationActionResponse {
+        try await request(
+            path: "/api/v2/users/\(targetUserId)/block",
             method: "DELETE",
             token: token
         )
@@ -8865,12 +9059,12 @@ private struct NativeHomepageShellScreen: View {
             ) {
                 HStack(alignment: .center, spacing: 12) {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Add today’s memory")
+                        Text("Add a food diary")
                             .font(nativeAppFont(size: 20, weight: .black))
                             .foregroundStyle(.white)
                             .fixedSize(horizontal: false, vertical: true)
 
-                        Text("Your latest photos are ready")
+                        Text("Upload from your gallery")
                             .font(nativeAppFont(size: 12, weight: .semibold))
                             .foregroundStyle(.white.opacity(0.58))
                             .fixedSize(horizontal: false, vertical: true)
@@ -8930,7 +9124,7 @@ private struct NativeHomepageShellScreen: View {
 
     private var recentMemoriesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Recent memories")
+            Text("Your recent memories")
                 .font(nativeAppFont(size: 18, weight: .black))
                 .foregroundStyle(.white)
 
@@ -11023,6 +11217,7 @@ private struct NativeAuthScreen: View {
     @State private var firstPlaceManualResults: [NativePlace] = []
     @State private var firstPlaceSelectedPlace: NativePlace?
     @State private var firstPlaceRatingLabel = NativeMomentRatingChoice.liked.rawValue
+    @State private var firstPlaceWouldRevisit = "yes"
     @State private var firstPlaceReviewText = ""
     @State private var firstPlaceReviewWordLimitMessage: String?
     @State private var isFirstPlaceAnalyzing = false
@@ -11576,10 +11771,11 @@ private struct NativeAuthScreen: View {
                     .frame(maxWidth: .infinity, alignment: .center)
             } else {
                 Text(stepTitle)
-                    .font(nativePixelAccentFont(size: 32))
+                    .font(nativeAppFont(size: 28, weight: .black))
                     .foregroundStyle(nativeAccent)
-                    .lineLimit(2)
+                    .lineLimit(3)
                     .minimumScaleFactor(0.78)
+                    .lineSpacing(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -11602,9 +11798,10 @@ private struct NativeAuthScreen: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
                 Text("Build your circle")
-                    .font(nativePixelAccentFont(size: 28))
+                    .font(nativeAppFont(size: 26, weight: .black))
                     .foregroundStyle(nativeAccent)
                     .lineLimit(3)
+                    .lineSpacing(2)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
 
@@ -11752,7 +11949,10 @@ private struct NativeAuthScreen: View {
     }
 
     private var shouldShowFloatingFirstPlaceCTA: Bool {
-        step == .firstPlaceEntry && firstPlaceStage == .noLocation && firstPlaceSelectedPlace != nil
+        step == .firstPlaceEntry
+        && firstPlaceStage == .noLocation
+        && firstPlaceSelectedPlace != nil
+        && focusedField != .firstPlaceSearch
     }
 
     private var isFirstPlaceLocationSearchScreen: Bool {
@@ -11919,8 +12119,9 @@ private struct NativeAuthScreen: View {
 
     private func firstPlaceCardTitle(_ value: String) -> some View {
         Text(value)
-            .font(nativePixelAccentFont(size: 32))
+            .font(nativeAppFont(size: 28, weight: .black))
             .foregroundStyle(nativeAccent)
+            .lineSpacing(2)
             .frame(maxWidth: .infinity, alignment: .leading)
             .fixedSize(horizontal: false, vertical: true)
     }
@@ -12097,6 +12298,17 @@ private struct NativeAuthScreen: View {
         ) {
             VStack(alignment: .leading, spacing: 14) {
                 inviteCodeInputSection
+                if isSubmitting {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .tint(nativeAccent)
+                        Text("Checking your code...")
+                            .font(nativeAppFont(size: 14, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.72))
+                    }
+                    .padding(.horizontal, 2)
+                    .transition(.opacity)
+                }
                 HStack(spacing: 0) {
                     Text("Don't have the code? ")
                         .font(nativeAppFont(size: 14, weight: .semibold))
@@ -12112,6 +12324,8 @@ private struct NativeAuthScreen: View {
                     .foregroundStyle(.white)
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
+                .allowsHitTesting(!isSubmitting)
+                .opacity(isSubmitting ? 0.45 : 1)
                 inlineErrorSnackbar
             }
         }
@@ -12361,7 +12575,7 @@ private struct NativeAuthScreen: View {
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                         .focused($focusedField, equals: .profileUsername)
 
-                    Text("vibinn.app/\(profileUsername.trimmingCharacters(in: .whitespacesAndNewlines))")
+                    Text("vibinn.club/\(profileUsername.trimmingCharacters(in: .whitespacesAndNewlines))")
                         .font(nativeAppFont(size: 12, weight: .semibold))
                         .foregroundStyle(.white.opacity(0.46))
                         .padding(.horizontal, 2)
@@ -12695,6 +12909,16 @@ private struct NativeAuthScreen: View {
                                     .buttonStyle(.plain)
                                 }
                             }
+                        }
+
+                        Text("Would revisit")
+                            .font(nativeAppFont(size: 14, weight: .bold))
+                            .foregroundStyle(.white.opacity(0.5))
+
+                        HStack(spacing: 10) {
+                            firstPlaceRevisitChoiceChip("Yes", value: "yes")
+                            firstPlaceRevisitChoiceChip("Maybe", value: "maybe")
+                            firstPlaceRevisitChoiceChip("No", value: "no")
                         }
 
                         Text("Write a note")
@@ -13204,6 +13428,7 @@ private struct NativeAuthScreen: View {
                 .autocorrectionDisabled()
                 .keyboardType(.asciiCapable)
                 .focused($focusedField, equals: .inviteCode)
+                .disabled(isSubmitting)
                 .opacity(0.01)
                 .frame(height: 1)
                 .onChange(of: inviteCode) { value in
@@ -13237,8 +13462,10 @@ private struct NativeAuthScreen: View {
                         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
                 }
             }
+            .opacity(isSubmitting ? 0.62 : 1)
             .contentShape(Rectangle())
             .onTapGesture {
+                guard !isSubmitting else { return }
                 focusedField = .inviteCode
             }
         }
@@ -13920,7 +14147,7 @@ private struct NativeAuthScreen: View {
                 place: place,
                 visitedDate: firstPlaceVisitedDateValue,
                 ratingLabel: firstPlaceRatingLabel,
-                wouldRevisit: "yes",
+                wouldRevisit: firstPlaceWouldRevisit,
                 visibility: "public",
                 note: firstPlaceReviewText,
                 uploadedMedia: uploadedMedia
@@ -14316,6 +14543,21 @@ private struct NativeAuthScreen: View {
                 errorMessage = nil
             }
         }
+    }
+
+    private func firstPlaceRevisitChoiceChip(_ label: String, value: String) -> some View {
+        Button {
+            firstPlaceWouldRevisit = value
+        } label: {
+            Text(label)
+                .font(nativeAppFont(size: 13, weight: .black))
+                .foregroundStyle(firstPlaceWouldRevisit == value ? .black : .white.opacity(0.78))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(firstPlaceWouldRevisit == value ? nativeAccent : Color.white.opacity(0.06))
+                .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private func normalizedErrorMessage(_ message: String) -> String {
@@ -24527,6 +24769,7 @@ private struct NativeFeedScreen: View {
 
     @State private var showShareSheet = false
     @State private var inviteSMSContact: NativeInviteContact?
+    @State private var inviteShareMessage = nativeInviteShareMessage(code: nil)
     @State private var contactsAuthorizationStatus: CNAuthorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
     @State private var matchedContacts: [(contact: NativeInviteContact, match: NativeMatchedFeedContact)] = []
     @State private var unmatchedContacts: [NativeInviteContact] = []
@@ -24653,23 +24896,25 @@ private struct NativeFeedScreen: View {
         .onAppear {
             appState.trackAnalytics(.viewFeed)
             Task {
+                await ensureInviteShareMessageLoaded()
                 await appState.refreshFeed()
                 await refreshFeedContactsIfPossible(force: false)
                 updateFeedMapRegion()
             }
         }
         .refreshable {
+            await ensureInviteShareMessageLoaded()
             await appState.refreshFeed()
             await refreshFeedContactsIfPossible(force: true)
             updateFeedMapRegion()
         }
         .sheet(isPresented: $showShareSheet) {
-            NativeShareSheet(items: ["https://vibinn.club"])
+            NativeShareSheet(items: [inviteShareMessage])
         }
         .sheet(item: $inviteSMSContact) { contact in
             NativeMessageComposer(
                 recipients: [contact.phoneNumber],
-                body: "Come join me on Vibinn. Download it here: \(nativeAppStoreURL)"
+                body: inviteShareMessage
             ) { _ in
                 inviteSMSContact = nil
             }
@@ -24709,6 +24954,15 @@ private struct NativeFeedScreen: View {
             feedModePicker
             feedModeFilterSection
             feedModeContent
+        }
+    }
+
+    private func ensureInviteShareMessageLoaded() async {
+        guard appState.currentUser != nil else { return }
+        do {
+            inviteShareMessage = try await appState.loadCurrentInviteShareMessage()
+        } catch {
+            inviteShareMessage = nativeInviteShareMessage(code: nil)
         }
     }
 
@@ -25280,33 +25534,45 @@ private struct NativeFeedScreen: View {
         let isUpdating = updatingFollowContactIds.contains(contact.id)
         return NativeSurfaceCard {
             HStack(spacing: 12) {
-                if let avatarData = contact.avatarData, let image = UIImage(data: avatarData) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 52, height: 52)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                } else {
-                    NativeAvatarPlaceholderSquare(
-                        fallbackText: contact.displayName,
-                        size: 52,
-                        fontSize: 18
-                    )
-                }
+                NavigationLink {
+                    NativeTravelerProfileScreen(initialTraveler: match.traveler)
+                } label: {
+                    HStack(spacing: 12) {
+                        if let avatarURL = match.traveler.avatar, !avatarURL.isEmpty {
+                            NativeRemoteImage(url: avatarURL)
+                                .frame(width: 52, height: 52)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        } else if let avatarData = contact.avatarData, let image = UIImage(data: avatarData) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 52, height: 52)
+                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        } else {
+                            NativeAvatarPlaceholderSquare(
+                                fallbackText: match.traveler.displayName ?? contact.displayName,
+                                size: 52,
+                                fontSize: 18
+                            )
+                        }
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(contact.displayName)
-                        .font(nativeAppFont(size: 15, weight: .black))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Text("@\(match.traveler.username)")
-                        .font(nativeAppFont(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.52))
-                        .lineLimit(1)
-                    Text("In your contacts")
-                        .font(nativeAppFont(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.42))
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(contact.displayName)
+                                .font(nativeAppFont(size: 15, weight: .black))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                            Text("@\(match.traveler.username)")
+                                .font(nativeAppFont(size: 12, weight: .semibold))
+                                .foregroundStyle(.white.opacity(0.52))
+                                .lineLimit(1)
+                            Text("In your contacts")
+                                .font(nativeAppFont(size: 12, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.42))
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
+                .buttonStyle(.plain)
 
                 Spacer(minLength: 8)
 
@@ -27632,6 +27898,7 @@ private struct NativePeopleSearchScreen: View {
     @State private var errorMessage: String?
     @State private var searchTask: Task<Void, Never>?
     @State private var showShareSheet = false
+    @State private var inviteShareMessage = nativeInviteShareMessage(code: nil)
     @FocusState private var isSearchFieldFocused: Bool
 
     private var trimmedQuery: String {
@@ -27713,9 +27980,12 @@ private struct NativePeopleSearchScreen: View {
         .navigationTitle("Search Friend")
         .navigationBarTitleDisplayMode(.inline)
         .sheet(isPresented: $showShareSheet) {
-            NativeShareSheet(items: ["https://vibinn.club"])
+            NativeShareSheet(items: [inviteShareMessage])
         }
         .onAppear {
+            Task {
+                await ensureInviteShareMessageLoaded()
+            }
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 isSearchFieldFocused = true
             }
@@ -27755,6 +28025,15 @@ private struct NativePeopleSearchScreen: View {
                 "feed friend search failed query=\(trimmedQuery, privacy: .public) error=\(error.localizedDescription, privacy: .public)"
             )
             errorMessage = "Could not search people right now."
+        }
+    }
+
+    private func ensureInviteShareMessageLoaded() async {
+        guard appState.currentUser != nil else { return }
+        do {
+            inviteShareMessage = try await appState.loadCurrentInviteShareMessage()
+        } catch {
+            inviteShareMessage = nativeInviteShareMessage(code: nil)
         }
     }
 }
