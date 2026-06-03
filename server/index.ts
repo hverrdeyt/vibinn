@@ -1168,6 +1168,80 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
   };
 }
 
+async function buildV2TravelerConnectionList(
+  travelerId: string,
+  kind: 'followers' | 'following'
+) {
+  const traveler = await prismaV2.user.findUnique({
+    where: { id: travelerId },
+    select: {
+      id: true,
+      status: true,
+      username: true,
+    },
+  });
+
+  if (!traveler || traveler.status !== 'ACTIVE' || !traveler.username) {
+    return null;
+  }
+
+  if (kind === 'followers') {
+    const followers = await prismaV2.follow.findMany({
+      where: { targetUserId: travelerId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        follower: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+            status: true,
+          },
+        },
+      },
+    });
+
+    return followers
+      .map((entry) => entry.follower)
+      .filter((user) => user.status === 'ACTIVE' && Boolean(user.username))
+      .map((user) => ({
+        id: user.id,
+        username: user.username!,
+        displayName: user.displayName,
+        avatar: user.avatarUrl,
+        matchScore: null,
+      }));
+  }
+
+  const following = await prismaV2.follow.findMany({
+    where: { followerId: travelerId },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      targetUser: {
+        select: {
+          id: true,
+          username: true,
+          displayName: true,
+          avatarUrl: true,
+          status: true,
+        },
+      },
+    },
+  });
+
+  return following
+    .map((entry) => entry.targetUser)
+    .filter((user) => user.status === 'ACTIVE' && Boolean(user.username))
+    .map((user) => ({
+      id: user.id,
+      username: user.username!,
+      displayName: user.displayName,
+      avatar: user.avatarUrl,
+      matchScore: null,
+    }));
+}
+
 function startOfWeekUtc(date = new Date()) {
   const next = new Date(date);
   next.setUTCHours(0, 0, 0, 0);
@@ -9502,6 +9576,32 @@ app.get('/api/v2/travelers/:id', requireV2Auth, async (req: AuthenticatedRequest
       return;
     }
     res.json(payload);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/travelers/:id/followers', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const followers = await buildV2TravelerConnectionList(req.params.id, 'followers');
+    if (!followers) {
+      res.status(404).json({ error: 'Traveler not found' });
+      return;
+    }
+    res.json({ travelers: followers });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/travelers/:id/following', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const following = await buildV2TravelerConnectionList(req.params.id, 'following');
+    if (!following) {
+      res.status(404).json({ error: 'Traveler not found' });
+      return;
+    }
+    res.json({ travelers: following });
   } catch (error) {
     handleError(res, error);
   }
