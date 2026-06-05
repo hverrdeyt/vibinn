@@ -39,7 +39,7 @@ private let nativePlaceDetailLayoutDebugMode = false
 private let nativePreferenceLayoutDebugMode = false
 private let nativeAuthLayoutDebugMode = false
 private let nativeAuthPositionDebugMode = false
-private let nativeAuthShowsWelcomeStickers = false
+private let nativeAuthShowsWelcomeStickers = true
 private let nativeAuthHeroImageDebugMode = false
 private let nativeDecisionLayoutDebugMode = false
 private let nativeMyProfileDebugMode = false
@@ -101,6 +101,14 @@ private func nativeInviteShareMessage(code: String?) -> String {
         return "Join me on Vibinn. Use my code \(code) to join my circle. Download it here: \(nativeAppStoreURL)"
     }
     return "Join me on Vibinn. Download it here: \(nativeAppStoreURL)"
+}
+
+private func nativeMyProfileShareMessage(username: String?) -> String {
+    let trimmedUsername = username?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !trimmedUsername.isEmpty else {
+        return "Check my food diary profile on Vibinn: https://vibinn.club"
+    }
+    return "Check my food diary profile on Vibinn: https://vibinn.club/\(trimmedUsername)"
 }
 
 #if canImport(FirebaseMessaging)
@@ -2928,7 +2936,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             locationManager.startUpdatingLocation()
         }
         Task { [weak self] in
-            await self?.ensureBackendWarmupIfNeeded()
+            await self?.kickoffBackendWarmupIfNeeded()
         }
         Task { [weak self] in
             await self?.refreshClientConfig()
@@ -3024,6 +3032,27 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         backendWarmupTask = warmupTask
         await warmupTask.value
         backendWarmupTask = nil
+    }
+
+    func kickoffBackendWarmupIfNeeded(force: Bool = false) async {
+        if !force, let backendLastWarmAt, Date().timeIntervalSince(backendLastWarmAt) < 120 {
+            return
+        }
+
+        if backendWarmupTask != nil {
+            return
+        }
+
+        backendWarmupTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.api.prewarmBackend()
+                self.backendLastWarmAt = Date()
+            } catch {
+                nativeLogger.error("backend prewarm failed: \(error.localizedDescription, privacy: .public)")
+            }
+            self.backendWarmupTask = nil
+        }
     }
 
     private func syncLocationPermissionState(with status: CLAuthorizationStatus) {
@@ -3569,6 +3598,16 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             diaryMomentsErrorMessage = error.localizedDescription
             nativeLogger.error("refreshV2DiaryMoments failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    func fetchV2Moment(id: String) async throws -> NativeMoment {
+        guard let token = authToken else {
+            presentAuthGate(reason: "Log in to open this post.")
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        let response = try await api.getV2Moment(token: token, id: id)
+        return response.moment
     }
 
     func matchContactsForFeed(phoneNumbers: [String]) async throws -> [NativeMatchedFeedContact] {
@@ -6295,6 +6334,14 @@ private struct NativeAPIClient {
         )
     }
 
+    func getV2Moment(token: String, id: String) async throws -> NativeMomentDetailResponse {
+        try await request(
+            path: "/api/v2/moments/\(id)",
+            method: "GET",
+            token: token
+        )
+    }
+
     func createMyV2InviteCode(token: String) async throws -> NativeV2MyInviteCodeResponse {
         try await request(
             path: "/api/v2/invite-codes/me",
@@ -7753,9 +7800,11 @@ private struct NativeAPIClient {
         let isClientConfig = path == "/api/client-config"
         let isHealthCheck = path == "/api/health"
         if isInviteValidation {
-            request.timeoutInterval = 60
-        } else if isClientConfig || isHealthCheck {
-            request.timeoutInterval = 45
+            request.timeoutInterval = 100
+        } else if isHealthCheck {
+            request.timeoutInterval = 100
+        } else if isClientConfig {
+            request.timeoutInterval = 12
         } else {
             request.timeoutInterval = method == "GET" ? 30 : 25
         }
@@ -9073,6 +9122,8 @@ private struct NativeHomepageShellScreen: View {
     @State private var showBuildYourCircleScreen = false
     @State private var selectedHeroPhoto: NativePickedPhotoAsset?
     @State private var selectedHomepageMoment: NativeMoment?
+    @State private var homepageInviteShareSummary: NativeV2InviteCodeSummary?
+    @State private var homepageInviteShareMessage = nativeInviteShareMessage(code: nil)
 
     private var greetingName: String {
         let username = appState.currentUser?.username.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -9106,6 +9157,7 @@ private struct NativeHomepageShellScreen: View {
                 recentMemoriesSection
                 feedPreview
                 statsAndChallengesSection
+                homepageInviteCodeSection
             }
             .padding(.horizontal, 20)
             .padding(.top, 18)
@@ -9145,6 +9197,7 @@ private struct NativeHomepageShellScreen: View {
                 await appState.refreshHomepageRecentMemories()
                 await appState.refreshFeed()
                 await appState.refreshNotificationUnreadCount()
+                await loadHomepageInviteModule()
             }
         }
         .onChange(of: photoAuthorizationStatus) { _ in
@@ -9280,6 +9333,50 @@ private struct NativeHomepageShellScreen: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var homepageInviteCodeString: String {
+        homepageInviteShareSummary?.code ?? "------"
+    }
+
+    private var homepageInviteCodeSection: some View {
+        NativeSurfaceCard {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Your invite code")
+                            .font(nativeAppFont(size: 12, weight: .black))
+                            .foregroundStyle(.white.opacity(0.45))
+                            .textCase(.uppercase)
+
+                        Text(homepageInviteCodeString)
+                            .font(nativeAppFont(size: 24, weight: .black))
+                            .foregroundStyle(.white)
+                    }
+
+                    Spacer(minLength: 0)
+
+                    Button {
+                        UIPasteboard.general.string = homepageInviteShareMessage
+                        appState.showToast(message: "Invite text copied", icon: "doc.on.doc.fill")
+                    } label: {
+                        Image(systemName: "doc.on.doc")
+                            .font(nativeAppFont(size: 16, weight: .black))
+                            .foregroundStyle(.black)
+                            .frame(width: 42, height: 42)
+                            .background(nativeAccent)
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                    .buttonStyle(.plain)
+                }
+
+                Text("Copy and send your invite text to bring more friends into your circle.")
+                    .font(nativeAppFont(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -9476,6 +9573,20 @@ private struct NativeHomepageShellScreen: View {
                 RoundedRectangle(cornerRadius: 22, style: .continuous)
                     .stroke(Color.white.opacity(0.06), lineWidth: 1)
             )
+    }
+
+    private func loadHomepageInviteModule() async {
+        do {
+            async let shareMessage = appState.loadCurrentInviteShareMessage()
+            async let inviteSummary = appState.loadCurrentInviteCodeSummary()
+            let (message, summary) = try await (shareMessage, inviteSummary)
+            await MainActor.run {
+                homepageInviteShareMessage = message
+                homepageInviteShareSummary = summary
+            }
+        } catch {
+            nativeLogger.error("homepage invite module failed \(nativeDescribeError(error), privacy: .public)")
+        }
     }
 
     private func homepageCircleFeedCard(_ item: NativeFeedItem) -> some View {
@@ -9898,7 +10009,7 @@ private struct NativeHomepageShellScreen: View {
                     .foregroundStyle(.white.opacity(0.58))
             }
 
-            if ratingMeta != nil || moment.wouldRevisit != nil {
+            if ratingMeta != nil || moment.wouldRevisit != nil || nativeVisibilityPillMeta(moment.visibility) != nil {
                 HStack(spacing: 8) {
                     if let ratingMeta {
                         HStack(spacing: 8) {
@@ -9919,6 +10030,15 @@ private struct NativeHomepageShellScreen: View {
                             label: homepageRevisitLabel(wouldRevisit),
                             foreground: wouldRevisit == "yes" ? nativeAccent : .white.opacity(0.82),
                             background: wouldRevisit == "yes" ? nativeAccent.opacity(0.16) : Color.white.opacity(0.08)
+                        )
+                    }
+
+                    if let visibilityMeta = nativeVisibilityPillMeta(moment.visibility) {
+                        NativeFeedMetaPill(
+                            label: visibilityMeta.label,
+                            icon: visibilityMeta.icon,
+                            foreground: .white.opacity(0.84),
+                            background: Color.white.opacity(0.08)
                         )
                     }
                 }
@@ -11086,10 +11206,17 @@ private struct NativeFriendRequestRow: View {
 }
 
 private struct NativeNotificationRow: View {
+    @EnvironmentObject private var appState: NativeAppState
     let notification: NativeNotificationItem
 
     private var destinationPlace: NativePlace? {
-        notification.place
+        guard notification.targetType != "MOMENT" else { return nil }
+        return notification.place
+    }
+
+    private var destinationMomentId: String? {
+        guard notification.targetType == "MOMENT" else { return nil }
+        return notification.targetId
     }
 
     private var destinationTraveler: NativeTravelerSummary? {
@@ -11283,7 +11410,15 @@ private struct NativeNotificationRow: View {
     }
 
     var body: some View {
-        if let place = destinationPlace {
+        if let momentId = destinationMomentId {
+            NavigationLink {
+                NativeNotificationMomentDestination(momentId: momentId)
+                    .environmentObject(appState)
+            } label: {
+                rowContent
+            }
+            .buttonStyle(.plain)
+        } else if let place = destinationPlace {
             NavigationLink {
                 NativePlaceDetailScreen(initialPlace: place, source: "notification")
             } label: {
@@ -11299,6 +11434,201 @@ private struct NativeNotificationRow: View {
             .buttonStyle(.plain)
         } else {
             rowContent
+        }
+    }
+}
+
+private struct NativeNotificationMomentDestination: View {
+    @EnvironmentObject private var appState: NativeAppState
+    let momentId: String
+
+    @State private var moment: NativeMoment?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        Group {
+            if let moment {
+                NativeNotificationMomentFullscreen(moment: moment)
+            } else if let errorMessage {
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        Image(systemName: "exclamationmark.triangle")
+                            .font(nativeAppFont(size: 22, weight: .black))
+                            .foregroundStyle(nativeAccent)
+                        Text(errorMessage)
+                            .font(nativeAppFont(size: 14, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.82))
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 24)
+                    }
+                }
+            } else {
+                ZStack {
+                    Color.black.ignoresSafeArea()
+                    ProgressView()
+                        .tint(nativeAccent)
+                }
+            }
+        }
+        .task {
+            guard moment == nil else { return }
+            do {
+                moment = try await appState.fetchV2Moment(id: momentId)
+            } catch {
+                errorMessage = "Could not open this post right now."
+            }
+        }
+    }
+}
+
+private struct NativeNotificationMomentFullscreen: View {
+    @EnvironmentObject private var appState: NativeAppState
+    @Environment(\.dismiss) private var dismiss
+    let moment: NativeMoment
+
+    @State private var comments: [NativeComment] = []
+    @State private var isCommentsLoading = false
+    @State private var commentsErrorMessage: String?
+    @State private var commentDraft = ""
+    @State private var vibed = false
+    @State private var vibinCount = 0
+    @State private var isTogglingVibin = false
+    @State private var selectedPlace: NativePlace? = nil
+
+    private var mediaUrl: String? {
+        if let uploaded = moment.uploadedMedia?.first, !uploaded.isEmpty {
+            return uploaded
+        }
+        if let image = moment.place.image, !image.isEmpty {
+            return image
+        }
+        if let image = moment.place.images?.first, !image.isEmpty {
+            return image
+        }
+        return nil
+    }
+
+    private var ratingMeta: (label: String, icon: String)? {
+        nativeMomentRatingMeta(label: moment.ratingLabel, fallbackRating: moment.rating)
+    }
+
+    private var shortAddress: String {
+        let raw = moment.place.address?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if raw.isEmpty {
+            return moment.place.location
+        }
+        let parts = raw
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard let first = parts.first else { return moment.place.location }
+        if CharacterSet.decimalDigits.isSuperset(of: CharacterSet(charactersIn: first)),
+           parts.count > 1 {
+            return "\(first) \(parts[1])"
+        }
+        return first
+    }
+
+    private var placeMetaLine: String {
+        [moment.place.category?.trimmingCharacters(in: .whitespacesAndNewlines), shortAddress]
+            .compactMap { value -> String? in
+                guard let value, !value.isEmpty else { return nil }
+                return value
+            }
+            .joined(separator: " • ")
+    }
+
+    var body: some View {
+        NativeMomentFullscreenScaffold(
+            displayName: moment.traveler?.displayName ?? moment.traveler?.username ?? "Vibinn",
+            username: moment.traveler?.username,
+            avatarURL: moment.traveler?.avatar,
+            avatarFallback: moment.traveler?.displayName ?? moment.traveler?.username ?? "V",
+            timestampLabel: NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate),
+            ratingMeta: ratingMeta,
+            wouldRevisit: moment.wouldRevisit,
+            visibility: moment.visibility,
+            reviewText: moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
+            mediaUrl: mediaUrl,
+            placeName: moment.place.name,
+            placeMetaLine: placeMetaLine,
+            isLiked: vibed,
+            likeCount: vibinCount,
+            isLikeBusy: isTogglingVibin,
+            comments: comments,
+            isCommentsLoading: isCommentsLoading,
+            commentsErrorMessage: commentsErrorMessage,
+            commentComposerPlaceholder: "Write a comment",
+            menuView: nil,
+            onClose: { dismiss() },
+            onPlaceTap: { selectedPlace = moment.place },
+            onToggleLike: { Task { await toggleVibin() } },
+            onPostComment: { Task { await postComment() } },
+            commentDraft: $commentDraft
+        )
+        .task {
+            vibed = false
+            vibinCount = moment.likeCount ?? 0
+            await loadComments()
+        }
+        .fullScreenCover(item: $selectedPlace) { place in
+            NativePlaceDetailScreen(
+                initialPlace: place,
+                source: NativeAnalyticsSource.feed,
+                showsExplicitBackButton: true
+            )
+        }
+    }
+
+    private func loadComments() async {
+        isCommentsLoading = true
+        commentsErrorMessage = nil
+        do {
+            comments = try await appState.fetchComments(targetType: "MOMENT", targetId: moment.id)
+        } catch {
+            commentsErrorMessage = "Could not load comments right now."
+        }
+        isCommentsLoading = false
+    }
+
+    private func postComment() async {
+        let trimmed = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        do {
+            let newComment = try await appState.createComment(
+                targetType: "MOMENT",
+                targetId: moment.id,
+                body: trimmed,
+                momentId: moment.id
+            )
+            comments.insert(newComment, at: 0)
+            commentDraft = ""
+            commentsErrorMessage = nil
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        } catch {
+            commentsErrorMessage = "Could not post comment right now."
+        }
+    }
+
+    private func toggleVibin() async {
+        guard !isTogglingVibin else { return }
+        guard let receiverUserId = moment.traveler?.id, !receiverUserId.isEmpty else { return }
+
+        isTogglingVibin = true
+        defer { isTogglingVibin = false }
+
+        do {
+            let response = try await appState.toggleMomentVibin(
+                targetId: moment.id,
+                receiverUserId: receiverUserId,
+                momentId: moment.id
+            )
+            vibed = response.active
+            vibinCount = response.count
+            nativeHaptic(.selection)
+        } catch {
+            commentsErrorMessage = "Could not update likes right now."
         }
     }
 }
@@ -12577,7 +12907,7 @@ private struct NativeAuthScreen: View {
             }
         }
         .task {
-            await appState.ensureBackendWarmupIfNeeded()
+            await appState.kickoffBackendWarmupIfNeeded()
         }
     }
 
@@ -13937,7 +14267,7 @@ private struct NativeAuthScreen: View {
         defer { isSubmitting = false }
 
         do {
-            await appState.ensureBackendWarmupIfNeeded()
+            await appState.kickoffBackendWarmupIfNeeded()
             validatedInvite = try await appState.validateInviteCode(inviteCode)
             appState.trackAnalytics(.inviteCodeValidated, properties: [
                 "inviter_user_id": validatedInvite?.inviter?.id ?? ""
@@ -15109,13 +15439,13 @@ private struct NativeAuthStickerStage: View {
     let showsLogo: Bool
 
     private let referenceFrame = CGSize(width: 402, height: 871)
-    private let stickers: [NativeAuthStickerDescriptor] = [
-        .init(assetName: "AuthStickerLayer6", originalSize: CGSize(width: 469, height: 423), x: 13, y: 0, width: 151, rotation: 0),
-        .init(assetName: "AuthStickerLayer2", originalSize: CGSize(width: 396, height: 375), x: 213, y: 0, width: 137, rotation: 0),
-        .init(assetName: "AuthStickerLayer4", originalSize: CGSize(width: 478, height: 547), x: -32, y: 112, width: 179, rotation: 0),
-        .init(assetName: "AuthStickerLayer5", originalSize: CGSize(width: 542, height: 599), x: 0, y: 275, width: 147, rotation: 0),
-        .init(assetName: "AuthStickerLayer3", originalSize: CGSize(width: 309, height: 546), x: 298, y: 80, width: 104, rotation: 0),
-        .init(assetName: "AuthStickerLayer7", originalSize: CGSize(width: 533, height: 627), x: 258, y: 242, width: 166, rotation: 0),
+    private let stickers: [NativeAuthWelcomeStickerDescriptor] = [
+        .init(assetName: "AuthStickerLayer6", x: 13, y: 2, width: 151, height: 100, rotation: -9),
+        .init(assetName: "AuthStickerLayer2", x: 213, y: 0, width: 137, height: 92, rotation: 8),
+        .init(assetName: "AuthStickerLayer4", x: -10, y: 126, width: 178, height: 118, rotation: -7),
+        .init(assetName: "AuthStickerLayer5", x: 4, y: 310, width: 148, height: 104, rotation: -7),
+        .init(assetName: "AuthStickerLayer3", x: 288, y: 104, width: 118, height: 82, rotation: 7),
+        .init(assetName: "AuthStickerLayer7", x: 244, y: 286, width: 160, height: 108, rotation: 6),
     ]
 
     var body: some View {
@@ -15126,21 +15456,20 @@ private struct NativeAuthStickerStage: View {
             ZStack {
                 ForEach(Array(stickers.enumerated()), id: \.offset) { index, sticker in
                     let isVisible = visibleStickerCount > index
-                    let displayedWidthInReference = sticker.width
-                    let displayedHeightInReference = displayedWidthInReference * (sticker.originalSize.height / sticker.originalSize.width)
-                    let targetWidth = stageWidth * (displayedWidthInReference / referenceFrame.width)
-                    let targetHeight = stageHeight * (displayedHeightInReference / referenceFrame.height)
+                    let targetWidth = stageWidth * (sticker.width / referenceFrame.width)
+                    let targetHeight = stageHeight * (sticker.height / referenceFrame.height)
+
                     Image(sticker.assetName)
                         .resizable()
                         .scaledToFit()
                         .frame(width: targetWidth, height: targetHeight)
                         .rotationEffect(.degrees(sticker.rotation))
-                        .shadow(color: .black.opacity(0.28), radius: 18, x: 0, y: 12)
+                        .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 5)
                         .scaleEffect(isVisible ? 1 : 0.72)
                         .opacity(nativeAuthShowsWelcomeStickers && isVisible ? 1 : 0)
                         .position(
-                            x: stageWidth * ((sticker.x + (displayedWidthInReference / 2)) / referenceFrame.width),
-                            y: stageHeight * ((sticker.y + (displayedHeightInReference / 2)) / referenceFrame.height)
+                            x: stageWidth * ((sticker.x + (sticker.width / 2)) / referenceFrame.width),
+                            y: stageHeight * ((sticker.y + (sticker.height / 2)) / referenceFrame.height)
                         )
                 }
 
@@ -15177,6 +15506,15 @@ private struct NativeAuthStickerStage: View {
         }
         .animation(.easeOut(duration: 0.24), value: showsLogo)
     }
+}
+
+private struct NativeAuthWelcomeStickerDescriptor {
+    let assetName: String
+    let x: CGFloat
+    let y: CGFloat
+    let width: CGFloat
+    let height: CGFloat
+    let rotation: Double
 }
 
 private struct NativeAuthPositionDebugOverlay: View {
@@ -20342,6 +20680,8 @@ private struct NativeDecisionHistoryMomentFullscreen: View {
             avatarFallback: appState.currentUser?.displayName ?? appState.currentUser?.username ?? "V",
             timestampLabel: NativeAppState.relativeLabel(from: displayedMoment.visitedAtIso ?? displayedMoment.visitedDate),
             ratingMeta: ratingMeta,
+            wouldRevisit: displayedMoment.wouldRevisit,
+            visibility: displayedMoment.visibility,
             reviewText: displayedMoment.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
             mediaUrl: mediaUrl,
             placeName: displayedMoment.place.name,
@@ -23837,7 +24177,7 @@ private struct NativeProfileScreen: View {
             }
         }
         .sheet(isPresented: $showShareSheet) {
-            NativeShareSheet(items: ["https://vibinn.club/u/\(appState.currentUser?.username ?? "")"])
+            NativeShareSheet(items: [nativeMyProfileShareMessage(username: appState.currentUser?.username)])
         }
         .sheet(item: $selectedConnectionKind) { kind in
             if let user = appState.currentUser {
@@ -33147,6 +33487,8 @@ private struct NativeMomentFullscreenScaffold: View {
     let avatarFallback: String
     let timestampLabel: String
     let ratingMeta: (label: String, icon: String)?
+    let wouldRevisit: String?
+    let visibility: String?
     let reviewText: String?
     let mediaUrl: String?
     let placeName: String?
@@ -33206,18 +33548,39 @@ private struct NativeMomentFullscreenScaffold: View {
                                 }
                             }
 
-                            if let ratingMeta {
+                            if ratingMeta != nil || wouldRevisit != nil || nativeVisibilityPillMeta(visibility) != nil {
                                 HStack(spacing: 8) {
-                                    Image(systemName: ratingMeta.icon)
-                                        .font(nativeAppFont(size: 12, weight: .black))
-                                    Text(ratingMeta.label)
-                                        .font(nativeAppFont(size: 12, weight: .bold))
+                                    if let ratingMeta {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: ratingMeta.icon)
+                                                .font(nativeAppFont(size: 12, weight: .black))
+                                            Text(ratingMeta.label)
+                                                .font(nativeAppFont(size: 12, weight: .bold))
+                                        }
+                                        .foregroundStyle(.black)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 8)
+                                        .background(nativeAccent)
+                                        .clipShape(Capsule())
+                                    }
+
+                                    if let wouldRevisit {
+                                        NativeFeedMetaPill(
+                                            label: revisitLabel(for: wouldRevisit),
+                                            foreground: wouldRevisit == "yes" ? nativeAccent : .white.opacity(0.82),
+                                            background: wouldRevisit == "yes" ? nativeAccent.opacity(0.16) : Color.white.opacity(0.08)
+                                        )
+                                    }
+
+                                    if let visibilityMeta = nativeVisibilityPillMeta(visibility) {
+                                        NativeFeedMetaPill(
+                                            label: visibilityMeta.label,
+                                            icon: visibilityMeta.icon,
+                                            foreground: .white.opacity(0.84),
+                                            background: Color.white.opacity(0.08)
+                                        )
+                                    }
                                 }
-                                .foregroundStyle(.black)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(nativeAccent)
-                                .clipShape(Capsule())
                             }
 
                             if let reviewText, !reviewText.isEmpty {
@@ -33453,6 +33816,19 @@ private struct NativeMomentFullscreenScaffold: View {
                 .stroke(Color.white.opacity(0.06), lineWidth: 1)
         )
     }
+
+    private func revisitLabel(for value: String) -> String {
+        switch value.lowercased() {
+        case "yes":
+            return "Would revisit"
+        case "maybe":
+            return "Maybe"
+        case "no":
+            return "No revisit"
+        default:
+            return value
+        }
+    }
 }
 
 private struct NativeFeedMomentFullscreen: View {
@@ -33538,6 +33914,8 @@ private struct NativeFeedMomentFullscreen: View {
             avatarFallback: item.traveler.displayName ?? item.traveler.username,
             timestampLabel: item.timestampLabel.replacingOccurrences(of: ". ago", with: " ago"),
             ratingMeta: ratingMeta,
+            wouldRevisit: item.place?.momentWouldRevisit,
+            visibility: item.visibility,
             reviewText: item.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
             mediaUrl: mediaUrl,
             placeName: item.place?.name,

@@ -11663,6 +11663,82 @@ app.delete('/api/moments/:id', requireAuth, async (req: AuthenticatedRequest, re
   }
 });
 
+app.get('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const moment = await prismaV2.moment.findFirst({
+      where: {
+        id: req.params.id,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    });
+
+    if (!moment) {
+      res.status(404).json({ error: 'Moment not found' });
+      return;
+    }
+
+    const [commentCount, likeCount, latestComment] = await Promise.all([
+      prismaV2.comment.count({
+        where: {
+          targetType: 'MOMENT',
+          targetId: moment.id,
+        },
+      }),
+      prismaV2.vibin.count({
+        where: {
+          targetType: 'MOMENT',
+          targetId: moment.id,
+        },
+      }),
+      prismaV2.comment.findFirst({
+        where: {
+          targetType: 'MOMENT',
+          targetId: moment.id,
+        },
+        orderBy: { createdAt: 'desc' },
+        include: {
+          user: {
+            select: {
+              username: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const payload = mapV2MomentForClient(
+      moment,
+      requestOrigin,
+      { commentCount, likeCount },
+      latestComment,
+    );
+
+    res.json({
+      moment: {
+        ...payload,
+        traveler: {
+          id: moment.user.id,
+          username: moment.user.username ?? buildV2TravelerUsernameFallback(moment.user.id),
+          displayName: moment.user.displayName ?? moment.user.username ?? buildV2TravelerUsernameFallback(moment.user.id),
+          avatar: moment.user.avatarUrl ?? null,
+        },
+      },
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 app.delete('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest, res) => {
   try {
     const existing = await prismaV2.moment.findFirst({
