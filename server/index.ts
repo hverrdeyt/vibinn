@@ -717,6 +717,23 @@ function canViewerSeeV2Moment(
   }
 }
 
+function buildV2TravelerMomentVisibilityWhere(
+  travelerId: string,
+  viewerUserId: string,
+  mutualFollowUserIds: Set<string>,
+) {
+  if (travelerId === viewerUserId) {
+    return {};
+  }
+
+  return {
+    OR: [
+      { visibility: 'PUBLIC' as const },
+      ...(mutualFollowUserIds.has(travelerId) ? [{ visibility: 'FRIENDS' as const }] : []),
+    ],
+  };
+}
+
 async function loadV2MomentSocialState(momentIds: string[], viewerUserId?: string) {
   if (momentIds.length === 0) {
     return {
@@ -883,7 +900,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
 
   const mutualFollowUserIds = await loadV2MutualFollowUserIds(userId, followedUserIds);
 
-  const [followerCounts, visitedCounts, moments] = await Promise.all([
+  const [followerCounts, visitedCounts, rawMoments] = await Promise.all([
     prismaV2.follow.groupBy({
       by: ['targetUserId'],
       where: { targetUserId: { in: followedUserIds } },
@@ -903,10 +920,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
     prismaV2.moment.findMany({
       where: {
         userId: { in: followedUserIds },
-        OR: [
-          { visibility: 'PUBLIC' },
-          { visibility: 'FRIENDS', userId: { in: Array.from(mutualFollowUserIds) } },
-        ],
+        visibility: { in: ['PUBLIC', 'FRIENDS'] },
       },
       orderBy: [
         { visitedAt: 'desc' },
@@ -915,6 +929,10 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
       take: 40,
     }),
   ]);
+  const moments = rawMoments
+    .filter((moment) => canViewerSeeV2Moment(moment, userId, mutualFollowUserIds))
+    .slice(0, 40);
+  const visitedCountMap = new Map(visitedCounts.map((item) => [item.userId, item._count._all]));
   const social = await loadV2MomentSocialState(moments.map((moment) => moment.id), userId);
 
   const placeIdsNeedingFallback = Array.from(new Set(
@@ -944,7 +962,6 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
     : [];
 
   const followerCountMap = new Map(followerCounts.map((item) => [item.targetUserId, item._count._all]));
-  const visitedCountMap = new Map(visitedCounts.map((item) => [item.userId, item._count._all]));
   const fallbackPlaceMap = new Map(
     fallbackPlaces.map((place) => [place.id, mapStoredV2PlaceForClient(place)] as const),
   );
@@ -993,6 +1010,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
       place: mergedPlace,
       collection: null,
       caption: mappedMoment.caption,
+      visibility: mappedMoment.visibility,
       isVibed: social.vibedMomentIds.has(moment.id),
       vibinCount: social.likeCounts[moment.id] ?? 0,
     }];
@@ -1111,15 +1129,8 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
 
   const viewerIsOwner = travelerId === viewerUserId;
   const mutualFollowUserIds = viewerIsOwner ? new Set<string>() : await loadV2MutualFollowUserIds(viewerUserId, [travelerId]);
-  const visibilityWhere = viewerIsOwner
-    ? {}
-    : {
-        OR: [
-          { visibility: 'PUBLIC' as const },
-          ...(mutualFollowUserIds.has(travelerId) ? [{ visibility: 'FRIENDS' as const }] : []),
-        ],
-      };
-  const [visibleMomentCount, moments] = await Promise.all([
+  const visibilityWhere = buildV2TravelerMomentVisibilityWhere(travelerId, viewerUserId, mutualFollowUserIds);
+  const [visibleMomentCount, rawMoments] = await Promise.all([
     prismaV2.moment.count({
       where: {
         userId: travelerId,
@@ -1138,6 +1149,7 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
       take: 60,
     }),
   ]);
+  const moments = rawMoments.filter((moment) => canViewerSeeV2Moment(moment, viewerUserId, mutualFollowUserIds));
   const socialState = await loadV2MomentSocialState(moments.map((moment) => moment.id), viewerUserId);
 
   return {

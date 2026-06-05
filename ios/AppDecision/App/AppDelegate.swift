@@ -1963,6 +1963,7 @@ private struct NativeServerFeedItem: Decodable, Identifiable {
     let place: NativePlace?
     let collection: NativeCollection?
     let caption: String?
+    let visibility: String?
     let isVibed: Bool?
     let vibinCount: Int?
 }
@@ -2388,6 +2389,7 @@ private struct NativeFeedItem: Identifiable {
     let place: NativePlace?
     let collection: NativeCollection?
     let caption: String?
+    let visibility: String?
     let isVibed: Bool
     let vibinCount: Int
     // For visited items that come from a moment/check-in, keep user uploads separate from place media.
@@ -2405,6 +2407,7 @@ private struct NativeFeedItem: Identifiable {
         place: NativePlace?,
         collection: NativeCollection?,
         caption: String?,
+        visibility: String? = nil,
         isVibed: Bool = false,
         vibinCount: Int = 0,
         uploadedMediaUrls: [String]? = nil
@@ -2418,6 +2421,7 @@ private struct NativeFeedItem: Identifiable {
         self.place = place
         self.collection = collection
         self.caption = caption
+        self.visibility = visibility
         self.isVibed = isVibed
         self.vibinCount = vibinCount
         self.uploadedMediaUrls = uploadedMediaUrls
@@ -4611,6 +4615,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     place: item.place,
                     collection: item.collection,
                     caption: item.caption,
+                    visibility: item.visibility,
                     isVibed: item.isVibed ?? false,
                     vibinCount: item.vibinCount ?? 0,
                     uploadedMediaUrls: item.place?.userMediaUrls ?? item.place?.momentMedia?.map(\.url)
@@ -5103,6 +5108,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     place: existing.place,
                     collection: existing.collection,
                     caption: existing.caption,
+                    visibility: existing.visibility,
                     isVibed: isVibed,
                     vibinCount: vibinCount,
                     uploadedMediaUrls: existing.uploadedMediaUrls
@@ -6099,6 +6105,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 ),
                 collection: nil,
                 caption: moment.caption,
+                visibility: moment.visibility,
                 uploadedMediaUrls: momentMedia.isEmpty ? nil : momentMedia
             )
         })
@@ -8812,6 +8819,7 @@ private struct NativeDiaryScreen: View {
             avatarFallback: appState.currentUser?.displayName ?? appState.currentUser?.username ?? "You",
             ratingMeta: ratingMeta,
             wouldRevisit: moment.wouldRevisit,
+            visibility: moment.visibility,
             reviewText: moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
             mediaURL: nativeDiaryMediaURL(for: moment),
             placeName: moment.place.name,
@@ -24380,6 +24388,14 @@ private struct NativeOwnVisitedMomentCard: View {
                             background: wouldRevisit == "yes" ? nativeAccent.opacity(0.16) : Color.white.opacity(0.08)
                         )
                     }
+                    if let visibilityMeta = nativeVisibilityPillMeta(moment.visibility) {
+                        NativeFeedMetaPill(
+                            label: visibilityMeta.label,
+                            icon: visibilityMeta.icon,
+                            foreground: .white.opacity(0.84),
+                            background: Color.white.opacity(0.08)
+                        )
+                    }
                     Spacer(minLength: 0)
                 }
 
@@ -27455,6 +27471,7 @@ private struct NativeFeedCard: View {
             headerLinkTraveler: item.traveler,
             ratingMeta: ratingMeta,
             wouldRevisit: place.momentWouldRevisit,
+            visibility: item.visibility,
             reviewText: item.caption?.trimmingCharacters(in: .whitespacesAndNewlines),
             mediaURL: mediaURL,
             placeName: place.name,
@@ -30002,6 +30019,7 @@ private struct NativeTravelerProfileScreen: View {
             place: nativePlaceApplyingMoment(moment),
             collection: nil,
             caption: moment.caption,
+            visibility: moment.visibility,
             uploadedMediaUrls: media
         )
     }
@@ -32799,6 +32817,17 @@ private func nativeNormalizedMomentVisibility(_ value: String?) -> String {
     }
 }
 
+private func nativeVisibilityPillMeta(_ value: String?) -> (label: String, icon: String)? {
+    switch nativeNormalizedMomentVisibility(value) {
+    case "friends":
+        return ("Friends", "person.2.fill")
+    case "private":
+        return ("Private", "lock.fill")
+    default:
+        return nil
+    }
+}
+
 private func nativeAvatarInitials(from raw: String) -> String {
     let tokens = raw
         .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
@@ -32949,6 +32978,7 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
     var headerLinkTraveler: NativeTravelerSummary? = nil
     let ratingMeta: (label: String, icon: String)?
     let wouldRevisit: String?
+    let visibility: String?
     let reviewText: String?
     let mediaURL: String?
     let placeName: String
@@ -32969,7 +32999,7 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
                     headerTrailing()
                 }
 
-                if ratingMeta != nil || wouldRevisit != nil {
+                if ratingMeta != nil || wouldRevisit != nil || nativeVisibilityPillMeta(visibility) != nil {
                     HStack(spacing: 8) {
                         if let ratingMeta {
                             HStack(spacing: 8) {
@@ -32990,6 +33020,15 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
                                 label: revisitLabel(for: wouldRevisit),
                                 foreground: wouldRevisit == "yes" ? nativeAccent : .white.opacity(0.82),
                                 background: wouldRevisit == "yes" ? nativeAccent.opacity(0.16) : Color.white.opacity(0.08)
+                            )
+                        }
+
+                        if let visibilityMeta = nativeVisibilityPillMeta(visibility) {
+                            NativeFeedMetaPill(
+                                label: visibilityMeta.label,
+                                icon: visibilityMeta.icon,
+                                foreground: .white.opacity(0.84),
+                                background: Color.white.opacity(0.08)
                             )
                         }
                     }
