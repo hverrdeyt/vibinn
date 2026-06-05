@@ -1517,6 +1517,74 @@ async function sendPushNotification(input: {
   }
 }
 
+async function sendV2PushNotification(input: {
+  userId: string;
+  title: string;
+  body: string;
+  data?: Record<string, string>;
+}) {
+  const messaging = getFirebaseMessagingClient();
+  if (!messaging) {
+    return;
+  }
+
+  const [settings, devices] = await Promise.all([
+    prismaV2.userNotificationSettings.findUnique({
+      where: { userId: input.userId },
+      select: { pushEnabled: true },
+    }),
+    prismaV2.userPushDevice.findMany({
+      where: {
+        userId: input.userId,
+        isActive: true,
+      },
+      select: {
+        id: true,
+        fcmToken: true,
+      },
+    }),
+  ]);
+
+  if (settings?.pushEnabled === false || devices.length === 0) {
+    return;
+  }
+
+  const response = await messaging.sendEachForMulticast({
+    tokens: devices.map((device) => device.fcmToken),
+    notification: {
+      title: input.title,
+      body: input.body,
+    },
+    data: input.data,
+    apns: {
+      payload: {
+        aps: {
+          sound: 'default',
+        },
+      },
+    },
+  });
+
+  const invalidDeviceIds = response.responses.flatMap((result, index) => {
+    if (!result.error) {
+      return [];
+    }
+    const code = result.error.code;
+    if (code === 'messaging/registration-token-not-registered' || code === 'messaging/invalid-registration-token') {
+      return [devices[index]?.id].filter(Boolean) as string[];
+    }
+    console.error('V2 push send failed', code, result.error.message);
+    return [];
+  });
+
+  if (invalidDeviceIds.length > 0) {
+    await prismaV2.userPushDevice.updateMany({
+      where: { id: { in: invalidDeviceIds } },
+      data: { isActive: false },
+    });
+  }
+}
+
 async function createSession(userId: string) {
   const token = crypto.randomUUID();
   await prisma.session.create({
@@ -9656,6 +9724,17 @@ async function createV2Notification(input: {
         targetId: input.targetId ?? null,
         title: input.title,
         body: input.body,
+      },
+    });
+
+    void sendV2PushNotification({
+      userId: input.userId,
+      title: input.title,
+      body: input.body,
+      data: {
+        type: input.type,
+        ...(input.targetType ? { targetType: input.targetType } : {}),
+        ...(input.targetId ? { targetId: input.targetId } : {}),
       },
     });
   } catch (error) {
