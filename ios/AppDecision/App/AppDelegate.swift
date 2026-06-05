@@ -940,6 +940,9 @@ private struct NativeAuthSessionResponse: Decodable {
 }
 
 private struct NativeEmptyResponse: Decodable {}
+private struct NativeHealthResponse: Decodable {
+    let ok: Bool
+}
 private struct NativeClientConfigResponse: Decodable {
     let unsupportedCityGateEnabled: Bool
 }
@@ -2821,6 +2824,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private var hasStartedBootstrap = false
     private var lastGeocodedCoordinate: CLLocationCoordinate2D?
     private var toastDismissWorkItem: DispatchWorkItem?
+    private var backendWarmupTask: Task<Void, Never>?
+    private var backendLastWarmAt: Date?
 
     var fallbackLocationWhenGateDisabled: NativeLocationOption? {
         guard unsupportedCityGateEnabled == false else { return nil }
@@ -2919,6 +2924,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             locationManager.startUpdatingLocation()
         }
         Task { [weak self] in
+            await self?.ensureBackendWarmupIfNeeded()
+        }
+        Task { [weak self] in
             await self?.refreshClientConfig()
         }
         Task { [weak self] in
@@ -2986,6 +2994,32 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         } catch {
             nativeLogger.error("client config failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    func ensureBackendWarmupIfNeeded(force: Bool = false) async {
+        if !force, let backendLastWarmAt, Date().timeIntervalSince(backendLastWarmAt) < 120 {
+            return
+        }
+
+        if let backendWarmupTask {
+            await backendWarmupTask.value
+            return
+        }
+
+        let warmupTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await self.api.prewarmBackend()
+                self.backendLastWarmAt = Date()
+                nativeLogger.log("backend prewarm succeeded")
+            } catch {
+                nativeLogger.error("backend prewarm failed: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        backendWarmupTask = warmupTask
+        await warmupTask.value
+        backendWarmupTask = nil
     }
 
     private func syncLocationPermissionState(with status: CLAuthorizationStatus) {
@@ -6190,6 +6224,10 @@ private struct NativeAPIClient {
         try await request(path: "/api/client-config", method: "GET", token: nil)
     }
 
+    func prewarmBackend() async throws {
+        let _: NativeHealthResponse = try await request(path: "/api/health", method: "GET", token: nil)
+    }
+
     func googleAuth(idToken: String) async throws -> NativeLoginResponse {
         try await request(
             path: "/api/auth/google",
@@ -7705,7 +7743,15 @@ private struct NativeAPIClient {
         var request = URLRequest(url: url)
         request.httpMethod = method
         let isInviteValidation = path.hasPrefix("/api/v2/invite-codes/validate")
-        request.timeoutInterval = isInviteValidation ? 40 : (method == "GET" ? 30 : 25)
+        let isClientConfig = path == "/api/client-config"
+        let isHealthCheck = path == "/api/health"
+        if isInviteValidation {
+            request.timeoutInterval = 60
+        } else if isClientConfig || isHealthCheck {
+            request.timeoutInterval = 45
+        } else {
+            request.timeoutInterval = method == "GET" ? 30 : 25
+        }
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -7722,6 +7768,7 @@ private struct NativeAPIClient {
             let shouldRetry = method == "GET" && (nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorTimedOut)
             if shouldRetry {
                 nativeLogger.error("API request timed out, retrying path=\(path, privacy: .public)")
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
                 dataAndResponse = try await URLSession.shared.data(for: request)
             } else {
                 throw error
@@ -9107,9 +9154,13 @@ private struct NativeHomepageShellScreen: View {
 
     private var homepageHeader: some View {
         HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text("\(greetingPrefix),\n\(greetingName).")
-                    .font(nativeAppFont(size: 21, weight: .black))
+            VStack(alignment: .leading, spacing: 6) {
+                Text("HOME")
+                    .font(nativePixelAccentFont(size: 10))
+                    .foregroundStyle(nativeAccent.opacity(0.88))
+
+                Text("Today’s Vibe")
+                    .font(nativeAppFont(size: 28, weight: .black))
                     .foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -11842,6 +11893,7 @@ private struct NativeAuthScreen: View {
         .background(onboardingBackgroundGradient)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .padding(.bottom, max(safeBottom, 24) + 24)
+        .ignoresSafeArea(isFirstPlaceReviewScreen ? .keyboard : [], edges: .bottom)
     }
 
     private func inviteShareOnboardingPage(safeTop: CGFloat, safeBottom: CGFloat) -> some View {
@@ -12140,6 +12192,10 @@ private struct NativeAuthScreen: View {
 
     private var isFirstPlaceLocationSearchScreen: Bool {
         step == .firstPlaceEntry && firstPlaceStage == .noLocation
+    }
+
+    private var isFirstPlaceReviewScreen: Bool {
+        step == .firstPlaceEntry && firstPlaceStage == .review
     }
 
     private var isInviteShareScreen: Bool {
@@ -12511,6 +12567,9 @@ private struct NativeAuthScreen: View {
                 .opacity(isSubmitting ? 0.45 : 1)
                 inlineErrorSnackbar
             }
+        }
+        .task {
+            await appState.ensureBackendWarmupIfNeeded()
         }
     }
 
@@ -13128,6 +13187,7 @@ private struct NativeAuthScreen: View {
                                             get: { firstPlaceReviewText },
                                             set: { updateFirstPlaceReviewText($0) }
                                         ),
+                                        autocapitalizationType: .none,
                                         onBeginEditing: {
                                             focusedField = .firstPlaceReview
                                             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -13869,6 +13929,7 @@ private struct NativeAuthScreen: View {
         defer { isSubmitting = false }
 
         do {
+            await appState.ensureBackendWarmupIfNeeded()
             validatedInvite = try await appState.validateInviteCode(inviteCode)
             appState.trackAnalytics(.inviteCodeValidated, properties: [
                 "inviter_user_id": validatedInvite?.inviter?.id ?? ""
@@ -25159,10 +25220,19 @@ private struct NativeFeedScreen: View {
         ScrollView(showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: 18) {
                 HStack(alignment: .top, spacing: 14) {
-                    Text("Feed")
-                        .font(nativeAppFont(size: 32, weight: .black))
-                        .foregroundStyle(.white)
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("FEED")
+                            .font(nativePixelAccentFont(size: 10))
+                            .foregroundStyle(nativeAccent.opacity(0.88))
+
+                        Text("From Your Circle")
+                            .font(nativeAppFont(size: 28, weight: .black))
+                            .foregroundStyle(.white)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+
                     Spacer(minLength: 0)
+
                     NavigationLink {
                         NativePeopleSearchScreen()
                     } label: {
@@ -27923,7 +27993,7 @@ private struct NativeCommentSheet: View {
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                         .frame(minHeight: 72, maxHeight: 72)
-                        .scrollContentBackground(.hidden)
+                        .nativeHiddenTextEditorBackground()
                         .background(Color.clear)
                 }
                 .frame(minHeight: 72, maxHeight: 72)
@@ -33275,7 +33345,7 @@ private struct NativeMomentFullscreenScaffold: View {
                                     .padding(.horizontal, 10)
                                     .padding(.vertical, 8)
                                     .frame(minHeight: 72, maxHeight: 72)
-                                    .scrollContentBackground(.hidden)
+                                    .nativeHiddenTextEditorBackground()
                                     .background(Color.clear)
                                     .focused($isCommentFieldFocused)
                             }
@@ -34375,7 +34445,7 @@ private struct NativeCheckInScreen: View {
                                 set: { updateReviewText($0) }
                             )
                         )
-                        .textInputAutocapitalization(.words)
+                        .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .submitLabel(.done)
                         .focused($isReviewFieldFocused)
@@ -35624,6 +35694,7 @@ private struct NativeMultilineInputField: View {
 
 private struct NativeWrappedTextView: UIViewRepresentable {
     @Binding var text: String
+    var autocapitalizationType: UITextAutocapitalizationType = .sentences
     var onBeginEditing: (() -> Void)? = nil
     var onEndEditing: (() -> Void)? = nil
 
@@ -35638,7 +35709,7 @@ private struct NativeWrappedTextView: UIViewRepresentable {
         textView.textColor = .white
         textView.font = .systemFont(ofSize: 16, weight: .medium)
         textView.autocorrectionType = .no
-        textView.autocapitalizationType = .sentences
+        textView.autocapitalizationType = autocapitalizationType
         textView.textContainerInset = .zero
         textView.textContainer.lineFragmentPadding = 0
         textView.showsVerticalScrollIndicator = false
@@ -35673,6 +35744,17 @@ private struct NativeWrappedTextView: UIViewRepresentable {
 
         func textViewDidEndEditing(_ textView: UITextView) {
             onEndEditing?()
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func nativeHiddenTextEditorBackground() -> some View {
+        if #available(iOS 16.0, *) {
+            self.scrollContentBackground(.hidden)
+        } else {
+            self
         }
     }
 }

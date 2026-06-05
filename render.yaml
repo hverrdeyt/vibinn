@@ -3,12 +3,16 @@ databases:
     databaseName: vibecheck_travel
     user: vibecheck_travel
     plan: free
+  - name: vibecheck-db-v2
+    databaseName: vibecheck_travel_v2
+    user: vibecheck_travel_v2
+    plan: free
 
 services:
   - type: web
     name: vibecheck-api
     runtime: node
-    plan: free
+    plan: starter
     buildCommand: npm install && npm run prisma:generate:production && npm run prisma:v2:generate:production && npm run prisma:migrate:deploy:production && npm run prisma:v2:migrate:deploy:production
     startCommand: npm run start:server:production
     autoDeploy: true
@@ -20,7 +24,9 @@ services:
           name: vibecheck-db
           property: connectionString
       - key: DATABASE_URL_V2
-        sync: false
+        fromDatabase:
+          name: vibecheck-db-v2
+          property: connectionString
       - key: API_ORIGIN
         value: https://api.vibinn.club
       - key: GOOGLE_CLIENT_ID
