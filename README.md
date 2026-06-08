@@ -105,6 +105,10 @@ Expected OTP provider env:
 - `VONAGE_VERIFY_CODE_LENGTH`
 - `VONAGE_VERIFY_PIN_EXPIRY_SECONDS`
 - `VONAGE_VERIFY_WORKFLOW_ID`
+- Optional App Review-only OTP env:
+  - `APP_REVIEW_MODE_ENABLED`
+  - `APP_REVIEW_PHONE`
+  - `APP_REVIEW_OTP_CODE`
 
 Render blueprints for backend split deploys:
 
@@ -122,10 +126,14 @@ Before shipping the current v2 stack to production:
      - `VONAGE_API_KEY`
      - `VONAGE_API_SECRET`
      - `VONAGE_VERIFY_BRAND`
-     - `VONAGE_VERIFY_CODE_LENGTH=6`
-     - `VONAGE_VERIFY_PIN_EXPIRY_SECONDS`
-     - `VONAGE_VERIFY_WORKFLOW_ID`
+   - `VONAGE_VERIFY_CODE_LENGTH=6`
+   - `VONAGE_VERIFY_PIN_EXPIRY_SECONDS`
+   - `VONAGE_VERIFY_WORKFLOW_ID`
    - Do **not** set `V2_STAGING_FIXED_OTP_CODE` in production
+   - If App Review needs a pre-populated demo account, optionally set:
+     - `APP_REVIEW_MODE_ENABLED=true`
+     - `APP_REVIEW_PHONE=+16172345678`
+     - `APP_REVIEW_OTP_CODE=1247`
    - Set R2 env vars for media uploads
    - Set Firebase env vars for push delivery
    - Set `API_ORIGIN=https://api.vibinn.club`

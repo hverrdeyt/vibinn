@@ -11,6 +11,11 @@ const VONAGE_VERIFY_WORKFLOW_ID = Number(process.env.VONAGE_VERIFY_WORKFLOW_ID |
 const V2_SESSION_TTL_MS = Number(process.env.V2_SESSION_TTL_MS || 1000 * 60 * 60 * 24 * 30);
 const STAGING_FIXED_OTP_CODE = String(process.env.V2_STAGING_FIXED_OTP_CODE || '1234').trim();
 const USE_STAGING_FIXED_OTP = APP_ENV === 'staging';
+const APP_REVIEW_MODE_ENABLED = String(
+  process.env.APP_REVIEW_MODE_ENABLED ?? (APP_ENV === 'production' ? 'true' : 'false'),
+).toLowerCase() === 'true';
+const APP_REVIEW_PHONE_RAW = String(process.env.APP_REVIEW_PHONE || '+16172345678').trim();
+const APP_REVIEW_OTP_CODE = String(process.env.APP_REVIEW_OTP_CODE || '1247').trim();
 
 type AuthPurpose = 'SIGN_UP' | 'SIGN_IN';
 
@@ -146,6 +151,20 @@ export function normalizePhoneNumberE164(input: string) {
   }
 
   return candidate.startsWith('+') ? candidate : `+${candidate}`;
+}
+
+const NORMALIZED_APP_REVIEW_PHONE = (() => {
+  try {
+    return normalizePhoneNumberE164(APP_REVIEW_PHONE_RAW);
+  } catch {
+    return null;
+  }
+})();
+
+function isAppReviewOtpPhone(phoneNumberE164: string) {
+  return APP_REVIEW_MODE_ENABLED
+    && Boolean(NORMALIZED_APP_REVIEW_PHONE)
+    && NORMALIZED_APP_REVIEW_PHONE === phoneNumberE164;
 }
 
 function sanitizeInviteCode(input: string) {
@@ -409,6 +428,11 @@ function createStagingOtpRequestId(phoneNumberE164: string) {
   return `staging-${phoneNumberE164.replace(/\D+/g, '')}-${suffix}`;
 }
 
+function createAppReviewOtpRequestId(phoneNumberE164: string) {
+  const suffix = crypto.randomBytes(8).toString('hex');
+  return `review-${phoneNumberE164.replace(/\D+/g, '')}-${suffix}`;
+}
+
 async function checkVonageVerification(providerRequestId: string, code: string) {
   const body = new URLSearchParams({
     request_id: providerRequestId,
@@ -436,6 +460,13 @@ function checkStagingFixedVerification(code: string) {
   return {
     status: code.trim() === STAGING_FIXED_OTP_CODE ? '0' : '16',
     error_text: code.trim() === STAGING_FIXED_OTP_CODE ? undefined : 'OTP code is invalid',
+  };
+}
+
+function checkAppReviewFixedVerification(code: string) {
+  return {
+    status: code.trim() === APP_REVIEW_OTP_CODE ? '0' : '16',
+    error_text: code.trim() === APP_REVIEW_OTP_CODE ? undefined : 'OTP code is invalid',
   };
 }
 
@@ -937,9 +968,11 @@ export async function requestOtp(input: RequestOtpInput) {
     await getActiveInviteCodeOrThrow(input.inviteCode);
   }
 
-  const providerRequestId = USE_STAGING_FIXED_OTP
-    ? createStagingOtpRequestId(phoneNumberE164)
-    : await startVonageVerification(phoneNumberE164);
+  const providerRequestId = isAppReviewOtpPhone(phoneNumberE164)
+    ? createAppReviewOtpRequestId(phoneNumberE164)
+    : USE_STAGING_FIXED_OTP
+      ? createStagingOtpRequestId(phoneNumberE164)
+      : await startVonageVerification(phoneNumberE164);
   const otpRequest = await prismaV2.otpRequest.create({
     data: {
       phoneNumberE164,
@@ -977,9 +1010,11 @@ export async function verifyOtp(input: VerifyOtpInput) {
     throw new AuthV2Error('OTP_REQUEST_EXPIRED', 'OTP request has expired');
   }
 
-  const verification = USE_STAGING_FIXED_OTP
-    ? checkStagingFixedVerification(input.code)
-    : await checkVonageVerification(otpRequest.providerRequestId, input.code);
+  const verification = otpRequest.providerRequestId.startsWith('review-')
+    ? checkAppReviewFixedVerification(input.code)
+    : USE_STAGING_FIXED_OTP
+      ? checkStagingFixedVerification(input.code)
+      : await checkVonageVerification(otpRequest.providerRequestId, input.code);
   const now = new Date();
 
   if (verification.status !== '0') {
