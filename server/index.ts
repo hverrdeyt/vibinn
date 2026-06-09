@@ -1180,6 +1180,98 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
   };
 }
 
+async function buildPublicProfilePayloadFromV2Username(username: string, requestOrigin?: string) {
+  const traveler = await prismaV2.user.findFirst({
+    where: {
+      username: {
+        equals: username.trim().toLowerCase(),
+        mode: 'insensitive',
+      },
+      status: 'ACTIVE',
+    },
+    select: {
+      id: true,
+      username: true,
+      displayName: true,
+      avatarUrl: true,
+      bio: true,
+      cityLabel: true,
+      moments: {
+        where: {
+          visibility: 'PUBLIC',
+        },
+        orderBy: [
+          { visitedAt: 'desc' },
+          { createdAt: 'desc' },
+        ],
+        take: 60,
+      },
+    },
+  });
+
+  if (!traveler || !traveler.username) {
+    return null;
+  }
+
+  const placeholderAvatar = `https://placehold.co/400x400/111111/D3FF48?text=${encodeURIComponent((traveler.displayName ?? traveler.username).slice(0, 1).toUpperCase())}`;
+  const mappedMoments = traveler.moments.map((moment) => mapV2MomentForClient(moment, requestOrigin));
+  const places = mappedMoments.map((moment) => moment.place);
+  const uniqueCities = new Set<string>();
+  const uniqueCountries = new Set<string>();
+  const groupedTravelHistory = new Map<string, { country: string; cities: string[]; places: typeof places }>();
+
+  for (const place of places) {
+    const rawLocation = place.location?.trim() || 'Unknown location';
+    const parts = rawLocation.split(',').map((part) => part.trim()).filter(Boolean);
+    const city = parts[0] || rawLocation;
+    const country = parts[parts.length - 1] || city;
+    uniqueCities.add(city.toLowerCase());
+    uniqueCountries.add(country.toLowerCase());
+
+    const groupKey = `${country.toLowerCase()}::${city.toLowerCase()}`;
+    const existing = groupedTravelHistory.get(groupKey);
+    if (existing) {
+      existing.places.push(place);
+      continue;
+    }
+    groupedTravelHistory.set(groupKey, {
+      country,
+      cities: [city],
+      places: [place],
+    });
+  }
+
+  return {
+    user: {
+      id: traveler.id,
+      username: traveler.username,
+      displayName: traveler.displayName ?? traveler.username,
+      bio: traveler.bio?.trim() || 'Sharing a personal food diary on Vibinn.',
+      avatar: traveler.avatarUrl?.trim() || placeholderAvatar,
+      descriptor: traveler.cityLabel?.trim() || undefined,
+      relevanceReason: undefined,
+      vibinCount: undefined,
+      badges: [],
+      flags: [],
+      stats: {
+        countries: uniqueCountries.size,
+        cities: uniqueCities.size,
+        trips: places.length,
+      },
+      travelHistory: Array.from(groupedTravelHistory.values()),
+      recentSavedPlaces: [],
+      recentCollections: [],
+      latestVisitedAtIso: traveler.moments[0]?.visitedAt.toISOString(),
+      savedPlacesCount: 0,
+      collectionsCount: 0,
+      matchScore: undefined,
+    },
+    bookmarks: [],
+    collections: [],
+    moments: mappedMoments,
+  };
+}
+
 async function buildV2TravelerConnectionList(
   travelerId: string,
   kind: 'followers' | 'following'
@@ -9534,6 +9626,7 @@ app.patch('/api/v2/profile/me', async (req: AuthenticatedRequest, res) => {
       avatarUrl,
       bio,
     });
+    await ensureLegacyUserForV2User(req.authV2UserId);
 
     const onboarding = await getMyOnboardingState(req.authV2UserId);
     res.json({ user, onboarding });
@@ -11120,13 +11213,22 @@ app.get('/api/profiles/:username/public', (req, res) => {
     return;
   }
 
+  const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+
   void getPublicProfileByUsername(username)
-    .then((payload) => {
-      if (!payload) {
+    .then(async (payload) => {
+      if (payload) {
+        res.json(payload);
+        return;
+      }
+
+      const v2Payload = await buildPublicProfilePayloadFromV2Username(username, requestOrigin);
+      if (!v2Payload) {
         res.status(404).json({ error: 'Profile not found' });
         return;
       }
-      res.json(payload);
+
+      res.json(v2Payload);
     })
     .catch((error) => handleError(res, error));
 });
