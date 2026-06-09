@@ -366,11 +366,11 @@ export default function LandingPage({
   ], []);
 
   const floatingCta = activeSection === 1
-    ? { label: 'Pick for Me', source: 'section_3' as const }
+    ? { label: 'Start your diary', source: 'section_3' as const }
     : activeSection === 2
-      ? { label: 'Let me try', source: 'section_3' as const }
+      ? { label: 'Find your friends', source: 'section_3' as const }
       : activeSection === 3
-        ? { label: 'Find my people', source: 'section_4' as const }
+        ? { label: 'Explore your map', source: 'section_4' as const }
         : null;
 
   return (
@@ -407,13 +407,13 @@ export default function LandingPage({
         >
           <div className="flex max-w-6xl flex-col items-center">
             <span className="mb-4 inline-flex rotate-[-4deg] rounded-full border-2 border-black/85 bg-white px-4 py-2 text-[11px] font-black uppercase tracking-[0.16em] text-black shadow-[4px_4px_0_#000]">
-              too many saved posts
+              your food diary
             </span>
             <h1 className="max-w-[11ch] text-balance text-[3rem] font-black leading-[0.88] tracking-[-0.09em] text-black sm:text-[4.8rem]">
-              Overthinking <span className="landing-bbh-bartle">where</span> to go?
+              Every meal. <span className="landing-bbh-bartle">Remembered</span>.
             </h1>
             <p className="mt-4 text-lg font-semibold text-black/72 sm:text-2xl">
-              Same.
+              Snap, rate, save — your entire food journey in one place.
             </p>
             <motion.div
               className="mt-8 flex items-center gap-2 rounded-full bg-black px-4 py-2 text-[11px] font-black uppercase tracking-[0.16em] text-[#D3FF48]"
@@ -437,13 +437,13 @@ export default function LandingPage({
         <div className="relative z-10 mx-auto flex h-full w-full max-w-6xl flex-col items-center justify-center px-6 pb-16 pt-24 sm:px-10">
           <div className="text-center">
             <span className="inline-flex rounded-full border border-white/14 bg-white/8 px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-[#D3FF48]">
-              mood first
+              food diary
             </span>
             <h2 className="mt-5 text-balance text-[2.8rem] font-black leading-[0.9] tracking-[-0.08em] sm:text-[4.3rem]">
-              Tell us the <span className="landing-bbh-bartle text-[#D3FF48]">vibe</span>.
+              Every meal you&apos;ve eaten, finally organized.
             </h2>
             <p className="mt-3 text-lg font-semibold text-white/70 sm:text-2xl">
-              Not the place.
+              Snap a photo, write 3 words, pick a rating. Done in seconds.
             </p>
           </div>
 
@@ -496,7 +496,7 @@ export default function LandingPage({
               }}
             >
               <PhoneMockup className="rotate-[-4deg]">
-                <div className="rounded-[1.8rem] bg-black p-4 text-left text-white">
+              <div className="rounded-[1.8rem] bg-black p-4 text-left text-white">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <img
@@ -512,9 +512,9 @@ export default function LandingPage({
                     </div>
                   </div>
                   <div className="mt-6 text-[2rem] font-black leading-[0.9] tracking-[-0.08em]">
-                    Where we
+                    Every meal,
                     <br />
-                    going?
+                    remembered.
                   </div>
                   <div className="mt-6">
                     <MoodSelectorColumn
@@ -524,7 +524,7 @@ export default function LandingPage({
                     />
                   </div>
                   <div className="mt-5 rounded-full bg-[#D3FF48] px-4 py-3 text-center text-sm font-black text-black shadow-[4px_4px_0_#1a1a1a]">
-                    Pick for Me
+                    Start your diary
                   </div>
                 </div>
               </PhoneMockup>
@@ -555,13 +555,13 @@ export default function LandingPage({
           <div className="grid items-center gap-10 lg:grid-cols-[0.95fr_1.05fr]">
             <div className="max-w-xl">
               <span className="inline-flex rounded-full border-2 border-black bg-[#D3FF48] px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-black shadow-[4px_4px_0_#000]">
-                clarity moment
+                trusted circle
               </span>
               <h2 className="mt-5 text-balance text-[2.8rem] font-black leading-[0.9] tracking-[-0.09em] text-black sm:text-[4.4rem]">
-                We give you <span className="landing-bbh-bartle">3</span>.
+                Real reviews from people you actually trust.
               </h2>
               <p className="mt-3 text-lg font-semibold text-black/68 sm:text-2xl">
-                You pick one and go.
+                When your friend says it&apos;s recommended, you know they mean it.
               </p>
             </div>
 
@@ -575,7 +575,7 @@ export default function LandingPage({
                 <div className="rounded-[1.8rem] bg-[#0f0f0f] p-4">
                   <div className="flex items-center justify-between">
                     <div>
-                      <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#D3FF48]">today’s picks</div>
+                      <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#D3FF48]">trusted reviews</div>
                       <div className="mt-1 text-2xl font-black tracking-[-0.07em] text-white">Boston</div>
                     </div>
                     <div className="rounded-full bg-white/8 p-2 text-white/70">
@@ -625,13 +625,13 @@ export default function LandingPage({
           <div className="mx-auto flex max-w-3xl flex-col items-center">
             <div className="max-w-xl text-center">
               <span className="inline-flex rounded-full border-2 border-black bg-white px-4 py-2 text-[10px] font-black uppercase tracking-[0.18em] text-black shadow-[4px_4px_0_#000]">
-                social layer
+                food map
               </span>
               <h2 className="mt-5 text-balance text-[2.8rem] font-normal leading-[0.9] tracking-[-0.09em] text-black sm:text-[4.2rem]">
-                See where your friends go
+                Your food journey, mapped.
               </h2>
               <p className="mt-3 text-lg font-semibold text-black/70 sm:text-2xl">
-                <span className="landing-bbh-bartle">Today</span>
+                See everywhere you&apos;ve eaten — and discover new spots hiding nearby.
               </p>
             </div>
 
@@ -644,7 +644,7 @@ export default function LandingPage({
               <PhoneMockup className="max-w-[19rem] rotate-[-2deg]">
                 <div className="rounded-[1.8rem] bg-black p-4">
                   <div className="flex items-center justify-between">
-                    <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#D3FF48]">today feed</div>
+                    <div className="text-[10px] font-black uppercase tracking-[0.18em] text-[#D3FF48]">your map</div>
                     <div className="rounded-full bg-white/10 px-3 py-1 text-[10px] font-black uppercase tracking-[0.16em] text-white/70">3 friends</div>
                   </div>
                   <div className="mt-4 space-y-3">
