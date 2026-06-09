@@ -968,6 +968,45 @@ export async function requestOtp(input: RequestOtpInput) {
     await getActiveInviteCodeOrThrow(input.inviteCode);
   }
 
+  const now = new Date();
+  await prismaV2.otpRequest.updateMany({
+    where: {
+      phoneNumberE164,
+      purpose: effectivePurpose,
+      status: 'PENDING',
+      expiresAt: { lte: now },
+    },
+    data: {
+      status: 'EXPIRED',
+    },
+  });
+
+  const activeRequest = await prismaV2.otpRequest.findFirst({
+    where: {
+      phoneNumberE164,
+      purpose: effectivePurpose,
+      status: 'PENDING',
+      expiresAt: { gt: now },
+      consumedAt: null,
+    },
+    orderBy: { createdAt: 'desc' },
+  });
+
+  if (activeRequest) {
+    await prismaV2.otpRequest.update({
+      where: { id: activeRequest.id },
+      data: {
+        resendCount: { increment: 1 },
+      },
+    });
+
+    return {
+      otpRequestId: activeRequest.id,
+      phoneNumber: phoneNumberE164,
+      expiresAt: activeRequest.expiresAt.toISOString(),
+    };
+  }
+
   const providerRequestId = isAppReviewOtpPhone(phoneNumberE164)
     ? createAppReviewOtpRequestId(phoneNumberE164)
     : USE_STAGING_FIXED_OTP
