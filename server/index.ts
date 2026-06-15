@@ -14783,7 +14783,7 @@ app.use(express.static(DIST_DIR, {
   index: false,
   setHeaders: (res, servedPath) => {
     if (servedPath.includes(`${path.sep}assets${path.sep}`)) {
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       return;
     }
 
@@ -14792,7 +14792,7 @@ app.use(express.static(DIST_DIR, {
       return;
     }
 
-    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   },
 }));
 
