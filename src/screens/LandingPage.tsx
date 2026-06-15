@@ -129,7 +129,7 @@ export default function LandingPage({
             </span>
             <h1 className="mx-auto mt-5 max-w-[11ch] text-balance text-[2.7rem] font-black leading-[0.92] tracking-[-0.08em] text-black sm:text-[4.3rem]">
               Every meal.{' '}
-              <span className="landing-bbh-bartle inline-block text-[0.8em]">
+              <span className="landing-bbh-bartle inline-block text-[0.75em]">
                 Remembered
               </span>
               .
