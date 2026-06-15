@@ -1376,6 +1376,54 @@ async function buildPublicProfileOgJpeg(input: {
   imageUrls: string[];
 }) {
   const imagePool = input.imageUrls.filter((url) => url.trim().length > 0);
+  const hasAvatar = Boolean(input.avatarUrl?.trim());
+  const hasMemories = imagePool.length > 0;
+
+  if (!hasAvatar && !hasMemories) {
+    const logoBuffer = await fetchPreviewImageBuffer('https://vibinn.club/brand/vibinn-logo-icon.png');
+    const background = sharp({
+      create: {
+        width: 1200,
+        height: 630,
+        channels: 3,
+        background: '#050505',
+      },
+    });
+
+    if (!logoBuffer) {
+      return background
+        .jpeg({
+          quality: 74,
+          mozjpeg: true,
+          progressive: true,
+          chromaSubsampling: '4:2:0',
+        })
+        .toBuffer();
+    }
+
+    const logoComposite = await sharp(logoBuffer)
+      .resize(280, 280, {
+        fit: 'contain',
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      })
+      .png()
+      .toBuffer();
+
+    return background
+      .composite([{
+        input: logoComposite,
+        left: 460,
+        top: 175,
+      }])
+      .jpeg({
+        quality: 74,
+        mozjpeg: true,
+        progressive: true,
+        chromaSubsampling: '4:2:0',
+      })
+      .toBuffer();
+  }
+
   const collageImages = input.avatarUrl?.trim()
     ? [input.avatarUrl.trim(), ...imagePool].slice(0, 4)
     : imagePool.slice(0, 4);
