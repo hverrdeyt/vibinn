@@ -1324,52 +1324,38 @@ function escapeSvgText(value: string) {
 }
 
 function buildPublicProfileOgSvg(input: {
-  displayName: string;
-  username: string;
+  avatarUrl?: string | null;
   imageUrls: string[];
 }) {
-  const displayName = escapeSvgText(input.displayName.trim() || input.username.trim());
-  const username = escapeSvgText(input.username.trim());
-  const subtitle = escapeSvgText(`Check out ${input.username.trim()}'s food diary!`);
-  const collageImages = input.imageUrls.slice(0, 3);
+  const imagePool = input.imageUrls.filter((url) => url.trim().length > 0);
+  const collageImages = input.avatarUrl?.trim()
+    ? [input.avatarUrl.trim(), ...imagePool].slice(0, 4)
+    : imagePool.slice(0, 4);
+  const fallbackImage = collageImages[collageImages.length - 1] ?? 'https://placehold.co/1200x630/111111/ffffff?text=Vibinn';
+  const normalizedImages = Array.from({ length: 4 }, (_, index) => collageImages[index] ?? fallbackImage);
   const slots = [
-    { x: 610, y: 72, width: 280, height: 260, rotation: '-4' },
-    { x: 676, y: 250, width: 200, height: 200, rotation: '7' },
-    { x: 520, y: 292, width: 212, height: 170, rotation: '-8' },
+    { x: 40, y: 40, width: 540, height: 270, rx: 34 },
+    { x: 620, y: 40, width: 540, height: 270, rx: 34 },
+    { x: 40, y: 350, width: 540, height: 240, rx: 34 },
+    { x: 620, y: 350, width: 540, height: 240, rx: 34 },
   ] as const;
-  const collageMarkup = collageImages.map((imageUrl, index) => {
+  const collageMarkup = normalizedImages.map((imageUrl, index) => {
     const slot = slots[index];
     if (!slot) return '';
+    const isAvatarTile = Boolean(input.avatarUrl?.trim()) && index === 0;
     return `
-      <g transform="rotate(${slot.rotation} ${slot.x + (slot.width / 2)} ${slot.y + (slot.height / 2)})">
-        <rect x="${slot.x}" y="${slot.y}" width="${slot.width}" height="${slot.height}" rx="28" fill="#1a1a1f" stroke="rgba(255,255,255,0.16)" stroke-width="4" />
-        <clipPath id="photo-clip-${index}">
-          <rect x="${slot.x + 10}" y="${slot.y + 10}" width="${slot.width - 20}" height="${slot.height - 20}" rx="20" />
-        </clipPath>
-        <image href="${escapeSvgText(imageUrl)}" x="${slot.x + 10}" y="${slot.y + 10}" width="${slot.width - 20}" height="${slot.height - 20}" preserveAspectRatio="xMidYMid slice" clip-path="url(#photo-clip-${index})" />
-      </g>
+      <rect x="${slot.x}" y="${slot.y}" width="${slot.width}" height="${slot.height}" rx="${slot.rx}" fill="#161616" />
+      <clipPath id="photo-clip-${index}">
+        <rect x="${slot.x}" y="${slot.y}" width="${slot.width}" height="${slot.height}" rx="${slot.rx}" />
+      </clipPath>
+      <image href="${escapeSvgText(imageUrl)}" x="${slot.x}" y="${slot.y}" width="${slot.width}" height="${slot.height}" preserveAspectRatio="${isAvatarTile ? 'xMidYMid slice' : 'xMidYMid slice'}" clip-path="url(#photo-clip-${index})" />
     `;
   }).join('');
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
   <rect width="1200" height="630" fill="#050505"/>
-  <rect width="1200" height="630" fill="url(#bgGlow)"/>
-  <circle cx="962" cy="80" r="210" fill="#d6ff4d" fill-opacity="0.08"/>
-  <circle cx="246" cy="598" r="280" fill="#d6ff4d" fill-opacity="0.05"/>
-  <text x="84" y="116" fill="#d6ff4d" font-family="'Arial Black', 'Plus Jakarta Sans', Arial, sans-serif" font-size="34" letter-spacing="8">VIBINN</text>
-  <text x="84" y="260" fill="#ffffff" font-family="'Arial Black', 'Plus Jakarta Sans', Arial, sans-serif" font-size="88">${displayName}</text>
-  <text x="84" y="348" fill="#d6ff4d" font-family="'Arial Black', 'Plus Jakarta Sans', Arial, sans-serif" font-size="88">on Vibinn</text>
-  <text x="84" y="430" fill="rgba(255,255,255,0.82)" font-family="'Plus Jakarta Sans', Arial, sans-serif" font-size="36">${subtitle}</text>
-  <rect x="84" y="474" width="254" height="64" rx="32" fill="#d6ff4d"/>
-  <text x="211" y="517" text-anchor="middle" fill="#050505" font-family="'Arial Black', 'Plus Jakarta Sans', Arial, sans-serif" font-size="28">Get the app</text>
   ${collageMarkup}
-  <defs>
-    <radialGradient id="bgGlow" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(1056 44) rotate(128.123) scale(812.654 1177.62)">
-      <stop stop-color="#d6ff4d" stop-opacity="0.16"/>
-      <stop offset="1" stop-color="#050505" stop-opacity="0"/>
-    </radialGradient>
-  </defs>
 </svg>`;
 }
 
@@ -11422,7 +11408,6 @@ app.get('/api/profiles/:username/public/og-image', (req, res) => {
         return;
       }
 
-      const displayName = payload.user.displayName?.trim() || payload.user.username;
       const imageUrls = (payload.moments ?? [])
         .flatMap((moment) => {
           const urls = Array.isArray(moment?.uploadedMedia) ? moment.uploadedMedia : [];
@@ -11430,8 +11415,7 @@ app.get('/api/profiles/:username/public/og-image', (req, res) => {
         })
         .slice(0, 3);
       const svg = buildPublicProfileOgSvg({
-        displayName,
-        username: payload.user.username,
+        avatarUrl: payload.user.avatar ?? null,
         imageUrls,
       });
 
