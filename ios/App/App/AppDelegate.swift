@@ -174,6 +174,152 @@ private func nativeAppVersionString() -> String? {
     return shortVersion ?? buildNumber
 }
 
+private enum NativeAnalyticsEvent: String {
+    case viewDiscovery = "View Discovery"
+    case switchDiscoveryTab = "Switch Discovery Tab"
+    case savingPlace = "Saving Place"
+    case viewFeed = "View Feed"
+    case viewSaved = "View Saved"
+    case viewMyProfile = "View My Profile"
+    case clickCheckin = "Click Checkin"
+    case visitUserProfile = "Visit User Profile"
+    case visitPlaceDetails = "Visit Place Details"
+    case clickForYourInspiration = "Click For Your Inspiration"
+}
+
+private enum NativeAnalyticsSource {
+    static let todaysPick = "todays_pick"
+    static let discovery = "discovery"
+    static let feed = "feed"
+    static let homepage = "homepage"
+    static let placeDetails = "place_details"
+    static let saved = "saved"
+    static let profile = "profile"
+    static let userProfile = "user_profile"
+    static let discoveryInspiration = "discovery_inspiration"
+}
+
+private final class NativeMixpanelTracker {
+    static let shared = NativeMixpanelTracker()
+
+    private static let fallbackProjectToken = "ce8a43e3dc710572335d8e1e597f86b3"
+    private let token: String?
+    private let distinctIdKey = "vibinn_native_mixpanel_distinct_id"
+
+    private init() {
+        let rawToken = Bundle.main.infoDictionary?["MixpanelProjectToken"] as? String
+        let trimmedToken = rawToken?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmedToken, !trimmedToken.isEmpty, !trimmedToken.contains("$(") {
+            token = trimmedToken
+        } else if !Self.fallbackProjectToken.isEmpty {
+            token = Self.fallbackProjectToken
+            nativeLogger.log("mixpanel using fallback project token")
+        } else {
+            token = nil
+            nativeLogger.error("mixpanel disabled: missing project token")
+        }
+    }
+
+    func track(_ event: NativeAnalyticsEvent, properties: [String: Any]) {
+        guard let token else {
+            nativeLogger.error("mixpanel skipped event=\(event.rawValue, privacy: .public): missing token")
+            return
+        }
+        var payloadProperties = sanitized(properties)
+        payloadProperties["token"] = token
+        payloadProperties["time"] = Int(Date().timeIntervalSince1970)
+        payloadProperties["distinct_id"] = (payloadProperties["user_id"] as? String) ?? anonymousDistinctId()
+        payloadProperties["$insert_id"] = UUID().uuidString
+
+        let payload: [String: Any] = [
+            "event": event.rawValue,
+            "properties": payloadProperties,
+        ]
+        guard JSONSerialization.isValidJSONObject(payload),
+              let jsonBody = try? JSONSerialization.data(withJSONObject: payload) else {
+            nativeLogger.error("mixpanel skipped event=\(event.rawValue, privacy: .public): invalid payload")
+            return
+        }
+        let encodedPayload = jsonBody.base64EncodedString()
+        var formBody = URLComponents()
+        formBody.queryItems = [
+            URLQueryItem(name: "data", value: encodedPayload),
+        ]
+        guard let body = formBody.percentEncodedQuery?.data(using: .utf8) else {
+            nativeLogger.error("mixpanel skipped event=\(event.rawValue, privacy: .public): invalid form body")
+            return
+        }
+
+        var components = URLComponents(string: "https://api.mixpanel.com/track")!
+        components.queryItems = [
+            URLQueryItem(name: "verbose", value: "1"),
+        ]
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = "POST"
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.timeoutInterval = 10
+        request.httpBody = body
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            if let error {
+                nativeLogger.error("mixpanel track failed event=\(event.rawValue, privacy: .public) error=\(error.localizedDescription, privacy: .public)")
+                return
+            }
+
+            let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let responseText = data.flatMap { String(data: $0, encoding: .utf8) }?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if statusCode == 200 && (responseText == "1" || responseText.contains("\"status\":1")) {
+                nativeLogger.log("mixpanel track success event=\(event.rawValue, privacy: .public)")
+            } else {
+                nativeLogger.error("mixpanel track rejected event=\(event.rawValue, privacy: .public) status=\(statusCode, privacy: .public) body=\(responseText, privacy: .public)")
+            }
+        }.resume()
+    }
+
+    private func anonymousDistinctId() -> String {
+        if let existing = UserDefaults.standard.string(forKey: distinctIdKey), !existing.isEmpty {
+            return existing
+        }
+        let generated = "anon-\(UUID().uuidString)"
+        UserDefaults.standard.set(generated, forKey: distinctIdKey)
+        return generated
+    }
+
+    private func sanitized(_ properties: [String: Any]) -> [String: Any] {
+        properties.reduce(into: [String: Any]()) { result, item in
+            if let value = sanitizeValue(item.value) {
+                result[item.key] = value
+            }
+        }
+    }
+
+    private func sanitizeValue(_ value: Any?) -> Any? {
+        guard let value else { return nil }
+        switch value {
+        case let string as String:
+            return string
+        case let int as Int:
+            return int
+        case let double as Double:
+            return double
+        case let float as Float:
+            return Double(float)
+        case let bool as Bool:
+            return bool
+        case let array as [String]:
+            return array
+        case let array as [Int]:
+            return array
+        case let array as [Double]:
+            return array
+        default:
+            return String(describing: value)
+        }
+    }
+}
+
 private enum NativeHapticFeedback {
     case selection
     case light
@@ -403,6 +549,7 @@ private struct NativePlace: Decodable, Identifiable {
     let visitedDate: String?
     let visitedAtIso: String?
     let momentCaption: String?
+    var momentVibeTags: [String]? = nil
     let momentWouldRevisit: String?
     let momentRating: Int?
     var momentRatingLabel: String? = nil
@@ -801,6 +948,7 @@ private struct NativeTravelerProfileResponse: Decodable {
     let traveler: NativeTravelerSummary
     let bookmarks: [NativePlace]
     let collections: [NativeCollection]
+    let inspirationMedia: [NativeDiscoveryInspirationMedia]?
 }
 
 private struct NativePlaceLookupResponse: Decodable {
@@ -956,6 +1104,20 @@ private struct NativeDiscoveryCategoryTab: Hashable, Identifiable {
     let icon: String
 }
 
+private struct NativeTodayRefineOption: Hashable, Identifiable {
+    let id: String
+    let label: String
+    let icon: String
+}
+
+private let nativeTodayRefineOptions: [NativeTodayRefineOption] = [
+    .init(id: "coffee", label: "Coffee", icon: "cup.and.saucer.fill"),
+    .init(id: "eat", label: "Eat", icon: "fork.knife"),
+    .init(id: "outdoor", label: "Go outdoor", icon: "tree.fill"),
+    .init(id: "fun", label: "Something fun", icon: "sparkles"),
+    .init(id: "cheap", label: "Cheap", icon: "dollarsign.circle.fill"),
+]
+
 private let nativeInterestAliasMap: [String: String] = [
     "cafe": "good_coffee",
     "nature": "parks_outdoor",
@@ -972,22 +1134,23 @@ private func nativeCanonicalInterests(_ selectedInterests: [String]) -> Set<Stri
 private func nativeDiscoveryFilterTabs(for selectedInterests: [String]) -> [NativeDiscoveryCategoryTab] {
     let selected = nativeCanonicalInterests(selectedInterests)
     var tabs: [NativeDiscoveryCategoryTab] = [
+        .init(id: "today", label: "Today", icon: "sparkles"),
         .init(id: "all", label: "All", icon: "square.grid.2x2.fill"),
         .init(id: "eat", label: "Eat", icon: "fork.knife"),
         .init(id: "trending", label: "Trending", icon: "flame.fill"),
     ]
 
     if selected.contains("good_coffee") {
-        tabs.insert(.init(id: "coffee", label: "Coffee", icon: "cup.and.saucer.fill"), at: 2)
+        tabs.insert(.init(id: "coffee", label: "Coffee", icon: "cup.and.saucer.fill"), at: min(3, tabs.count))
     }
     if selected.contains("asian_comfort_food") {
-        tabs.insert(.init(id: "asian-food", label: "Asian Food", icon: "takeoutbag.and.cup.and.straw.fill"), at: min(3, tabs.count))
+        tabs.insert(.init(id: "asian-food", label: "Asian Food", icon: "takeoutbag.and.cup.and.straw.fill"), at: min(4, tabs.count))
     }
     if selected.contains("desserts_sweet_treats") {
-        tabs.insert(.init(id: "dessert", label: "Dessert", icon: "birthday.cake.fill"), at: min(4, tabs.count))
+        tabs.insert(.init(id: "dessert", label: "Dessert", icon: "birthday.cake.fill"), at: min(5, tabs.count))
     }
     if selected.contains("drinks_nightlife") {
-        tabs.insert(.init(id: "drinks", label: "Drinks", icon: "wineglass.fill"), at: min(5, tabs.count))
+        tabs.insert(.init(id: "drinks", label: "Drinks", icon: "wineglass.fill"), at: min(6, tabs.count))
     }
     if selected.contains("fun_activities") {
         tabs.append(.init(id: "culture", label: "Culture", icon: "building.columns.fill"))
@@ -1022,6 +1185,16 @@ private let nativePlaceMoodBadges: [NativeMoodBadgeMeta] = [
     NativeMoodBadgeMeta(label: "Chill", icon: "cup.and.saucer.fill", foreground: Color(red: 217 / 255, green: 249 / 255, blue: 157 / 255), background: Color(red: 132 / 255, green: 204 / 255, blue: 22 / 255).opacity(0.24)),
     NativeMoodBadgeMeta(label: "Outdoorsy", icon: "tree.fill", foreground: Color(red: 153 / 255, green: 246 / 255, blue: 228 / 255), background: Color(red: 20 / 255, green: 184 / 255, blue: 166 / 255).opacity(0.24)),
 ]
+
+private func nativeMoodBadgeMeta(for raw: String) -> NativeMoodBadgeMeta? {
+    let normalized = raw
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+        .replacingOccurrences(of: "_", with: " ")
+    return nativePlaceMoodBadges.first {
+        $0.label.lowercased() == normalized
+    }
+}
 
 private struct NativeCompatibilityBadgeMeta {
     let label: String
@@ -1071,6 +1244,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     private let api = NativeAPIClient()
     private let authTokenKey = "vibinn_native_auth_token"
+    private let cachedUserKey = "vibinn_native_cached_user"
     private let onboardingKey = "vibinn_native_onboarding_completed"
     private let locationKey = "vibinn_native_location_label"
     private let selectedInterestsKey = "vibinn_native_selected_interests"
@@ -1083,6 +1257,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private var pendingPostAuthAction: NativePostAuthAction?
     private var placeDetailCache: [String: NativeCachedPlaceDetail] = [:]
     private let placeDetailCacheTTL: TimeInterval = 120
+    private var hasStartedBootstrap = false
 
     var shouldShowUnlockVibeCTA: Bool {
         if let currentUser {
@@ -1115,6 +1290,12 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         self.hasCompletedOnboarding = UserDefaults.standard.bool(forKey: onboardingKey)
         self.selectedInterests = UserDefaults.standard.stringArray(forKey: selectedInterestsKey) ?? []
         self.selectedVibe = UserDefaults.standard.string(forKey: selectedVibeKey)
+        if authToken == nil {
+            self.isBootstrapping = false
+        } else if let cachedUser = cachedAuthUser {
+            self.currentUser = cachedUser
+            self.isBootstrapping = false
+        }
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyHundredMeters
         syncLocationPermissionState(with: locationManager.authorizationStatus)
@@ -1167,6 +1348,59 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         locationPermissionState != .authorized
     }
 
+    func trackAnalytics(_ event: NativeAnalyticsEvent, properties: [String: Any] = [:]) {
+        var merged: [String: Any] = [
+            "platform": "ios",
+            "device_type": UIDevice.current.userInterfaceIdiom == .pad ? "ipad" : "iphone",
+            "os_version": UIDevice.current.systemVersion,
+            "app_version": nativeAppVersionString() ?? "unknown",
+            "city": selectedLocation.label,
+            "is_logged_in": currentUser != nil,
+        ]
+        if let currentUser {
+            merged["user_id"] = currentUser.id
+            merged["username"] = currentUser.username
+        }
+        properties.forEach { key, value in
+            merged[key] = value
+        }
+        NativeMixpanelTracker.shared.track(event, properties: merged)
+    }
+
+    func placeAnalyticsProperties(
+        _ place: NativePlace,
+        source: String? = nil,
+        extra: [String: Any] = [:]
+    ) -> [String: Any] {
+        var properties: [String: Any] = [
+            "place_id": place.id,
+            "place_name": place.name,
+            "place_city": nativePrimaryCity(from: place.location) ?? place.location,
+        ]
+        if let source {
+            properties["source"] = source
+        }
+        if let googlePlaceId = place.googlePlaceId {
+            properties["google_place_id"] = googlePlaceId
+        }
+        if let neighborhood = place.neighborhood {
+            properties["neighborhood"] = neighborhood
+        }
+        if let category = place.category {
+            properties["category"] = category
+        }
+        if let score = place.similarityStat {
+            properties["compatibility_score"] = score
+        }
+        if let rank = place.discoveryTopRank {
+            properties["top_rank"] = rank
+        }
+        extra.forEach { key, value in
+            properties[key] = value
+        }
+        return properties
+    }
+
     func requestLocationAccessOrOpenSettings() {
         switch locationPermissionState {
         case .authorized:
@@ -1198,23 +1432,64 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     func bootstrap() async {
         nativeLogger.log("bootstrap start")
-        defer { isBootstrapping = false }
-        guard let token = authToken else { return }
+        guard !hasStartedBootstrap else { return }
+        hasStartedBootstrap = true
+        guard let token = authToken else {
+            isBootstrapping = false
+            return
+        }
+
+        if let cachedUser = cachedAuthUser {
+            currentUser = cachedUser
+            isBootstrapping = false
+            nativeLogger.log("bootstrap cached user=\(cachedUser.username, privacy: .public)")
+            Task { [weak self] in
+                await self?.validateSessionAndRunStartupMaintenance(token: token)
+            }
+            return
+        }
 
         do {
             let session = try await api.getAuthSession(token: token)
             currentUser = session.user
+            cachedAuthUser = session.user
             if session.user.hasCompletedTastePreferences != true {
                 markOnboardingRequiredAfterAuth()
             }
-            await syncLocalTastePreferencesIfNeeded()
-            await refreshCurrentPushTokenFromFirebase()
-            await syncPushTokenIfPossible()
+            isBootstrapping = false
+            Task { [weak self] in
+                await self?.runStartupMaintenance()
+            }
             nativeLogger.log("bootstrap session ok user=\(session.user.username, privacy: .public)")
         } catch {
             nativeLogger.error("bootstrap failed: \(error.localizedDescription, privacy: .public)")
             clearSession()
+            isBootstrapping = false
         }
+    }
+
+    private func validateSessionAndRunStartupMaintenance(token: String) async {
+        do {
+            let session = try await api.getAuthSession(token: token)
+            guard authToken == token else { return }
+            currentUser = session.user
+            cachedAuthUser = session.user
+            if session.user.hasCompletedTastePreferences != true {
+                markOnboardingRequiredAfterAuth()
+            }
+            await runStartupMaintenance()
+            nativeLogger.log("bootstrap session revalidated user=\(session.user.username, privacy: .public)")
+        } catch {
+            guard authToken == token else { return }
+            nativeLogger.error("bootstrap revalidate failed: \(error.localizedDescription, privacy: .public)")
+            clearSession()
+        }
+    }
+
+    private func runStartupMaintenance() async {
+        await syncLocalTastePreferencesIfNeeded()
+        await refreshCurrentPushTokenFromFirebase()
+        await syncPushTokenIfPossible()
     }
 
     func login(email: String, password: String) async throws {
@@ -1222,10 +1497,13 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let response = try await api.login(email: email, password: password)
         authToken = response.token
         currentUser = response.user
+        cachedAuthUser = response.user
         markOnboardingRequiredAfterAuth()
         await syncLocalTastePreferencesIfNeeded()
-        await refreshCurrentPushTokenFromFirebase()
-        await syncPushTokenIfPossible()
+        Task { [weak self] in
+            await self?.refreshCurrentPushTokenFromFirebase()
+            await self?.syncPushTokenIfPossible()
+        }
         nativeLogger.log("login success user=\(response.user.username, privacy: .public)")
     }
 
@@ -1234,10 +1512,13 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let response = try await api.register(name: name, email: email, password: password)
         authToken = response.token
         currentUser = response.user
+        cachedAuthUser = response.user
         markOnboardingRequiredAfterAuth()
         await syncLocalTastePreferencesIfNeeded()
-        await refreshCurrentPushTokenFromFirebase()
-        await syncPushTokenIfPossible()
+        Task { [weak self] in
+            await self?.refreshCurrentPushTokenFromFirebase()
+            await self?.syncPushTokenIfPossible()
+        }
         nativeLogger.log("register success user=\(response.user.username, privacy: .public)")
     }
 
@@ -1247,10 +1528,13 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         let response = try await api.googleAuth(idToken: idToken)
         authToken = response.token
         currentUser = response.user
+        cachedAuthUser = response.user
         markOnboardingRequiredAfterAuth()
         await syncLocalTastePreferencesIfNeeded()
-        await refreshCurrentPushTokenFromFirebase()
-        await syncPushTokenIfPossible()
+        Task { [weak self] in
+            await self?.refreshCurrentPushTokenFromFirebase()
+            await self?.syncPushTokenIfPossible()
+        }
         nativeLogger.log("google login success user=\(response.user.username, privacy: .public)")
     }
 
@@ -1270,10 +1554,13 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         )
         authToken = response.token
         currentUser = response.user
+        cachedAuthUser = response.user
         markOnboardingRequiredAfterAuth()
         await syncLocalTastePreferencesIfNeeded()
-        await refreshCurrentPushTokenFromFirebase()
-        await syncPushTokenIfPossible()
+        Task { [weak self] in
+            await self?.refreshCurrentPushTokenFromFirebase()
+            await self?.syncPushTokenIfPossible()
+        }
         nativeLogger.log("apple login success user=\(response.user.username, privacy: .public)")
     }
 
@@ -1364,6 +1651,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         )
 
         currentUser = updatedUser
+        cachedAuthUser = updatedUser
     }
 
     func uploadAvatarImage(_ image: UIImage) async throws -> String {
@@ -1503,7 +1791,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 onboardingCompleted: true
             )
             if let currentUser {
-                self.currentUser = NativeAuthUser(
+                let updatedUser = NativeAuthUser(
                     id: currentUser.id,
                     displayName: currentUser.displayName,
                     username: currentUser.username,
@@ -1512,6 +1800,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     avatarUrl: currentUser.avatarUrl,
                     hasCompletedTastePreferences: true
                 )
+                self.currentUser = updatedUser
+                cachedAuthUser = updatedUser
             }
         } catch {
             nativeLogger.error("savePreferences failed: \(error.localizedDescription, privacy: .public)")
@@ -1553,7 +1843,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         await refreshDiscovery()
     }
 
-    func loadTodayRecommendation() async {
+    func loadTodayRecommendation(focus: String? = nil) async {
         guard let token = authToken else {
             presentAuthGate(
                 reason: "Log in to get today's recommendation.",
@@ -1563,12 +1853,14 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
 
         guard locationPermissionState == .authorized else {
-            todayRecommendationErrorMessage = nil
+            todayRecommendation = nil
+            todayRecommendationErrorMessage = "Enable location to get today's pick."
             return
         }
 
         guard let currentCoordinate else {
-            todayRecommendationErrorMessage = "Enable location to get today's recommendation."
+            todayRecommendation = nil
+            todayRecommendationErrorMessage = "Enable location to get today's pick."
             return
         }
 
@@ -1581,7 +1873,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 token: token,
                 location: selectedLocation.label,
                 latitude: currentCoordinate.latitude,
-                longitude: currentCoordinate.longitude
+                longitude: currentCoordinate.longitude,
+                focus: focus
             )
             todayRecommendation = recommendation
         } catch {
@@ -1708,6 +2001,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 Dictionary(moments.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }).values
             )
             currentUser = response.user
+            cachedAuthUser = response.user
             savedPlaces = uniqueBookmarks
             collections = uniqueCollections
             myMoments = uniqueMoments
@@ -1788,7 +2082,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 onboardingCompleted: true
             )
             if let currentUser {
-                self.currentUser = NativeAuthUser(
+                let updatedUser = NativeAuthUser(
                     id: currentUser.id,
                     displayName: currentUser.displayName,
                     username: currentUser.username,
@@ -1797,6 +2091,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                     avatarUrl: currentUser.avatarUrl,
                     hasCompletedTastePreferences: true
                 )
+                self.currentUser = updatedUser
+                cachedAuthUser = updatedUser
             }
         } catch {
             nativeLogger.error("syncLocalTastePreferences failed: \(error.localizedDescription, privacy: .public)")
@@ -2496,7 +2792,27 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     private var authToken: String? {
         get { UserDefaults.standard.string(forKey: authTokenKey) }
-        set { UserDefaults.standard.set(newValue, forKey: authTokenKey) }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: authTokenKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: authTokenKey)
+            }
+        }
+    }
+
+    private var cachedAuthUser: NativeAuthUser? {
+        get {
+            guard let data = UserDefaults.standard.data(forKey: cachedUserKey) else { return nil }
+            return try? JSONDecoder().decode(NativeAuthUser.self, from: data)
+        }
+        set {
+            guard let newValue, let data = try? JSONEncoder().encode(newValue) else {
+                UserDefaults.standard.removeObject(forKey: cachedUserKey)
+                return
+            }
+            UserDefaults.standard.set(data, forKey: cachedUserKey)
+        }
     }
 
     private var currentPushToken: String? {
@@ -2512,6 +2828,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private func clearSession() {
         authToken = nil
         currentUser = nil
+        cachedAuthUser = nil
         lastSyncedPushToken = nil
         placeDetailCache.removeAll()
     }
@@ -2859,11 +3176,17 @@ private struct NativeAPIClient {
         token: String,
         location: String,
         latitude: Double,
-        longitude: Double
+        longitude: Double,
+        focus: String? = nil
     ) async throws -> NativeTodayRecommendationResponse {
         let encodedLocation = location.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? location
+        let encodedFocus = focus?.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)
+        var path = "/api/recommendations/today?location=\(encodedLocation)&type=city&latitude=\(latitude)&longitude=\(longitude)"
+        if let encodedFocus, !encodedFocus.isEmpty {
+            path += "&focus=\(encodedFocus)"
+        }
         return try await request(
-            path: "/api/recommendations/today?location=\(encodedLocation)&type=city&latitude=\(latitude)&longitude=\(longitude)",
+            path: path,
             method: "GET",
             token: token
         )
@@ -3554,6 +3877,7 @@ private struct NativeAPIClient {
         }
         var request = URLRequest(url: url)
         request.httpMethod = method
+        request.timeoutInterval = method == "GET" ? 15 : 25
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let token {
             request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -3945,7 +4269,7 @@ private struct NativeDiscoveryTileLink: View {
                 .frame(width: columnWidth, height: nativeDiscoveryTileHeight(for: item.index))
             } else {
                 NavigationLink {
-                    NativePlaceDetailScreen(initialPlace: item.place)
+                    NativePlaceDetailScreen(initialPlace: item.place, source: NativeAnalyticsSource.discovery)
                 } label: {
                     NativeDiscoveryPlaceCard(
                         place: item.place,
@@ -4419,7 +4743,7 @@ private struct NativeDiscoverySearchSheet: View {
                             VStack(spacing: 12) {
                                 ForEach(results) { place in
                                     NavigationLink {
-                                        NativePlaceDetailScreen(initialPlace: place)
+                                        NativePlaceDetailScreen(initialPlace: place, source: "search")
                                     } label: {
                                         HStack(spacing: 12) {
                                             NativeRemoteImage(url: place.image)
@@ -4850,7 +5174,7 @@ private struct NativeNotificationRow: View {
     var body: some View {
         if let place = destinationPlace {
             NavigationLink {
-                NativePlaceDetailScreen(initialPlace: place)
+                NativePlaceDetailScreen(initialPlace: place, source: "notification")
             } label: {
                 rowContent
             }
@@ -6172,6 +6496,16 @@ private struct NativeMainTabView: View {
         .onAppear {
             UITabBar.appearance().isHidden = true
         }
+        .onChange(of: appState.activeTab) { tab in
+            if tab == .checkIn {
+                appState.trackAnalytics(
+                    .clickCheckin,
+                    properties: [
+                        "source": NativeAnalyticsSource.homepage,
+                    ]
+                )
+            }
+        }
         .task(id: appState.activeTab) {
             await appState.loadActiveTabIfNeeded()
         }
@@ -6303,6 +6637,12 @@ private struct NativeFloatingTabBar: View {
             }
 
             Button {
+                appState.trackAnalytics(
+                    .clickCheckin,
+                    properties: [
+                        "source": NativeAnalyticsSource.homepage,
+                    ]
+                )
                 appState.presentCheckInFlow()
             } label: {
                 ZStack {
@@ -6390,12 +6730,11 @@ private struct NativeDiscoverScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @State private var showLocationSheet = false
     @State private var showNotificationsSheet = false
-    @State private var showTodayRecommendationLocationSheet = false
     @State private var showDiscoveryScoreDebug = nativeDiscoveryScoreDebugMode
     @State private var showTodayRecommendationDebug = false
     @State private var selectedDebugPlace: NativePlace?
     @State private var selectedInspirationMedia: NativeDiscoveryInspirationMedia?
-    @State private var selectedDiscoveryTabId = "all"
+    @State private var selectedDiscoveryTabId = "today"
     @State private var isLocationAccessBannerDismissed = false
     @State private var discoveryScrollOffsets: [String: CGFloat] = [:]
 
@@ -6411,13 +6750,6 @@ private struct NativeDiscoverScreen: View {
 
     private var selectedDiscoveryPlaces: [NativePlace] {
         discoveryPlaces(for: selectedDiscoveryTabId)
-    }
-
-    private var shouldShowTodayRecommendationCTA: Bool {
-        appState.discoveryPlaces.contains { place in
-            guard let score = place.similarityStat else { return false }
-            return score >= 70
-        }
     }
 
     private var discoveryScoreCounts: (yourVibe: Int, strongFit: Int, couldHit: Int, softMaybe: Int, unscored: Int) {
@@ -6461,6 +6793,14 @@ private struct NativeDiscoverScreen: View {
         min(activeDiscoveryScrollOffset, discoveryChromeHeaderHeight + discoveryChromeSpacing)
     }
 
+    private func analyticsPropertiesForDiscoveryTab(_ tabId: String) -> [String: Any] {
+        let tab = discoveryTabs.first { $0.id == tabId }
+        return [
+            "tab_id": tabId,
+            "tab_name": tab?.label ?? tabId,
+        ]
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let contentWidth = proxy.size.width - 32
@@ -6477,7 +6817,6 @@ private struct NativeDiscoverScreen: View {
                             inspirationMedia: tab.id == "all" ? appState.discoveryInspirationMedia : [],
                             contentWidth: contentWidth,
                             topInset: discoveryExpandedChromeHeight,
-                            shouldShowTodayRecommendationCTA: shouldShowTodayRecommendationCTA,
                             shouldShowLocationAccessCTA: appState.shouldShowLocationAccessCTA && !isLocationAccessBannerDismissed,
                             onLocationAccessTap: {
                                 appState.requestLocationAccessOrOpenSettings()
@@ -6493,14 +6832,25 @@ private struct NativeDiscoverScreen: View {
                                     showTodayRecommendationDebug = true
                                 }
                             },
-                            onTodayRecommendationTap: {
-                                if appState.locationPermissionState == .authorized {
-                                    Task { await appState.loadTodayRecommendation() }
-                                } else {
-                                    showTodayRecommendationLocationSheet = true
+                            onSelectTab: { tabId in
+                                withAnimation(.easeOut(duration: 0.22)) {
+                                    selectedDiscoveryTabId = tabId
                                 }
                             },
                             onInspirationTap: { media in
+                                appState.trackAnalytics(
+                                    .clickForYourInspiration,
+                                    properties: appState.placeAnalyticsProperties(
+                                        media.place,
+                                        source: NativeAnalyticsSource.discovery,
+                                        extra: [
+                                            "media_id": media.id,
+                                            "moment_id": media.momentId ?? "",
+                                            "traveler_id": media.traveler.id,
+                                            "traveler_username": media.traveler.username,
+                                        ]
+                                    )
+                                )
                                 selectedInspirationMedia = media
                             },
                             onScrollOffsetChange: { offset in
@@ -6637,28 +6987,29 @@ private struct NativeDiscoverScreen: View {
             }
             .navigationViewStyle(.stack)
         }
-        .sheet(isPresented: $showTodayRecommendationLocationSheet) {
-            NativeTodayRecommendationLocationSheet(
-                onAllowAccess: {
-                    showTodayRecommendationLocationSheet = false
-                    appState.requestLocationAccessOrOpenSettings()
-                },
-                onCancel: {
-                    showTodayRecommendationLocationSheet = false
-                }
-            )
-        }
         .fullScreenCover(item: $selectedInspirationMedia) { media in
             NativeDiscoveryInspirationFullscreen(media: media)
         }
+        .onAppear {
+            appState.trackAnalytics(
+                .viewDiscovery,
+                properties: analyticsPropertiesForDiscoveryTab(selectedDiscoveryTabId)
+            )
+        }
+        .onChange(of: selectedDiscoveryTabId) { tabId in
+            appState.trackAnalytics(
+                .switchDiscoveryTab,
+                properties: analyticsPropertiesForDiscoveryTab(tabId)
+            )
+        }
         .onChange(of: appState.discoveryPlaces.map(\.id)) { _ in
             if !discoveryTabs.contains(where: { $0.id == selectedDiscoveryTabId }) {
-                selectedDiscoveryTabId = "all"
+                selectedDiscoveryTabId = "today"
             }
         }
         .onChange(of: appState.selectedInterests) { _ in
             if !discoveryTabs.contains(where: { $0.id == selectedDiscoveryTabId }) {
-                selectedDiscoveryTabId = "all"
+                selectedDiscoveryTabId = "today"
             }
         }
         .onChange(of: appState.locationPermissionState) { state in
@@ -6672,6 +7023,7 @@ private struct NativeDiscoverScreen: View {
     }
 
     private func discoveryPlaces(for tabId: String) -> [NativePlace] {
+        guard tabId != "today" else { return [] }
         guard tabId != "all" else { return appState.discoveryPlaces }
         return appState.discoveryPlaces.filter { nativePlaceMatchesDiscoveryFilter($0, filterId: tabId) }
     }
@@ -6684,13 +7036,12 @@ private struct NativeDiscoveryTabPage: View {
     let inspirationMedia: [NativeDiscoveryInspirationMedia]
     let contentWidth: CGFloat
     let topInset: CGFloat
-    let shouldShowTodayRecommendationCTA: Bool
     let shouldShowLocationAccessCTA: Bool
     let onLocationAccessTap: () -> Void
     let onLocationAccessDismiss: () -> Void
     let onPlaceDebugTap: (NativePlace) -> Void
     let onTodayDebugTap: () -> Void
-    let onTodayRecommendationTap: () -> Void
+    let onSelectTab: (String) -> Void
     let onInspirationTap: (NativeDiscoveryInspirationMedia) -> Void
     let onScrollOffsetChange: (CGFloat) -> Void
 
@@ -6743,102 +7094,23 @@ private struct NativeDiscoveryTabPage: View {
                 Color.clear
                     .frame(height: max(topInset - 18, 0))
 
-                if let discoveryErrorMessage = appState.discoveryErrorMessage {
+                if tab.id == "today" {
+                    NativeTodayPickTabContent(
+                        contentWidth: contentWidth,
+                        onMoreLikeThis: {
+                            nativeHaptic(.selection)
+                            onSelectTab("all")
+                        },
+                        onDebugTap: onTodayDebugTap
+                    )
+                } else if let discoveryErrorMessage = appState.discoveryErrorMessage {
                     NativeInlineError(message: discoveryErrorMessage)
-                }
-
-                if shouldShowLocationAccessCTA {
+                } else if shouldShowLocationAccessCTA {
                     NativeLocationAccessCard(
                         onAllowAccess: onLocationAccessTap,
                         onDismiss: onLocationAccessDismiss
                     )
-                }
-
-                if tab.id == "all" && shouldShowTodayRecommendationCTA {
-                    Button {
-                        nativeHaptic(.light)
-                        onTodayRecommendationTap()
-                    } label: {
-                        HStack(spacing: 14) {
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text("Today recommendation")
-                                    .font(.system(size: 19, weight: .black))
-                                    .foregroundStyle(.black)
-                                Text("Get one strong pick for today near you.")
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundStyle(Color.black.opacity(0.72))
-                            }
-                            Spacer(minLength: 0)
-                            Group {
-                                if appState.isTodayRecommendationLoading {
-                                    ProgressView()
-                                        .tint(.black)
-                                } else {
-                                    Image(systemName: "die.face.5.fill")
-                                        .font(.system(size: 18, weight: .black))
-                                        .foregroundStyle(.black)
-                                }
-                            }
-                            .frame(width: 36, height: 36)
-                            .background(Color.black.opacity(0.08))
-                            .clipShape(Circle())
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 28, style: .continuous)
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            nativeAccent,
-                                            Color(red: 176 / 255, green: 1, blue: 72 / 255),
-                                        ],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                        )
-                        .contentShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-                    }
-                    .frame(maxWidth: .infinity)
-                    .buttonStyle(.plain)
-
-                    if let todayRecommendationErrorMessage = appState.todayRecommendationErrorMessage {
-                        NativeInlineError(message: todayRecommendationErrorMessage)
-                    }
-
-                    if let todayRecommendation = appState.todayRecommendation {
-                        NavigationLink {
-                            NativePlaceDetailScreen(initialPlace: todayRecommendation.place)
-                        } label: {
-                            NativeTodayRecommendationCard(
-                                recommendation: todayRecommendation,
-                                containerWidth: contentWidth,
-                                onDebugTap: nativeTodayRecommendationScoreDebugMode ? onTodayDebugTap : nil
-                            )
-                        }
-                        .frame(width: contentWidth, alignment: .leading)
-                        .overlay(
-                            Group {
-                                if nativeTodayRecommendationDebugMode {
-                                    RoundedRectangle(cornerRadius: 30, style: .continuous)
-                                        .stroke(Color.red, lineWidth: 2)
-                                        .overlay(alignment: .topTrailing) {
-                                            NativeLayoutDebugBadge(title: "LINK")
-                                                .padding(10)
-                                        }
-                                }
-                            }
-                        )
-                        .buttonStyle(.plain)
-                        .simultaneousGesture(TapGesture().onEnded {
-                            nativeHaptic(.light)
-                        })
-                    }
-                }
-
-                if appState.isDiscoveryLoading && places.isEmpty {
+                } else if appState.isDiscoveryLoading && places.isEmpty {
                     NativeSurfaceCard {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("Cooking your picks")
@@ -6919,6 +7191,310 @@ private struct NativeDiscoveryTabPage: View {
         .refreshable {
             await appState.refreshDiscovery()
         }
+    }
+}
+
+private struct NativeTodayPickTabContent: View {
+    @EnvironmentObject private var appState: NativeAppState
+    let contentWidth: CGFloat
+    let onMoreLikeThis: () -> Void
+    let onDebugTap: () -> Void
+    @State private var hasLoadedInitialPick = false
+    @State private var isRefining = false
+    @State private var selectedFocusId = nativeTodayRefineOptions.first?.id ?? "coffee"
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Today's Pick")
+                    .font(.system(size: 34, weight: .black))
+                    .tracking(-1.2)
+                    .foregroundStyle(.white)
+                Text("One spot that fits your vibe right now.")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.58))
+            }
+            .frame(width: contentWidth, alignment: .leading)
+
+            if appState.isTodayRecommendationLoading && appState.todayRecommendation == nil {
+                NativeTodayHeroSkeletonCard(contentWidth: contentWidth)
+            }
+
+            if let message = appState.todayRecommendationErrorMessage {
+                NativeInlineError(message: message)
+            }
+
+            if let recommendation = appState.todayRecommendation {
+                NavigationLink {
+                    NativePlaceDetailScreen(initialPlace: recommendation.place, source: NativeAnalyticsSource.todaysPick)
+                } label: {
+                    NativeTodayHeroPlaceCard(
+                        recommendation: recommendation,
+                        contentWidth: contentWidth,
+                        onDebugTap: nativeTodayRecommendationScoreDebugMode ? onDebugTap : nil
+                    )
+                }
+                .buttonStyle(.plain)
+                .simultaneousGesture(TapGesture().onEnded {
+                    nativeHaptic(.light)
+                })
+
+                NativeSurfaceCard {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text("Why this?")
+                            .font(.system(size: 18, weight: .black))
+                            .foregroundStyle(.white)
+                        Text(recommendation.todayReason)
+                            .font(.system(size: 14, weight: .semibold))
+                            .lineSpacing(3)
+                            .foregroundStyle(.white.opacity(0.72))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .frame(width: contentWidth)
+
+                HStack(spacing: 10) {
+                    NativeTodayActionButton(
+                        title: appState.isBookmarked(recommendation.place.id) ? "Saved" : "Save",
+                        icon: appState.isBookmarked(recommendation.place.id) ? "heart.fill" : "heart",
+                        isPrimary: appState.isBookmarked(recommendation.place.id)
+                    ) {
+                        nativeHaptic(.light)
+                        Task {
+                            let wasBookmarked = appState.isBookmarked(recommendation.place.id)
+                            do {
+                                try await appState.toggleBookmark(for: recommendation.place)
+                                if !wasBookmarked {
+                                    appState.trackAnalytics(
+                                        .savingPlace,
+                                        properties: appState.placeAnalyticsProperties(
+                                            recommendation.place,
+                                            source: NativeAnalyticsSource.todaysPick
+                                        )
+                                    )
+                                }
+                            } catch {
+                                // Auth gating and inline errors are handled by app state.
+                            }
+                        }
+                    }
+
+                    NativeTodayActionButton(
+                        title: "Try Another",
+                        icon: "shuffle",
+                        isPrimary: false
+                    ) {
+                        nativeHaptic(.selection)
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.86)) {
+                            isRefining.toggle()
+                        }
+                    }
+
+                    NativeTodayActionButton(
+                        title: "More like this",
+                        icon: "square.grid.2x2.fill",
+                        isPrimary: false,
+                        action: onMoreLikeThis
+                    )
+                }
+                .frame(width: contentWidth)
+            }
+
+            if isRefining {
+                VStack(alignment: .leading, spacing: 12) {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(nativeTodayRefineOptions) { option in
+                                Button {
+                                    nativeHaptic(.selection)
+                                    selectedFocusId = option.id
+                                } label: {
+                                    HStack(spacing: 7) {
+                                        Image(systemName: option.icon)
+                                            .font(.system(size: 12, weight: .black))
+                                        Text(option.label)
+                                            .font(.system(size: 13, weight: .black))
+                                    }
+                                    .foregroundStyle(selectedFocusId == option.id ? .black : .white)
+                                    .padding(.horizontal, 13)
+                                    .padding(.vertical, 10)
+                                    .background(selectedFocusId == option.id ? nativeAccent : Color.white.opacity(0.09))
+                                    .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    .frame(width: contentWidth, alignment: .leading)
+
+                    Button {
+                        nativeHaptic(.medium)
+                        Task {
+                            await appState.loadTodayRecommendation(focus: selectedFocusId)
+                        }
+                    } label: {
+                        HStack(spacing: 9) {
+                            if appState.isTodayRecommendationLoading {
+                                ProgressView()
+                                    .tint(.black)
+                            } else {
+                                Image(systemName: "wand.and.stars")
+                                    .font(.system(size: 14, weight: .black))
+                            }
+                            Text("Generate")
+                                .font(.system(size: 15, weight: .black))
+                        }
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(nativeAccent)
+                        .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(appState.isTodayRecommendationLoading)
+                    .opacity(appState.isTodayRecommendationLoading ? 0.72 : 1)
+                }
+                .frame(width: contentWidth, alignment: .leading)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .frame(width: contentWidth, alignment: .leading)
+        .task {
+            guard !hasLoadedInitialPick else { return }
+            hasLoadedInitialPick = true
+            await appState.loadTodayRecommendation()
+        }
+    }
+}
+
+private struct NativeTodayHeroSkeletonCard: View {
+    let contentWidth: CGFloat
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 30, style: .continuous)
+            .fill(
+                LinearGradient(
+                    colors: [Color.white.opacity(0.08), Color.white.opacity(0.03)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .overlay {
+                ProgressView()
+                    .tint(nativeAccent)
+            }
+            .frame(width: contentWidth, height: contentWidth * 9 / 16)
+    }
+}
+
+private struct NativeTodayHeroPlaceCard: View {
+    let recommendation: NativeTodayRecommendationResponse
+    let contentWidth: CGFloat
+    let onDebugTap: (() -> Void)?
+
+    private var areaLabel: String {
+        recommendation.place.neighborhood ?? recommendation.place.location
+    }
+
+    private var distanceLabel: String {
+        if recommendation.distanceMiles < 0.2 {
+            return "Nearby now"
+        }
+        return String(format: "%.1f mi away", recommendation.distanceMiles)
+    }
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            NativeRemoteImage(url: recommendation.place.image ?? recommendation.place.images?.first)
+                .frame(width: contentWidth, height: contentWidth * 9 / 16)
+                .clipped()
+
+            LinearGradient(
+                colors: [Color.black.opacity(0.05), Color.black.opacity(0.2), Color.black.opacity(0.86)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 7) {
+                    Image(systemName: "diamond")
+                        .font(.system(size: 12, weight: .black))
+                    Text("\(recommendation.compatibilityScore)% match")
+                        .font(.system(size: 12, weight: .black))
+                }
+                .foregroundStyle(.black)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(nativeAccent)
+                .clipShape(Capsule())
+
+                Spacer(minLength: 0)
+
+                Text(recommendation.place.name)
+                    .font(.system(size: 27, weight: .black))
+                    .tracking(-0.7)
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 8) {
+                    Label(areaLabel, systemImage: "mappin.and.ellipse")
+                    Text("•")
+                    Label(distanceLabel, systemImage: "location.fill")
+                }
+                .font(.system(size: 12, weight: .black))
+                .foregroundStyle(.white.opacity(0.76))
+                .lineLimit(1)
+            }
+            .padding(18)
+        }
+        .frame(width: contentWidth, height: contentWidth * 9 / 16)
+        .clipShape(RoundedRectangle(cornerRadius: 30, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 30, style: .continuous)
+                .stroke(nativeAccent.opacity(0.72), lineWidth: 1.5)
+        )
+        .overlay(alignment: .topTrailing) {
+            if let onDebugTap, nativeTodayRecommendationScoreDebugMode {
+                Button(action: onDebugTap) {
+                    Image(systemName: "ladybug.fill")
+                        .font(.system(size: 13, weight: .black))
+                        .foregroundStyle(.black)
+                        .frame(width: 32, height: 32)
+                        .background(nativeAccent)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(12)
+            }
+        }
+        .shadow(color: nativeAccent.opacity(0.16), radius: 18, y: 10)
+    }
+}
+
+private struct NativeTodayActionButton: View {
+    let title: String
+    let icon: String
+    let isPrimary: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: icon)
+                    .font(.system(size: 15, weight: .black))
+                Text(title)
+                    .font(.system(size: 11, weight: .black))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
+            .foregroundStyle(isPrimary ? .black : .white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(isPrimary ? nativeAccent : Color.white.opacity(0.09))
+            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -7042,7 +7618,7 @@ private struct NativeDiscoveryInspirationFullscreen: View {
                     Spacer()
 
                     NavigationLink {
-                        NativePlaceDetailScreen(initialPlace: media.place)
+                        NativePlaceDetailScreen(initialPlace: media.place, source: NativeAnalyticsSource.discoveryInspiration)
                     } label: {
                         HStack(spacing: 10) {
                             Image(systemName: "mappin.and.ellipse")
@@ -8302,6 +8878,7 @@ private struct NativeSavedScreen: View {
             .navigationViewStyle(.stack)
         }
         .onAppear {
+            appState.trackAnalytics(.viewSaved)
             if appState.savedPlaces.isEmpty && appState.collections.isEmpty && appState.currentUser != nil {
                 Task { await appState.refreshSavedContent() }
             }
@@ -8330,7 +8907,7 @@ private struct NativeSavedScreen: View {
                     LazyVStack(spacing: 12) {
                         ForEach(filteredSavedPlaces) { place in
                             NavigationLink {
-                                NativePlaceDetailScreen(initialPlace: place)
+                                NativePlaceDetailScreen(initialPlace: place, source: NativeAnalyticsSource.saved)
                             } label: {
                                 NativePlaceCard(place: place)
                             }
@@ -8689,6 +9266,7 @@ private struct NativeProfileScreen: View {
             Text(postDeleteErrorMessage ?? "Please try again.")
         }
         .onAppear {
+            appState.trackAnalytics(.viewMyProfile)
             nativeLogger.log("NativeProfileScreen appear saved=\(appState.savedPlaces.count, privacy: .public) collections=\(appState.collections.count, privacy: .public) moments=\(appState.myMoments.count, privacy: .public)")
             guard !hasLoadedInitialProfileState else { return }
             hasLoadedInitialProfileState = true
@@ -8757,7 +9335,7 @@ private struct NativeProfileScreen: View {
                         LazyVStack(spacing: 12) {
                             ForEach(filteredSavedPlaces) { place in
                                 NavigationLink {
-                                    NativePlaceDetailScreen(initialPlace: place)
+                                    NativePlaceDetailScreen(initialPlace: place, source: NativeAnalyticsSource.profile)
                                 } label: {
                                     NativePlaceCard(place: place)
                                 }
@@ -8907,7 +9485,7 @@ private struct NativeOwnVisitedMomentCard: View {
 
     var body: some View {
         NativeSurfaceCard {
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 16) {
                 HStack(alignment: .top, spacing: 10) {
                     VStack(alignment: .leading, spacing: 4) {
                         (
@@ -8984,7 +9562,7 @@ private struct NativeOwnVisitedMomentCard: View {
                 }
 
                 NativeFeedPlaceAttachment(place: enrichedPlace, activityType: .visited, uploadedMediaUrls: momentUploadedMediaUrls) {
-                    NativePlaceDetailScreen(initialPlace: enrichedPlace)
+                    NativePlaceDetailScreen(initialPlace: enrichedPlace, source: NativeAnalyticsSource.profile)
                 }
             }
         }
@@ -9787,6 +10365,9 @@ private struct NativeFeedScreen: View {
         .navigationTitle("Feed")
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarHidden(true)
+        .onAppear {
+            appState.trackAnalytics(.viewFeed)
+        }
         .refreshable {
             await appState.refreshFeed()
         }
@@ -10185,7 +10766,21 @@ private struct NativeDiscoveryPlaceCard: View {
                     guard !isBookmarkUpdating else { return }
                     isBookmarkUpdating = true
                     Task {
-                        try? await appState.toggleBookmark(for: place)
+                        let wasBookmarked = appState.isBookmarked(place.id)
+                        do {
+                            try await appState.toggleBookmark(for: place)
+                            if !wasBookmarked {
+                                appState.trackAnalytics(
+                                    .savingPlace,
+                                    properties: appState.placeAnalyticsProperties(
+                                        place,
+                                        source: NativeAnalyticsSource.discovery
+                                    )
+                                )
+                            }
+                        } catch {
+                            // Auth gating and error haptics are handled by app state.
+                        }
                         await MainActor.run {
                             isBookmarkUpdating = false
                         }
@@ -10291,11 +10886,9 @@ private struct NativeFeedCard: View {
     @State private var vibinScale: CGFloat = 1
     @State private var vibinRotation: Double = 0
 	    @State private var vibinFlash = false
-    @State private var comments: [NativeComment] = []
-    @State private var showCommentSheet = false
     @State private var commentDraft = ""
-    @State private var isCommentsLoading = false
-	    @State private var commentsErrorMessage: String?
+    @State private var isPostingComment = false
+	@State private var commentsErrorMessage: String?
     @State private var showReportPostDialog = false
     @State private var showReportAccountDialog = false
     @State private var showBlockAccountDialog = false
@@ -10303,43 +10896,66 @@ private struct NativeFeedCard: View {
     @State private var moderationAlertMessage = ""
     @State private var showModerationAlert = false
 
+    private var isOwnPost: Bool {
+        appState.currentUser?.id == item.traveler.id
+    }
+
     var body: some View {
         NativeSurfaceCard {
             VStack(alignment: .leading, spacing: 14) {
                 HStack(alignment: .top, spacing: 10) {
-                    NavigationLink {
-                        NativeTravelerProfileScreen(initialTraveler: item.traveler)
-                    } label: {
-                        NativeAvatarCircle(
-                            url: item.traveler.avatar,
-                            fallbackText: item.traveler.displayName ?? item.traveler.username,
-                            size: 42,
-                            fontSize: 15
-                        )
+                    Group {
+                        if isOwnPost {
+                            NativeAvatarCircle(
+                                url: item.traveler.avatar,
+                                fallbackText: item.traveler.displayName ?? item.traveler.username,
+                                size: 42,
+                                fontSize: 15
+                            )
+                        } else {
+                            NavigationLink {
+                                NativeTravelerProfileScreen(initialTraveler: item.traveler)
+                            } label: {
+                                NativeAvatarCircle(
+                                    url: item.traveler.avatar,
+                                    fallbackText: item.traveler.displayName ?? item.traveler.username,
+                                    size: 42,
+                                    fontSize: 15
+                                )
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    .buttonStyle(.plain)
 
                     VStack(alignment: .leading, spacing: 4) {
-                        NavigationLink {
-                            NativeTravelerProfileScreen(initialTraveler: item.traveler)
-                        } label: {
-                            (
-                                Text(item.traveler.displayName ?? item.traveler.username)
-                                    .font(.system(size: 14, weight: .black))
+                        Group {
+                            if isOwnPost {
+                                Text(displayNameLabel)
+                                    .font(.system(size: 15, weight: .black))
                                     .foregroundColor(.white)
-                                +
-                                Text(" \(activityLabel)")
-                                    .font(.system(size: 14, weight: .medium))
-                                    .foregroundColor(.white.opacity(0.78))
-                            )
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
+                                    .multilineTextAlignment(.leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            } else {
+                                NavigationLink {
+                                    NativeTravelerProfileScreen(initialTraveler: item.traveler)
+                                } label: {
+                                    Text(displayNameLabel)
+                                        .font(.system(size: 15, weight: .black))
+                                        .foregroundColor(.white)
+                                        .multilineTextAlignment(.leading)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
-                        .buttonStyle(.plain)
 
-                        Text("@\(item.traveler.username) • \(displayTimestampLabel)")
+                        Text("\(secondaryIdentityLabel) • \(displayTimestampLabel)")
                             .font(.system(size: 11, weight: .bold))
                             .foregroundStyle(.white.opacity(0.4))
+
+                        Text(activityLabel)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(.white.opacity(0.62))
                     }
 
                     Spacer(minLength: 0)
@@ -10386,31 +11002,18 @@ private struct NativeFeedCard: View {
                     }
                 }
 
-                if let caption = item.caption, !caption.isEmpty {
-                    Text(caption)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.82))
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                if item.type == .visited, item.place?.momentRatingLabel != nil || item.place?.momentRating != nil || item.place?.momentWouldRevisit != nil {
-                    HStack(spacing: 8) {
-                        if let ratingMeta = nativeMomentRatingMeta(label: item.place?.momentRatingLabel, fallbackRating: item.place?.momentRating) {
-                            NativeFeedMetaPill(
-                                label: ratingMeta.label,
-                                icon: ratingMeta.icon,
-                                foreground: .white.opacity(0.88),
-                                background: Color.white.opacity(0.08)
-                            )
+                if !feedMetaPills.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(feedMetaPills) { pill in
+                                NativeFeedMetaPill(
+                                    label: pill.label,
+                                    icon: pill.icon,
+                                    foreground: pill.foreground,
+                                    background: pill.background
+                                )
+                            }
                         }
-                        if let wouldRevisit = item.place?.momentWouldRevisit {
-                            NativeFeedMetaPill(
-                                label: nativeRevisitLabel(wouldRevisit),
-                                foreground: wouldRevisit == "yes" ? nativeAccent : .white.opacity(0.82),
-                                background: wouldRevisit == "yes" ? nativeAccent.opacity(0.16) : Color.white.opacity(0.08)
-                            )
-                        }
-                        Spacer(minLength: 0)
                     }
                 }
 
@@ -10418,11 +11021,12 @@ private struct NativeFeedCard: View {
                     NativeFeedPlaceAttachment(
                         place: place,
                         activityType: item.type,
+                        caption: item.caption,
                         uploadedMediaUrls: item.uploadedMediaUrls
                             ?? place.userMediaUrls
                             ?? (place.momentMedia?.map { $0.url } ?? [])
                     ) {
-                        NativePlaceDetailScreen(initialPlace: place)
+                        NativePlaceDetailScreen(initialPlace: place, source: NativeAnalyticsSource.feed)
                     }
                 }
 
@@ -10439,89 +11043,111 @@ private struct NativeFeedCard: View {
                     .buttonStyle(.plain)
                 }
 
-	                HStack(spacing: 22) {
-                    Button {
-                        guard appState.currentUser != nil else {
-                            appState.presentAuthGate(reason: "Log in to vibin with posts.")
-                            return
-                        }
-                        if vibed {
-                            vibed = false
-                            vibinCount = max(0, vibinCount - 1)
-                        } else {
-                            vibed = true
-                            vibinCount += 1
-                        }
-                        withAnimation(.spring(response: 0.22, dampingFraction: 0.52)) {
-                            vibinScale = 1.22
-                            vibinRotation = -10
-                            vibinFlash = true
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            withAnimation(.spring(response: 0.24, dampingFraction: 0.76)) {
-                                vibinScale = 1
-                                vibinRotation = 8
-                            }
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                            withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-                                vibinRotation = 0
-                                vibinFlash = false
-                            }
-                        }
-	                    } label: {
-	                        HStack(spacing: 8) {
-	                            ZStack {
-	                                if vibinFlash {
-	                                    Image(systemName: "bolt.fill")
-	                                        .font(.system(size: 18, weight: .bold))
-	                                        .foregroundStyle(nativeAccent.opacity(0.28))
-	                                        .scaleEffect(2.1)
-	                                        .blur(radius: 1.5)
-	                                }
-	
-	                                Image(systemName: vibed ? "bolt.fill" : "bolt")
-	                                    .font(.system(size: 18, weight: .bold))
-	                            }
-	                            Text("\(vibinCount)")
-	                                .font(.system(size: 16, weight: .black))
-	                        }
-	                        .foregroundStyle(vibed ? nativeAccent : .white.opacity(0.72))
-	                        .scaleEffect(vibinScale)
-	                        .rotationEffect(.degrees(vibinRotation))
-	                    }
-	                    .buttonStyle(.plain)
-	
-	                    Button {
-                        showCommentSheet = true
-                        Task {
-                            await loadComments()
-                        }
-	                    } label: {
-	                        HStack(spacing: 8) {
-	                            Image(systemName: "bubble.right")
-	                                .font(.system(size: 18, weight: .bold))
-	                            Text("\(comments.count)")
-	                                .font(.system(size: 16, weight: .black))
-	                        }
-	                        .foregroundStyle(.white.opacity(0.72))
-	                    }
-                    .buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: 8) {
+                    if let commentsErrorMessage, !commentsErrorMessage.isEmpty {
+                        Text(commentsErrorMessage)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color(red: 252 / 255, green: 165 / 255, blue: 165 / 255))
+                    }
 
-                    Spacer()
-                }
-            }
-        }
-        .sheet(isPresented: $showCommentSheet) {
-            NativeCommentSheet(
-                itemTitle: item.collection?.label ?? item.place?.name ?? "Post",
-                commentDraft: $commentDraft,
-                comments: $comments,
-                isLoading: isCommentsLoading,
-                errorMessage: commentsErrorMessage
-            ) {
-                Task {
-                    await postComment()
+                    HStack(spacing: 10) {
+                        Button {
+                            guard appState.currentUser != nil else {
+                                appState.presentAuthGate(reason: "Log in to comment on posts.")
+                                return
+                            }
+                        } label: {
+                            Image(systemName: "bubble.left.fill")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.82))
+                                .frame(width: 46, height: 46)
+                                .background(Color.white.opacity(0.06))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+
+                        HStack(spacing: 10) {
+                            TextField(commentComposerPlaceholder, text: $commentDraft)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                                .textInputAutocapitalization(.sentences)
+                                .disableAutocorrection(false)
+
+                            Button {
+                                Task { await postComment() }
+                            } label: {
+                                if isPostingComment {
+                                    ProgressView()
+                                        .tint(.black)
+                                } else {
+                                    Image(systemName: "arrow.up")
+                                        .font(.system(size: 13, weight: .black))
+                                        .foregroundStyle(.black)
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .frame(width: 30, height: 30)
+                            .background(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? Color.white.opacity(0.1) : nativeAccent)
+                            .clipShape(Circle())
+                            .disabled(commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isPostingComment)
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(height: 46)
+                        .background(Color.white.opacity(0.06))
+                        .clipShape(Capsule())
+                        .frame(maxWidth: .infinity)
+
+                        Button {
+                            guard appState.currentUser != nil else {
+                                appState.presentAuthGate(reason: "Log in to vibin with posts.")
+                                return
+                            }
+                            if vibed {
+                                vibed = false
+                                vibinCount = max(0, vibinCount - 1)
+                            } else {
+                                vibed = true
+                                vibinCount += 1
+                            }
+                            withAnimation(.spring(response: 0.22, dampingFraction: 0.52)) {
+                                vibinScale = 1.22
+                                vibinRotation = -10
+                                vibinFlash = true
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                withAnimation(.spring(response: 0.24, dampingFraction: 0.76)) {
+                                    vibinScale = 1
+                                    vibinRotation = 8
+                                }
+                            }
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
+                                    vibinRotation = 0
+                                    vibinFlash = false
+                                }
+                            }
+                        } label: {
+                            ZStack {
+                                if vibinFlash {
+                                    Image(systemName: "bolt.fill")
+                                        .font(.system(size: 18, weight: .bold))
+                                        .foregroundStyle(nativeAccent.opacity(0.28))
+                                        .scaleEffect(2.1)
+                                        .blur(radius: 1.5)
+                                }
+
+                                Image(systemName: vibed ? "bolt.fill" : "bolt")
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundStyle(vibed ? nativeAccent : .white.opacity(0.72))
+                            }
+                            .frame(width: 46, height: 46)
+                            .background(Color.white.opacity(0.06))
+                            .clipShape(Circle())
+                            .scaleEffect(vibinScale)
+                            .rotationEffect(.degrees(vibinRotation))
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
             }
         }
@@ -10568,14 +11194,26 @@ private struct NativeFeedCard: View {
         }
     }
 
+    private var displayNameLabel: String {
+        isOwnPost ? "You" : (item.traveler.displayName ?? item.traveler.username)
+    }
+
+    private var secondaryIdentityLabel: String {
+        isOwnPost ? "@\(item.traveler.username)" : "@\(item.traveler.username)"
+    }
+
+    private var commentComposerPlaceholder: String {
+        isOwnPost ? "Add a comment" : "Send a thought to @\(item.traveler.username)"
+    }
+
     private var activityLabel: String {
         switch item.type {
         case .saved:
-            return "saved a place"
+            return isOwnPost ? "You saved this place" : "Saved this place"
         case .visited:
-            return "visited a place"
+            return isOwnPost ? "You checked in here" : "Checked in here"
         case .collection:
-            return "created a collection"
+            return isOwnPost ? "You made a collection" : "Made a collection"
         }
     }
 
@@ -10602,19 +11240,6 @@ private struct NativeFeedCard: View {
         item.timestampLabel.replacingOccurrences(of: ". ago", with: " ago")
     }
 
-    private func nativeRevisitLabel(_ value: String) -> String {
-        switch value {
-        case "yes":
-            return "Would revisit"
-        case "not_sure":
-            return "Maybe revisit"
-        case "not_interested":
-            return "No revisit"
-        default:
-            return value.replacingOccurrences(of: "_", with: " ").capitalized
-        }
-    }
-
     private var commentTargetType: String? {
         if item.collection != nil { return "COLLECTION" }
         guard let place = item.place else { return nil }
@@ -10627,35 +11252,60 @@ private struct NativeFeedCard: View {
         return place.momentId ?? place.id
     }
 
-    private func loadComments() async {
-        guard let targetType = commentTargetType, let targetId = commentTargetId else { return }
-        isCommentsLoading = true
-        commentsErrorMessage = nil
-        do {
-            comments = try await appState.fetchComments(targetType: targetType, targetId: targetId)
-        } catch {
-            commentsErrorMessage = "Could not load comments right now."
-        }
-        isCommentsLoading = false
-    }
-
     private func postComment() async {
         guard let targetType = commentTargetType, let targetId = commentTargetId else { return }
         let trimmed = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
+        isPostingComment = true
         do {
-            let newComment = try await appState.createComment(
+            _ = try await appState.createComment(
                 targetType: targetType,
                 targetId: targetId,
                 body: trimmed,
                 momentId: item.place?.momentId
             )
-            comments.insert(newComment, at: 0)
             commentDraft = ""
             commentsErrorMessage = nil
         } catch {
             commentsErrorMessage = "Could not post comment right now."
         }
+        isPostingComment = false
+    }
+
+    private var feedMetaPills: [NativeFeedMetaDisplayPill] {
+        var pills: [NativeFeedMetaDisplayPill] = []
+
+        for mood in Array((item.place?.momentVibeTags ?? []).prefix(2)) {
+            if let meta = nativeMoodBadgeMeta(for: mood) {
+                pills.append(.init(
+                    id: "mood-\(mood)",
+                    label: meta.label,
+                    icon: meta.icon,
+                    foreground: meta.foreground,
+                    background: meta.background
+                ))
+            } else {
+                pills.append(.init(
+                    id: "mood-\(mood)",
+                    label: mood.replacingOccurrences(of: "_", with: " ").trimmingCharacters(in: .whitespacesAndNewlines).localizedCapitalized,
+                    icon: "sparkles",
+                    foreground: .white.opacity(0.92),
+                    background: Color.white.opacity(0.08)
+                ))
+            }
+        }
+
+        if let ratingMeta = nativeMomentRatingMeta(label: item.place?.momentRatingLabel, fallbackRating: item.place?.momentRating) {
+            pills.append(.init(
+                id: "rating-\(ratingMeta.label)",
+                label: ratingMeta.label,
+                icon: ratingMeta.icon,
+                foreground: .white.opacity(0.88),
+                background: Color.white.opacity(0.08)
+            ))
+        }
+
+        return pills
     }
 
     private var reportPostTargetType: String? {
@@ -10713,6 +11363,14 @@ private struct NativeFeedCard: View {
             showModerationAlert = true
         }
     }
+}
+
+private struct NativeFeedMetaDisplayPill: Identifiable {
+    let id: String
+    let label: String
+    let icon: String?
+    let foreground: Color
+    let background: Color
 }
 
 private struct NativeFeedMetaPill: View {
@@ -10878,6 +11536,7 @@ private struct NativeCommentSheet: View {
 private struct NativeFeedPlaceAttachment: View {
     let place: NativePlace
     let activityType: NativeFeedActivityType
+    let caption: String?
     // Explicit visited uploads (from moments). This keeps user media separate from place media (Google).
     // When provided, it becomes the single source of truth for the visited horizontal scroller.
     let uploadedMediaUrls: [String]
@@ -10890,11 +11549,13 @@ private struct NativeFeedPlaceAttachment: View {
     init(
         place: NativePlace,
         activityType: NativeFeedActivityType,
+        caption: String? = nil,
         uploadedMediaUrls: [String] = [],
         destination: @escaping () -> NativePlaceDetailScreen
     ) {
         self.place = place
         self.activityType = activityType
+        self.caption = caption
         self.uploadedMediaUrls = uploadedMediaUrls
         self.destination = destination
     }
@@ -10927,6 +11588,16 @@ private struct NativeFeedPlaceAttachment: View {
 
     private var hasVisitedUploadedMedia: Bool {
         !visitedUploadedUrls.isEmpty
+    }
+
+    private var reviewPillText: String? {
+        if let ratingLabel = place.momentRatingLabel?.trimmingCharacters(in: .whitespacesAndNewlines), !ratingLabel.isEmpty {
+            return ratingLabel.replacingOccurrences(of: "_", with: " ").localizedCapitalized
+        }
+        if let caption, !caption.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
     }
 
     private var locationLine: String {
@@ -10976,8 +11647,16 @@ private struct NativeFeedPlaceAttachment: View {
 
             case .visited:
                 VStack(alignment: .leading, spacing: 12) {
+                    if let reviewPillText {
+                        NativeFeedMetaPill(
+                            label: reviewPillText,
+                            foreground: .black,
+                            background: nativeAccent
+                        )
+                    }
+
                     if hasVisitedUploadedMedia {
-                        visitedMediaScroller(urls: visitedUploadedUrls)
+                        visitedPrimaryMedia(url: visitedUploadedUrls.first)
                     }
 
                     NavigationLink {
@@ -11079,16 +11758,18 @@ private struct NativeFeedPlaceAttachment: View {
     }
 
     private func placeInfoCard(showThumbnail: Bool, thumbnailURL: String?) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
             if showThumbnail {
                 NativeRemoteImage(url: thumbnailURL)
-                    .frame(width: 72, height: 96) // 3:4 thumbnail
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .frame(maxWidth: .infinity)
+                    .aspectRatio(1, contentMode: .fill)
+                    .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+                    .clipped()
             }
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 8) {
                 Text(place.name)
-                    .font(.system(size: 14, weight: .black))
+                    .font(.system(size: 18, weight: .black))
                     .foregroundStyle(.white)
                     .fixedSize(horizontal: false, vertical: true)
                     .lineLimit(2)
@@ -11097,57 +11778,49 @@ private struct NativeFeedPlaceAttachment: View {
                     if let tagText = tagPartText {
                         (
                             locationPartText
-                            + Text(" · ").font(.system(size: 11, weight: .semibold)).foregroundColor(.white.opacity(0.55))
+                            + Text(" · ").font(.system(size: 12, weight: .semibold)).foregroundColor(.white.opacity(0.55))
                             + tagText
                         )
-                            .lineLimit(2)
+                        .lineLimit(2)
                     } else {
                         locationPartText
                             .lineLimit(2)
                     }
                 }
 
-                Spacer(minLength: 0)
+                if let caption, !caption.isEmpty {
+                    Text(caption)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.8))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 if let score = place.similarityStat {
                     Text("\(score)% match")
-                        .font(.system(size: 10, weight: .black))
+                        .font(.system(size: 11, weight: .black))
                         .foregroundStyle(nativeAccent)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .fill(nativeSurfaceStrong)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
-                .stroke(nativeBorder, lineWidth: 1)
-        )
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func visitedMediaScroller(urls: [String]) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
-                    Button {
-                        fullscreenGalleryStartIndex = index
-                        showFullscreenGallery = true
-                    } label: {
-                        NativeRemoteImage(url: url)
-                            .frame(width: 240, height: 320) // 3:4 (2x larger)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .stroke(nativeBorder, lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
+    private func visitedPrimaryMedia(url: String?) -> some View {
+        Button {
+            fullscreenGalleryStartIndex = 0
+            showFullscreenGallery = true
+        } label: {
+            NativeRemoteImage(url: url)
+                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fill)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .clipped()
+                .overlay(
+                    RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        .stroke(nativeBorder, lineWidth: 1)
+                )
         }
+        .buttonStyle(.plain)
     }
 }
 
@@ -11922,6 +12595,7 @@ private struct NativeTravelerProfileScreen: View {
 	@State private var traveler: NativeTravelerSummary
 	@State private var bookmarks: [NativePlace] = []
 	@State private var collections: [NativeCollection] = []
+    @State private var inspirationMedia: [NativeDiscoveryInspirationMedia] = []
 	@State private var activeSection: NativeProfileSection = .feed
 	@State private var selectedFeedCity: String?
 	@State private var selectedSavedCity: String?
@@ -11930,6 +12604,7 @@ private struct NativeTravelerProfileScreen: View {
 	@State private var isTogglingFollow = false
     @State private var showShareSheet = false
     @State private var showTravelerScoreDebug = false
+    @State private var selectedInspirationMedia: NativeDiscoveryInspirationMedia?
     @State private var showReportAccountDialog = false
     @State private var showBlockAccountDialog = false
     @State private var moderationAlertMessage = ""
@@ -12149,6 +12824,15 @@ private struct NativeTravelerProfileScreen: View {
             await loadTravelerProfile()
         }
         .onAppear {
+            appState.trackAnalytics(
+                .visitUserProfile,
+                properties: [
+                    "profile_user_id": traveler.id,
+                    "profile_username": traveler.username,
+                    "profile_display_name": traveler.displayName ?? "",
+                    "source": NativeAnalyticsSource.userProfile,
+                ]
+            )
             appState.pushFloatingTabBarHidden()
             let appearance = UINavigationBarAppearance()
             appearance.configureWithOpaqueBackground()
@@ -12170,6 +12854,9 @@ private struct NativeTravelerProfileScreen: View {
                 NativeTravelerScoreDebugSheet(traveler: traveler)
             }
             .navigationViewStyle(.stack)
+        }
+        .fullScreenCover(item: $selectedInspirationMedia) { media in
+            NativeDiscoveryInspirationFullscreen(media: media)
         }
         .confirmationDialog("Report account", isPresented: $showReportAccountDialog, titleVisibility: .visible) {
             ForEach(NativeReportReason.allCases) { reason in
@@ -12200,16 +12887,21 @@ private struct NativeTravelerProfileScreen: View {
 	private var travelerSectionContent: some View {
 		switch activeSection {
 		case .feed:
-			if filteredTravelerFeedItems.isEmpty {
+			if travelerFeedItems.isEmpty {
 				emptyTravelerBlock("Their latest activity will show up here.")
 			} else {
 				VStack(alignment: .leading, spacing: 14) {
+                    travelerInspirationSection
 					NativeCityFilterPills(selectedCity: effectiveTravelerFeedCityBinding, cities: travelerFeedCities)
-					LazyVStack(spacing: 14) {
-						ForEach(filteredTravelerFeedItems) { item in
-							NativeFeedCard(item: item)
-						}
-					}
+                    if filteredTravelerFeedItems.isEmpty {
+                        emptyTravelerBlock("No activity is visible for this city.")
+                    } else {
+                        LazyVStack(spacing: 14) {
+                            ForEach(filteredTravelerFeedItems) { item in
+                                NativeFeedCard(item: item)
+                            }
+                        }
+                    }
 				}
 			}
 		case .saved:
@@ -12221,7 +12913,7 @@ private struct NativeTravelerProfileScreen: View {
 					LazyVStack(spacing: 12) {
 						ForEach(filteredTravelerSavedPlaces) { place in
 							NavigationLink {
-								NativePlaceDetailScreen(initialPlace: place)
+								NativePlaceDetailScreen(initialPlace: place, source: NativeAnalyticsSource.userProfile)
 							} label: {
 								NativePlaceCard(place: place)
 							}
@@ -12231,16 +12923,21 @@ private struct NativeTravelerProfileScreen: View {
 				}
 			}
 		case .visited:
-			if filteredTravelerVisitedFeedItems.isEmpty {
+			if travelerVisitedFeedItems.isEmpty {
 				emptyTravelerBlock("No visited places are visible right now.")
 			} else {
 				VStack(alignment: .leading, spacing: 14) {
+                    travelerInspirationSection
 					NativeCityFilterPills(selectedCity: effectiveTravelerVisitedCityBinding, cities: travelerVisitedCities)
-					LazyVStack(spacing: 14) {
-						ForEach(filteredTravelerVisitedFeedItems) { item in
-							NativeFeedCard(item: item)
-						}
-					}
+                    if filteredTravelerVisitedFeedItems.isEmpty {
+                        emptyTravelerBlock("No visited places are visible for this city.")
+                    } else {
+                        LazyVStack(spacing: 14) {
+                            ForEach(filteredTravelerVisitedFeedItems) { item in
+                                NativeFeedCard(item: item)
+                            }
+                        }
+                    }
 				}
 			}
 		case .collections:
@@ -12271,6 +12968,19 @@ private struct NativeTravelerProfileScreen: View {
             Text(text)
                 .font(.system(size: 15, weight: .medium))
                 .foregroundStyle(.white.opacity(0.6))
+        }
+    }
+
+    @ViewBuilder
+    private var travelerInspirationSection: some View {
+        if !inspirationMedia.isEmpty {
+            NativeDiscoveryInspirationSection(
+                media: inspirationMedia,
+                contentWidth: UIScreen.main.bounds.width - (nativeTravelerProfileHorizontalPadding * 2),
+                onMediaTap: { media in
+                    selectedInspirationMedia = media
+                }
+            )
         }
     }
 
@@ -12407,6 +13117,7 @@ private struct NativeTravelerProfileScreen: View {
             traveler = response.traveler
             bookmarks = response.bookmarks
             collections = response.collections
+            inspirationMedia = response.inspirationMedia ?? []
         } catch {
             errorMessage = "Could not load this profile right now."
         }
@@ -12527,6 +13238,7 @@ private struct NativePlaceDetailScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @Environment(\.openURL) private var openURL
     @State private var place: NativePlace
+    let analyticsSource: String
     @State private var travelerMoments: [NativePlaceTravelerMoment] = []
     @State private var selectedMediaIndex = 0
     @State private var sheetState: NativePlaceDetailSheetState = .default
@@ -12538,8 +13250,9 @@ private struct NativePlaceDetailScreen: View {
     @State private var hasLoadedCanonicalDetails = true
     @State private var showDirectionsOptions = false
 
-    init(initialPlace: NativePlace) {
+    init(initialPlace: NativePlace, source: String = NativeAnalyticsSource.placeDetails) {
         _place = State(initialValue: initialPlace)
+        self.analyticsSource = source
     }
 
     var body: some View {
@@ -12605,6 +13318,10 @@ private struct NativePlaceDetailScreen: View {
         }
         .onAppear {
             appState.pushFloatingTabBarHidden()
+            appState.trackAnalytics(
+                .visitPlaceDetails,
+                properties: appState.placeAnalyticsProperties(place, source: analyticsSource)
+            )
         }
         .onDisappear {
             appState.popFloatingTabBarHidden()
@@ -13224,6 +13941,13 @@ private struct NativePlaceDetailScreen: View {
     private func floatingActionBar(bottomInset: CGFloat) -> some View {
         HStack(spacing: 12) {
             Button {
+                appState.trackAnalytics(
+                    .clickCheckin,
+                    properties: appState.placeAnalyticsProperties(
+                        place,
+                        source: NativeAnalyticsSource.placeDetails
+                    )
+                )
                 appState.presentCheckInFlow(prefilledPlace: place)
             } label: {
                 HStack {
@@ -13782,7 +14506,14 @@ private struct NativePlaceDetailScreen: View {
         isTogglingBookmark = true
         defer { isTogglingBookmark = false }
         do {
+            let wasBookmarked = appState.isBookmarked(place.id)
             try await appState.toggleBookmark(for: place)
+            if !wasBookmarked {
+                appState.trackAnalytics(
+                    .savingPlace,
+                    properties: appState.placeAnalyticsProperties(place, source: analyticsSource)
+                )
+            }
         } catch {
             let nsError = error as NSError
             if nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorUserAuthenticationRequired {

@@ -6,6 +6,30 @@ export interface AuthPayload {
   password?: string;
 }
 
+export interface V2UserPayload {
+  id: string;
+  phoneNumber?: string;
+  displayName?: string;
+  username?: string;
+  avatarUrl?: string;
+  cityLabel?: string;
+}
+
+export interface V2OnboardingPayload {
+  currentStep: string;
+  completedSteps: string[];
+  skippedSteps: string[];
+  inviteCodeValidated: boolean;
+  inviteCodeValidatedAt?: string;
+  phoneVerifiedAt?: string;
+  profileCompletedAt?: string;
+  locationDecisionAt?: string;
+  contactsDecisionAt?: string;
+  firstPlaceLoggedAt?: string;
+  inviteShareSeenAt?: string;
+  updatedAt: string;
+}
+
 export class ApiError extends Error {
   status: number;
 
@@ -101,6 +125,91 @@ export const api = {
   },
   getAuthSession() {
     return request<{ user: { id: string; displayName?: string; username: string; email?: string } }>('/api/auth/session');
+  },
+  getV2AuthConfig() {
+    return request<{ otpProvider: string; enabled: boolean; inviteRequired: boolean; codeLength: number; fixedCodeEnabled: boolean }>('/api/v2/auth/config');
+  },
+  validateV2InviteCode(code: string) {
+    return request<{
+      valid: true;
+      inviteCode: {
+        code: string;
+        status: string;
+        usageCount: number;
+        usageLimit?: number;
+        remainingUses?: number;
+        expiresAt?: string;
+        inviter?: { name?: string; avatarUrl?: string };
+      };
+    }>(`/api/v2/invite-codes/validate?code=${encodeURIComponent(code)}`);
+  },
+  joinV2Waitlist(payload: { phoneNumber: string; source?: string }) {
+    return request<{ entry: { id: string; phoneNumber: string; source?: string; createdAt: string } }>('/api/v2/waitlist', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+  requestV2Otp(payload: { phoneNumber: string; purpose: 'SIGN_UP' | 'SIGN_IN'; inviteCode?: string }) {
+    return request<{ otpRequestId: string; phoneNumber: string; expiresAt: string }>('/api/v2/auth/otp/request', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+  verifyV2Otp(payload: { otpRequestId: string; code: string; inviteCode?: string; displayName?: string }) {
+    return request<{ token: string; user: V2UserPayload }>('/api/v2/auth/otp/verify', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }).then((response) => {
+      setAuthToken(response.token);
+      return response;
+    });
+  },
+  getV2AuthSession() {
+    return request<{ user: V2UserPayload }>('/api/v2/auth/session');
+  },
+  logoutV2() {
+    return request<void>('/api/v2/auth/logout', {
+      method: 'POST',
+    }).finally(() => {
+      setAuthToken(null);
+    });
+  },
+  getV2Onboarding() {
+    return request<{ onboarding: V2OnboardingPayload }>('/api/v2/onboarding');
+  },
+  updateV2Onboarding(payload: { currentStep?: string; completedStep?: string; skippedStep?: string }) {
+    return request<{ onboarding: V2OnboardingPayload }>('/api/v2/onboarding', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  },
+  getV2Profile() {
+    return request<{ user: V2UserPayload }>('/api/v2/profile/me');
+  },
+  updateV2Profile(payload: { displayName: string; username: string; avatarUrl?: string | null }) {
+    return request<{ user: V2UserPayload; onboarding: V2OnboardingPayload }>('/api/v2/profile/me', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  },
+  updateV2Location(payload: { cityLabel: string; cityLatitude?: number | null; cityLongitude?: number | null; citySource?: string | null }) {
+    return request<{ user: V2UserPayload; onboarding: V2OnboardingPayload }>('/api/v2/profile/location', {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    });
+  },
+  matchV2Contacts(payload: { phoneNumbers: string[] }) {
+    return request<{
+      matches: {
+        totalContactsSubmitted: number;
+        matchedCount: number;
+        matchedUsers: V2UserPayload[];
+      };
+      onboarding: V2OnboardingPayload;
+    }>('/api/v2/contacts/match', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
   },
   getProfileMe() {
     return request<{
