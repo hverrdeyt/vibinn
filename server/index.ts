@@ -14819,7 +14819,20 @@ app.get(['/u/:username', '/:username'], (req, res, next) => {
     .catch((error) => handleError(res, error));
 });
 
-app.get('*', (_req, res, next) => {
+app.get('*', (req, res, next) => {
+  const requestPath = req.path || '';
+  const looksLikeStaticAsset = requestPath.startsWith('/assets/')
+    || requestPath.startsWith('/fonts/')
+    || requestPath.startsWith('/brand/')
+    || requestPath.startsWith('/homepage-stickers/')
+    || requestPath.startsWith('/uploads/')
+    || /\.[a-z0-9]+$/i.test(requestPath);
+
+  if (looksLikeStaticAsset) {
+    next();
+    return;
+  }
+
   void loadWebIndexHtml()
     .then((html) => {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
