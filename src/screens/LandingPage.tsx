@@ -30,7 +30,7 @@ type CTAButtonProps = {
   className?: string;
 };
 
-const LANDING_STICKER_VERSION = '20260615';
+const LANDING_STICKER_VERSION = '20260615b';
 
 function withStickerVersion(path: string) {
   return `${path}?v=${LANDING_STICKER_VERSION}`;
