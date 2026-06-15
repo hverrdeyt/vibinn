@@ -53,7 +53,6 @@ import { getCurrentDevicePosition, isNativeApp, openExternalUrl, shareNativeCont
 
 const LandingPage = lazy(() => import('./screens/LandingPage'));
 const OnboardingScreen = lazy(() => import('./screens/Onboarding'));
-const InviteOnlyOnboardingScreen = lazy(() => import('./screens/InviteOnlyOnboarding'));
 const NotificationsScreen = lazy(() => import('./screens/SettingsScreens').then((module) => ({ default: module.NotificationsScreen })));
 const SettingsScreen = lazy(() => import('./screens/SettingsScreens').then((module) => ({ default: module.SettingsScreen })));
 const AccountSettingsScreen = lazy(() => import('./screens/SettingsScreens').then((module) => ({ default: module.AccountSettingsScreen })));
@@ -4640,54 +4639,42 @@ export default function App() {
       case 'onboarding':
         return (
           <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
-            {!hasStoredOnboardingCompletion() ? (
-              <InviteOnlyOnboardingScreen
-                isAuthenticated={isAuthenticated}
-                onAuthenticated={(payload) => completeV2Auth(payload, { preserveCurrentScreen: true })}
-                onComplete={() => completeOnboarding({
-                  selectedInterests: [],
-                  selectedVibe: null,
-                })}
-                onShowToast={showActionToast}
-              />
-            ) : (
-              <OnboardingScreen
-                entryMode={onboardingEntryMode}
-                selectedInterests={selectedInterests}
-                setSelectedInterests={setSelectedInterests}
-                selectedVibe={selectedVibe}
-                setSelectedVibe={setSelectedVibe}
-                savedLocations={savedLocations}
-                activeLocationId={activeLocationId}
-                onSelectInitialLocation={(locationId) => setActiveLocationId(locationId)}
-                onAddInitialLocation={async (location) => {
-                  if (isAuthenticated) {
-                    try {
-                      const response = await api.addSavedLocation({
-                        label: location.label,
-                        type: location.type,
-                        googlePlaceId: location.googlePlaceId,
-                        isDefault: true,
-                      });
-                      setSavedLocations((prev) => mergeSavedLocations(prev, response.locations as SavedLocationOption[]));
-                      if (response.activeLocationId) {
-                        setActiveLocationId(response.activeLocationId);
-                      }
-                      showActionToast(`${location.label} selected`);
-                    } catch {
-                      showActionToast('Could not save location right now');
+            <OnboardingScreen
+              entryMode={onboardingEntryMode}
+              selectedInterests={selectedInterests}
+              setSelectedInterests={setSelectedInterests}
+              selectedVibe={selectedVibe}
+              setSelectedVibe={setSelectedVibe}
+              savedLocations={savedLocations}
+              activeLocationId={activeLocationId}
+              onSelectInitialLocation={(locationId) => setActiveLocationId(locationId)}
+              onAddInitialLocation={async (location) => {
+                if (isAuthenticated) {
+                  try {
+                    const response = await api.addSavedLocation({
+                      label: location.label,
+                      type: location.type,
+                      googlePlaceId: location.googlePlaceId,
+                      isDefault: true,
+                    });
+                    setSavedLocations((prev) => mergeSavedLocations(prev, response.locations as SavedLocationOption[]));
+                    if (response.activeLocationId) {
+                      setActiveLocationId(response.activeLocationId);
                     }
-                    return;
+                    showActionToast(`${location.label} selected`);
+                  } catch {
+                    showActionToast('Could not save location right now');
                   }
+                  return;
+                }
 
-                  setSavedLocations((prev) => mergeSavedLocations(prev, [location]));
-                  setActiveLocationId(location.id);
-                  showActionToast(`${location.label} selected`);
-                }}
-                onComplete={completeOnboarding}
-                analyticsContext={buildAnalyticsUserContext()}
-              />
-            )}
+                setSavedLocations((prev) => mergeSavedLocations(prev, [location]));
+                setActiveLocationId(location.id);
+                showActionToast(`${location.label} selected`);
+              }}
+              onComplete={completeOnboarding}
+              analyticsContext={buildAnalyticsUserContext()}
+            />
           </Suspense>
         );
       case 'post-preferences-intro':
