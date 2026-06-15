@@ -47,12 +47,13 @@ import PlaceCard, { PlaceCardData } from './components/PlaceCard';
 import PlaceDetailPage, { PlaceDetailData } from './components/PlaceDetailPage';
 import { TravelerCardData } from './components/TravelerCard';
 import DetailActionBar from './components/DetailActionBar';
-import { api, ApiError, resolveApiAssetUrl } from './lib/api';
+import { api, ApiError, resolveApiAssetUrl, type V2UserPayload } from './lib/api';
 import { identifyAnalyticsUser, initAnalytics, resetAnalyticsUser, trackEvent, trackPageView } from './lib/analytics';
 import { getCurrentDevicePosition, isNativeApp, openExternalUrl, shareNativeContent } from './lib/native';
 
 const LandingPage = lazy(() => import('./screens/LandingPage'));
 const OnboardingScreen = lazy(() => import('./screens/Onboarding'));
+const InviteOnlyOnboardingScreen = lazy(() => import('./screens/InviteOnlyOnboarding'));
 const NotificationsScreen = lazy(() => import('./screens/SettingsScreens').then((module) => ({ default: module.NotificationsScreen })));
 const SettingsScreen = lazy(() => import('./screens/SettingsScreens').then((module) => ({ default: module.SettingsScreen })));
 const AccountSettingsScreen = lazy(() => import('./screens/SettingsScreens').then((module) => ({ default: module.AccountSettingsScreen })));
@@ -65,6 +66,7 @@ const PublicProfileScreen = lazy(() => import('./screens/PublicProfileScreen'));
 const TravelerProfileScreen = lazy(() => import('./screens/TravelerProfileScreen'));
 const ProfileScreen = lazy(() => import('./screens/ProfileScreen'));
 const PlaceDiscoveryScreen = lazy(() => import('./screens/PlaceDiscoveryScreen'));
+const APP_STORE_URL = 'https://apps.apple.com/us/app/vibinn/id6762061149';
 
 type MomentRatingLabel = 'disliked' | 'not_bad' | 'liked' | 'recommended';
 
@@ -208,6 +210,16 @@ const RESERVED_TOP_LEVEL_PATHS = new Set([
   'robots.txt',
   'sitemap.xml',
 ]);
+const WEB_PUBLIC_ALLOWED_SCREENS = new Set<Screen>([
+  'landing',
+  'terms',
+  'privacy',
+  'public-profile',
+]);
+
+function isWebPublicAllowedScreen(screen: Screen) {
+  return WEB_PUBLIC_ALLOWED_SCREENS.has(screen);
+}
 
 function mergeSavedLocations(
   currentLocations: SavedLocationOption[],
@@ -1630,6 +1642,25 @@ function buildAuthenticatedUserDraft(payload?: { id?: string; name?: string; use
   };
 }
 
+function buildAuthenticatedUserDraftFromV2(payload?: V2UserPayload): User {
+  const displayName = payload?.displayName?.trim() || payload?.username || payload?.phoneNumber || 'Traveler';
+  return {
+    id: payload?.id || 'auth-user',
+    username: payload?.username || payload?.phoneNumber || 'traveler',
+    displayName,
+    bio: '',
+    avatar: payload?.avatarUrl ? resolveApiAssetUrl(payload.avatarUrl) : getAvatarFallbackUrl(displayName),
+    badges: [],
+    flags: [],
+    stats: {
+      countries: 0,
+      cities: 0,
+      trips: 0,
+    },
+    travelHistory: [],
+  };
+}
+
 function resolvePublicProfileUser(username: string | null | undefined, currentUser: User) {
   const normalizedUsername = username?.trim().toLowerCase();
   if (!normalizedUsername) return null;
@@ -1702,6 +1733,7 @@ function getPlaceDetailIdFromLocation() {
 export default function App() {
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID as string | undefined;
   const mockReviewMode = isMockReviewModeEnabled();
+  const isPublicWebMode = !isNativeApp() && !mockReviewMode;
   const mockReviewScenario = mockReviewMode ? MOCK_REVIEW_SCENARIO : null;
   const [currentScreen, setCurrentScreen] = useState<Screen>(() => {
     if (typeof window === 'undefined') return 'landing';
@@ -1725,6 +1757,10 @@ export default function App() {
       return isNativeApp()
         ? getNativeDefaultScreen()
         : 'landing';
+    }
+
+    if (!isNativeApp() && !isMockReview && !isWebPublicAllowedScreen(route.screen)) {
+      return 'landing';
     }
 
     if (placeIdFromShareLink) {
@@ -1766,6 +1802,16 @@ export default function App() {
   const [selectedTravelerReturnScreen, setSelectedTravelerReturnScreen] = useState<Screen>('discover-travelers');
   const [placeDetailReturnScreen, setPlaceDetailReturnScreen] = useState<Screen>('discover-places');
   const [isTravelerProfileLoading, setIsTravelerProfileLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isPublicWebMode) return;
+    if (isWebPublicAllowedScreen(currentScreen)) return;
+
+    if (typeof window !== 'undefined' && window.location.pathname !== '/') {
+      window.history.replaceState({}, '', '/');
+    }
+    setCurrentScreen('landing');
+  }, [currentScreen, isPublicWebMode]);
   const [placeTravelerMoments, setPlaceTravelerMoments] = useState<Array<{
     id: string;
     travelerUsername: string;
@@ -2472,6 +2518,11 @@ export default function App() {
       window.history.pushState({}, '', screenToAppPath(targetScreen));
     }
     setCurrentScreen(targetScreen);
+  };
+
+  const openAppStore = () => {
+    if (typeof window === 'undefined') return;
+    window.open(APP_STORE_URL, '_blank', 'noopener,noreferrer');
   };
 
   const disableMockReviewMode = () => {
@@ -3559,6 +3610,45 @@ export default function App() {
     });
   };
 
+  const completeV2Auth = async (
+    payload?: V2UserPayload,
+    options?: { preserveCurrentScreen?: boolean },
+  ) => {
+    const wasAuthenticated = isAuthenticatedRef.current;
+    const guestPreferences = {
+      selectedInterests,
+      selectedVibe,
+    };
+
+    isAuthenticatedRef.current = true;
+    setIsAuthenticated(true);
+    setUser(buildAuthenticatedUserDraftFromV2(payload));
+
+    if (!options?.preserveCurrentScreen) {
+      setCurrentScreen(hasStoredOnboardingCompletion() ? 'discover-places' : 'onboarding');
+    }
+
+    if (!wasAuthenticated && payload?.id) {
+      identifyAnalyticsUser({
+        id: payload.id,
+        username: payload.username,
+        displayName: payload.displayName,
+      });
+      trackEvent('Auth Completed', {
+        user_id: payload.id,
+        username: payload.username,
+        method: 'phone_otp',
+      });
+    }
+
+    if (!wasAuthenticated) {
+      void applyAuthenticatedBootstrapState({
+        guestPreferences,
+        includeProfile: false,
+      });
+    }
+  };
+
   useEffect(() => {
     if (!isAuthenticated) return;
     if (currentScreen !== 'profile') return;
@@ -3911,8 +4001,16 @@ export default function App() {
         });
       })
       .catch(() => {
-        api.clearAuthToken();
-        resetAnalyticsUser();
+        void api.getV2AuthSession()
+          .then(async (response) => {
+            await completeV2Auth(response.user, {
+              preserveCurrentScreen: true,
+            });
+          })
+          .catch(() => {
+            api.clearAuthToken();
+            resetAnalyticsUser();
+          });
       });
   }, []);
 
@@ -4542,42 +4640,54 @@ export default function App() {
       case 'onboarding':
         return (
           <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
-            <OnboardingScreen
-              entryMode={onboardingEntryMode}
-              selectedInterests={selectedInterests}
-              setSelectedInterests={setSelectedInterests}
-              selectedVibe={selectedVibe}
-              setSelectedVibe={setSelectedVibe}
-              savedLocations={savedLocations}
-              activeLocationId={activeLocationId}
-              onSelectInitialLocation={(locationId) => setActiveLocationId(locationId)}
-              onAddInitialLocation={async (location) => {
-                if (isAuthenticated) {
-                  try {
-                    const response = await api.addSavedLocation({
-                      label: location.label,
-                      type: location.type,
-                      googlePlaceId: location.googlePlaceId,
-                      isDefault: true,
-                    });
-                    setSavedLocations((prev) => mergeSavedLocations(prev, response.locations as SavedLocationOption[]));
-                    if (response.activeLocationId) {
-                      setActiveLocationId(response.activeLocationId);
+            {!hasStoredOnboardingCompletion() ? (
+              <InviteOnlyOnboardingScreen
+                isAuthenticated={isAuthenticated}
+                onAuthenticated={(payload) => completeV2Auth(payload, { preserveCurrentScreen: true })}
+                onComplete={() => completeOnboarding({
+                  selectedInterests: [],
+                  selectedVibe: null,
+                })}
+                onShowToast={showActionToast}
+              />
+            ) : (
+              <OnboardingScreen
+                entryMode={onboardingEntryMode}
+                selectedInterests={selectedInterests}
+                setSelectedInterests={setSelectedInterests}
+                selectedVibe={selectedVibe}
+                setSelectedVibe={setSelectedVibe}
+                savedLocations={savedLocations}
+                activeLocationId={activeLocationId}
+                onSelectInitialLocation={(locationId) => setActiveLocationId(locationId)}
+                onAddInitialLocation={async (location) => {
+                  if (isAuthenticated) {
+                    try {
+                      const response = await api.addSavedLocation({
+                        label: location.label,
+                        type: location.type,
+                        googlePlaceId: location.googlePlaceId,
+                        isDefault: true,
+                      });
+                      setSavedLocations((prev) => mergeSavedLocations(prev, response.locations as SavedLocationOption[]));
+                      if (response.activeLocationId) {
+                        setActiveLocationId(response.activeLocationId);
+                      }
+                      showActionToast(`${location.label} selected`);
+                    } catch {
+                      showActionToast('Could not save location right now');
                     }
-                    showActionToast(`${location.label} selected`);
-                  } catch {
-                    showActionToast('Could not save location right now');
+                    return;
                   }
-                  return;
-                }
 
-                setSavedLocations((prev) => mergeSavedLocations(prev, [location]));
-                setActiveLocationId(location.id);
-                showActionToast(`${location.label} selected`);
-              }}
-              onComplete={completeOnboarding}
-              analyticsContext={buildAnalyticsUserContext()}
-            />
+                  setSavedLocations((prev) => mergeSavedLocations(prev, [location]));
+                  setActiveLocationId(location.id);
+                  showActionToast(`${location.label} selected`);
+                }}
+                onComplete={completeOnboarding}
+                analyticsContext={buildAnalyticsUserContext()}
+              />
+            )}
           </Suspense>
         );
       case 'post-preferences-intro':
@@ -5151,7 +5261,7 @@ export default function App() {
               user={resolvedPublicProfileUser}
               bookmarkedPlaces={resolvedPublicProfileBookmarkedPlaces}
               customCollections={resolvedPublicProfileCollections}
-              onFollow={openApp}
+              onFollow={openAppStore}
               onOpenCollection={(collection) => {
                 setSelectedCollection(collection);
                 setSelectedCollectionReturnScreen('public-profile');
@@ -5232,6 +5342,134 @@ export default function App() {
         return null;
     }
   };
+
+  const renderPublicWebScreen = () => {
+    switch (currentScreen) {
+      case 'terms':
+        return (
+          <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
+            <TermsOfServiceScreen />
+          </Suspense>
+        );
+      case 'privacy':
+        return (
+          <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
+            <PrivacyPolicyScreen />
+          </Suspense>
+        );
+      case 'public-profile':
+        return isPublicProfileLoading ? (
+          <div className="flex min-h-screen flex-col items-center justify-center bg-zinc-950 px-6 text-center text-white">
+            <div className="rounded-[2rem] border border-white/10 bg-white/6 px-6 py-8">
+              <h1 className="text-2xl font-black tracking-tight">Loading profile</h1>
+              <p className="mt-3 text-sm font-medium leading-relaxed text-white/60">
+                Pulling this traveler&apos;s public travel card now.
+              </p>
+            </div>
+          </div>
+        ) : resolvedPublicProfileUser ? (
+          <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
+            <PublicProfileScreen
+              user={resolvedPublicProfileUser}
+              bookmarkedPlaces={resolvedPublicProfileBookmarkedPlaces}
+              customCollections={resolvedPublicProfileCollections}
+              onFollow={openApp}
+              onOpenCollection={(collection) => {
+                setSelectedCollection(collection);
+                setSelectedCollectionReturnScreen('public-profile');
+                setPublicCollectionId(collection.id ?? null);
+                setSelectedCollectionOwner({
+                  avatar: resolvedPublicProfileUser.avatar,
+                  username: resolvedPublicProfileUser.username,
+                  displayName: resolvedPublicProfileUser.displayName,
+                });
+                setCurrentScreen('collection-detail');
+              }}
+              displayFlags={(resolvedPublicProfileUser.flags?.length ? resolvedPublicProfileUser.flags : deriveFlagsFromTravelHistory(resolvedPublicProfileUser.travelHistory)).slice(0, 5)}
+              publicMomentsCount={resolvedPublicProfileUser.travelHistory.flatMap((item) => item.places ?? []).length}
+              feedItems={publicProfileFeedItems}
+              renderFeedEntryCard={(item, index) => (
+                <FollowingFeedCard
+                  item={item}
+                  vibed={publicProfileFeedControls[item.id]?.vibed}
+                  vibinCount={publicProfileFeedControls[item.id]?.vibinCount}
+                  commentsCount={publicProfileFeedControls[item.id]?.commentsCount}
+                  onOpenPlace={item.type === 'collection' ? undefined : () => openPlaceDetail(item.place, 'public-profile')}
+                  onOpenCollection={item.type === 'collection' && item.collectionId ? () => {
+                    const collection = resolvedPublicProfileCollections.find((entry) => entry.id === item.collectionId);
+                    if (!collection) return;
+                    setSelectedCollection(collection);
+                    setSelectedCollectionReturnScreen('public-profile');
+                    setPublicCollectionId(collection.id ?? null);
+                    setSelectedCollectionOwner({
+                      avatar: resolvedPublicProfileUser.avatar,
+                      username: resolvedPublicProfileUser.username,
+                      displayName: resolvedPublicProfileUser.displayName,
+                    });
+                    setCurrentScreen('collection-detail');
+                  } : undefined}
+                  onOpenTraveler={() => undefined}
+                  onToggleVibin={undefined}
+                  onOpenComments={undefined}
+                  showSocialActions={false}
+                  animationDelay={Math.min(index, 8) * 0.03}
+                />
+              )}
+            />
+          </Suspense>
+        ) : (
+          <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
+            <LandingPage
+              analyticsContext={buildAnalyticsUserContext()}
+              onHeaderTryNow={openAppStore}
+              onFloatingTryNow={openAppStore}
+            />
+          </Suspense>
+        );
+      case 'landing':
+      default:
+        return (
+          <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
+            <LandingPage
+              analyticsContext={buildAnalyticsUserContext()}
+              onHeaderTryNow={() => {
+                trackEvent('Try now', {
+                  ...buildAnalyticsUserContext(),
+                  placement: 'landing_header',
+                });
+                openAppStore();
+              }}
+              onFloatingTryNow={() => {
+                trackEvent('Try now', {
+                  ...buildAnalyticsUserContext(),
+                  placement: 'landing_floating',
+                });
+                openAppStore();
+              }}
+            />
+          </Suspense>
+        );
+    }
+  };
+
+  if (isPublicWebMode) {
+    return (
+      <div className="app-shell app-screen-shell relative overflow-hidden bg-zinc-950">
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={currentScreen}
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="app-screen-shell"
+          >
+            {renderPublicWebScreen()}
+          </motion.div>
+        </AnimatePresence>
+      </div>
+    );
+  }
 
   return (
     <div className={currentScreen === 'landing'

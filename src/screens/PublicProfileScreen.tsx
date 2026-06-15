@@ -135,7 +135,7 @@ export default function PublicProfileScreen({
                 className="rounded-[1.35rem] border border-white/10 bg-white/[0.04] px-4 py-3.5"
               >
                 <div className="text-[1.15rem] font-black text-white">{formatStat(item.value)}</div>
-                <div className="mt-1 text-[11px] font-black uppercase tracking-[0.18em] text-white/36">
+                <div className="mt-1 text-[11px] font-black uppercase text-white/36">
                   {item.label}
                 </div>
               </div>
@@ -144,7 +144,7 @@ export default function PublicProfileScreen({
         </section>
 
         <section className="mt-4 rounded-[2rem] border border-white/10 bg-[#101013]/94 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.24)]">
-          <h2 className="landing-bbh-bartle mb-4 text-[1.9rem] leading-none text-accent">
+          <h2 className="landing-bbh-bartle mb-4 text-[1.55rem] leading-none text-accent">
             Food Memories
           </h2>
 

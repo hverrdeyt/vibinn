@@ -54,7 +54,6 @@ import {
   getPrivacySettings,
   getPublicCollectionById,
   getProfileMe,
-  getPublicProfileByUsername,
   getSupport,
   updateCollection,
   updateMoment,
@@ -1267,7 +1266,7 @@ async function buildPublicProfilePayloadFromV2Username(username: string, request
       id: traveler.id,
       username: traveler.username,
       displayName: traveler.displayName ?? traveler.username,
-      bio: traveler.bio?.trim() || 'Sharing a personal food diary on Vibinn.',
+      bio: traveler.bio?.trim() || null,
       avatar: traveler.avatarUrl?.trim() || placeholderAvatar,
       descriptor: traveler.cityLabel?.trim() || undefined,
       relevanceReason: undefined,
@@ -11239,14 +11238,8 @@ app.get('/api/profiles/:username/public', (req, res) => {
 
   const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
 
-  void getPublicProfileByUsername(username)
-    .then(async (payload) => {
-      if (payload) {
-        res.json(payload);
-        return;
-      }
-
-      const v2Payload = await buildPublicProfilePayloadFromV2Username(username, requestOrigin);
+  void buildPublicProfilePayloadFromV2Username(username, requestOrigin)
+    .then((v2Payload) => {
       if (!v2Payload) {
         res.status(404).json({ error: 'Profile not found' });
         return;
