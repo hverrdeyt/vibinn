@@ -679,6 +679,19 @@ function normalizeV2WouldRevisit(value: unknown): string | null {
   }
 }
 
+function parseVisitedDayString(raw: string) {
+  const normalized = raw.trim();
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) {
+    const year = Number(match[1]);
+    const monthIndex = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    // Store day-only submissions at noon UTC to avoid date rollback in negative timezones.
+    return new Date(Date.UTC(year, monthIndex, day, 12, 0, 0, 0));
+  }
+  return new Date(normalized);
+}
+
 async function loadV2MutualFollowUserIds(viewerUserId: string, candidateUserIds: string[]) {
   const uniqueCandidateUserIds = Array.from(new Set(candidateUserIds.filter((candidateId) => candidateId !== viewerUserId)));
   if (uniqueCandidateUserIds.length === 0) {
@@ -1214,6 +1227,14 @@ async function buildPublicProfilePayloadFromV2Username(username: string, request
   }
 
   const placeholderAvatar = `https://placehold.co/400x400/111111/D3FF48?text=${encodeURIComponent((traveler.displayName ?? traveler.username).slice(0, 1).toUpperCase())}`;
+  const [followersCount, followingCount] = await Promise.all([
+    prismaV2.follow.count({
+      where: { targetUserId: traveler.id },
+    }),
+    prismaV2.follow.count({
+      where: { sourceUserId: traveler.id },
+    }),
+  ]);
   const mappedMoments = traveler.moments.map((moment) => mapV2MomentForClient(moment, requestOrigin));
   const places = mappedMoments.map((moment) => moment.place);
   const uniqueCities = new Set<string>();
@@ -1262,8 +1283,11 @@ async function buildPublicProfilePayloadFromV2Username(username: string, request
       recentSavedPlaces: [],
       recentCollections: [],
       latestVisitedAtIso: traveler.moments[0]?.visitedAt.toISOString(),
+      visitedPlacesCount: places.length,
       savedPlacesCount: 0,
       collectionsCount: 0,
+      followersCount,
+      followingCount,
       matchScore: undefined,
     },
     bookmarks: [],
@@ -11657,7 +11681,7 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
         autocompleteSessionToken,
         placeLatitude: resolvedPlaceLatitude,
         placeLongitude: resolvedPlaceLongitude,
-        visitedAt: new Date(visitedDate),
+        visitedAt: parseVisitedDayString(visitedDate),
         caption,
         uploadedMedia,
         rating: typeof payload.rating === 'number' ? payload.rating : null,
@@ -11731,7 +11755,7 @@ app.patch('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest
       where: { id: existing.id },
       data: {
         visitedAt: typeof payload.visitedDate === 'string' && payload.visitedDate.trim().length > 0
-          ? new Date(payload.visitedDate)
+          ? parseVisitedDayString(payload.visitedDate)
           : undefined,
         caption: typeof payload.caption === 'string' ? payload.caption.trim() : undefined,
         rating: typeof payload.rating === 'number' ? payload.rating : undefined,

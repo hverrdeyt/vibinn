@@ -149,6 +149,18 @@ function mapMomentRatingLabel(value?: MomentRecord['ratingLabel'] | null) {
   return 'LIKED';
 }
 
+function parseVisitedDayString(raw: string) {
+  const normalized = raw.trim();
+  const match = normalized.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (match) {
+    const year = Number(match[1]);
+    const monthIndex = Number(match[2]) - 1;
+    const day = Number(match[3]);
+    return new Date(Date.UTC(year, monthIndex, day, 12, 0, 0, 0));
+  }
+  return new Date(normalized);
+}
+
 const deletedAccountWhere: Prisma.UserWhereInput = {
   OR: [
     { email: { endsWith: '@vibinn.invalid' } },
@@ -950,16 +962,30 @@ export async function getPublicProfileByUsername(username: string) {
   }
 
   const moments = user.feedPosts.map(mapFeedPostForClient);
-  const descriptor = await generateTravelerProfileDescriptor({
-    userId: user.id,
-    displayName: user.displayName,
-    moments,
-    bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
-  });
+  const [descriptor, followersCount, followingCount] = await Promise.all([
+    generateTravelerProfileDescriptor({
+      userId: user.id,
+      displayName: user.displayName,
+      moments,
+      bookmarkedPlaces: user.bookmarks.map((bookmark) => mapPlaceForClient(bookmark.place)),
+    }),
+    prisma.follow.count({
+      where: {
+        targetUserId: user.id,
+      },
+    }),
+    prisma.follow.count({
+      where: {
+        sourceUserId: user.id,
+      },
+    }),
+  ]);
 
   return {
     user: buildProfileUserWithMatch(user, moments, undefined, {
       descriptor,
+      followersCount,
+      followingCount,
       recentSavedPlaces: user.bookmarks.map((bookmark) => ({
         place: mapPlaceForClient(bookmark.place),
         savedAtLabel: formatRelativeActivityLabel(bookmark.createdAt),
@@ -2838,7 +2864,7 @@ export async function createMoment(userId: string | undefined, payload: Omit<Mom
     data: {
       userId: currentUser.id,
       placeId: payload.placeId,
-      visitedAt: new Date(payload.visitedDate),
+      visitedAt: parseVisitedDayString(payload.visitedDate),
       caption: payload.caption,
       rating: payload.rating,
       ratingLabel: mapMomentRatingLabel(payload.ratingLabel),
@@ -2892,7 +2918,7 @@ export async function updateMoment(userId: string | undefined, id: string, paylo
     where: { id: existing.id },
     data: {
       placeId: payload.placeId ?? existing.placeId,
-      visitedAt: payload.visitedDate ? new Date(payload.visitedDate) : existing.visitedAt,
+      visitedAt: payload.visitedDate ? parseVisitedDayString(payload.visitedDate) : existing.visitedAt,
       caption: payload.caption ?? existing.caption,
       rating: payload.rating ?? existing.rating,
       ratingLabel: payload.ratingLabel ? mapMomentRatingLabel(payload.ratingLabel) : existing.ratingLabel,

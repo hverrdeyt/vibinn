@@ -91,8 +91,11 @@ export interface User {
     places: Place[];
   }>;
   latestVisitedAtIso?: string;
+  visitedPlacesCount?: number;
   savedPlacesCount?: number;
   collectionsCount?: number;
+  followersCount?: number;
+  followingCount?: number;
   matchScore?: number;
 }
 
