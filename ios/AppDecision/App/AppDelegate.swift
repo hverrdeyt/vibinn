@@ -2907,7 +2907,6 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     override init() {
         super.init()
-        migrateLegacySessionStateIfNeeded()
         let storedLocation = UserDefaults.standard.string(forKey: locationKey) ?? "Boston"
         self.selectedLocation = nativeLocationOptions.first {
             $0.label.caseInsensitiveCompare(storedLocation) == .orderedSame
@@ -3274,13 +3273,6 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             return
         }
 
-        guard usesV2Session else {
-            nativeLogger.log("bootstrap clearing non-v2 session")
-            clearSession()
-            isBootstrapping = false
-            return
-        }
-
         if let cachedUser = cachedAuthUser {
             currentUser = cachedUser
             isBootstrapping = false
@@ -3292,46 +3284,77 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
 
         do {
-            let v2Session = try await api.getV2AuthSession(token: token)
-            syncCurrentUserFromV2Payload(v2Session.user)
-            if v2Session.user.onboardingCompleted == true {
-                markInviteOnboardingCompletedAfterAuth()
+            let session = try await api.getAuthSession(token: token)
+            currentUser = session.user
+            cachedAuthUser = session.user
+            if session.user.hasCompletedTastePreferences != true {
+                markOnboardingRequiredAfterAuth()
             }
             isBootstrapping = false
             Task { [weak self] in
                 await self?.runStartupMaintenance()
             }
-            nativeLogger.log("bootstrap v2 session ok user=\(self.currentUser?.username ?? "unknown", privacy: .public)")
+            nativeLogger.log("bootstrap session ok user=\(session.user.username, privacy: .public)")
         } catch {
-            nativeLogger.error("bootstrap v2 session failed: \(error.localizedDescription, privacy: .public)")
+            nativeLogger.error("bootstrap legacy session failed: \(error.localizedDescription, privacy: .public)")
             if shouldClearSession(for: error) {
-                clearSession()
+                do {
+                    let v2Session = try await api.getV2AuthSession(token: token)
+                    syncCurrentUserFromV2Payload(v2Session.user)
+                    if v2Session.user.onboardingCompleted == true {
+                        markInviteOnboardingCompletedAfterAuth()
+                    }
+                    isBootstrapping = false
+                    Task { [weak self] in
+                        await self?.runStartupMaintenance()
+                    }
+                    nativeLogger.log("bootstrap v2 session ok user=\(self.currentUser?.username ?? "unknown", privacy: .public)")
+                } catch {
+                    nativeLogger.error("bootstrap v2 session failed: \(error.localizedDescription, privacy: .public)")
+                    if shouldClearSession(for: error) {
+                        clearSession()
+                    }
+                    isBootstrapping = false
+                }
+            } else {
+                isBootstrapping = false
             }
-            isBootstrapping = false
         }
     }
 
     private func validateSessionAndRunStartupMaintenance(token: String) async {
-        guard usesV2Session else {
-            clearSession()
-            return
-        }
-
         do {
-            let v2Session = try await api.getV2AuthSession(token: token)
+            let session = try await api.getAuthSession(token: token)
             guard authToken == token else { return }
-            sessionFlavor = .v2
-            syncCurrentUserFromV2Payload(v2Session.user)
-            if v2Session.user.onboardingCompleted == true {
-                markInviteOnboardingCompletedAfterAuth()
+            sessionFlavor = .legacy
+            currentUser = session.user
+            cachedAuthUser = session.user
+            if session.user.hasCompletedTastePreferences != true {
+                markOnboardingRequiredAfterAuth()
             }
             await runStartupMaintenance()
-            nativeLogger.log("bootstrap v2 revalidated user=\(self.currentUser?.username ?? "unknown", privacy: .public)")
+            nativeLogger.log("bootstrap session revalidated user=\(session.user.username, privacy: .public)")
         } catch {
             guard authToken == token else { return }
-            nativeLogger.error("bootstrap v2 revalidate failed: \(error.localizedDescription, privacy: .public)")
+            nativeLogger.error("bootstrap legacy revalidate failed: \(error.localizedDescription, privacy: .public)")
             if shouldClearSession(for: error) {
-                clearSession()
+                do {
+                    let v2Session = try await api.getV2AuthSession(token: token)
+                    guard authToken == token else { return }
+                    sessionFlavor = .v2
+                    syncCurrentUserFromV2Payload(v2Session.user)
+                    if v2Session.user.onboardingCompleted == true {
+                        markInviteOnboardingCompletedAfterAuth()
+                    }
+                    await runStartupMaintenance()
+                    nativeLogger.log("bootstrap v2 revalidated user=\(self.currentUser?.username ?? "unknown", privacy: .public)")
+                } catch {
+                    guard authToken == token else { return }
+                    nativeLogger.error("bootstrap v2 revalidate failed: \(error.localizedDescription, privacy: .public)")
+                    if shouldClearSession(for: error) {
+                        clearSession()
+                    }
+                }
             }
         }
     }
@@ -5678,7 +5701,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 let rawValue = UserDefaults.standard.string(forKey: sessionFlavorKey),
                 let flavor = NativeSessionFlavor(rawValue: rawValue)
             else {
-                return .v2
+                return .legacy
             }
             return flavor
         }
@@ -5700,26 +5723,13 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         authToken = nil
         currentUser = nil
         cachedAuthUser = nil
-        sessionFlavor = .v2
+        sessionFlavor = .legacy
         lastSyncedPushToken = nil
         blockedUsersCache = []
         notificationUnreadCount = 0
         clearPersistedDecisionSession()
         decisionSession = nil
         placeDetailCache.removeAll()
-    }
-
-    private func migrateLegacySessionStateIfNeeded() {
-        let storedFlavor = UserDefaults.standard.string(forKey: sessionFlavorKey)
-            .flatMap(NativeSessionFlavor.init(rawValue:))
-
-        if storedFlavor != .v2 {
-            UserDefaults.standard.removeObject(forKey: authTokenKey)
-            UserDefaults.standard.removeObject(forKey: cachedUserKey)
-            UserDefaults.standard.removeObject(forKey: syncedPushTokenKey)
-            UserDefaults.standard.removeObject(forKey: decisionSessionCacheKey)
-            UserDefaults.standard.set(NativeSessionFlavor.v2.rawValue, forKey: sessionFlavorKey)
-        }
     }
 
     @objc
@@ -11469,8 +11479,6 @@ private struct NativeNotificationMomentDestination: View {
                 errorMessage = "Could not open this post right now."
             }
         }
-        .navigationBarBackButtonHidden(true)
-        .navigationBarHidden(true)
     }
 }
 
@@ -14219,12 +14227,6 @@ private struct NativeAuthScreen: View {
         return "\(minutes):" + String(format: "%02d", seconds)
     }
 
-    private func otpResendCountdownSeconds(from expiresAt: String) -> Int {
-        let formatter = ISO8601DateFormatter()
-        guard let expiryDate = formatter.date(from: expiresAt) else { return 30 }
-        return max(Int(ceil(expiryDate.timeIntervalSinceNow)), 0)
-    }
-
     private func focusField(for step: Step) {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 150_000_000)
@@ -14321,7 +14323,7 @@ private struct NativeAuthScreen: View {
             otpRequestId = response.otpRequestId
             otpDestinationNumber = response.phoneNumber
             otpCode = ""
-            otpResendSecondsRemaining = otpResendCountdownSeconds(from: response.expiresAt)
+            otpResendSecondsRemaining = 30
             otpCountdownSeed = UUID()
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                 step = .otpEntry
