@@ -1,29 +1,39 @@
 import type { ReactNode } from 'react';
-import { ExternalLink } from 'lucide-react';
 
 function LegalShell({
   title,
-  updatedAt,
   children,
+  titleClassName = '',
+  hideUpdatedAt = false,
+  updatedAt,
 }: {
   title: string;
-  updatedAt: string;
   children: ReactNode;
+  titleClassName?: string;
+  hideUpdatedAt?: boolean;
+  updatedAt?: string;
 }) {
   return (
-    <div className="min-h-[100svh] bg-zinc-950 text-white">
+    <div className="min-h-[100svh] bg-zinc-950 font-sans text-white">
       <div className="mx-auto w-full max-w-3xl px-6 py-10">
         <div className="mb-8 flex items-start justify-between gap-6">
           <div>
             <a
               href="/"
-              className="inline-flex items-center gap-2 rounded-full bg-white/10 px-4 py-2 text-xs font-black uppercase tracking-[0.18em] text-white/80 hover:bg-white/14"
+              className="inline-flex items-center rounded-full bg-white/10 px-4 py-2 text-white/80 hover:bg-white/14"
+              aria-label="Vibinn"
             >
-              Vibinn
-              <ExternalLink size={14} className="opacity-70" />
+              <img
+                src="/brand/vibinn-logo-icon.png"
+                alt="Vibinn"
+                className="h-7 w-auto object-contain"
+                draggable={false}
+              />
             </a>
-            <h1 className="mt-6 text-3xl font-black tracking-tight">{title}</h1>
-            <p className="mt-2 text-sm text-white/55">Last updated: {updatedAt}</p>
+            <h1 className={`mt-6 text-3xl font-black tracking-tight ${titleClassName}`}>{title}</h1>
+            {!hideUpdatedAt && updatedAt ? (
+              <p className="mt-2 text-sm text-white/55">Last updated: {updatedAt}</p>
+            ) : null}
           </div>
         </div>
 
@@ -277,16 +287,33 @@ export function PrivacyPolicyScreen() {
 
 export function FounderLetterScreen() {
   return (
-    <LegalShell title="A Letter from Founder" updatedAt="June 15, 2026">
+    <LegalShell
+      title="A Letter from Founder"
+      titleClassName="landing-bbh-bartle text-[#D3FF48]"
+      hideUpdatedAt
+    >
+      <P>Boston, June 15, 2026</P>
+
       <P>
         Vibinn started from a simple feeling: meals pass too quickly, even when they become part of
         our life story.
       </P>
 
       <P>
-        We remember trips, friendships, neighborhoods, and turning points through food. A late-night
-        noodle stop. A coffee run before something important. A place a friend swore was worth it.
-        Vibinn is my attempt to give those memories a home.
+        I grew up in Indonesia, where food is never just food — it&apos;s how people gather,
+        celebrate, and remember. When I moved to Boston for school, that feeling followed me.
+        Suddenly I was eating in a new city, a new country, building a new life — and food became
+        the through line. A late-night noodle stop. A coffee run before something important. A place
+        a friend swore was worth it.
+      </P>
+
+      <P>
+        But I kept forgetting. The names, the streets, the details. And I realized most of us do.
+      </P>
+
+      <P>
+        Vibinn is my attempt to give those memories a home — wherever you are, whatever you&apos;re
+        eating, whoever you&apos;re with.
       </P>
 
       <P>
@@ -301,8 +328,26 @@ export function FounderLetterScreen() {
       </P>
 
       <P>
-        Fauzan
+        If you&apos;re on Vibinn, find me at{' '}
+        <a
+          className="underline decoration-white/30 hover:decoration-white/70"
+          href="https://vibinn.club/fauzan"
+          target="_blank"
+          rel="noreferrer"
+        >
+          @fauzan
+        </a>{' '}
+        — I&apos;d love to see your food journey too.
       </P>
+
+      <div className="pt-2">
+        <p
+          className="text-3xl text-white/92"
+          style={{ fontFamily: '"Snell Roundhand", "Segoe Script", "Bradley Hand", "Apple Chancery", cursive' }}
+        >
+          Fauzan Muhammad
+        </p>
+      </div>
     </LegalShell>
   );
 }
