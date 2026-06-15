@@ -1,4 +1,3 @@
-import { Share2 } from 'lucide-react';
 import { type ReactNode, useMemo } from 'react';
 import { type Place, type PlaceCollection, type User } from '../types';
 
@@ -19,6 +18,20 @@ function getMomentPreviewImage(place: Place) {
 
 function formatStat(value: number) {
   return new Intl.NumberFormat('en-US', { notation: value >= 1000 ? 'compact' : 'standard' }).format(value);
+}
+
+function formatMemoryDate(value?: string | null) {
+  if (!value?.trim()) return 'Recently';
+  const normalized = value.trim();
+  const parsed = normalized.match(/^\d{4}-\d{2}-\d{2}$/)
+    ? new Date(`${normalized}T12:00:00Z`)
+    : new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return 'Recently';
+  return parsed.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
 }
 
 function buildPreviewCells(places: Place[], startIndex: number) {
@@ -57,21 +70,6 @@ export default function PublicProfileScreen({
   const followersCount = user.followersCount ?? 0;
   const followingCount = user.followingCount ?? 0;
 
-  const handleShareProfile = async () => {
-    if (typeof window === 'undefined') return;
-    const shareUrl = window.location.href;
-    const message = `Check @${user.username}'s food diary profile on Vibinn: ${shareUrl}`;
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: `@${user.username} on Vibinn`, text: message, url: shareUrl });
-        return;
-      } catch {
-        // fall through to clipboard
-      }
-    }
-    await navigator.clipboard?.writeText(message).catch(() => undefined);
-  };
-
   return (
     <div className="min-h-screen bg-black text-white">
       <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col px-4 pb-14 pt-4 sm:px-6 sm:pt-6">
@@ -89,14 +87,6 @@ export default function PublicProfileScreen({
           </div>
 
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleShareProfile}
-              className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-bold text-white transition hover:bg-white/[0.08]"
-            >
-              <Share2 size={16} />
-              <span>Share</span>
-            </button>
             <button
               type="button"
               onClick={onFollow}
@@ -154,12 +144,9 @@ export default function PublicProfileScreen({
         </section>
 
         <section className="mt-4 rounded-[2rem] border border-white/10 bg-[#101013]/94 p-4 shadow-[0_24px_80px_rgba(0,0,0,0.24)]">
-          <div className="mb-3 flex items-center justify-between">
-            <div>
-              <div className="text-[11px] font-black uppercase tracking-[0.2em] text-white/36">Public memories</div>
-              <h2 className="mt-1 text-[1.15rem] font-black text-white">A quick look at their food diary</h2>
-            </div>
-          </div>
+          <h2 className="landing-bbh-bartle mb-4 text-[1.9rem] leading-none text-accent">
+            Food Memories
+          </h2>
 
           {publicMemories.length === 0 ? (
             <div className="rounded-[1.5rem] border border-dashed border-white/10 bg-white/[0.03] px-5 py-8 text-center">
@@ -187,7 +174,9 @@ export default function PublicProfileScreen({
                           referrerPolicy="no-referrer"
                         />
                         <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/85 to-transparent p-3">
-                          <div className="line-clamp-1 text-sm font-black text-white">{place.name}</div>
+                          <div className="text-[11px] font-semibold tracking-[0.02em] text-white/74">
+                            {formatMemoryDate(place.visitedDate)}
+                          </div>
                         </div>
                       </>
                     ) : (
