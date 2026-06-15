@@ -1,6 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { motion } from 'motion/react';
-import { ArrowRight, ExternalLink } from 'lucide-react';
+import { ArrowRight, FileText } from 'lucide-react';
 import { trackEvent } from '../lib/analytics';
 
 type LandingPageProps = {
@@ -55,17 +55,17 @@ const referenceFrame = { width: 402, height: 871 };
 
 const socialLinks: SocialLink[] = [
   {
-    href: 'https://www.tiktok.com/@vibinn',
+    href: 'https://www.tiktok.com/@vibinnapp',
     label: 'TikTok',
     icon: <TikTokIcon />,
   },
   {
-    href: 'https://www.instagram.com/vibinn',
+    href: 'https://www.instagram.com/vibinnapp',
     label: 'Instagram',
     icon: <InstagramIcon />,
   },
   {
-    href: 'https://www.threads.net/@vibinn',
+    href: 'https://www.threads.com/@vibinnapp',
     label: 'Threads',
     icon: <ThreadsIcon />,
   },
@@ -129,7 +129,7 @@ export default function LandingPage({
             </span>
             <h1 className="mx-auto mt-5 max-w-[11ch] text-balance text-[2.7rem] font-black leading-[0.92] tracking-[-0.08em] text-black sm:text-[4.3rem]">
               Every meal.{' '}
-              <span className="landing-bbh-bartle inline-block text-[0.9em]">
+              <span className="landing-bbh-bartle inline-block text-[0.8em]">
                 Remembered
               </span>
               .
@@ -160,7 +160,7 @@ export default function LandingPage({
                   onOpenFounderLetter();
                 }}
                 variant="secondary"
-                icon={<ExternalLink size={15} />}
+                icon={<FileText size={15} />}
                 className="bg-transparent"
               />
             </div>
