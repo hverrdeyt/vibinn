@@ -14842,6 +14842,44 @@ app.get('*', (req, res, next) => {
     .catch(() => next());
 });
 
+app.use((req, res, next) => {
+  const requestPath = req.path || '';
+  const looksLikeStaticAsset = requestPath.startsWith('/assets/')
+    || requestPath.startsWith('/fonts/')
+    || requestPath.startsWith('/brand/')
+    || requestPath.startsWith('/homepage-stickers/')
+    || requestPath.startsWith('/uploads/')
+    || /\.[a-z0-9]+$/i.test(requestPath);
+
+  if (!looksLikeStaticAsset) {
+    next();
+    return;
+  }
+
+  const extension = path.extname(requestPath).toLowerCase();
+  const contentTypeByExtension: Record<string, string> = {
+    '.css': 'text/css; charset=utf-8',
+    '.js': 'application/javascript; charset=utf-8',
+    '.mjs': 'application/javascript; charset=utf-8',
+    '.json': 'application/json; charset=utf-8',
+    '.svg': 'image/svg+xml',
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.webp': 'image/webp',
+    '.gif': 'image/gif',
+    '.woff': 'font/woff',
+    '.woff2': 'font/woff2',
+    '.ttf': 'font/ttf',
+  };
+
+  res.status(404);
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Type', contentTypeByExtension[extension] ?? 'text/plain; charset=utf-8');
+  res.send('');
+});
+
 app.listen(port, () => {
   console.log(`API server listening on http://localhost:${port}`);
 });
