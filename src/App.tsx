@@ -530,6 +530,32 @@ function buildCanonicalProfilePath(username: string) {
   return `${LEGACY_PUBLIC_PROFILE_BASE_PATH}/${encodeURIComponent(username)}`;
 }
 
+function upsertDocumentMeta(
+  attr: 'name' | 'property',
+  key: string,
+  content: string,
+) {
+  if (typeof document === 'undefined') return;
+  let node = document.head.querySelector(`meta[${attr}="${key}"]`) as HTMLMetaElement | null;
+  if (!node) {
+    node = document.createElement('meta');
+    node.setAttribute(attr, key);
+    document.head.appendChild(node);
+  }
+  node.setAttribute('content', content);
+}
+
+function upsertCanonicalLink(href: string) {
+  if (typeof document === 'undefined') return;
+  let node = document.head.querySelector('link[rel="canonical"]') as HTMLLinkElement | null;
+  if (!node) {
+    node = document.createElement('link');
+    node.setAttribute('rel', 'canonical');
+    document.head.appendChild(node);
+  }
+  node.setAttribute('href', href);
+}
+
 function getNativeDefaultScreen(): Screen {
   return hasStoredOnboardingCompletion() ? 'discover-places' : 'onboarding';
 }
@@ -4229,6 +4255,51 @@ export default function App() {
       sortTimestamp: collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000,
     })),
   ].sort((a, b) => b.sortTimestamp - a.sortTimestamp) : [];
+
+  useEffect(() => {
+    const defaultTitle = 'Vibinn Club';
+    const defaultDescription = 'Turn your meals into a food diary.';
+
+    if (
+      currentScreen === 'public-profile'
+      && resolvedPublicProfileUser
+      && typeof window !== 'undefined'
+    ) {
+      const displayName = (resolvedPublicProfileUser.displayName?.trim() || resolvedPublicProfileUser.username).trim();
+      const username = resolvedPublicProfileUser.username.trim();
+      const title = `${displayName} on Vibinn`;
+      const description = `Check out ${username}'s food diary!`;
+      const canonicalUrl = `${window.location.origin}${buildCanonicalProfilePath(username)}`;
+      const ogImageUrl = `${api.getBaseUrl()}/api/profiles/${encodeURIComponent(username)}/public/og-image`;
+
+      document.title = title;
+      upsertCanonicalLink(canonicalUrl);
+      upsertDocumentMeta('name', 'description', description);
+      upsertDocumentMeta('property', 'og:title', title);
+      upsertDocumentMeta('property', 'og:description', description);
+      upsertDocumentMeta('property', 'og:type', 'profile');
+      upsertDocumentMeta('property', 'og:url', canonicalUrl);
+      upsertDocumentMeta('property', 'og:image', ogImageUrl);
+      upsertDocumentMeta('name', 'twitter:card', 'summary_large_image');
+      upsertDocumentMeta('name', 'twitter:title', title);
+      upsertDocumentMeta('name', 'twitter:description', description);
+      upsertDocumentMeta('name', 'twitter:image', ogImageUrl);
+      return;
+    }
+
+    document.title = defaultTitle;
+    if (typeof window !== 'undefined') {
+      upsertCanonicalLink(window.location.origin + window.location.pathname);
+      upsertDocumentMeta('property', 'og:url', window.location.origin + window.location.pathname);
+    }
+    upsertDocumentMeta('name', 'description', defaultDescription);
+    upsertDocumentMeta('property', 'og:title', defaultTitle);
+    upsertDocumentMeta('property', 'og:description', defaultDescription);
+    upsertDocumentMeta('property', 'og:type', 'website');
+    upsertDocumentMeta('name', 'twitter:card', 'summary_large_image');
+    upsertDocumentMeta('name', 'twitter:title', defaultTitle);
+    upsertDocumentMeta('name', 'twitter:description', defaultDescription);
+  }, [currentScreen, resolvedPublicProfileUser]);
 
   const renderScreen = () => {
 

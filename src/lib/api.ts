@@ -93,6 +93,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
+  getBaseUrl() {
+    return API_BASE_URL || (typeof window !== 'undefined' ? window.location.origin : '');
+  },
   getStoredAuthToken() {
     return getAuthToken();
   },
