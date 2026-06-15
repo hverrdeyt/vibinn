@@ -95,7 +95,30 @@ export default function LandingPage({
         <div className="pointer-events-none absolute inset-0">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.36),_transparent_34%),radial-gradient(circle_at_bottom_left,_rgba(0,0,0,0.08),_transparent_38%)]" />
           {homepageStickers.map((sticker) => (
-            <HomepageSticker key={sticker.src} sticker={sticker} />
+            <motion.img
+              key={sticker.src}
+              src={sticker.src}
+              alt={sticker.alt}
+              draggable={false}
+              className="landing-sticker absolute select-none object-contain"
+              style={{
+                left: `${(sticker.x / referenceFrame.width) * 100}%`,
+                top: `${(sticker.y / referenceFrame.height) * 100}%`,
+                width: `${(sticker.width / referenceFrame.width) * 100}%`,
+                maxWidth: `${sticker.width}px`,
+                transform: `rotate(${sticker.rotation}deg)`,
+                filter: 'drop-shadow(0 8px 18px rgba(0,0,0,0.18))',
+              }}
+              animate={{
+                y: [0, -(sticker.floatDistance ?? 12), 0],
+                rotate: [sticker.rotation, sticker.rotation + 1.4, sticker.rotation],
+              }}
+              transition={{
+                duration: sticker.floatDuration ?? 6.8,
+                ease: 'easeInOut',
+                repeat: Infinity,
+              }}
+            />
           ))}
         </div>
 
@@ -192,34 +215,6 @@ function LandingFooter() {
         </a>
       ))}
     </div>
-  );
-}
-
-function HomepageSticker({ sticker }: { sticker: StickerConfig }) {
-  return (
-    <motion.img
-      src={sticker.src}
-      alt={sticker.alt}
-      draggable={false}
-      className="landing-sticker absolute select-none object-contain"
-      style={{
-        left: `${(sticker.x / referenceFrame.width) * 100}%`,
-        top: `${(sticker.y / referenceFrame.height) * 100}%`,
-        width: `${(sticker.width / referenceFrame.width) * 100}%`,
-        maxWidth: `${sticker.width}px`,
-        transform: `rotate(${sticker.rotation}deg)`,
-        filter: 'drop-shadow(0 8px 18px rgba(0,0,0,0.18))',
-      }}
-      animate={{
-        y: [0, -(sticker.floatDistance ?? 12), 0],
-        rotate: [sticker.rotation, sticker.rotation + 1.4, sticker.rotation],
-      }}
-      transition={{
-        duration: sticker.floatDuration ?? 6.8,
-        ease: 'easeInOut',
-        repeat: Infinity,
-      }}
-    />
   );
 }
 

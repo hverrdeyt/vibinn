@@ -14781,6 +14781,19 @@ app.get('/api/lookups/travelers', (_, res) => {
 
 app.use(express.static(DIST_DIR, {
   index: false,
+  setHeaders: (res, servedPath) => {
+    if (servedPath.includes(`${path.sep}assets${path.sep}`)) {
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      return;
+    }
+
+    if (servedPath.endsWith('.html')) {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      return;
+    }
+
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+  },
 }));
 
 app.get(['/u/:username', '/:username'], (req, res, next) => {
@@ -14800,6 +14813,7 @@ app.get(['/u/:username', '/:username'], (req, res, next) => {
       }
 
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.send(html);
     })
     .catch((error) => handleError(res, error));
@@ -14809,6 +14823,7 @@ app.get('*', (_req, res, next) => {
   void loadWebIndexHtml()
     .then((html) => {
       res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       res.send(html);
     })
     .catch(() => next());
