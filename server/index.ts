@@ -7,6 +7,7 @@ import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3
 import { cert, getApps, initializeApp as initializeFirebaseAdminApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 import { Prisma, NotificationType, TargetType } from '@prisma/client';
+import sharp from 'sharp';
 import { MOCK_PLACES, SIMILAR_TRAVELERS } from '../src/mockData';
 import { prisma } from './prisma';
 import { prismaV2 } from './prismaV2';
@@ -1314,16 +1315,61 @@ async function buildPublicProfilePayloadFromV2Username(username: string, request
   };
 }
 
-function escapeSvgText(value: string) {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+async function fetchPreviewImageBuffer(url: string) {
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'VibinnPreviewBot/1.0',
+      },
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.startsWith('image/')) {
+      return null;
+    }
+    const bytes = await response.arrayBuffer();
+    return Buffer.from(bytes);
+  } catch {
+    return null;
+  }
 }
 
-function buildPublicProfileOgSvg(input: {
+async function buildPreviewTileBuffer(url: string | null, width: number, height: number) {
+  if (!url) {
+    return sharp({
+      create: {
+        width,
+        height,
+        channels: 3,
+        background: '#161616',
+      },
+    }).png().toBuffer();
+  }
+
+  const sourceBuffer = await fetchPreviewImageBuffer(url);
+  if (!sourceBuffer) {
+    return sharp({
+      create: {
+        width,
+        height,
+        channels: 3,
+        background: '#161616',
+      },
+    }).png().toBuffer();
+  }
+
+  return sharp(sourceBuffer)
+    .resize(width, height, {
+      fit: 'cover',
+      position: 'centre',
+    })
+    .png()
+    .toBuffer();
+}
+
+async function buildPublicProfileOgPng(input: {
   avatarUrl?: string | null;
   imageUrls: string[];
 }) {
@@ -1339,24 +1385,27 @@ function buildPublicProfileOgSvg(input: {
     { x: 0, y: 315, width: 600, height: 315, rx: 0 },
     { x: 600, y: 315, width: 600, height: 315, rx: 0 },
   ] as const;
-  const collageMarkup = normalizedImages.map((imageUrl, index) => {
+  const composites = await Promise.all(normalizedImages.map(async (imageUrl, index) => {
     const slot = slots[index];
-    if (!slot) return '';
-    const isAvatarTile = Boolean(input.avatarUrl?.trim()) && index === 0;
-    return `
-      <rect x="${slot.x}" y="${slot.y}" width="${slot.width}" height="${slot.height}" rx="${slot.rx}" fill="#161616" />
-      <clipPath id="photo-clip-${index}">
-        <rect x="${slot.x}" y="${slot.y}" width="${slot.width}" height="${slot.height}" rx="${slot.rx}" />
-      </clipPath>
-      <image href="${escapeSvgText(imageUrl)}" x="${slot.x}" y="${slot.y}" width="${slot.width}" height="${slot.height}" preserveAspectRatio="${isAvatarTile ? 'xMidYMid slice' : 'xMidYMid slice'}" clip-path="url(#photo-clip-${index})" />
-    `;
-  }).join('');
+    if (!slot) return null;
+    return {
+      input: await buildPreviewTileBuffer(imageUrl, slot.width, slot.height),
+      left: slot.x,
+      top: slot.y,
+    };
+  }));
 
-  return `<?xml version="1.0" encoding="UTF-8"?>
-<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="1200" height="630" fill="#050505"/>
-  ${collageMarkup}
-</svg>`;
+  return sharp({
+    create: {
+      width: 1200,
+      height: 630,
+      channels: 3,
+      background: '#050505',
+    },
+  })
+    .composite(composites.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)))
+    .png()
+    .toBuffer();
 }
 
 function escapeHtmlAttribute(value: string) {
@@ -1395,6 +1444,9 @@ function injectPublicProfileMetaHtml(input: {
   const injectedMeta = [
     `<meta property="og:url" content="${canonicalUrl}" />`,
     `<meta property="og:image" content="${imageUrl}" />`,
+    '<meta property="og:image:type" content="image/png" />',
+    '<meta property="og:image:width" content="1200" />',
+    '<meta property="og:image:height" content="630" />',
     `<meta name="twitter:image" content="${imageUrl}" />`,
     `<link rel="canonical" href="${canonicalUrl}" />`,
   ].join('');
@@ -11414,14 +11466,19 @@ app.get('/api/profiles/:username/public/og-image', (req, res) => {
           return urls.filter((value) => typeof value === 'string' && value.trim().length > 0);
         })
         .slice(0, 3);
-      const svg = buildPublicProfileOgSvg({
+      return buildPublicProfileOgPng({
         avatarUrl: payload.user.avatar ?? null,
         imageUrls,
       });
-
-      res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+    })
+    .then((pngBuffer) => {
+      if (!pngBuffer) {
+        res.status(500).json({ error: 'Could not build preview image' });
+        return;
+      }
+      res.setHeader('Content-Type', 'image/png');
       res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
-      res.send(svg);
+      res.send(pngBuffer);
     })
     .catch((error) => handleError(res, error));
 });
