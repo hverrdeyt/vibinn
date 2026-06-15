@@ -30,6 +30,12 @@ type CTAButtonProps = {
   className?: string;
 };
 
+type SocialLink = {
+  href: string;
+  label: string;
+  icon: ReactNode;
+};
+
 const LANDING_STICKER_VERSION = '20260615b';
 
 function withStickerVersion(path: string) {
@@ -37,15 +43,33 @@ function withStickerVersion(path: string) {
 }
 
 const homepageStickers: StickerConfig[] = [
-  { src: withStickerVersion('/homepage-stickers/auth-sticker-6.png'), alt: 'Food sticker 6', x: 13, y: 2, width: 151, height: 100, rotation: -9, floatDuration: 6.6, floatDistance: 12 },
-  { src: withStickerVersion('/homepage-stickers/auth-sticker-2.png'), alt: 'Food sticker 2', x: 213, y: 0, width: 137, height: 92, rotation: 8, floatDuration: 7.2, floatDistance: 12 },
-  { src: withStickerVersion('/homepage-stickers/auth-sticker-4.png'), alt: 'Food sticker 4', x: -10, y: 126, width: 178, height: 118, rotation: -7, floatDuration: 6.8, floatDistance: 14 },
-  { src: withStickerVersion('/homepage-stickers/auth-sticker-5.png'), alt: 'Food sticker 5', x: 4, y: 310, width: 148, height: 104, rotation: -7, floatDuration: 6.4, floatDistance: 11 },
-  { src: withStickerVersion('/homepage-stickers/auth-sticker-3.png'), alt: 'Food sticker 3', x: 288, y: 104, width: 118, height: 82, rotation: 7, floatDuration: 7.1, floatDistance: 10 },
-  { src: withStickerVersion('/homepage-stickers/auth-sticker-7.png'), alt: 'Food sticker 7', x: 244, y: 286, width: 160, height: 108, rotation: 6, floatDuration: 6.9, floatDistance: 13 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-6.png'), alt: 'Food sticker 6', x: 12, y: 32, width: 104, height: 72, rotation: -10, floatDuration: 6.6, floatDistance: 10 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-2.png'), alt: 'Food sticker 2', x: 294, y: 18, width: 92, height: 68, rotation: 11, floatDuration: 7.2, floatDistance: 11 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-4.png'), alt: 'Food sticker 4', x: -8, y: 224, width: 132, height: 92, rotation: -8, floatDuration: 6.8, floatDistance: 12 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-5.png'), alt: 'Food sticker 5', x: 286, y: 256, width: 124, height: 96, rotation: 6, floatDuration: 6.4, floatDistance: 10 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-3.png'), alt: 'Food sticker 3', x: 28, y: 612, width: 94, height: 72, rotation: -7, floatDuration: 7.1, floatDistance: 9 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-7.png'), alt: 'Food sticker 7', x: 284, y: 638, width: 96, height: 86, rotation: 8, floatDuration: 6.9, floatDistance: 11 },
 ];
 
 const referenceFrame = { width: 402, height: 871 };
+
+const socialLinks: SocialLink[] = [
+  {
+    href: 'https://www.tiktok.com/@vibinn',
+    label: 'TikTok',
+    icon: <TikTokIcon />,
+  },
+  {
+    href: 'https://www.instagram.com/vibinn',
+    label: 'Instagram',
+    icon: <InstagramIcon />,
+  },
+  {
+    href: 'https://www.threads.net/@vibinn',
+    label: 'Threads',
+    icon: <ThreadsIcon />,
+  },
+];
 
 export default function LandingPage({
   onHeaderTryNow,
@@ -75,14 +99,14 @@ export default function LandingPage({
           ))}
         </div>
 
-        <div className="relative z-10 mx-auto flex min-h-[calc(100svh-9rem)] w-full max-w-6xl items-center justify-center">
+        <div className="relative z-10 mx-auto flex min-h-[calc(100svh-9rem)] w-full max-w-6xl flex-col items-center justify-center">
           <div className="max-w-3xl text-center">
             <span className="inline-flex rotate-[-4deg] rounded-full border-2 border-black/85 bg-white px-4 py-2 text-[11px] font-black uppercase tracking-[0.16em] text-black shadow-[4px_4px_0_#000]">
               your food diary
             </span>
-            <h1 className="mx-auto mt-5 max-w-[11ch] text-balance text-[2.7rem] font-black leading-[0.9] tracking-[-0.08em] text-black sm:text-[4.6rem]">
+            <h1 className="mx-auto mt-5 max-w-[11ch] text-balance text-[2.7rem] font-black leading-[0.92] tracking-[-0.08em] text-black sm:text-[4.3rem]">
               Every meal.{' '}
-              <span className="landing-bbh-bartle inline-block rotate-[5deg]">
+              <span className="landing-bbh-bartle inline-block text-[0.9em]">
                 Remembered
               </span>
               .
@@ -118,6 +142,8 @@ export default function LandingPage({
               />
             </div>
           </div>
+
+          <LandingFooter />
         </div>
       </section>
     </div>
@@ -146,6 +172,25 @@ function LandingHeader({ onCta }: { onCta: () => void }) {
           icon={<span className="text-base leading-none"></span>}
         />
       </div>
+    </div>
+  );
+}
+
+function LandingFooter() {
+  return (
+    <div className="pointer-events-auto mt-14 flex items-center gap-3">
+      {socialLinks.map((link) => (
+        <a
+          key={link.label}
+          href={link.href}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={link.label}
+          className="inline-flex h-11 w-11 items-center justify-center rounded-full border-2 border-black bg-white/75 text-black shadow-[3px_3px_0_#000] transition-transform duration-200 hover:-translate-y-0.5"
+        >
+          {link.icon}
+        </a>
+      ))}
     </div>
   );
 }
@@ -192,5 +237,31 @@ function CTAButton({ label, onClick, variant = 'primary', icon, className = '' }
       {icon ?? <ArrowRight size={16} />}
       <span>{label}</span>
     </button>
+  );
+}
+
+function TikTokIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] fill-current" aria-hidden="true">
+      <path d="M14.6 3c.3 2 1.5 3.7 3.4 4.5.9.4 1.8.6 2.7.6v3.1a8.1 8.1 0 0 1-4-1V15a6 6 0 1 1-6-6c.4 0 .8 0 1.2.1v3.2a3 3 0 1 0 1.7 2.7V3h3Z" />
+    </svg>
+  );
+}
+
+function InstagramIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] fill-none stroke-current" strokeWidth="2" aria-hidden="true">
+      <rect x="3.5" y="3.5" width="17" height="17" rx="5" />
+      <circle cx="12" cy="12" r="4.25" />
+      <circle cx="17.2" cy="6.8" r="1" className="fill-current stroke-none" />
+    </svg>
+  );
+}
+
+function ThreadsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" className="h-[18px] w-[18px] fill-current" aria-hidden="true">
+      <path d="M15.7 11.2c-.1-.1-.2-.2-.2-.3-.7-1.1-1.9-1.7-3.6-1.8-2.1-.1-3.8 1-4.4 2.8l2.2.8c.3-.9 1.1-1.4 2.2-1.4.8 0 1.4.2 1.8.6-.9.1-1.8.3-2.6.5-2.3.7-3.5 2-3.5 3.9 0 2.2 1.8 3.8 4.4 3.8 2.3 0 4-.9 4.9-2.6.7-1.2.8-2.7.4-4.1.7.4 1.2 1 1.4 1.7.4 1.3.2 2.7-.7 3.9-1 1.3-2.7 2-4.9 2-3.6 0-6.1-2.4-6.1-6 0-3.8 2.6-6.3 6.4-6.3 3 0 5.1 1.4 5.9 3.7.3.9.4 1.8.3 2.8h-2.4c0-.5 0-1-.1-1.2-.1-.6-.4-1-.8-1.4Zm-1.5 3c-.6-.1-1.4-.1-2.1.1-1.4.3-2.2.9-2.2 1.9 0 .9.8 1.5 2 1.5 1.8 0 2.7-1.1 2.5-3.5Z" />
+    </svg>
   );
 }
