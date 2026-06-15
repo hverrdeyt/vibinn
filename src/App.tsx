@@ -61,6 +61,7 @@ const PrivacySettingsScreen = lazy(() => import('./screens/SettingsScreens').the
 const SupportScreen = lazy(() => import('./screens/SettingsScreens').then((module) => ({ default: module.SupportScreen })));
 const TermsOfServiceScreen = lazy(() => import('./screens/LegalPages').then((module) => ({ default: module.TermsOfServiceScreen })));
 const PrivacyPolicyScreen = lazy(() => import('./screens/LegalPages').then((module) => ({ default: module.PrivacyPolicyScreen })));
+const FounderLetterScreen = lazy(() => import('./screens/LegalPages').then((module) => ({ default: module.FounderLetterScreen })));
 const PublicProfileScreen = lazy(() => import('./screens/PublicProfileScreen'));
 const TravelerProfileScreen = lazy(() => import('./screens/TravelerProfileScreen'));
 const ProfileScreen = lazy(() => import('./screens/ProfileScreen'));
@@ -202,6 +203,7 @@ const RESERVED_TOP_LEVEL_PATHS = new Set([
   'app',
   'api',
   'lists',
+  'founder-letter',
   'terms',
   'privacy',
   'assets',
@@ -211,6 +213,7 @@ const RESERVED_TOP_LEVEL_PATHS = new Set([
 ]);
 const WEB_PUBLIC_ALLOWED_SCREENS = new Set<Screen>([
   'landing',
+  'founder-letter',
   'terms',
   'privacy',
   'public-profile',
@@ -572,6 +575,8 @@ function screenToAppPath(screen: Screen) {
       return APP_BASE_PATH;
     case 'terms':
       return '/terms';
+    case 'founder-letter':
+      return '/founder-letter';
     case 'privacy':
       return '/privacy';
     case 'post-preferences-intro':
@@ -614,6 +619,10 @@ function parseAppRoute(pathname: string): AppRouteState {
 
   if (normalizedPath === '/terms') {
     return { screen: 'terms' };
+  }
+
+  if (normalizedPath === '/founder-letter') {
+    return { screen: 'founder-letter' };
   }
 
   if (normalizedPath === '/privacy') {
@@ -4693,7 +4702,19 @@ export default function App() {
                 });
                 openApp();
               }}
+              onOpenFounderLetter={() => {
+                if (typeof window !== 'undefined') {
+                  window.history.pushState({}, '', '/founder-letter');
+                }
+                setCurrentScreen('founder-letter');
+              }}
             />
+          </Suspense>
+        );
+      case 'founder-letter':
+        return (
+          <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
+            <FounderLetterScreen />
           </Suspense>
         );
       case 'terms':
@@ -5410,6 +5431,12 @@ export default function App() {
             <TermsOfServiceScreen />
           </Suspense>
         );
+      case 'founder-letter':
+        return (
+          <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
+            <FounderLetterScreen />
+          </Suspense>
+        );
       case 'privacy':
         return (
           <Suspense fallback={<div className="h-[100svh] bg-zinc-950" />}>
@@ -5504,6 +5531,12 @@ export default function App() {
                   placement: 'landing_floating',
                 });
                 openAppStore();
+              }}
+              onOpenFounderLetter={() => {
+                if (typeof window !== 'undefined') {
+                  window.history.pushState({}, '', '/founder-letter');
+                }
+                setCurrentScreen('founder-letter');
               }}
             />
           </Suspense>

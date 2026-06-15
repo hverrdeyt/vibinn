@@ -95,6 +95,7 @@ const RESERVED_PUBLIC_WEB_PATHS = new Set([
   'app',
   'api',
   'lists',
+  'founder-letter',
   'terms',
   'privacy',
   'assets',

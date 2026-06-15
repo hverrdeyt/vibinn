@@ -124,6 +124,7 @@ export interface EventItem {
 
 export type Screen =
   | 'landing'
+  | 'founder-letter'
   | 'terms'
   | 'privacy'
   | 'onboarding'

@@ -274,3 +274,35 @@ export function PrivacyPolicyScreen() {
     </LegalShell>
   );
 }
+
+export function FounderLetterScreen() {
+  return (
+    <LegalShell title="A Letter from Founder" updatedAt="June 15, 2026">
+      <P>
+        Vibinn started from a simple feeling: meals pass too quickly, even when they become part of
+        our life story.
+      </P>
+
+      <P>
+        We remember trips, friendships, neighborhoods, and turning points through food. A late-night
+        noodle stop. A coffee run before something important. A place a friend swore was worth it.
+        Vibinn is my attempt to give those memories a home.
+      </P>
+
+      <P>
+        I want Vibinn to feel private, warm, and honest. Not a performance feed. Not another place
+        to shout. Just a space to keep your food diary, remember what mattered, and discover places
+        through people you actually trust.
+      </P>
+
+      <P>
+        This page will keep evolving as I write more. For now, thank you for being early, trying the
+        product, and helping shape what Vibinn becomes.
+      </P>
+
+      <P>
+        Fauzan
+      </P>
+    </LegalShell>
+  );
+}
