@@ -1,7 +1,7 @@
 import express from 'express';
 import './env';
 import crypto from 'node:crypto';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { cert, getApps, initializeApp as initializeFirebaseAdminApp } from 'firebase-admin/app';
@@ -87,6 +87,25 @@ const port = Number(process.env.PORT || process.env.API_PORT || 3001);
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads');
+const DIST_DIR = path.resolve(process.cwd(), 'dist');
+const DIST_INDEX_PATH = path.join(DIST_DIR, 'index.html');
+const RESERVED_PUBLIC_WEB_PATHS = new Set([
+  'app',
+  'api',
+  'lists',
+  'terms',
+  'privacy',
+  'assets',
+  'brand',
+  'fonts',
+  'uploads',
+  'favicon.ico',
+  'robots.txt',
+  'sitemap.xml',
+  'manifest.webmanifest',
+  'vibinn-icon.png',
+  'icon.svg',
+]);
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
@@ -1352,6 +1371,76 @@ function buildPublicProfileOgSvg(input: {
     </radialGradient>
   </defs>
 </svg>`;
+}
+
+function escapeHtmlAttribute(value: string) {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+async function loadWebIndexHtml() {
+  return readFile(DIST_INDEX_PATH, 'utf8');
+}
+
+function injectPublicProfileMetaHtml(input: {
+  html: string;
+  title: string;
+  description: string;
+  canonicalUrl: string;
+  imageUrl: string;
+}) {
+  const title = escapeHtmlAttribute(input.title);
+  const description = escapeHtmlAttribute(input.description);
+  const canonicalUrl = escapeHtmlAttribute(input.canonicalUrl);
+  const imageUrl = escapeHtmlAttribute(input.imageUrl);
+
+  let html = input.html;
+  html = html.replace(/<title>.*?<\/title>/i, `<title>${title}</title>`);
+  html = html.replace(/<meta name="description" content=".*?" \/>/i, `<meta name="description" content="${description}" />`);
+  html = html.replace(/<meta property="og:title" content=".*?" \/>/i, `<meta property="og:title" content="${title}" />`);
+  html = html.replace(/<meta property="og:description" content=".*?" \/>/i, `<meta property="og:description" content="${description}" />`);
+  html = html.replace(/<meta property="og:type" content=".*?" \/>/i, '<meta property="og:type" content="profile" />');
+  html = html.replace(/<meta name="twitter:title" content=".*?" \/>/i, `<meta name="twitter:title" content="${title}" />`);
+  html = html.replace(/<meta name="twitter:description" content=".*?" \/>/i, `<meta name="twitter:description" content="${description}" />`);
+
+  const injectedMeta = [
+    `<meta property="og:url" content="${canonicalUrl}" />`,
+    `<meta property="og:image" content="${imageUrl}" />`,
+    `<meta name="twitter:image" content="${imageUrl}" />`,
+    `<link rel="canonical" href="${canonicalUrl}" />`,
+  ].join('');
+
+  if (html.includes('</head>')) {
+    html = html.replace('</head>', `${injectedMeta}</head>`);
+  }
+
+  return html;
+}
+
+async function buildPublicProfileHtml(username: string, requestOrigin: string) {
+  const payload = await buildPublicProfilePayloadFromV2Username(username, requestOrigin);
+  if (!payload) {
+    return null;
+  }
+
+  const htmlTemplate = await loadWebIndexHtml();
+  const displayName = payload.user.displayName?.trim() || payload.user.username;
+  const resolvedUsername = payload.user.username.trim();
+  const title = `${displayName} on Vibinn`;
+  const description = `Check out ${resolvedUsername}'s food diary!`;
+  const canonicalUrl = `${requestOrigin}/${encodeURIComponent(resolvedUsername)}`;
+  const imageUrl = `${requestOrigin}/api/profiles/${encodeURIComponent(resolvedUsername)}/public/og-image`;
+
+  return injectPublicProfileMetaHtml({
+    html: htmlTemplate,
+    title,
+    description,
+    canonicalUrl,
+    imageUrl,
+  });
 }
 
 async function buildV2TravelerConnectionList(
@@ -14552,6 +14641,41 @@ app.post('/api/comments', requireAuth, async (req: AuthenticatedRequest, res) =>
 
 app.get('/api/lookups/travelers', (_, res) => {
   res.json({ travelers: SIMILAR_TRAVELERS });
+});
+
+app.use(express.static(DIST_DIR, {
+  index: false,
+}));
+
+app.get(['/u/:username', '/:username'], (req, res, next) => {
+  const username = req.params.username?.trim();
+  if (!username || RESERVED_PUBLIC_WEB_PATHS.has(username.toLowerCase())) {
+    next();
+    return;
+  }
+
+  const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+
+  void buildPublicProfileHtml(username, requestOrigin)
+    .then((html) => {
+      if (!html) {
+        next();
+        return;
+      }
+
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+    })
+    .catch((error) => handleError(res, error));
+});
+
+app.get('*', (_req, res, next) => {
+  void loadWebIndexHtml()
+    .then((html) => {
+      res.setHeader('Content-Type', 'text/html; charset=utf-8');
+      res.send(html);
+    })
+    .catch(() => next());
 });
 
 app.listen(port, () => {

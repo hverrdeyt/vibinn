@@ -13,7 +13,7 @@ services:
     name: vibecheck-api-production
     runtime: node
     plan: starter
-    buildCommand: npm install && npm run prisma:generate:production && npm run prisma:v2:generate:production && npm run prisma:migrate:deploy:production && npm run prisma:v2:migrate:deploy:production
+    buildCommand: npm install && npm run build && npm run prisma:generate:production && npm run prisma:v2:generate:production && npm run prisma:migrate:deploy:production && npm run prisma:v2:migrate:deploy:production
     startCommand: npm run start:server:production
     autoDeploy: true
     envVars:
