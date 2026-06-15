@@ -4182,54 +4182,55 @@ export default function App() {
     };
   }, []);
 
+  const resolvedPublicProfileUser = publicProfileUser;
+  const resolvedPublicProfileBookmarkedPlaces = publicProfileBookmarkedPlaces.length > 0
+    ? publicProfileBookmarkedPlaces
+    : (resolvedPublicProfileUser?.recentSavedPlaces?.map((entry) => entry.place) ?? []);
+  const resolvedPublicProfileCollections = publicProfileCollections.length > 0
+    ? publicProfileCollections
+    : ((resolvedPublicProfileUser?.recentCollections ?? []).map((collection) => ({
+        id: collection.id,
+        label: collection.label,
+        createdAt: collection.createdAt,
+        places: collection.places,
+      })));
+  const publicProfileFeedItems = resolvedPublicProfileUser ? [
+    ...((resolvedPublicProfileUser.recentSavedPlaces ?? []).map((entry, index) => ({
+      id: `${resolvedPublicProfileUser.id}-saved-${entry.place.id}-${index}`,
+      type: 'saved' as const,
+      traveler: resolvedPublicProfileUser,
+      place: entry.place,
+      activityDate: entry.savedAtLabel,
+      caption: undefined,
+      compatibility: undefined,
+      sortTimestamp: entry.savedAtIso
+        ? Date.parse(entry.savedAtIso)
+        : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (index + 1) * 3600000)),
+    }))),
+    ...resolvedPublicProfileUser.travelHistory.flatMap((history) => (history.places ?? []).slice(0, 6)).map((place, index) => ({
+      id: `${resolvedPublicProfileUser.id}-visited-${place.id}-${index}`,
+      type: 'visited' as const,
+      traveler: resolvedPublicProfileUser,
+      place,
+      activityDate: formatRelativeActivityTime(place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000),
+      caption: place.momentCaption ?? 'Dropped a check-in here.',
+      compatibility: undefined,
+      sortTimestamp: place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000,
+    })),
+    ...resolvedPublicProfileCollections.map((collection, index) => ({
+      id: `${resolvedPublicProfileUser.id}-collection-${collection.id ?? collection.label}-${index}`,
+      type: 'collection' as const,
+      traveler: resolvedPublicProfileUser,
+      collectionId: collection.id,
+      collectionName: collection.label,
+      collectionPlaces: collection.places.slice(0, 4),
+      activityDate: formatRelativeActivityTime(collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000),
+      caption: undefined,
+      sortTimestamp: collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000,
+    })),
+  ].sort((a, b) => b.sortTimestamp - a.sortTimestamp) : [];
+
   const renderScreen = () => {
-    const resolvedPublicProfileUser = publicProfileUser;
-    const resolvedPublicProfileBookmarkedPlaces = publicProfileBookmarkedPlaces.length > 0
-      ? publicProfileBookmarkedPlaces
-      : (resolvedPublicProfileUser?.recentSavedPlaces?.map((entry) => entry.place) ?? []);
-    const resolvedPublicProfileCollections = publicProfileCollections.length > 0
-      ? publicProfileCollections
-      : ((resolvedPublicProfileUser?.recentCollections ?? []).map((collection) => ({
-          id: collection.id,
-          label: collection.label,
-          createdAt: collection.createdAt,
-          places: collection.places,
-        })));
-    const publicProfileFeedItems = resolvedPublicProfileUser ? [
-      ...((resolvedPublicProfileUser.recentSavedPlaces ?? []).map((entry, index) => ({
-        id: `${resolvedPublicProfileUser.id}-saved-${entry.place.id}-${index}`,
-        type: 'saved' as const,
-        traveler: resolvedPublicProfileUser,
-        place: entry.place,
-        activityDate: entry.savedAtLabel,
-        caption: undefined,
-        compatibility: undefined,
-        sortTimestamp: entry.savedAtIso
-          ? Date.parse(entry.savedAtIso)
-          : (parseRelativeActivityLabelToTimestamp(entry.savedAtLabel) || (Date.now() - (index + 1) * 3600000)),
-      }))),
-      ...resolvedPublicProfileUser.travelHistory.flatMap((history) => (history.places ?? []).slice(0, 6)).map((place, index) => ({
-        id: `${resolvedPublicProfileUser.id}-visited-${place.id}-${index}`,
-        type: 'visited' as const,
-        traveler: resolvedPublicProfileUser,
-        place,
-        activityDate: formatRelativeActivityTime(place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000),
-        caption: place.momentCaption ?? 'Dropped a check-in here.',
-        compatibility: undefined,
-        sortTimestamp: place.visitedDate ? Date.parse(place.visitedDate) : Date.now() - (index + 1) * 86400000,
-      })),
-      ...resolvedPublicProfileCollections.map((collection, index) => ({
-        id: `${resolvedPublicProfileUser.id}-collection-${collection.id ?? collection.label}-${index}`,
-        type: 'collection' as const,
-        traveler: resolvedPublicProfileUser,
-        collectionId: collection.id,
-        collectionName: collection.label,
-        collectionPlaces: collection.places.slice(0, 4),
-        activityDate: formatRelativeActivityTime(collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000),
-        caption: undefined,
-        sortTimestamp: collection.createdAt ? Date.parse(collection.createdAt) : Date.now() - (index + 1) * 86400000,
-      })),
-    ].sort((a, b) => b.sortTimestamp - a.sortTimestamp) : [];
 
   const discoveryPlacesScreen = (
     <Suspense fallback={<div className="min-h-screen bg-zinc-950" />}>
@@ -5360,7 +5361,7 @@ export default function App() {
               user={resolvedPublicProfileUser}
               bookmarkedPlaces={resolvedPublicProfileBookmarkedPlaces}
               customCollections={resolvedPublicProfileCollections}
-              onFollow={openApp}
+              onFollow={openAppStore}
               onOpenCollection={(collection) => {
                 setSelectedCollection(collection);
                 setSelectedCollectionReturnScreen('public-profile');
