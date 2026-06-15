@@ -211,14 +211,14 @@ export default function PublicProfileScreen({
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="pointer-events-auto text-center">
                     <div className="text-lg font-black text-white">
-                      {`Check more @${user.username} food memories on app`}
+                      Check more @{user.username} food memories on app
                     </div>
                     <button
                       type="button"
                       onClick={onFollow}
                       className="mt-3 rounded-full bg-accent px-5 py-3 text-sm font-black text-black transition hover:brightness-105"
                     >
-                      {`Follow @${user.username}`}
+                      Follow @{user.username}
                     </button>
                   </div>
                 </div>
