@@ -30,13 +30,19 @@ type CTAButtonProps = {
   className?: string;
 };
 
+const LANDING_STICKER_VERSION = '20260615';
+
+function withStickerVersion(path: string) {
+  return `${path}?v=${LANDING_STICKER_VERSION}`;
+}
+
 const homepageStickers: StickerConfig[] = [
-  { src: '/homepage-stickers/auth-sticker-6.png', alt: 'Food sticker 6', x: 13, y: 2, width: 151, height: 100, rotation: -9, floatDuration: 6.6, floatDistance: 12 },
-  { src: '/homepage-stickers/auth-sticker-2.png', alt: 'Food sticker 2', x: 213, y: 0, width: 137, height: 92, rotation: 8, floatDuration: 7.2, floatDistance: 12 },
-  { src: '/homepage-stickers/auth-sticker-4.png', alt: 'Food sticker 4', x: -10, y: 126, width: 178, height: 118, rotation: -7, floatDuration: 6.8, floatDistance: 14 },
-  { src: '/homepage-stickers/auth-sticker-5.png', alt: 'Food sticker 5', x: 4, y: 310, width: 148, height: 104, rotation: -7, floatDuration: 6.4, floatDistance: 11 },
-  { src: '/homepage-stickers/auth-sticker-3.png', alt: 'Food sticker 3', x: 288, y: 104, width: 118, height: 82, rotation: 7, floatDuration: 7.1, floatDistance: 10 },
-  { src: '/homepage-stickers/auth-sticker-7.png', alt: 'Food sticker 7', x: 244, y: 286, width: 160, height: 108, rotation: 6, floatDuration: 6.9, floatDistance: 13 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-6.png'), alt: 'Food sticker 6', x: 13, y: 2, width: 151, height: 100, rotation: -9, floatDuration: 6.6, floatDistance: 12 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-2.png'), alt: 'Food sticker 2', x: 213, y: 0, width: 137, height: 92, rotation: 8, floatDuration: 7.2, floatDistance: 12 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-4.png'), alt: 'Food sticker 4', x: -10, y: 126, width: 178, height: 118, rotation: -7, floatDuration: 6.8, floatDistance: 14 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-5.png'), alt: 'Food sticker 5', x: 4, y: 310, width: 148, height: 104, rotation: -7, floatDuration: 6.4, floatDistance: 11 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-3.png'), alt: 'Food sticker 3', x: 288, y: 104, width: 118, height: 82, rotation: 7, floatDuration: 7.1, floatDistance: 10 },
+  { src: withStickerVersion('/homepage-stickers/auth-sticker-7.png'), alt: 'Food sticker 7', x: 244, y: 286, width: 160, height: 108, rotation: 6, floatDuration: 6.9, floatDistance: 13 },
 ];
 
 const referenceFrame = { width: 402, height: 871 };
