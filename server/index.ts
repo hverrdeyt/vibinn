@@ -90,6 +90,7 @@ const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
 const UPLOADS_DIR = path.resolve(process.cwd(), 'uploads');
 const DIST_DIR = path.resolve(process.cwd(), 'dist');
 const DIST_INDEX_PATH = path.join(DIST_DIR, 'index.html');
+const PUBLIC_PROFILE_OG_CACHE_TTL_MS = 1000 * 60 * 15;
 const RESERVED_PUBLIC_WEB_PATHS = new Set([
   'app',
   'api',
@@ -107,6 +108,7 @@ const RESERVED_PUBLIC_WEB_PATHS = new Set([
   'vibinn-icon.png',
   'icon.svg',
 ]);
+const publicProfileOgImageCache = new Map<string, { expiresAt: number; buffer: Buffer }>();
 const R2_BUCKET_NAME = process.env.R2_BUCKET_NAME;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
@@ -1345,7 +1347,7 @@ async function buildPreviewTileBuffer(url: string | null, width: number, height:
         channels: 3,
         background: '#161616',
       },
-    }).png().toBuffer();
+    }).jpeg({ quality: 72, mozjpeg: true }).toBuffer();
   }
 
   const sourceBuffer = await fetchPreviewImageBuffer(url);
@@ -1357,7 +1359,7 @@ async function buildPreviewTileBuffer(url: string | null, width: number, height:
         channels: 3,
         background: '#161616',
       },
-    }).png().toBuffer();
+    }).jpeg({ quality: 72, mozjpeg: true }).toBuffer();
   }
 
   return sharp(sourceBuffer)
@@ -1365,11 +1367,11 @@ async function buildPreviewTileBuffer(url: string | null, width: number, height:
       fit: 'cover',
       position: 'centre',
     })
-    .png()
+    .jpeg({ quality: 72, mozjpeg: true })
     .toBuffer();
 }
 
-async function buildPublicProfileOgPng(input: {
+async function buildPublicProfileOgJpeg(input: {
   avatarUrl?: string | null;
   imageUrls: string[];
 }) {
@@ -1404,8 +1406,27 @@ async function buildPublicProfileOgPng(input: {
     },
   })
     .composite(composites.filter((entry): entry is NonNullable<typeof entry> => Boolean(entry)))
-    .png()
+    .jpeg({
+      quality: 74,
+      mozjpeg: true,
+      progressive: true,
+      chromaSubsampling: '4:2:0',
+    })
     .toBuffer();
+}
+
+function buildPublicProfileOgCacheKey(input: {
+  username: string;
+  avatarUrl?: string | null;
+  latestVisitedAtIso?: string | undefined;
+  imageUrls: string[];
+}) {
+  return [
+    input.username.trim().toLowerCase(),
+    input.avatarUrl?.trim() || '',
+    input.latestVisitedAtIso || '',
+    ...input.imageUrls,
+  ].join('|');
 }
 
 function escapeHtmlAttribute(value: string) {
@@ -1444,7 +1465,7 @@ function injectPublicProfileMetaHtml(input: {
   const injectedMeta = [
     `<meta property="og:url" content="${canonicalUrl}" />`,
     `<meta property="og:image" content="${imageUrl}" />`,
-    '<meta property="og:image:type" content="image/png" />',
+    '<meta property="og:image:type" content="image/jpeg" />',
     '<meta property="og:image:width" content="1200" />',
     '<meta property="og:image:height" content="630" />',
     `<meta name="twitter:image" content="${imageUrl}" />`,
@@ -11466,19 +11487,36 @@ app.get('/api/profiles/:username/public/og-image', (req, res) => {
           return urls.filter((value) => typeof value === 'string' && value.trim().length > 0);
         })
         .slice(0, 3);
-      return buildPublicProfileOgPng({
+      const cacheKey = buildPublicProfileOgCacheKey({
+        username: payload.user.username,
         avatarUrl: payload.user.avatar ?? null,
+        latestVisitedAtIso: payload.user.latestVisitedAtIso,
         imageUrls,
       });
+      const cached = publicProfileOgImageCache.get(cacheKey);
+      if (cached && cached.expiresAt > Date.now()) {
+        return cached.buffer;
+      }
+
+      return buildPublicProfileOgJpeg({
+        avatarUrl: payload.user.avatar ?? null,
+        imageUrls,
+      }).then((buffer) => {
+        publicProfileOgImageCache.set(cacheKey, {
+          buffer,
+          expiresAt: Date.now() + PUBLIC_PROFILE_OG_CACHE_TTL_MS,
+        });
+        return buffer;
+      });
     })
-    .then((pngBuffer) => {
-      if (!pngBuffer) {
+    .then((imageBuffer) => {
+      if (!imageBuffer) {
         res.status(500).json({ error: 'Could not build preview image' });
         return;
       }
-      res.setHeader('Content-Type', 'image/png');
-      res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
-      res.send(pngBuffer);
+      res.setHeader('Content-Type', 'image/jpeg');
+      res.setHeader('Cache-Control', 'public, max-age=900, s-maxage=900');
+      res.send(imageBuffer);
     })
     .catch((error) => handleError(res, error));
 });
