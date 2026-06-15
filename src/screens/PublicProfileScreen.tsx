@@ -210,13 +210,15 @@ export default function PublicProfileScreen({
                 <div className="absolute inset-0 rounded-[1.6rem] bg-black/48" />
                 <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
                   <div className="pointer-events-auto text-center">
-                    <div className="text-lg font-black text-white">See more in the app</div>
+                    <div className="text-lg font-black text-white">
+                      {`Check more @${user.username} food memories on app`}
+                    </div>
                     <button
                       type="button"
                       onClick={onFollow}
                       className="mt-3 rounded-full bg-accent px-5 py-3 text-sm font-black text-black transition hover:brightness-105"
                     >
-                      See in app
+                      {`Follow @${user.username}`}
                     </button>
                   </div>
                 </div>
