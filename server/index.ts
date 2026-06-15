@@ -1334,10 +1334,10 @@ function buildPublicProfileOgSvg(input: {
   const fallbackImage = collageImages[collageImages.length - 1] ?? 'https://placehold.co/1200x630/111111/ffffff?text=Vibinn';
   const normalizedImages = Array.from({ length: 4 }, (_, index) => collageImages[index] ?? fallbackImage);
   const slots = [
-    { x: 40, y: 40, width: 540, height: 270, rx: 34 },
-    { x: 620, y: 40, width: 540, height: 270, rx: 34 },
-    { x: 40, y: 350, width: 540, height: 240, rx: 34 },
-    { x: 620, y: 350, width: 540, height: 240, rx: 34 },
+    { x: 0, y: 0, width: 600, height: 315, rx: 0 },
+    { x: 600, y: 0, width: 600, height: 315, rx: 0 },
+    { x: 0, y: 315, width: 600, height: 315, rx: 0 },
+    { x: 600, y: 315, width: 600, height: 315, rx: 0 },
   ] as const;
   const collageMarkup = normalizedImages.map((imageUrl, index) => {
     const slot = slots[index];
