@@ -1443,6 +1443,14 @@ async function buildPublicProfileHtml(username: string, requestOrigin: string) {
   });
 }
 
+function getRequestOrigin(req: express.Request) {
+  const forwardedProtoHeader = req.get('x-forwarded-proto');
+  const forwardedProto = forwardedProtoHeader?.split(',')[0]?.trim();
+  const protocol = forwardedProto || req.protocol || 'https';
+  const host = req.get('host') ?? `localhost:${port}`;
+  return `${protocol}://${host}`;
+}
+
 async function buildV2TravelerConnectionList(
   travelerId: string,
   kind: 'followers' | 'following'
@@ -9654,7 +9662,7 @@ app.get('/api/v2/home/recent-memories', async (req: AuthenticatedRequest, res) =
       return;
     }
 
-    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const requestOrigin = `${getRequestOrigin(req)}`;
     const payload = await buildV2HomepageRecentMemories(req.authV2UserId, requestOrigin);
     res.json(payload);
   } catch (error) {
@@ -9758,7 +9766,7 @@ app.get('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
       return;
     }
 
-    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const requestOrigin = `${getRequestOrigin(req)}`;
     const payload = await buildV2DiaryMoments(req.authV2UserId, requestOrigin);
     res.json(payload);
   } catch (error) {
@@ -9893,7 +9901,7 @@ app.post('/api/v2/contacts/match', async (req: AuthenticatedRequest, res) => {
 
 app.get('/api/v2/feed', requireV2Auth, async (req: AuthenticatedRequest, res) => {
   try {
-    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const requestOrigin = `${getRequestOrigin(req)}`;
     const payload = await buildV2FollowingFeed(req.authV2UserId!, requestOrigin);
     res.json(payload);
   } catch (error) {
@@ -9913,7 +9921,7 @@ app.get('/api/v2/travelers/search', requireV2Auth, async (req: AuthenticatedRequ
 
 app.get('/api/v2/travelers/:id', requireV2Auth, async (req: AuthenticatedRequest, res) => {
   try {
-    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const requestOrigin = `${getRequestOrigin(req)}`;
     const payload = await buildV2TravelerProfile(req.params.id, req.authV2UserId!, requestOrigin);
     if (!payload) {
       res.status(404).json({ error: 'Traveler not found' });
@@ -11384,7 +11392,7 @@ app.get('/api/profiles/:username/public', (req, res) => {
     return;
   }
 
-  const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+  const requestOrigin = `${getRequestOrigin(req)}`;
 
   void buildPublicProfilePayloadFromV2Username(username, requestOrigin)
     .then((v2Payload) => {
@@ -11405,7 +11413,7 @@ app.get('/api/profiles/:username/public/og-image', (req, res) => {
     return;
   }
 
-  const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+  const requestOrigin = `${getRequestOrigin(req)}`;
 
   void buildPublicProfilePayloadFromV2Username(username, requestOrigin)
     .then((payload) => {
@@ -11877,7 +11885,7 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
       completedStep: 'FIRST_PLACE',
     });
 
-    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const requestOrigin = `${getRequestOrigin(req)}`;
     res.status(201).json({ moment: mapV2MomentForClient(moment, requestOrigin) });
   } catch (error) {
     handleError(res, error);
@@ -11942,7 +11950,7 @@ app.patch('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest
       },
     });
 
-    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const requestOrigin = `${getRequestOrigin(req)}`;
     res.json({ moment: mapV2MomentForClient(updated, requestOrigin) });
   } catch (error) {
     handleError(res, error);
@@ -12018,7 +12026,7 @@ app.get('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest, 
       }),
     ]);
 
-    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const requestOrigin = `${getRequestOrigin(req)}`;
     const payload = mapV2MomentForClient(
       moment,
       requestOrigin,
@@ -12104,7 +12112,7 @@ app.get('/api/media', async (req, res) => {
 
 app.post('/api/uploads/media', requireAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const requestOrigin = `${getRequestOrigin(req)}`;
     const files = (req.body as {
       files?: Array<{
         fileName?: string;
@@ -12163,7 +12171,7 @@ app.post('/api/v2/uploads/media', async (req: AuthenticatedRequest, res) => {
       return;
     }
 
-    const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+    const requestOrigin = `${getRequestOrigin(req)}`;
     const files = (req.body as {
       files?: Array<{
         fileName?: string;
@@ -14654,7 +14662,7 @@ app.get(['/u/:username', '/:username'], (req, res, next) => {
     return;
   }
 
-  const requestOrigin = `${req.protocol}://${req.get('host') ?? `localhost:${port}`}`;
+  const requestOrigin = `${getRequestOrigin(req)}`;
 
   void buildPublicProfileHtml(username, requestOrigin)
     .then((html) => {
