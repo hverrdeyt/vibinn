@@ -10182,7 +10182,9 @@ app.patch('/api/v2/profile/me', async (req: AuthenticatedRequest, res) => {
       avatarUrl,
       bio,
     });
-    await ensureLegacyUserForV2User(req.authV2UserId);
+    if (!legacyDbAccessDisabled) {
+      await ensureLegacyUserForV2User(req.authV2UserId);
+    }
 
     const onboarding = await getMyOnboardingState(req.authV2UserId);
     res.json({ user, onboarding });
