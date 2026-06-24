@@ -602,7 +602,7 @@ function mapV2MomentForClient(moment: {
   autocompleteSessionToken: string | null;
   placeLatitude: number | null;
   placeLongitude: number | null;
-}, requestOrigin?: string, counts?: { commentCount?: number; likeCount?: number }, latestComment: {
+}, requestOrigin?: string, counts?: { commentCount?: number; likeCount?: number; isVibed?: boolean }, latestComment: {
   id: string;
   userId: string;
   user: { username: string | null };
@@ -625,6 +625,7 @@ function mapV2MomentForClient(moment: {
     visibility: (moment.visibility ?? 'PUBLIC').toLowerCase(),
     commentCount: counts?.commentCount ?? 0,
     likeCount: counts?.likeCount ?? 0,
+    isVibed: counts?.isVibed ?? false,
     latestComment: latestComment
       ? {
           id: latestComment.id,
@@ -1210,6 +1211,7 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
     moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
       commentCount: socialState.commentCounts[moment.id] ?? 0,
       likeCount: socialState.likeCounts[moment.id] ?? 0,
+      isVibed: socialState.vibedMomentIds.has(moment.id),
     }, socialState.latestCommentByMoment.get(moment.id) ?? null)),
     inspirationMedia: [],
   };
@@ -1765,6 +1767,7 @@ async function buildV2HomepageRecentMemories(userId: string, requestOrigin?: str
     moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
       commentCount: social.commentCounts[moment.id] ?? 0,
       likeCount: social.likeCounts[moment.id] ?? 0,
+      isVibed: social.vibedMomentIds.has(moment.id),
     }, social.latestCommentByMoment.get(moment.id) ?? null)),
   };
 }
@@ -1783,6 +1786,7 @@ async function buildV2DiaryMoments(userId: string, requestOrigin?: string) {
     moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
       commentCount: social.commentCounts[moment.id] ?? 0,
       likeCount: social.likeCounts[moment.id] ?? 0,
+      isVibed: social.vibedMomentIds.has(moment.id),
     }, social.latestCommentByMoment.get(moment.id) ?? null)),
   };
 }
@@ -4030,6 +4034,207 @@ function mapStoredV2PlaceForClient(place: {
   };
 }
 
+function normalizeV2BookmarkSource(source?: string | null) {
+  return source?.trim().toLowerCase() || 'saved';
+}
+
+function formatV2BookmarkSourceLabel(source?: string | null) {
+  const normalized = normalizeV2BookmarkSource(source);
+  switch (normalized) {
+    case 'todays_pick':
+    case 'daily':
+    case 'decision':
+      return 'Saved from Daily';
+    case 'feed':
+      return 'Saved from Feed';
+    case 'discovery':
+      return 'Saved from Discovery';
+    case 'profile':
+      return 'Saved from Profile';
+    case 'user_profile':
+      return 'Saved from User Profile';
+    case 'place_details':
+      return 'Saved from Place Details';
+    case 'saved':
+      return 'Saved on Vibinn';
+    default:
+      return `Saved from ${normalized.replace(/[_-]+/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())}`;
+  }
+}
+
+function resolveV2BookmarkExpiresAt(bookmark: { createdAt: Date; expiresAt?: Date | null }) {
+  const fallbackMs = 48 * 60 * 60 * 1000;
+  return bookmark.expiresAt ?? new Date(bookmark.createdAt.getTime() + fallbackMs);
+}
+
+async function getV2Bookmarks(userId: string) {
+  const bookmarks = await prismaV2.bookmark.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      place: true,
+    },
+  });
+
+  const activeBookmarks = bookmarks.filter((bookmark) => resolveV2BookmarkExpiresAt(bookmark) > new Date());
+
+  return {
+    bookmarks: activeBookmarks.map((bookmark) => mapStoredV2PlaceForClient(bookmark.place)),
+    entries: activeBookmarks.map((bookmark) => ({
+      id: bookmark.id,
+      place: mapStoredV2PlaceForClient(bookmark.place),
+      savedAtIso: bookmark.createdAt.toISOString(),
+      expiresAtIso: resolveV2BookmarkExpiresAt(bookmark).toISOString(),
+      source: normalizeV2BookmarkSource(bookmark.source),
+      sourceLabel: formatV2BookmarkSourceLabel(bookmark.source),
+    })),
+  };
+}
+
+async function getV2Collections(userId: string) {
+  const collections = await prismaV2.collection.findMany({
+    where: { userId },
+    orderBy: { createdAt: 'desc' },
+    include: {
+      places: {
+        orderBy: { sortOrder: 'asc' },
+        include: {
+          place: true,
+        },
+      },
+    },
+  });
+
+  return collections.map((collection) => ({
+    id: collection.id,
+    label: collection.title,
+    createdAt: collection.createdAt.toISOString(),
+    places: collection.places.map((item) => mapStoredV2PlaceForClient(item.place)),
+  }));
+}
+
+async function createV2Collection(userId: string, payload: { label?: string; placeIds?: string[] }) {
+  const normalizedTitle = String(payload.label ?? '').trim();
+  const normalizedPlaceIds = Array.from(new Set((payload.placeIds ?? []).filter(Boolean)));
+
+  if (!normalizedTitle) {
+    throw new Error('Collection title required');
+  }
+
+  const collection = await prismaV2.collection.create({
+    data: {
+      userId,
+      title: normalizedTitle,
+      places: {
+        create: normalizedPlaceIds.map((placeId, index) => ({
+          placeId,
+          sortOrder: index,
+        })),
+      },
+    },
+    include: {
+      places: {
+        orderBy: { sortOrder: 'asc' },
+        include: {
+          place: true,
+        },
+      },
+    },
+  });
+
+  return {
+    id: collection.id,
+    label: collection.title,
+    createdAt: collection.createdAt.toISOString(),
+    places: collection.places.map((item) => mapStoredV2PlaceForClient(item.place)),
+  };
+}
+
+async function updateV2Collection(
+  userId: string,
+  collectionId: string,
+  payload: { label?: string; placeIds?: string[] },
+) {
+  const normalizedTitle = typeof payload.label === 'string' ? payload.label.trim() : undefined;
+  const normalizedPlaceIds = Array.isArray(payload.placeIds)
+    ? Array.from(new Set(payload.placeIds.filter(Boolean)))
+    : undefined;
+
+  if (normalizedTitle !== undefined && normalizedTitle.length === 0) {
+    throw new Error('Collection title required');
+  }
+
+  const updated = await prismaV2.$transaction(async (tx) => {
+    const existing = await tx.collection.findFirst({
+      where: { id: collectionId, userId },
+      select: { id: true },
+    });
+
+    if (!existing) {
+      throw new Error('Collection not found');
+    }
+
+    await tx.collection.update({
+      where: { id: collectionId },
+      data: normalizedTitle !== undefined ? { title: normalizedTitle } : {},
+    });
+
+    if (normalizedPlaceIds !== undefined) {
+      await tx.collectionPlace.deleteMany({ where: { collectionId } });
+      if (normalizedPlaceIds.length > 0) {
+        await tx.collectionPlace.createMany({
+          data: normalizedPlaceIds.map((placeId, index) => ({
+            collectionId,
+            placeId,
+            sortOrder: index,
+          })),
+          skipDuplicates: true,
+        });
+      }
+    }
+
+    return tx.collection.findUnique({
+      where: { id: collectionId },
+      include: {
+        places: {
+          orderBy: { sortOrder: 'asc' },
+          include: {
+            place: true,
+          },
+        },
+      },
+    });
+  });
+
+  if (!updated) {
+    throw new Error('Collection not found');
+  }
+
+  return {
+    id: updated.id,
+    label: updated.title,
+    createdAt: updated.createdAt.toISOString(),
+    places: updated.places.map((item) => mapStoredV2PlaceForClient(item.place)),
+  };
+}
+
+async function deleteV2Collection(userId: string, collectionId: string) {
+  const existing = await prismaV2.collection.findFirst({
+    where: { id: collectionId, userId },
+    select: { id: true },
+  });
+
+  if (!existing) {
+    throw new Error('Collection not found');
+  }
+
+  await prismaV2.collection.delete({
+    where: { id: collectionId },
+  });
+
+  return { ok: true };
+}
+
 function buildTransientPlaceCandidate(input: {
   name: string;
   address?: string | null;
@@ -4205,6 +4410,50 @@ async function ensureManualV2PlaceRecord(input: {
   });
 
   return mapStoredV2PlaceForClient(created);
+}
+
+async function ensureV2BookmarkablePlaceExists(placeId: string, snapshot?: BookmarkPlaceSnapshot | null) {
+  const existingPlace = await prismaV2.place.findUnique({
+    where: { id: placeId },
+    select: { id: true },
+  });
+
+  if (existingPlace) return;
+  if (!snapshot?.name?.trim()) return;
+
+  const { city, country } = splitDiscoveryLocation(snapshot.location ?? snapshot.address ?? '');
+  const tags = snapshot.tags?.filter(Boolean) ?? [];
+  const images = (snapshot.images?.filter(Boolean) ?? (snapshot.image ? [snapshot.image] : [])).slice(0, 6);
+  const normalizedCategory = normalizePlaceCategory(snapshot.category ?? 'recommended spot', tags);
+
+  try {
+    await prismaV2.place.create({
+      data: {
+        id: placeId,
+        name: snapshot.name.trim(),
+        address: snapshot.address?.trim() || null,
+        city,
+        country,
+        category: normalizedCategory,
+        latitude: typeof snapshot.latitude === 'number' ? snapshot.latitude : null,
+        longitude: typeof snapshot.longitude === 'number' ? snapshot.longitude : null,
+        rating: typeof snapshot.rating === 'number' ? snapshot.rating : null,
+        priceLevel: typeof snapshot.priceLevel === 'number' ? snapshot.priceLevel : null,
+        primaryImageUrl: snapshot.image?.trim() || images[0] || null,
+      },
+    });
+  } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error as { code?: string }).code === 'P2002'
+    ) {
+      return;
+    }
+
+    throw error;
+  }
 }
 
 function dedupeNativePlacesById<T extends { id: string }>(places: T[]) {
@@ -9442,12 +9691,12 @@ async function getTodayRecommendationForUser(input: {
   return {
     place,
     distanceMiles: Number(selectedCandidate.distanceMiles.toFixed(1)),
-    compatibilityScore: selectedCandidate.score ?? place.similarityStat ?? 0,
+    compatibilityScore: selectedCandidate.score ?? (place as any).similarityStat ?? 0,
     todayReason: buildTodayRecommendationReason({
-      baseReason: selectedCandidate.reason ?? place.recommendationReason,
-      bestTime: place.bestTime ?? selectedCandidate.place.aiEnrichment?.bestTime ?? null,
+      baseReason: selectedCandidate.reason ?? (place as any).recommendationReason,
+      bestTime: (place as any).bestTime ?? selectedCandidate.place.aiEnrichment?.bestTime ?? null,
       distanceMiles: selectedCandidate.distanceMiles,
-      score: selectedCandidate.score ?? place.similarityStat ?? 0,
+      score: selectedCandidate.score ?? (place as any).similarityStat ?? 0,
     }),
   };
 }
@@ -9459,6 +9708,18 @@ app.use(async (req: AuthenticatedRequest, _res, next) => {
   if (!token) {
     next();
     return;
+  }
+
+  try {
+    const v2Session = await getV2SessionFromToken(token);
+    if (v2Session) {
+      req.authV2UserId = v2Session.userId;
+      req.authV2Token = token;
+      next();
+      return;
+    }
+  } catch (error) {
+    console.error(error);
   }
 
   try {
@@ -9528,6 +9789,14 @@ app.get('/api/health', (_, res) => {
 
 app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
   try {
+    if (req.authV2UserId && !req.authUserId) {
+      const profile = await getMyProfile(req.authV2UserId);
+      res.json({
+        user: mapV2UserToLegacyAuthUser(profile.user),
+      });
+      return;
+    }
+
     if (!req.authUserId) {
       res.status(401).json({ error: 'Unauthorized' });
       return;
@@ -10122,8 +10391,58 @@ async function createV2Notification(input: {
   }
 }
 
+function serializeV2CommentTree(comments: Array<{
+  id: string;
+  userId: string;
+  parentCommentId: string | null;
+  body: string;
+  createdAt: Date;
+  user: { username: string | null };
+}>) {
+  type SerializedV2Comment = {
+    id: string;
+    user: string;
+    body: string;
+    createdAt: string;
+    parentCommentId: string | null;
+    replies: SerializedV2Comment[];
+  };
+
+  const commentMap = new Map<string, SerializedV2Comment>();
+
+  for (const comment of comments) {
+    commentMap.set(comment.id, {
+      id: comment.id,
+      user: comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId),
+      body: comment.body,
+      createdAt: comment.createdAt.toISOString(),
+      parentCommentId: comment.parentCommentId,
+      replies: [],
+    });
+  }
+
+  const roots: SerializedV2Comment[] = [];
+
+  for (const comment of comments) {
+    const serialized = commentMap.get(comment.id);
+    if (!serialized) continue;
+
+    if (comment.parentCommentId) {
+      const parent = commentMap.get(comment.parentCommentId);
+      if (parent) {
+        parent.replies.push(serialized);
+        continue;
+      }
+    }
+
+    roots.push(serialized);
+  }
+
+  return roots;
+}
+
 async function listV2Notifications(userId: string) {
-  let notifications: Awaited<ReturnType<typeof prismaV2.notification.findMany>>;
+  let notifications: Array<any>;
   try {
     notifications = await prismaV2.notification.findMany({
       where: { userId },
@@ -10422,7 +10741,7 @@ app.get('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, res
         targetType: targetType as 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION',
         targetId,
       },
-      orderBy: { createdAt: 'desc' },
+      orderBy: { createdAt: 'asc' },
       include: {
         user: {
           select: {
@@ -10433,12 +10752,7 @@ app.get('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, res
     });
 
     res.json({
-      comments: comments.map((comment) => ({
-        id: comment.id,
-        user: comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId),
-        body: comment.body,
-        createdAt: comment.createdAt.toISOString(),
-      })),
+      comments: serializeV2CommentTree(comments),
     });
   } catch (error) {
     handleError(res, error);
@@ -10452,11 +10766,13 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
       targetId,
       body,
       momentId,
+      parentCommentId,
     } = req.body as {
       targetType?: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
       targetId?: string;
       body?: string;
       momentId?: string;
+      parentCommentId?: string;
     };
 
     if (!targetType || !targetId || !body?.trim()) {
@@ -10465,6 +10781,43 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
     }
 
     const resolvedMomentId = momentId ?? await resolveV2TargetMomentId(targetType, targetId);
+    const trimmedParentCommentId = parentCommentId?.trim() || null;
+
+    let parentComment: {
+      id: string;
+      userId: string;
+      targetType: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
+      targetId: string;
+      parentCommentId: string | null;
+    } | null = null;
+
+    if (trimmedParentCommentId) {
+      parentComment = await prismaV2.comment.findUnique({
+        where: { id: trimmedParentCommentId },
+        select: {
+          id: true,
+          userId: true,
+          targetType: true,
+          targetId: true,
+          parentCommentId: true,
+        },
+      });
+
+      if (!parentComment) {
+        res.status(404).json({ error: 'Parent comment not found' });
+        return;
+      }
+
+      if (parentComment.targetType !== targetType || parentComment.targetId !== targetId) {
+        res.status(400).json({ error: 'Reply must belong to the same target' });
+        return;
+      }
+
+      if (parentComment.parentCommentId) {
+        res.status(400).json({ error: 'Nested replies are limited to one level' });
+        return;
+      }
+    }
 
     const comment = await prismaV2.comment.create({
       data: {
@@ -10473,6 +10826,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         targetId,
         body: body.trim(),
         momentId: resolvedMomentId ?? null,
+        parentCommentId: trimmedParentCommentId,
       },
       include: {
         user: {
@@ -10504,12 +10858,31 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
       });
     }
 
+    if (
+      parentComment
+      && parentComment.userId !== req.authV2UserId
+      && parentComment.userId !== notificationUserId
+    ) {
+      const actorName = comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId);
+      await createV2Notification({
+        userId: parentComment.userId,
+        actorUserId: req.authV2UserId!,
+        type: 'COMMENT',
+        targetType,
+        targetId,
+        title: `${actorName} replied to your comment`,
+        body: comment.body,
+      });
+    }
+
     res.json({
       comment: {
         id: comment.id,
         user: comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId),
         body: comment.body,
         createdAt: comment.createdAt.toISOString(),
+        parentCommentId: comment.parentCommentId,
+        replies: [],
       },
       count,
     });
@@ -11019,6 +11392,10 @@ app.post('/api/auth/logout', async (req: AuthenticatedRequest, res) => {
     const header = req.header('Authorization');
     const token = header?.startsWith('Bearer ') ? header.slice(7) : null;
 
+    if (req.authV2Token) {
+      await revokeV2Session(req.authV2Token);
+    }
+
     if (token) {
       await prisma.session.deleteMany({
         where: { token },
@@ -11039,12 +11416,27 @@ function requireAuth(req: AuthenticatedRequest, res: express.Response, next: exp
   next();
 }
 
+function requireSessionAuth(req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) {
+  if (!req.authUserId && !req.authV2UserId) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return;
+  }
+  next();
+}
+
 function requireV2Auth(req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) {
   if (!req.authV2UserId) {
     res.status(401).json({ error: 'Unauthorized' });
     return;
   }
   next();
+}
+
+function respondLegacyFeatureRetired(res: express.Response, feature: string) {
+  res.status(410).json({
+    error: `${feature} is no longer available`,
+    code: 'LEGACY_FEATURE_RETIRED',
+  });
 }
 
 async function optionalAuth(req: AuthenticatedRequest, _res: express.Response, next: express.NextFunction) {
@@ -11100,6 +11492,24 @@ function handleDecisionError(res: express.Response, error: unknown) {
     return;
   }
   handleError(res, error);
+}
+
+function mapV2UserToLegacyAuthUser(user: {
+  id: string;
+  displayName?: string | null;
+  username?: string | null;
+  bio?: string | null;
+  avatarUrl?: string | null;
+}) {
+  return {
+    id: user.id,
+    displayName: user.displayName ?? user.username ?? 'Vibinn member',
+    username: user.username ?? buildV2TravelerUsernameFallback(user.id),
+    email: null,
+    bio: user.bio ?? null,
+    avatarUrl: user.avatarUrl ?? null,
+    hasCompletedTastePreferences: true,
+  };
 }
 
 app.get('/api/decision/catalog/intents', (_req, res) => {
@@ -11486,7 +11896,29 @@ app.post('/api/decision/add-place', optionalAuth, async (req: AuthenticatedReque
   }
 });
 
-app.get('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/profile/me', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    const requestOrigin = `${getRequestOrigin(req)}`;
+    void Promise.all([
+      getMyProfile(req.authV2UserId),
+      buildV2TravelerProfile(req.authV2UserId, req.authV2UserId, requestOrigin),
+    ])
+      .then(([user, profile]) => {
+        if (!profile) {
+          res.status(404).json({ error: 'Profile not found' });
+          return;
+        }
+        res.json({
+          user: mapV2UserToLegacyAuthUser(user),
+          bookmarks: profile.bookmarks ?? [],
+          collections: profile.collections ?? [],
+          moments: profile.moments ?? [],
+        });
+      })
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void refreshSavedPlaceScoresForUser(req.authUserId!).catch(() => {});
   void getProfileMe(req.authUserId)
     .then((payload) => res.json(payload))
@@ -11592,7 +12024,37 @@ app.post('/api/waitlist', async (req, res) => {
   }
 });
 
-app.patch('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
+app.patch('/api/profile/me', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    const {
+      displayName,
+      username,
+      avatarUrl,
+      bio,
+    } = req.body as {
+      displayName?: string;
+      username?: string;
+      avatarUrl?: string | null;
+      bio?: string | null;
+    };
+
+    if (!displayName?.trim() || !username?.trim()) {
+      res.status(400).json({ error: 'displayName and username are required' });
+      return;
+    }
+
+    void updateMyProfile({
+      userId: req.authV2UserId,
+      displayName,
+      username,
+      avatarUrl,
+      bio,
+    })
+      .then((user) => res.json({ user: mapV2UserToLegacyAuthUser(user) }))
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void updateProfile(req.authUserId, req.body)
     .then((user) => res.json({ user }))
     .catch((error) => handleError(res, error));
@@ -11604,7 +12066,14 @@ app.get('/api/client-config', (_req, res) => {
   });
 });
 
-app.delete('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
+app.delete('/api/profile/me', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    res.status(501).json({
+      error: 'Account deletion has not been migrated to the new account system yet',
+    });
+    return;
+  }
+
   void eraseAccount(req.authUserId!)
     .then(() => res.status(204).send())
     .catch((error) => {
@@ -11615,12 +12084,39 @@ app.delete('/api/profile/me', requireAuth, (req: AuthenticatedRequest, res) => {
     });
 });
 
-app.get('/api/notifications', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/notifications', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    void listV2Notifications(req.authV2UserId).then((notifications) => res.json({ notifications }));
+    return;
+  }
+
   void getNotifications(req.authUserId).then((notifications) => res.json({ notifications }));
 });
 
-app.post('/api/notifications/:id/read', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/notifications/:id/read', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    if (req.authV2UserId && !req.authUserId) {
+      const notification = await prismaV2.notification.findFirst({
+        where: {
+          id: req.params.id,
+          userId: req.authV2UserId,
+        },
+      });
+
+      if (!notification) {
+        res.status(404).json({ error: 'Notification not found' });
+        return;
+      }
+
+      await prismaV2.notification.update({
+        where: { id: notification.id },
+        data: { readAt: notification.readAt ?? new Date() },
+      });
+
+      res.status(204).send();
+      return;
+    }
+
     const notification = await prisma.notification.findFirst({
       where: {
         id: req.params.id,
@@ -11644,8 +12140,23 @@ app.post('/api/notifications/:id/read', requireAuth, async (req: AuthenticatedRe
   }
 });
 
-app.post('/api/notifications/read-all', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/notifications/read-all', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    if (req.authV2UserId && !req.authUserId) {
+      await prismaV2.notification.updateMany({
+        where: {
+          userId: req.authV2UserId,
+          readAt: null,
+        },
+        data: {
+          readAt: new Date(),
+        },
+      });
+
+      res.status(204).send();
+      return;
+    }
+
     await prisma.notification.updateMany({
       where: {
         userId: req.authUserId!,
@@ -11662,7 +12173,7 @@ app.post('/api/notifications/read-all', requireAuth, async (req: AuthenticatedRe
   }
 });
 
-app.post('/api/me/push-devices', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/me/push-devices', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const {
       fcmToken,
@@ -11679,6 +12190,29 @@ app.post('/api/me/push-devices', requireAuth, async (req: AuthenticatedRequest, 
 
     if (!normalizedToken) {
       res.status(400).json({ error: 'fcmToken is required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      await prismaV2.userPushDevice.upsert({
+        where: { fcmToken: normalizedToken },
+        update: {
+          userId: req.authV2UserId,
+          platform: normalizedPlatform,
+          appVersion: appVersion?.trim() || null,
+          isActive: true,
+          lastSeenAt: new Date(),
+        },
+        create: {
+          userId: req.authV2UserId,
+          fcmToken: normalizedToken,
+          platform: normalizedPlatform,
+          appVersion: appVersion?.trim() || null,
+          isActive: true,
+        },
+      });
+
+      res.status(201).json({ ok: true });
       return;
     }
 
@@ -11706,13 +12240,29 @@ app.post('/api/me/push-devices', requireAuth, async (req: AuthenticatedRequest, 
   }
 });
 
-app.delete('/api/me/push-devices', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.delete('/api/me/push-devices', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { fcmToken } = req.body as { fcmToken?: string };
     const normalizedToken = fcmToken?.trim();
 
     if (!normalizedToken) {
       res.status(400).json({ error: 'fcmToken is required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      await prismaV2.userPushDevice.updateMany({
+        where: {
+          userId: req.authV2UserId,
+          fcmToken: normalizedToken,
+        },
+        data: {
+          isActive: false,
+          lastSeenAt: new Date(),
+        },
+      });
+
+      res.json({ ok: true });
       return;
     }
 
@@ -11733,15 +12283,69 @@ app.delete('/api/me/push-devices', requireAuth, async (req: AuthenticatedRequest
   }
 });
 
+app.use((req, res, next) => {
+  const retiredExactPaths = new Map<string, string>([
+    ['/api/settings/account', 'Legacy account settings'],
+    ['/api/settings/privacy', 'Legacy privacy settings'],
+    ['/api/support', 'Legacy support FAQ'],
+    ['/api/saved-locations', 'Legacy saved locations'],
+    ['/api/discovery/places', 'Legacy discovery places'],
+    ['/api/discovery/places/count', 'Legacy discovery places count'],
+    ['/api/discovery/events', 'Legacy discovery events'],
+    ['/api/discovery/travelers', 'Legacy traveler discovery'],
+    ['/api/discovery/travelers/public-search', 'Legacy public traveler search'],
+    ['/api/discovery/travelers/public-suggestions', 'Legacy public traveler suggestions'],
+    ['/api/recommendations/today', 'Legacy daily recommendations'],
+    ['/api/me/signals', 'Legacy personalization signals'],
+    ['/api/me/interaction-state', 'Legacy interaction state'],
+    ['/api/been-there', 'Legacy been-there check-ins'],
+  ]);
+
+  const retiredPrefixPaths: Array<[string, string]> = [
+    ['/api/saved-locations/', 'Legacy saved locations'],
+    ['/api/friendships/', 'Legacy friendships'],
+    ['/api/chat/', 'Legacy chat'],
+  ];
+
+  const exactFeature = retiredExactPaths.get(req.path);
+  if (exactFeature) {
+    respondLegacyFeatureRetired(res, exactFeature);
+    return;
+  }
+
+  const prefixFeature = retiredPrefixPaths.find(([prefix]) => req.path.startsWith(prefix));
+  if (prefixFeature) {
+    respondLegacyFeatureRetired(res, prefixFeature[1]);
+    return;
+  }
+
+  if (req.path.startsWith('/api/places/') && req.path.endsWith('/related')) {
+    respondLegacyFeatureRetired(res, 'Legacy related places');
+    return;
+  }
+
+  next();
+});
+
 app.get('/api/settings/account', requireAuth, (req: AuthenticatedRequest, res) => {
   void getAccountSettings(req.authUserId).then((payload) => res.json(payload));
 });
 
-app.get('/api/settings/notifications', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/settings/notifications', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    void getV2NotificationSettings(req.authV2UserId).then((payload) => res.json(payload));
+    return;
+  }
+
   void getNotificationSettings(req.authUserId).then((payload) => res.json(payload));
 });
 
-app.patch('/api/settings/notifications', requireAuth, (req: AuthenticatedRequest, res) => {
+app.patch('/api/settings/notifications', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    void updateV2NotificationSettings(req.authV2UserId, req.body ?? {}).then((payload) => res.json(payload));
+    return;
+  }
+
   void updateNotificationSettings(req.authUserId, req.body).then((payload) => res.json(payload));
 });
 
@@ -11757,7 +12361,14 @@ app.get('/api/support', requireAuth, (_, res) => {
   void getSupport().then((payload) => res.json(payload));
 });
 
-app.get('/api/collections', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/collections', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    void getV2Collections(req.authV2UserId)
+      .then((collections) => res.json({ collections }))
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void refreshSavedPlaceScoresForUser(req.authUserId!).catch(() => {});
   void getCollections(req.authUserId)
     .then((collections) => res.json({ collections }))
@@ -11776,20 +12387,47 @@ app.get('/api/collections/:id/public', (req, res) => {
     });
 });
 
-app.get('/api/bookmarks', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/bookmarks', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    void getV2Bookmarks(req.authV2UserId)
+      .then((payload) => res.json(payload))
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void refreshSavedPlaceScoresForUser(req.authUserId!).catch(() => {});
   void getBookmarks(req.authUserId)
     .then((payload) => res.json(payload))
     .catch((error) => handleError(res, error));
 });
 
-app.post('/api/collections', requireAuth, (req: AuthenticatedRequest, res) => {
+app.post('/api/collections', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    void createV2Collection(req.authV2UserId, req.body ?? {})
+      .then((collection) => res.status(201).json({ collection }))
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void createCollection(req.authUserId, req.body)
     .then((collection) => res.status(201).json({ collection }))
     .catch((error) => handleError(res, error));
 });
 
-app.patch('/api/collections/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+app.patch('/api/collections/:id', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    void updateV2Collection(req.authV2UserId, req.params.id, req.body ?? {})
+      .then((collection) => res.json({ collection }))
+      .catch((error) => {
+        if (error instanceof Error && error.message === 'Collection not found') {
+          res.status(404).json({ error: error.message });
+          return;
+        }
+        handleError(res, error);
+      });
+    return;
+  }
+
   void updateCollection(req.authUserId, req.params.id, req.body)
     .then((collection) => res.json({ collection }))
     .catch((error) => {
@@ -11801,7 +12439,20 @@ app.patch('/api/collections/:id', requireAuth, (req: AuthenticatedRequest, res) 
     });
 });
 
-app.delete('/api/collections/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+app.delete('/api/collections/:id', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    void deleteV2Collection(req.authV2UserId, req.params.id)
+      .then((payload) => res.json(payload))
+      .catch((error) => {
+        if (error instanceof Error && error.message === 'Collection not found') {
+          res.status(404).json({ error: error.message });
+          return;
+        }
+        handleError(res, error);
+      });
+    return;
+  }
+
   void deleteCollection(req.authUserId, req.params.id)
     .then((payload) => res.json(payload))
     .catch((error) => {
@@ -11813,14 +12464,121 @@ app.delete('/api/collections/:id', requireAuth, (req: AuthenticatedRequest, res)
     });
 });
 
-app.get('/api/moments', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/moments', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    const requestOrigin = `${getRequestOrigin(req)}`;
+    void buildV2DiaryMoments(req.authV2UserId, requestOrigin)
+      .then((payload) => res.json(payload))
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void getMoments(req.authUserId)
     .then((moments) => res.json({ moments }))
     .catch((error) => handleError(res, error));
 });
 
-app.post('/api/moments', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/moments', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    if (req.authV2UserId && !req.authUserId) {
+      const payload = { ...req.body };
+      const placeId = typeof payload.placeId === 'string' ? payload.placeId.trim() : '';
+      const placeName = typeof payload.placeName === 'string' ? payload.placeName.trim() : '';
+      const uploadedMedia = Array.isArray(payload.uploadedMedia)
+        ? payload.uploadedMedia.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+        : [];
+      const visitedDate = typeof payload.visitedDate === 'string' ? payload.visitedDate.trim() : '';
+      const caption = typeof payload.caption === 'string' ? payload.caption.trim() : '';
+
+      if (!placeId || !placeName || !visitedDate) {
+        res.status(400).json({ error: 'placeId, placeName, and visitedDate are required' });
+        return;
+      }
+
+      const googlePlaceId = typeof payload.googlePlaceId === 'string' ? payload.googlePlaceId.trim() || null : null;
+      const autocompleteSessionToken = typeof payload.autocompleteSessionToken === 'string'
+        ? payload.autocompleteSessionToken.trim() || null
+        : null;
+      const visibility = normalizeV2MomentVisibility(payload.visibility ?? payload.privacy);
+      const wouldRevisit = normalizeV2WouldRevisit(payload.wouldRevisit);
+
+      let resolvedPlaceId = placeId;
+      let resolvedPlaceName = placeName;
+      let resolvedPlaceAddress = typeof payload.placeAddress === 'string' ? payload.placeAddress.trim() || null : null;
+      let resolvedPlaceLocation = typeof payload.placeSearchLocation === 'string' && payload.placeSearchLocation.trim().length > 0
+        ? payload.placeSearchLocation.trim()
+        : resolvedPlaceAddress && resolvedPlaceAddress.length > 0
+          ? resolvedPlaceAddress
+          : 'Unknown location';
+      let resolvedPlaceCategory = typeof payload.placeCategory === 'string' ? payload.placeCategory.trim() || null : null;
+      let resolvedPlaceLatitude = typeof payload.placeLatitude === 'number' ? payload.placeLatitude : null;
+      let resolvedPlaceLongitude = typeof payload.placeLongitude === 'number' ? payload.placeLongitude : null;
+
+      if (googlePlaceId) {
+        const canonicalPlace = await acquireCheckInPlaceFromGoogleDetailsV2({
+          googlePlaceId,
+          sessionToken: autocompleteSessionToken,
+          locationLabel: resolvedPlaceLocation,
+        });
+
+        const placeRecord = await prismaV2.place.findUnique({
+          where: { id: canonicalPlace.id },
+          select: {
+            id: true,
+            name: true,
+            address: true,
+            city: true,
+            country: true,
+            category: true,
+            latitude: true,
+            longitude: true,
+          },
+        });
+
+        if (placeRecord) {
+          resolvedPlaceId = placeRecord.id;
+          resolvedPlaceName = placeRecord.name;
+          resolvedPlaceAddress = placeRecord.address ?? resolvedPlaceAddress;
+          resolvedPlaceLocation = [placeRecord.city, placeRecord.country].filter(Boolean).join(', ')
+            || placeRecord.address
+            || resolvedPlaceLocation;
+          resolvedPlaceCategory = placeRecord.category || resolvedPlaceCategory;
+          resolvedPlaceLatitude = placeRecord.latitude ?? resolvedPlaceLatitude;
+          resolvedPlaceLongitude = placeRecord.longitude ?? resolvedPlaceLongitude;
+        }
+      }
+
+      const moment = await prismaV2.moment.create({
+        data: {
+          userId: req.authV2UserId,
+          placeId: resolvedPlaceId,
+          placeName: resolvedPlaceName,
+          placeLocation: resolvedPlaceLocation,
+          placeAddress: resolvedPlaceAddress,
+          placeNeighborhood: null,
+          placeCategory: resolvedPlaceCategory,
+          placeGooglePlaceId: googlePlaceId,
+          autocompleteSessionToken,
+          placeLatitude: resolvedPlaceLatitude,
+          placeLongitude: resolvedPlaceLongitude,
+          visitedAt: parseVisitedDayString(visitedDate),
+          caption,
+          uploadedMedia,
+          rating: typeof payload.rating === 'number' ? payload.rating : null,
+          ratingLabel: typeof payload.ratingLabel === 'string' ? payload.ratingLabel.trim() || null : null,
+          wouldRevisit,
+          visibility,
+          vibeTags: Array.isArray(payload.vibeTags)
+            ? payload.vibeTags.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
+            : [],
+        },
+      });
+
+      const requestOrigin = `${getRequestOrigin(req)}`;
+      res.status(201).json({ moment: mapV2MomentForClient(moment, requestOrigin) });
+      return;
+    }
+
     const payload = { ...req.body };
     const googlePlaceId = typeof payload.googlePlaceId === 'string' ? payload.googlePlaceId.trim() : '';
     if (googlePlaceId) {
@@ -12020,8 +12778,49 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
   }
 });
 
-app.patch('/api/moments/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.patch('/api/moments/:id', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    if (req.authV2UserId && !req.authUserId) {
+      const payload = req.body ?? {};
+      const ratingLabel = typeof payload.ratingLabel === 'string' ? payload.ratingLabel.trim() : null;
+      const visibility = payload.visibility === undefined && payload.privacy === undefined
+        ? undefined
+        : normalizeV2MomentVisibility(payload.visibility ?? payload.privacy);
+      const wouldRevisit = payload.wouldRevisit === undefined
+        ? undefined
+        : normalizeV2WouldRevisit(payload.wouldRevisit);
+
+      const existing = await prismaV2.moment.findFirst({
+        where: {
+          id: req.params.id,
+          userId: req.authV2UserId,
+        },
+      });
+
+      if (!existing) {
+        res.status(404).json({ error: 'Moment not found' });
+        return;
+      }
+
+      const updated = await prismaV2.moment.update({
+        where: { id: existing.id },
+        data: {
+          visitedAt: typeof payload.visitedDate === 'string' && payload.visitedDate.trim().length > 0
+            ? parseVisitedDayString(payload.visitedDate)
+            : undefined,
+          caption: typeof payload.caption === 'string' ? payload.caption.trim() : undefined,
+          rating: typeof payload.rating === 'number' ? payload.rating : undefined,
+          ratingLabel,
+          wouldRevisit,
+          visibility,
+        },
+      });
+
+      const requestOrigin = `${getRequestOrigin(req)}`;
+      res.json({ moment: mapV2MomentForClient(updated, requestOrigin) });
+      return;
+    }
+
     const moment = await updateMoment(req.authUserId, req.params.id, req.body);
     if (!moment) {
       res.status(404).json({ error: 'Moment not found' });
@@ -12085,8 +12884,29 @@ app.patch('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest
   }
 });
 
-app.delete('/api/moments/:id', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.delete('/api/moments/:id', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    if (req.authV2UserId && !req.authUserId) {
+      const existing = await prismaV2.moment.findFirst({
+        where: {
+          id: req.params.id,
+          userId: req.authV2UserId,
+        },
+      });
+
+      if (!existing) {
+        res.status(404).json({ error: 'Moment not found' });
+        return;
+      }
+
+      await prismaV2.moment.delete({
+        where: { id: existing.id },
+      });
+
+      res.json({});
+      return;
+    }
+
     const result = await deleteMoment(req.authUserId, req.params.id);
     if (!result) {
       res.status(404).json({ error: 'Moment not found' });
@@ -12153,12 +12973,22 @@ app.get('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest, 
         },
       }),
     ]);
+    const existingVibin = await prismaV2.vibin.findUnique({
+      where: {
+        senderUserId_targetType_targetId: {
+          senderUserId: req.authV2UserId!,
+          targetType: 'MOMENT',
+          targetId: moment.id,
+        },
+      },
+      select: { id: true },
+    });
 
     const requestOrigin = `${getRequestOrigin(req)}`;
     const payload = mapV2MomentForClient(
       moment,
       requestOrigin,
-      { commentCount, likeCount },
+      { commentCount, likeCount, isVibed: Boolean(existingVibin) },
       latestComment,
     );
 
@@ -12428,13 +13258,24 @@ app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
 });
 
 app.get('/api/lookups/places', (req, res) => {
-  const q = String(req.query.q || '').toLowerCase().trim();
+  const q = String(req.query.q || '').trim();
+  const sessionToken = String(req.query.sessionToken || crypto.randomUUID()).trim();
+  const originLat = Number(req.query.originLat);
+  const originLon = Number(req.query.originLon);
   if (q.length < 3) {
     res.json({ places: [] });
     return;
   }
 
-  void getPlaceSuggestions(q)
+  const origin = Number.isFinite(originLat) && Number.isFinite(originLon)
+    ? { latitude: originLat, longitude: originLon }
+    : null;
+
+  void getCheckInPlaceSuggestions(q, {
+    sessionToken,
+    locationLabel: typeof req.query.location === 'string' ? req.query.location : '',
+    origin,
+  })
     .then((places) => res.json({ places }))
     .catch((error) => handleError(res, error));
 });
@@ -13597,19 +14438,42 @@ app.get('/api/me/interaction-state', requireAuth, async (req: AuthenticatedReque
   }
 });
 
-app.get('/api/discovery/travelers', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/discovery/travelers', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    void searchV2Travelers(req.authV2UserId, '')
+      .then((travelers) => res.json({ travelers }))
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void getTravelerDiscovery(req.authUserId)
     .then((payload) => res.json(payload))
     .catch((error) => handleError(res, error));
 });
 
-app.get('/api/feed', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/feed', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    const requestOrigin = `${getRequestOrigin(req)}`;
+    void buildV2FollowingFeed(req.authV2UserId, requestOrigin)
+      .then((payload) => res.json(payload))
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void getFollowingFeed(req.authUserId)
     .then((payload) => res.json(payload))
     .catch((error) => handleError(res, error));
 });
 
-app.get('/api/feed/posts', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/feed/posts', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    const requestOrigin = `${getRequestOrigin(req)}`;
+    void buildV2FollowingFeed(req.authV2UserId, requestOrigin)
+      .then((payload) => res.json(payload))
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void getFollowingFeed(req.authUserId)
     .then((payload) => res.json(payload))
     .catch((error) => handleError(res, error));
@@ -13630,7 +14494,21 @@ app.get('/api/discovery/travelers/public-suggestions', (req, res) => {
     .catch((error) => handleError(res, error));
 });
 
-app.get('/api/travelers/:id', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/travelers/:id', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    const requestOrigin = `${getRequestOrigin(req)}`;
+    void buildV2TravelerProfile(req.params.id, req.authV2UserId, requestOrigin)
+      .then((payload) => {
+        if (!payload) {
+          res.status(404).json({ error: 'Traveler not found' });
+          return;
+        }
+        res.json(payload);
+      })
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void getTravelerProfile(req.params.id, req.authUserId)
     .then((payload) => {
       if (!payload) {
@@ -13642,16 +14520,44 @@ app.get('/api/travelers/:id', requireAuth, (req: AuthenticatedRequest, res) => {
     .catch((error) => handleError(res, error));
 });
 
-app.get('/api/travelers/:id/followers', requireAuth, (req: AuthenticatedRequest, res) => {
+app.get('/api/travelers/:id/followers', requireSessionAuth, (req: AuthenticatedRequest, res) => {
+  if (req.authV2UserId && !req.authUserId) {
+    void buildV2TravelerConnectionList(req.params.id, 'followers')
+      .then((followers) => {
+        if (!followers) {
+          res.status(404).json({ error: 'Traveler not found' });
+          return;
+        }
+        res.json({ travelers: followers });
+      })
+      .catch((error) => handleError(res, error));
+    return;
+  }
+
   void getTravelerFollowers(req.params.id, req.authUserId)
     .then((followers) => res.json({ travelers: followers }))
     .catch((error) => handleError(res, error));
 });
 
-app.get('/api/places/:id/travelers', requireAuth, (req: AuthenticatedRequest, res) => {
-  void getPlaceTravelerMoments(req.params.id, req.authUserId)
-    .then((travelerMoments) => res.json({ travelerMoments }))
-    .catch((error) => handleError(res, error));
+app.get('/api/places/:id/travelers', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
+  try {
+    if (req.authV2UserId && !req.authUserId) {
+      const place = await getPlaceDetailsByInternalId(req.params.id, req.authV2UserId);
+      if (!place) {
+        res.status(404).json({ error: 'Place not found' });
+        return;
+      }
+
+      const travelerMoments = await getUnifiedPlaceTravelerMoments(place, req.authV2UserId);
+      res.json({ travelerMoments });
+      return;
+    }
+
+    const travelerMoments = await getPlaceTravelerMoments(req.params.id, req.authUserId);
+    res.json({ travelerMoments });
+  } catch (error) {
+    handleError(res, error);
+  }
 });
 
 app.get('/api/places/:id/related', requireAuth, (req: AuthenticatedRequest, res) => {
@@ -13660,8 +14566,44 @@ app.get('/api/places/:id/related', requireAuth, (req: AuthenticatedRequest, res)
     .catch((error) => handleError(res, error));
 });
 
-app.patch('/api/preferences', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.patch('/api/preferences', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    if (req.authV2UserId && !req.authUserId) {
+      const payload = req.body as {
+        selectedInterests?: string[];
+        selectedVibe?: string | null;
+        skippedPreferences?: boolean;
+        onboardingCompleted?: boolean;
+      };
+
+      const preferences = await prismaV2.userPreference.upsert({
+        where: { userId: req.authV2UserId },
+        update: {
+          selectedInterests: payload.selectedInterests ?? [],
+          selectedVibe: payload.selectedVibe ?? null,
+          skippedPreferences: payload.skippedPreferences ?? false,
+          onboardingCompleted: payload.onboardingCompleted ?? true,
+        },
+        create: {
+          userId: req.authV2UserId,
+          selectedInterests: payload.selectedInterests ?? [],
+          selectedVibe: payload.selectedVibe ?? null,
+          skippedPreferences: payload.skippedPreferences ?? false,
+          onboardingCompleted: payload.onboardingCompleted ?? true,
+        },
+      });
+
+      await prismaV2.user.update({
+        where: { id: req.authV2UserId },
+        data: {
+          onboardingCompleted: preferences.onboardingCompleted,
+        },
+      });
+
+      res.json(preferences);
+      return;
+    }
+
     const payload = req.body as {
       selectedInterests?: string[];
       selectedVibe?: string | null;
@@ -13702,11 +14644,49 @@ app.patch('/api/preferences', requireAuth, async (req: AuthenticatedRequest, res
   }
 });
 
-app.post('/api/bookmarks', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/bookmarks', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { placeId, place, source } = req.body as { placeId?: string; place?: BookmarkPlaceSnapshot; source?: string };
     if (!placeId) {
       res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      await ensureV2BookmarkablePlaceExists(placeId, place ?? null);
+
+      await prismaV2.bookmark.upsert({
+        where: {
+          userId_placeId: {
+            userId: req.authV2UserId,
+            placeId,
+          },
+        },
+        update: {
+          source: source?.trim() || undefined,
+          expiresAt: new Date(Date.now() + (48 * 60 * 60 * 1000)),
+        },
+        create: {
+          userId: req.authV2UserId,
+          placeId,
+          source: source?.trim() || undefined,
+          expiresAt: new Date(Date.now() + (48 * 60 * 60 * 1000)),
+        },
+      });
+
+      await prismaV2.dismissedPlace.deleteMany({
+        where: {
+          userId: req.authV2UserId,
+          placeId,
+        },
+      });
+
+      const payload = await getV2Bookmarks(req.authV2UserId);
+      res.json({
+        bookmarkedPlaceIds: payload.bookmarks.map((item) => item.id),
+        bookmarks: payload.bookmarks,
+        entries: payload.entries,
+      });
       return;
     }
 
@@ -13755,11 +14735,28 @@ app.post('/api/bookmarks', requireAuth, async (req: AuthenticatedRequest, res) =
   }
 });
 
-app.delete('/api/bookmarks/:placeId', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.delete('/api/bookmarks/:placeId', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { placeId } = req.params;
     if (!placeId) {
       res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      await prismaV2.bookmark.deleteMany({
+        where: {
+          userId: req.authV2UserId,
+          placeId,
+        },
+      });
+
+      const payload = await getV2Bookmarks(req.authV2UserId);
+      res.json({
+        bookmarkedPlaceIds: payload.bookmarks.map((item) => item.id),
+        bookmarks: payload.bookmarks,
+        entries: payload.entries,
+      });
       return;
     }
 
@@ -13786,11 +14783,36 @@ app.delete('/api/bookmarks/:placeId', requireAuth, async (req: AuthenticatedRequ
   }
 });
 
-app.post('/api/dismissed-places', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/dismissed-places', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { placeId, reason } = req.body as { placeId?: string; reason?: string };
     if (!placeId) {
       res.status(400).json({ error: 'placeId is required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      await prismaV2.dismissedPlace.upsert({
+        where: {
+          userId_placeId: {
+            userId: req.authV2UserId,
+            placeId,
+          },
+        },
+        update: { reason: reason ?? 'manual_hide' },
+        create: {
+          userId: req.authV2UserId,
+          placeId,
+          reason: reason ?? 'manual_hide',
+        },
+      });
+
+      const dismissed = await prismaV2.dismissedPlace.findMany({
+        where: { userId: req.authV2UserId },
+        select: { placeId: true },
+      });
+
+      res.json({ dismissedPlaceIds: dismissed.map((item) => item.placeId) });
       return;
     }
 
@@ -13879,11 +14901,50 @@ app.post('/api/been-there', requireAuth, async (req: AuthenticatedRequest, res) 
   }
 });
 
-app.post('/api/follows/toggle', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/follows/toggle', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const { targetUserId } = req.body as { targetUserId?: string };
     if (!targetUserId) {
       res.status(400).json({ error: 'targetUserId is required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      const targetUser = await prismaV2.user.findUnique({
+        where: { id: targetUserId },
+        select: { id: true },
+      });
+
+      if (!targetUser || targetUserId === req.authV2UserId) {
+        res.status(400).json({ error: 'A different target user is required' });
+        return;
+      }
+
+      const existing = await prismaV2.follow.findUnique({
+        where: {
+          sourceUserId_targetUserId: {
+            sourceUserId: req.authV2UserId,
+            targetUserId,
+          },
+        },
+      });
+
+      if (existing) {
+        await prismaV2.follow.delete({ where: { id: existing.id } });
+        const followersCount = await prismaV2.follow.count({ where: { targetUserId } });
+        res.json({ active: false, followersCount });
+        return;
+      }
+
+      await prismaV2.follow.create({
+        data: {
+          sourceUserId: req.authV2UserId,
+          targetUserId,
+        },
+      });
+
+      const followersCount = await prismaV2.follow.count({ where: { targetUserId } });
+      res.json({ active: true, followersCount });
       return;
     }
 
@@ -14378,7 +15439,7 @@ app.post('/api/chat/conversations/:id/read', requireAuth, async (req: Authentica
   }
 });
 
-app.post('/api/reports', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/reports', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const {
       targetType,
@@ -14400,6 +15461,22 @@ app.post('/api/reports', requireAuth, async (req: AuthenticatedRequest, res) => 
       return;
     }
 
+    if (req.authV2UserId && !req.authUserId) {
+      const report = await prismaV2.userReport.create({
+        data: {
+          reporterId: req.authV2UserId,
+          targetType,
+          targetId,
+          targetUserId: targetUserId ?? null,
+          reason: reason.trim(),
+          details: details?.trim() || null,
+        },
+      });
+
+      res.status(201).json({ ok: true, reportId: report.id });
+      return;
+    }
+
     const report = await prisma.userReport.create({
       data: {
         reporterId: req.authUserId!,
@@ -14417,13 +15494,42 @@ app.post('/api/reports', requireAuth, async (req: AuthenticatedRequest, res) => 
   }
 });
 
-app.post('/api/users/:id/block', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/users/:id/block', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const targetUserId = req.params.id;
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : null;
 
-    if (!targetUserId || targetUserId === req.authUserId) {
+    if (!targetUserId || targetUserId === req.authUserId || targetUserId === req.authV2UserId) {
       res.status(400).json({ error: 'A different target user is required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      await prismaV2.userBlock.upsert({
+        where: {
+          sourceUserId_targetUserId: {
+            sourceUserId: req.authV2UserId,
+            targetUserId,
+          },
+        },
+        update: { reason },
+        create: {
+          sourceUserId: req.authV2UserId,
+          targetUserId,
+          reason,
+        },
+      });
+
+      await prismaV2.follow.deleteMany({
+        where: {
+          OR: [
+            { sourceUserId: req.authV2UserId, targetUserId },
+            { sourceUserId: targetUserId, targetUserId: req.authV2UserId },
+          ],
+        },
+      });
+
+      res.json({ ok: true, blockedUserId: targetUserId });
       return;
     }
 
@@ -14463,12 +15569,24 @@ app.post('/api/users/:id/block', requireAuth, async (req: AuthenticatedRequest, 
   }
 });
 
-app.delete('/api/users/:id/block', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.delete('/api/users/:id/block', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const targetUserId = req.params.id;
 
-    if (!targetUserId || targetUserId === req.authUserId) {
+    if (!targetUserId || targetUserId === req.authUserId || targetUserId === req.authV2UserId) {
       res.status(400).json({ error: 'A different target user is required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      await prismaV2.userBlock.deleteMany({
+        where: {
+          sourceUserId: req.authV2UserId,
+          targetUserId,
+        },
+      });
+
+      res.json({ ok: true, blockedUserId: targetUserId });
       return;
     }
 
@@ -14485,8 +15603,39 @@ app.delete('/api/users/:id/block', requireAuth, async (req: AuthenticatedRequest
   }
 });
 
-app.get('/api/users/blocks', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.get('/api/users/blocks', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    if (req.authV2UserId && !req.authUserId) {
+      const blocks = await prismaV2.userBlock.findMany({
+        where: {
+          sourceUserId: req.authV2UserId,
+        },
+        orderBy: { createdAt: 'desc' },
+        include: {
+          targetUser: {
+            select: {
+              id: true,
+              username: true,
+              displayName: true,
+              avatarUrl: true,
+            },
+          },
+        },
+      });
+
+      res.json({
+        users: blocks.map((block) => ({
+          id: block.targetUser.id,
+          username: block.targetUser.username ?? buildV2TravelerUsernameFallback(block.targetUser.id),
+          displayName: block.targetUser.displayName ?? block.targetUser.username ?? buildV2TravelerUsernameFallback(block.targetUser.id),
+          avatar: block.targetUser.avatarUrl ?? null,
+          blockedAt: block.createdAt.toISOString(),
+          reason: block.reason ?? null,
+        })),
+      });
+      return;
+    }
+
     const blocks = await prisma.userBlock.findMany({
       where: {
         sourceUserId: req.authUserId!,
@@ -14519,7 +15668,7 @@ app.get('/api/users/blocks', requireAuth, async (req: AuthenticatedRequest, res)
   }
 });
 
-app.post('/api/vibins/toggle', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/vibins/toggle', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const {
       targetType,
@@ -14535,6 +15684,48 @@ app.post('/api/vibins/toggle', requireAuth, async (req: AuthenticatedRequest, re
 
     if (!targetType || !targetId) {
       res.status(400).json({ error: 'targetType and targetId are required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      const resolvedReceiverUserId = receiverUserId ?? await resolveV2TargetOwner(targetType, targetId);
+      const resolvedMomentId = momentId ?? await resolveV2TargetMomentId(targetType, targetId);
+
+      const existing = await prismaV2.vibin.findUnique({
+        where: {
+          senderUserId_targetType_targetId: {
+            senderUserId: req.authV2UserId,
+            targetType,
+            targetId,
+          },
+        },
+      });
+
+      if (existing) {
+        await prismaV2.vibin.delete({
+          where: { id: existing.id },
+        });
+        const count = await prismaV2.vibin.count({
+          where: { targetType, targetId },
+        });
+        res.json({ active: false, count });
+        return;
+      }
+
+      await prismaV2.vibin.create({
+        data: {
+          senderUserId: req.authV2UserId,
+          receiverUserId: resolvedReceiverUserId ?? null,
+          momentId: resolvedMomentId ?? null,
+          targetType,
+          targetId,
+        },
+      });
+
+      const count = await prismaV2.vibin.count({
+        where: { targetType, targetId },
+      });
+      res.json({ active: true, count });
       return;
     }
 
@@ -14609,13 +15800,35 @@ app.post('/api/vibins/toggle', requireAuth, async (req: AuthenticatedRequest, re
   }
 });
 
-app.get('/api/comments', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.get('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const targetType = String(req.query.targetType ?? '');
     const targetId = String(req.query.targetId ?? '');
 
     if (!targetType || !targetId) {
       res.status(400).json({ error: 'targetType and targetId are required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      const comments = await prismaV2.comment.findMany({
+        where: {
+          targetType: targetType as 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION',
+          targetId,
+        },
+        orderBy: { createdAt: 'asc' },
+        include: {
+          user: {
+            select: {
+              username: true,
+            },
+          },
+        },
+      });
+
+      res.json({
+        comments: serializeV2CommentTree(comments),
+      });
       return;
     }
 
@@ -14660,22 +15873,134 @@ app.get('/api/comments', requireAuth, async (req: AuthenticatedRequest, res) => 
   }
 });
 
-app.post('/api/comments', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
     const {
       targetType,
       targetId,
       body,
       momentId,
+      parentCommentId,
     } = req.body as {
       targetType?: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
       targetId?: string;
       body?: string;
       momentId?: string;
+      parentCommentId?: string;
     };
 
     if (!targetType || !targetId || !body?.trim()) {
       res.status(400).json({ error: 'targetType, targetId, and body are required' });
+      return;
+    }
+
+    if (req.authV2UserId && !req.authUserId) {
+      const resolvedMomentId = momentId ?? await resolveV2TargetMomentId(targetType, targetId);
+      const trimmedParentCommentId = parentCommentId?.trim() || null;
+
+      let parentComment: {
+        id: string;
+        userId: string;
+        targetType: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
+        targetId: string;
+        parentCommentId: string | null;
+      } | null = null;
+
+      if (trimmedParentCommentId) {
+        parentComment = await prismaV2.comment.findUnique({
+          where: { id: trimmedParentCommentId },
+          select: {
+            id: true,
+            userId: true,
+            targetType: true,
+            targetId: true,
+            parentCommentId: true,
+          },
+        });
+
+        if (!parentComment) {
+          res.status(404).json({ error: 'Parent comment not found' });
+          return;
+        }
+
+        if (parentComment.targetType !== targetType || parentComment.targetId !== targetId) {
+          res.status(400).json({ error: 'Reply must belong to the same target' });
+          return;
+        }
+
+        if (parentComment.parentCommentId) {
+          res.status(400).json({ error: 'Nested replies are limited to one level' });
+          return;
+        }
+      }
+
+      const comment = await prismaV2.comment.create({
+        data: {
+          userId: req.authV2UserId,
+          targetType,
+          targetId,
+          body: body.trim(),
+          momentId: resolvedMomentId ?? null,
+          parentCommentId: trimmedParentCommentId,
+        },
+        include: {
+          user: {
+            select: {
+              username: true,
+            },
+          },
+        },
+      });
+
+      const count = await prismaV2.comment.count({
+        where: { targetType, targetId },
+      });
+
+      const notificationUserId = targetType === 'PROFILE'
+        ? (targetId !== req.authV2UserId ? targetId : null)
+        : await resolveV2TargetOwner(targetType, targetId);
+
+      if (notificationUserId && notificationUserId !== req.authV2UserId) {
+        const actorName = comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId);
+        await createV2Notification({
+          userId: notificationUserId,
+          actorUserId: req.authV2UserId,
+          type: 'COMMENT',
+          targetType,
+          targetId,
+          title: `${actorName} commented on your moment`,
+          body: comment.body,
+        });
+      }
+
+      if (
+        parentComment
+        && parentComment.userId !== req.authV2UserId
+        && parentComment.userId !== notificationUserId
+      ) {
+        const actorName = comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId);
+        await createV2Notification({
+          userId: parentComment.userId,
+          actorUserId: req.authV2UserId,
+          type: 'COMMENT',
+          targetType,
+          targetId,
+          title: `${actorName} replied to your comment`,
+          body: comment.body,
+        });
+      }
+
+      res.json({
+        comment: {
+          id: comment.id,
+          user: comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId),
+          body: comment.body,
+          createdAt: comment.createdAt.toISOString(),
+          parentCommentId: comment.parentCommentId,
+          replies: [],
+        },
+        count,
+      });
       return;
     }
 
@@ -14767,6 +16092,8 @@ app.post('/api/comments', requireAuth, async (req: AuthenticatedRequest, res) =>
         user: comment.user.username,
         body: comment.body,
         createdAt: comment.createdAt.toISOString(),
+        parentCommentId: null,
+        replies: [],
       },
       count,
     });
