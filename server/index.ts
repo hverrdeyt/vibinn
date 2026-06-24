@@ -9790,11 +9790,6 @@ app.get('/api/health', (_, res) => {
 app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
   try {
     if (req.authV2UserId && !req.authUserId) {
-      if (legacyDbAccessDisabled) {
-        res.status(401).json({ error: 'Unauthorized' });
-        return;
-      }
-
       const profile = await getMyProfile(req.authV2UserId);
       res.json({
         user: mapV2UserToLegacyAuthUser(profile.user),
@@ -13073,8 +13068,14 @@ app.get('/api/media', async (req, res) => {
   }
 });
 
-app.post('/api/uploads/media', requireAuth, async (req: AuthenticatedRequest, res) => {
+app.post('/api/uploads/media', requireSessionAuth, async (req: AuthenticatedRequest, res) => {
   try {
+    const uploadUserId = req.authV2UserId ?? req.authUserId;
+    if (!uploadUserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
     const requestOrigin = `${getRequestOrigin(req)}`;
     const files = (req.body as {
       files?: Array<{
@@ -13098,7 +13099,7 @@ app.post('/api/uploads/media', requireAuth, async (req: AuthenticatedRequest, re
       const extension = getUploadExtension(file.fileName, file.mimeType ?? parsed.mimeType);
       const safeBaseName = path.basename(sanitizeFileName(file.fileName), path.extname(file.fileName));
       const storageName = `${Date.now()}-${index}-${crypto.randomUUID().slice(0, 8)}-${safeBaseName}${extension}`;
-      const objectKey = buildMomentObjectKey(req.authUserId!, storageName);
+      const objectKey = buildMomentObjectKey(uploadUserId, storageName);
 
       if (r2Client && R2_BUCKET_NAME) {
         await r2Client.send(new PutObjectCommand({
