@@ -9,7 +9,7 @@ import { getMessaging } from 'firebase-admin/messaging';
 import { Prisma, NotificationType, TargetType } from '@prisma/client';
 import sharp from 'sharp';
 import { MOCK_PLACES, SIMILAR_TRAVELERS } from '../src/mockData';
-import { prisma } from './prisma';
+import { legacyDbAccessDisabled, prisma } from './prisma';
 import { prismaV2 } from './prismaV2';
 import {
   attachDecisionPlace,
@@ -9790,6 +9790,11 @@ app.get('/api/health', (_, res) => {
 app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
   try {
     if (req.authV2UserId && !req.authUserId) {
+      if (legacyDbAccessDisabled) {
+        res.status(401).json({ error: 'Unauthorized' });
+        return;
+      }
+
       const profile = await getMyProfile(req.authV2UserId);
       res.json({
         user: mapV2UserToLegacyAuthUser(profile.user),
