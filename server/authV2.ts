@@ -787,11 +787,15 @@ export async function updateMyProfile(input: UpdateProfileInput) {
     },
   });
 
-  await updateMyOnboardingState({
-    userId: input.userId,
-    currentStep: 'LOCATION_PERMISSION',
-    completedStep: 'PROFILE',
-  });
+  try {
+    await updateMyOnboardingState({
+      userId: input.userId,
+      currentStep: 'LOCATION_PERMISSION',
+      completedStep: 'PROFILE',
+    });
+  } catch (error) {
+    console.error('updateMyProfile onboarding sync failed', error);
+  }
 
   return mapUser(user);
 }

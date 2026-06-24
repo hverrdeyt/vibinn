@@ -12051,7 +12051,13 @@ app.patch('/api/profile/me', requireSessionAuth, (req: AuthenticatedRequest, res
       bio,
     })
       .then((user) => res.json({ user: mapV2UserToLegacyAuthUser(user) }))
-      .catch((error) => handleError(res, error));
+      .catch((error) => {
+        if (error instanceof AuthV2Error) {
+          res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+          return;
+        }
+        handleError(res, error);
+      });
     return;
   }
 
