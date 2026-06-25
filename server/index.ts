@@ -602,13 +602,23 @@ function mapV2MomentForClient(moment: {
   autocompleteSessionToken: string | null;
   placeLatitude: number | null;
   placeLongitude: number | null;
-}, requestOrigin?: string, counts?: { commentCount?: number; likeCount?: number; isVibed?: boolean }, latestComment: {
+}, requestOrigin?: string, counts?: {
+  commentCount?: number;
+  likeCount?: number;
+  isVibed?: boolean;
+  recentVibers?: Array<{
+    id: string;
+    username: string;
+    displayName: string | null;
+    avatar: string | null;
+  }>;
+}, latestComment: {
   id: string;
   userId: string;
   user: { username: string | null };
   body: string;
   createdAt: Date;
-} | null = null) {
+} | null = null, placeContext?: { followedVisitorCount?: number }) {
   const resolvedMedia = resolveMomentMediaUrls(moment.uploadedMedia, requestOrigin);
   const primaryImage = resolvedMedia[0] || 'https://placehold.co/800x1000/111111/ffffff?text=Place';
 
@@ -626,6 +636,7 @@ function mapV2MomentForClient(moment: {
     commentCount: counts?.commentCount ?? 0,
     likeCount: counts?.likeCount ?? 0,
     isVibed: counts?.isVibed ?? false,
+    recentVibers: counts?.recentVibers ?? [],
     latestComment: latestComment
       ? {
           id: latestComment.id,
@@ -665,6 +676,7 @@ function mapV2MomentForClient(moment: {
       momentWouldRevisit: moment.wouldRevisit ?? undefined,
       momentRating: moment.rating ?? undefined,
       momentRatingLabel: moment.ratingLabel ?? undefined,
+      followedVisitorCount: placeContext?.followedVisitorCount ?? 0,
     },
   };
 }
@@ -781,11 +793,17 @@ async function loadV2MomentSocialState(momentIds: string[], viewerUserId?: strin
         body: string;
         createdAt: Date;
       }>(),
+      recentVibersByMoment: new Map<string, Array<{
+        id: string;
+        username: string;
+        displayName: string | null;
+        avatar: string | null;
+      }>>(),
       vibedMomentIds: new Set<string>(),
     };
   }
 
-  const [commentsByMoment, vibinsByMoment, latestComments, viewerVibins] = await Promise.all([
+  const [commentsByMoment, vibinsByMoment, latestComments, recentVibins, viewerVibins] = await Promise.all([
     prismaV2.comment.groupBy({
       by: ['targetId'],
       where: {
@@ -825,6 +843,26 @@ async function loadV2MomentSocialState(momentIds: string[], viewerUserId?: strin
       console.error('loadV2MomentSocialState latest comments failed', error);
       return [];
     }),
+    prismaV2.vibin.findMany({
+      where: {
+        targetType: 'MOMENT',
+        targetId: { in: momentIds },
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+          },
+        },
+      },
+    }).catch((error) => {
+      console.error('loadV2MomentSocialState recent vibins failed', error);
+      return [];
+    }),
     viewerUserId
       ? prismaV2.vibin.findMany({
           where: {
@@ -849,12 +887,78 @@ async function loadV2MomentSocialState(momentIds: string[], viewerUserId?: strin
     }
   }
 
+  const recentVibersByMoment = new Map<string, Array<{
+    id: string;
+    username: string;
+    displayName: string | null;
+    avatar: string | null;
+  }>>();
+  for (const vibin of recentVibins) {
+    const existing = recentVibersByMoment.get(vibin.targetId) ?? [];
+    if (existing.some((item) => item.id === vibin.sender.id)) {
+      continue;
+    }
+    if (existing.length >= 3) {
+      continue;
+    }
+    existing.push({
+      id: vibin.sender.id,
+      username: vibin.sender.username ?? buildV2TravelerUsernameFallback(vibin.sender.id),
+      displayName: vibin.sender.displayName ?? vibin.sender.username,
+      avatar: vibin.sender.avatarUrl ?? null,
+    });
+    recentVibersByMoment.set(vibin.targetId, existing);
+  }
+
   return {
     commentCounts,
     likeCounts,
     latestCommentByMoment,
+    recentVibersByMoment,
     vibedMomentIds: new Set(viewerVibins.map((item) => item.targetId)),
   };
+}
+
+async function loadV2FollowedPlaceVisitCounts(viewerUserId: string | undefined, placeIds: string[]) {
+  if (!viewerUserId || placeIds.length === 0) {
+    return new Map<string, number>();
+  }
+
+  const follows = await prismaV2.follow.findMany({
+    where: { sourceUserId: viewerUserId },
+    select: { targetUserId: true },
+  });
+  const followedUserIds = follows.map((follow) => follow.targetUserId);
+  if (followedUserIds.length === 0) {
+    return new Map<string, number>();
+  }
+
+  const mutualFollowUserIds = await loadV2MutualFollowUserIds(viewerUserId, followedUserIds);
+  const moments = await prismaV2.moment.findMany({
+    where: {
+      placeId: { in: placeIds },
+      userId: { in: followedUserIds },
+      OR: [
+        { visibility: 'PUBLIC' },
+        { visibility: 'FRIENDS', userId: { in: Array.from(mutualFollowUserIds) } },
+      ],
+    },
+    select: {
+      placeId: true,
+      userId: true,
+    },
+  });
+
+  const distinctVisitors = new Map<string, Set<string>>();
+  for (const moment of moments) {
+    const bucket = distinctVisitors.get(moment.placeId) ?? new Set<string>();
+    bucket.add(moment.userId);
+    distinctVisitors.set(moment.placeId, bucket);
+  }
+
+  return new Map(
+    Array.from(distinctVisitors.entries()).map(([placeId, visitors]) => [placeId, visitors.size] as const),
+  );
 }
 
 function formatRelativeActivityLabelV2(date: Date, now = new Date()) {
@@ -970,6 +1074,10 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
     .slice(0, 40);
   const visitedCountMap = new Map(visitedCounts.map((item) => [item.userId, item._count._all]));
   const social = await loadV2MomentSocialState(moments.map((moment) => moment.id), userId);
+  const followedPlaceVisitCounts = await loadV2FollowedPlaceVisitCounts(
+    userId,
+    Array.from(new Set(moments.map((moment) => moment.placeId))),
+  );
 
   const placeIdsNeedingFallback = Array.from(new Set(
     moments
@@ -1034,6 +1142,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
           images: (mappedMoment.place.images && mappedMoment.place.images.length > 0)
             ? mappedMoment.place.images
             : fallbackPlace.images,
+          followedVisitorCount: mappedMoment.place.followedVisitorCount ?? 0,
         }
       : mappedMoment.place;
 
@@ -1043,12 +1152,16 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
       traveler,
       timestampLabel: formatRelativeActivityLabelV2(moment.visitedAt),
       sortTimestamp: moment.visitedAt.toISOString(),
-      place: mergedPlace,
+      place: {
+        ...mergedPlace,
+        followedVisitorCount: followedPlaceVisitCounts.get(moment.placeId) ?? 0,
+      },
       collection: null,
       caption: mappedMoment.caption,
       visibility: mappedMoment.visibility,
       isVibed: social.vibedMomentIds.has(moment.id),
       vibinCount: social.likeCounts[moment.id] ?? 0,
+      recentVibers: social.recentVibersByMoment.get(moment.id) ?? [],
     }];
   });
 
@@ -1187,6 +1300,10 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
   ]);
   const moments = rawMoments.filter((moment) => canViewerSeeV2Moment(moment, viewerUserId, mutualFollowUserIds));
   const socialState = await loadV2MomentSocialState(moments.map((moment) => moment.id), viewerUserId);
+  const followedPlaceVisitCounts = await loadV2FollowedPlaceVisitCounts(
+    viewerUserId,
+    Array.from(new Set(moments.map((moment) => moment.placeId))),
+  );
 
   return {
     traveler: {
@@ -1212,7 +1329,10 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
       commentCount: socialState.commentCounts[moment.id] ?? 0,
       likeCount: socialState.likeCounts[moment.id] ?? 0,
       isVibed: socialState.vibedMomentIds.has(moment.id),
-    }, socialState.latestCommentByMoment.get(moment.id) ?? null)),
+      recentVibers: socialState.recentVibersByMoment.get(moment.id) ?? [],
+    }, socialState.latestCommentByMoment.get(moment.id) ?? null, {
+      followedVisitorCount: followedPlaceVisitCounts.get(moment.placeId) ?? 0,
+    })),
     inspirationMedia: [],
   };
 }
@@ -12953,51 +13073,25 @@ app.get('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest, 
       return;
     }
 
-    const [commentCount, likeCount, latestComment] = await Promise.all([
-      prismaV2.comment.count({
-        where: {
-          targetType: 'MOMENT',
-          targetId: moment.id,
-        },
-      }),
-      prismaV2.vibin.count({
-        where: {
-          targetType: 'MOMENT',
-          targetId: moment.id,
-        },
-      }),
-      prismaV2.comment.findFirst({
-        where: {
-          targetType: 'MOMENT',
-          targetId: moment.id,
-        },
-        orderBy: { createdAt: 'desc' },
-        include: {
-          user: {
-            select: {
-              username: true,
-            },
-          },
-        },
-      }),
+    const [socialState, followedPlaceVisitCounts] = await Promise.all([
+      loadV2MomentSocialState([moment.id], req.authV2UserId!),
+      loadV2FollowedPlaceVisitCounts(req.authV2UserId!, [moment.placeId]),
     ]);
-    const existingVibin = await prismaV2.vibin.findUnique({
-      where: {
-        senderUserId_targetType_targetId: {
-          senderUserId: req.authV2UserId!,
-          targetType: 'MOMENT',
-          targetId: moment.id,
-        },
-      },
-      select: { id: true },
-    });
 
     const requestOrigin = `${getRequestOrigin(req)}`;
     const payload = mapV2MomentForClient(
       moment,
       requestOrigin,
-      { commentCount, likeCount, isVibed: Boolean(existingVibin) },
-      latestComment,
+      {
+        commentCount: socialState.commentCounts[moment.id] ?? 0,
+        likeCount: socialState.likeCounts[moment.id] ?? 0,
+        isVibed: socialState.vibedMomentIds.has(moment.id),
+        recentVibers: socialState.recentVibersByMoment.get(moment.id) ?? [],
+      },
+      socialState.latestCommentByMoment.get(moment.id) ?? null,
+      {
+        followedVisitorCount: followedPlaceVisitCounts.get(moment.placeId) ?? 0,
+      },
     );
 
     res.json({
@@ -13010,6 +13104,50 @@ app.get('/api/v2/moments/:id', requireV2Auth, async (req: AuthenticatedRequest, 
           avatar: moment.user.avatarUrl ?? null,
         },
       },
+    });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/moments/:id/vibers', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const moment = await prismaV2.moment.findFirst({
+      where: { id: req.params.id },
+      select: { id: true },
+    });
+    if (!moment) {
+      res.status(404).json({ error: 'Moment not found' });
+      return;
+    }
+
+    const vibins = await prismaV2.vibin.findMany({
+      where: {
+        targetType: 'MOMENT',
+        targetId: moment.id,
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            username: true,
+            displayName: true,
+            avatarUrl: true,
+          },
+        },
+      },
+      take: 50,
+    });
+
+    res.json({
+      travelers: vibins.map((vibin) => ({
+        id: vibin.sender.id,
+        username: vibin.sender.username ?? buildV2TravelerUsernameFallback(vibin.sender.id),
+        displayName: vibin.sender.displayName ?? vibin.sender.username,
+        avatar: vibin.sender.avatarUrl ?? null,
+        matchScore: null,
+      })),
     });
   } catch (error) {
     handleError(res, error);
