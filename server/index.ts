@@ -9939,6 +9939,7 @@ app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
 
 app.get('/api/v2/auth/config', (_req, res) => {
   res.json({
+    appEnv: APP_ENV,
     otpProvider: USE_STAGING_FIXED_OTP ? 'fixed_code' : 'vonage_verify',
     enabled: VONAGE_VERIFY_ENABLED,
     inviteRequired: true,

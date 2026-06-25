@@ -166,10 +166,12 @@ private func nativeAppUIFont(size: CGFloat, weight: UIFont.Weight = .regular) ->
 private func nativeResolvedAPIBaseURL() -> URL {
     let environmentOverride = ProcessInfo.processInfo.environment["VIBINN_NATIVE_API_BASE_URL"]?
         .trimmingCharacters(in: .whitespacesAndNewlines)
+    let infoPlistBaseURL = (Bundle.main.object(forInfoDictionaryKey: "NativeAPIBaseURL") as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
     let userDefaultsOverride = UserDefaults.standard.string(forKey: nativeAPIBaseURLUserDefaultsKey)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
 
-    let explicitOverride = ([environmentOverride, userDefaultsOverride] as [String?])
+    let explicitOverride = ([environmentOverride, infoPlistBaseURL, userDefaultsOverride] as [String?])
         .compactMap { value -> String? in
             guard let value, !value.isEmpty else { return nil }
             return value
@@ -7952,7 +7954,7 @@ private struct NativeAPIClient {
         guard (200...299).contains(httpResponse.statusCode) else {
             let responseText = String(data: data, encoding: .utf8)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            nativeLogger.error("API request failed path=\(path, privacy: .public) status=\(httpResponse.statusCode, privacy: .public) body=\(responseText, privacy: .public)")
+            nativeLogger.error("API request failed host=\(url.host ?? \"unknown\", privacy: .public) path=\(path, privacy: .public) status=\(httpResponse.statusCode, privacy: .public) body=\(responseText, privacy: .public)")
             let sanitizedMessage: String
             if responseText.lowercased().contains("<!doctype html") || responseText.lowercased().contains("<html") {
                 sanitizedMessage = "Request failed (\(httpResponse.statusCode))"
@@ -8030,8 +8032,7 @@ private struct NativeVibinnRootView: View {
         .sheet(isPresented: $appState.showSecondMemoryProfileSharePrompt) {
             NativeSecondMemoryProfileShareSheet()
                 .environmentObject(appState)
-                .presentationDetents([.height(320)])
-                .presentationDragIndicator(.visible)
+                .modifier(NativeBottomSheetPresentationModifier())
         }
         .overlay(alignment: .bottom) {
             if let toast = appState.activeToast {
@@ -11617,7 +11618,6 @@ private struct NativeNotificationMomentFullscreen: View {
     @State private var vibinCount = 0
     @State private var isTogglingVibin = false
     @State private var selectedPlace: NativePlace? = nil
-    @State private var showVibersSheet = false
     @State private var showVibersSheet = false
 
     private var mediaUrl: String? {
@@ -19118,7 +19118,6 @@ private struct NativeTodayLiveFeedCard: View {
     @State private var moderationAlertMessage = ""
     @State private var showModerationAlert = false
     @State private var showVibersSheet = false
-    @State private var showVibersSheet = false
 
     private var isOwnPost: Bool {
         appState.currentUser?.id == item.traveler.id
@@ -20746,6 +20745,7 @@ private struct NativeDecisionHistoryMomentFullscreen: View {
     @State private var isTogglingVibin = false
     @State private var editedMoment: NativeMoment? = nil
     @State private var selectedPlace: NativePlace? = nil
+    @State private var showVibersSheet = false
     @State private var showEditMomentSheet = false
     @State private var showDeletePostDialog = false
 
@@ -27708,6 +27708,7 @@ private struct NativeFeedCard: View {
     @State private var showDeletePostDialog = false
     @State private var moderationAlertMessage = ""
     @State private var showModerationAlert = false
+    @State private var showVibersSheet = false
 
     private var isOwnPost: Bool {
         appState.currentUser?.id == item.traveler.id
@@ -28970,9 +28971,18 @@ private struct NativeFullscreenMediaGallery: View {
     var onPlaceTap: (() -> Void)? = nil
     @State private var selection: Int
 
-    init(urls: [String], startIndex: Int) {
+    init(
+        urls: [String],
+        startIndex: Int,
+        placeName: String? = nil,
+        placeMetaLine: String? = nil,
+        onPlaceTap: (() -> Void)? = nil
+    ) {
         self.urls = urls
         self.startIndex = startIndex
+        self.placeName = placeName
+        self.placeMetaLine = placeMetaLine
+        self.onPlaceTap = onPlaceTap
         _selection = State(initialValue: startIndex)
     }
 
@@ -34373,6 +34383,7 @@ private struct NativeFeedMomentFullscreen: View {
     @State private var showDeletePostDialog = false
     @State private var moderationAlertMessage = ""
     @State private var showModerationAlert = false
+    @State private var showVibersSheet = false
 
     private var mediaUrl: String? {
         if let uploaded = item.uploadedMediaUrls?.first, !uploaded.isEmpty {
