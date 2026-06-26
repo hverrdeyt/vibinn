@@ -1079,11 +1079,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
     Array.from(new Set(moments.map((moment) => moment.placeId))),
   );
 
-  const placeIdsNeedingFallback = Array.from(new Set(
-    moments
-      .filter((moment) => moment.placeLatitude == null || moment.placeLongitude == null)
-      .map((moment) => moment.placeId)
-  ));
+  const placeIdsNeedingFallback = Array.from(new Set(moments.map((moment) => moment.placeId)));
 
   const fallbackPlaces = placeIdsNeedingFallback.length > 0
     ? await prismaV2.place.findMany({
@@ -1131,20 +1127,11 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
 
     const mappedMoment = mapV2MomentForClient(moment, requestOrigin);
     const fallbackPlace = fallbackPlaceMap.get(moment.placeId);
-    const mergedPlace = fallbackPlace
-      ? {
-          ...fallbackPlace,
-          ...mappedMoment.place,
-          latitude: mappedMoment.place.latitude ?? fallbackPlace.latitude,
-          longitude: mappedMoment.place.longitude ?? fallbackPlace.longitude,
-          mapsUrl: mappedMoment.place.mapsUrl ?? fallbackPlace.mapsUrl,
-          image: mappedMoment.place.image ?? fallbackPlace.image,
-          images: (mappedMoment.place.images && mappedMoment.place.images.length > 0)
-            ? mappedMoment.place.images
-            : fallbackPlace.images,
-          followedVisitorCount: mappedMoment.place.followedVisitorCount ?? 0,
-        }
-      : mappedMoment.place;
+    const mergedPlace = mergeStoredV2PlaceIntoClientPlace(
+      mappedMoment.place,
+      fallbackPlace,
+      { followedVisitorCount: followedPlaceVisitCounts.get(moment.placeId) ?? 0 },
+    );
 
     return [{
       id: `visited-${moment.id}`,
@@ -1152,10 +1139,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
       traveler,
       timestampLabel: formatRelativeActivityLabelV2(moment.visitedAt),
       sortTimestamp: moment.visitedAt.toISOString(),
-      place: {
-        ...mergedPlace,
-        followedVisitorCount: followedPlaceVisitCounts.get(moment.placeId) ?? 0,
-      },
+      place: mergedPlace,
       collection: null,
       caption: mappedMoment.caption,
       visibility: mappedMoment.visibility,
@@ -1296,6 +1280,24 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
         { createdAt: 'desc' },
       ],
       take: 60,
+      include: {
+        placeRecord: {
+          select: {
+            id: true,
+            googlePlaceId: true,
+            name: true,
+            address: true,
+            city: true,
+            country: true,
+            neighborhood: true,
+            category: true,
+            primaryImageUrl: true,
+            latitude: true,
+            longitude: true,
+            mapsUrl: true,
+          },
+        },
+      },
     }),
   ]);
   const moments = rawMoments.filter((moment) => canViewerSeeV2Moment(moment, viewerUserId, mutualFollowUserIds));
@@ -1325,14 +1327,25 @@ async function buildV2TravelerProfile(travelerId: string, viewerUserId: string, 
     },
     bookmarks: [],
     collections: [],
-    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
-      commentCount: socialState.commentCounts[moment.id] ?? 0,
-      likeCount: socialState.likeCounts[moment.id] ?? 0,
-      isVibed: socialState.vibedMomentIds.has(moment.id),
-      recentVibers: socialState.recentVibersByMoment.get(moment.id) ?? [],
-    }, socialState.latestCommentByMoment.get(moment.id) ?? null, {
-      followedVisitorCount: followedPlaceVisitCounts.get(moment.placeId) ?? 0,
-    })),
+    moments: moments.map((moment) => {
+      const mappedMoment = mapV2MomentForClient(moment, requestOrigin, {
+        commentCount: socialState.commentCounts[moment.id] ?? 0,
+        likeCount: socialState.likeCounts[moment.id] ?? 0,
+        isVibed: socialState.vibedMomentIds.has(moment.id),
+        recentVibers: socialState.recentVibersByMoment.get(moment.id) ?? [],
+      }, socialState.latestCommentByMoment.get(moment.id) ?? null, {
+        followedVisitorCount: followedPlaceVisitCounts.get(moment.placeId) ?? 0,
+      });
+
+      return {
+        ...mappedMoment,
+        place: mergeStoredV2PlaceIntoClientPlace(
+          mappedMoment.place,
+          moment.placeRecord ? mapStoredV2PlaceForClient(moment.placeRecord) : null,
+          { followedVisitorCount: followedPlaceVisitCounts.get(moment.placeId) ?? 0 },
+        ),
+      };
+    }),
     inspirationMedia: [],
   };
 }
@@ -1362,6 +1375,24 @@ async function buildPublicProfilePayloadFromV2Username(username: string, request
           { createdAt: 'desc' },
         ],
         take: 60,
+        include: {
+          placeRecord: {
+            select: {
+              id: true,
+              googlePlaceId: true,
+              name: true,
+              address: true,
+              city: true,
+              country: true,
+              neighborhood: true,
+              category: true,
+              primaryImageUrl: true,
+              latitude: true,
+              longitude: true,
+              mapsUrl: true,
+            },
+          },
+        },
       },
     },
   });
@@ -1379,7 +1410,16 @@ async function buildPublicProfilePayloadFromV2Username(username: string, request
       where: { sourceUserId: traveler.id },
     }),
   ]);
-  const mappedMoments = traveler.moments.map((moment) => mapV2MomentForClient(moment, requestOrigin));
+  const mappedMoments = traveler.moments.map((moment) => {
+    const mappedMoment = mapV2MomentForClient(moment, requestOrigin);
+    return {
+      ...mappedMoment,
+      place: mergeStoredV2PlaceIntoClientPlace(
+        mappedMoment.place,
+        moment.placeRecord ? mapStoredV2PlaceForClient(moment.placeRecord) : null,
+      ),
+    };
+  });
   const places = mappedMoments.map((moment) => moment.place);
   const uniqueCities = new Set<string>();
   const uniqueCountries = new Set<string>();
@@ -4151,6 +4191,41 @@ function mapStoredV2PlaceForClient(place: {
     latitude: place.latitude ?? undefined,
     longitude: place.longitude ?? undefined,
     mapsUrl: place.mapsUrl ?? buildPlaceMapsUrl(place.latitude, place.longitude) ?? undefined,
+  };
+}
+
+function mergeStoredV2PlaceIntoClientPlace(
+  clientPlace: any,
+  storedPlace: ReturnType<typeof mapStoredV2PlaceForClient> | null | undefined,
+  overrides?: { followedVisitorCount?: number },
+) {
+  if (!storedPlace) {
+    return {
+      ...clientPlace,
+      followedVisitorCount: overrides?.followedVisitorCount ?? clientPlace.followedVisitorCount ?? 0,
+    };
+  }
+
+  return {
+    ...clientPlace,
+    ...storedPlace,
+    latitude: clientPlace.latitude ?? storedPlace.latitude,
+    longitude: clientPlace.longitude ?? storedPlace.longitude,
+    mapsUrl: clientPlace.mapsUrl ?? storedPlace.mapsUrl,
+    image: storedPlace.image,
+    images: storedPlace.images?.length ? storedPlace.images : clientPlace.images,
+    placeMediaUrls: storedPlace.images?.length ? storedPlace.images : clientPlace.placeMediaUrls,
+    userMediaUrls: clientPlace.userMediaUrls,
+    momentMedia: clientPlace.momentMedia,
+    momentId: clientPlace.momentId,
+    ownerUserId: clientPlace.ownerUserId,
+    visitedDate: clientPlace.visitedDate,
+    visitedAtIso: clientPlace.visitedAtIso,
+    momentCaption: clientPlace.momentCaption,
+    momentWouldRevisit: clientPlace.momentWouldRevisit,
+    momentRating: clientPlace.momentRating,
+    momentRatingLabel: clientPlace.momentRatingLabel,
+    followedVisitorCount: overrides?.followedVisitorCount ?? clientPlace.followedVisitorCount ?? 0,
   };
 }
 

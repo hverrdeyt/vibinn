@@ -22,7 +22,7 @@ services:
       - key: DATABASE_URL_V2
         sync: false
       - key: API_ORIGIN
-        value: https://vibecheck-api-staging.onrender.com
+        value: https://vibinn-api-staging.onrender.com
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_IOS_CLIENT_ID

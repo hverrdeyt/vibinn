@@ -1,2 +1,1 @@
 CAPACITOR_DEBUG = true
-NATIVE_API_BASE_URL = https://vibecheck-api-staging.onrender.com

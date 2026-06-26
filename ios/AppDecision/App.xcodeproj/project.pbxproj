@@ -477,13 +477,13 @@
 				DEVELOPMENT_TEAM = N7NAH5G98Q;
 				INFOPLIST_FILE = App/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.food-and-drink";
-				INFOPLIST_KEY_NativeAPIBaseURL = "https://api.vibinn.club";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2.0;
+				NATIVE_API_BASE_URL = "https://api.vibinn.club";
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\"";
 				PRODUCT_BUNDLE_IDENTIFIER = club.vibinn.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -504,13 +504,13 @@
 				DEVELOPMENT_TEAM = N7NAH5G98Q;
 				INFOPLIST_FILE = App/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.food-and-drink";
-				INFOPLIST_KEY_NativeAPIBaseURL = "https://api.vibinn.club";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2.0;
+				NATIVE_API_BASE_URL = "https://api.vibinn.club";
 				PRODUCT_BUNDLE_IDENTIFIER = club.vibinn.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "";
@@ -531,13 +531,13 @@
 				DEVELOPMENT_TEAM = N7NAH5G98Q;
 				INFOPLIST_FILE = App/Info.plist;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.food-and-drink";
-				INFOPLIST_KEY_NativeAPIBaseURL = "$(NATIVE_API_BASE_URL)";
 				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.2.0;
+				NATIVE_API_BASE_URL = "https://vibinn-api-staging.onrender.com";
 				OTHER_SWIFT_FLAGS = "$(inherited) \"-D\" \"COCOAPODS\" \"-DDEBUG\" \"-DSTAGING\"";
 				PRODUCT_BUNDLE_IDENTIFIER = club.vibinn.ios;
 				PRODUCT_NAME = "$(TARGET_NAME)";

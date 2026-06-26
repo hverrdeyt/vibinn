@@ -47,6 +47,8 @@
 	<true/>
 	<key>MixpanelProjectToken</key>
 	<string>$(MIXPANEL_PROJECT_TOKEN)</string>
+	<key>NativeAPIBaseURL</key>
+	<string>$(NATIVE_API_BASE_URL)</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>BBHBartle-Regular.ttf</string>
