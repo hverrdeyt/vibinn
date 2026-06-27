@@ -250,6 +250,45 @@ private func nativeDecisionHistoryDateLabel(_ raw: String?) -> String {
     NativeAppState.relativeLabel(from: raw)
 }
 
+private func nativeCommentTimestampLabel(from raw: String?) -> String {
+    guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+        return ""
+    }
+
+    let formatterWithFractional = ISO8601DateFormatter()
+    formatterWithFractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    let fallbackFormatter = ISO8601DateFormatter()
+
+    guard let parsed = formatterWithFractional.date(from: raw) ?? fallbackFormatter.date(from: raw) else {
+        return NativeAppState.relativeLabel(from: raw)
+    }
+
+    let seconds = max(0, Int(Date().timeIntervalSince(parsed)))
+    if seconds < 60 {
+        return "Just now"
+    }
+
+    let minutes = seconds / 60
+    if minutes < 60 {
+        return "\(minutes)m"
+    }
+
+    let hours = minutes / 60
+    if hours < 24 {
+        return "\(hours)h"
+    }
+
+    let days = hours / 24
+    if days < 7 {
+        return "\(days)d"
+    }
+
+    let output = DateFormatter()
+    output.locale = Locale(identifier: "en_US_POSIX")
+    output.setLocalizedDateFormatFromTemplate(Calendar.current.isDate(parsed, equalTo: Date(), toGranularity: .year) ? "dd MMM" : "dd MMM yy")
+    return output.string(from: parsed)
+}
+
 private enum NativeLocationPermissionState {
     case notDetermined
     case authorized
@@ -2541,6 +2580,142 @@ private func nativeInsertComment(_ newComment: NativeComment, into comments: [Na
     }
 
     return inserted ? updated : (comments + [newComment])
+}
+
+private struct NativeMentionSegment: Identifiable {
+    let id = UUID()
+    let text: String
+    let username: String?
+}
+
+private func nativeCommentReplyParentId(for comment: NativeComment?) -> String? {
+    guard let comment else { return nil }
+    let parentId = comment.parentCommentId?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let parentId, !parentId.isEmpty {
+        return parentId
+    }
+    return comment.id
+}
+
+private func nativeCommentDisplayBody(for row: NativeFlattenedComment) -> String {
+    if let parentUsername = row.parentUsername?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !parentUsername.isEmpty,
+       !row.comment.body.lowercased().hasPrefix("@\(parentUsername.lowercased())") {
+        return "@\(parentUsername) \(row.comment.body)"
+    }
+    return row.comment.body
+}
+
+private func nativeParseMentionSegments(from text: String) -> [NativeMentionSegment] {
+    let pattern = #"(?:^|\s)(@([A-Za-z0-9._]{1,30}))"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        return [NativeMentionSegment(text: text, username: nil)]
+    }
+
+    let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+    let matches = regex.matches(in: text, options: [], range: nsRange)
+    guard !matches.isEmpty else {
+        return [NativeMentionSegment(text: text, username: nil)]
+    }
+
+    var cursor = text.startIndex
+    var segments: [NativeMentionSegment] = []
+
+    for match in matches {
+        guard
+            let tokenRange = Range(match.range(at: 1), in: text),
+            let usernameRange = Range(match.range(at: 2), in: text)
+        else {
+            continue
+        }
+
+        let prefixRange = cursor..<tokenRange.lowerBound
+        if !prefixRange.isEmpty {
+            segments.append(NativeMentionSegment(text: String(text[prefixRange]), username: nil))
+        }
+
+        segments.append(
+            NativeMentionSegment(
+                text: String(text[tokenRange]),
+                username: String(text[usernameRange])
+            )
+        )
+        cursor = tokenRange.upperBound
+    }
+
+    if cursor < text.endIndex {
+        segments.append(NativeMentionSegment(text: String(text[cursor...]), username: nil))
+    }
+
+    return segments
+}
+
+private func nativeActiveMentionQuery(in text: String) -> String? {
+    let pattern = #"(?:^|\s)@([A-Za-z0-9._]{0,30})$"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        return nil
+    }
+
+    let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+    guard
+        let match = regex.firstMatch(in: text, options: [], range: nsRange),
+        let range = Range(match.range(at: 1), in: text)
+    else {
+        return nil
+    }
+
+    return String(text[range])
+}
+
+private func nativeReplacingActiveMention(in text: String, with username: String) -> String {
+    let pattern = #"(?:^|\s)@([A-Za-z0-9._]{0,30})$"#
+    guard let regex = try? NSRegularExpression(pattern: pattern) else {
+        return text
+    }
+
+    let nsRange = NSRange(text.startIndex..<text.endIndex, in: text)
+    guard let match = regex.firstMatch(in: text, options: [], range: nsRange) else {
+        return text
+    }
+
+    let tokenRange = match.range(at: 0)
+    guard let range = Range(tokenRange, in: text) else {
+        return text
+    }
+
+    let token = String(text[range])
+    let prefixHasSpace = token.first?.isWhitespace == true
+    let replacement = prefixHasSpace ? " @\(username) " : "@\(username) "
+    return String(text[..<range.lowerBound]) + replacement
+}
+
+private func nativeAllCommentTravelers(in comment: NativeComment) -> [NativeTravelerSummary] {
+    let current: [NativeTravelerSummary]
+    if let userId = comment.userId?.trimmingCharacters(in: .whitespacesAndNewlines), !userId.isEmpty {
+        current = [
+            NativeTravelerSummary(
+                id: userId,
+                username: comment.user,
+                displayName: comment.displayName,
+                avatar: comment.avatarURL,
+                bio: nil,
+                descriptor: nil,
+                matchScore: nil,
+                followersCount: nil,
+                followingCount: nil,
+                recentSavedPlaces: nil,
+                recentCollections: nil,
+                travelHistory: [],
+                visitedPlacesCount: nil,
+                savedPlacesCount: nil,
+                collectionsCount: nil
+            )
+        ]
+    } else {
+        current = []
+    }
+
+    return current + (comment.replies ?? []).flatMap { nativeAllCommentTravelers(in: $0) }
 }
 
 private enum NativeFeedActivityType {
@@ -11317,12 +11492,12 @@ private struct NativeHalfBottomSheetPresentationModifier: ViewModifier {
     func body(content: Content) -> some View {
         if #available(iOS 16.4, *) {
             content
-                .presentationDetents([.fraction(0.5)])
+                .presentationDetents([.fraction(0.75)])
                 .presentationDragIndicator(.visible)
                 .presentationCornerRadius(28)
         } else if #available(iOS 16.0, *) {
             content
-                .presentationDetents([.fraction(0.5)])
+                .presentationDetents([.fraction(0.75)])
                 .presentationDragIndicator(.visible)
         } else {
             content
@@ -11858,6 +12033,10 @@ private struct NativeNotificationRow: View {
             return "sent you a vibin"
         case "comment_saved":
             return "commented on a place you saved"
+        case "comment_reply":
+            return "replied to your comment"
+        case "comment_mention":
+            return "mentioned you in a comment"
         case "comment_visited":
             return "commented on a place you visited"
         case "comment":
@@ -12171,7 +12350,7 @@ private struct NativeNotificationMomentFullscreen: View {
                 targetId: moment.id,
                 body: trimmed,
                 momentId: moment.id,
-                parentCommentId: replyingToComment?.id
+                parentCommentId: nativeCommentReplyParentId(for: replyingToComment)
             )
             comments = nativeSortCommentsNewestFirst(nativeInsertComment(newComment, into: comments))
             commentDraft = ""
@@ -28424,7 +28603,7 @@ private struct NativeFeedCard: View {
                 targetId: targetId,
                 body: trimmed,
                 momentId: item.place?.momentId,
-                parentCommentId: replyingToComment?.id
+                parentCommentId: nativeCommentReplyParentId(for: replyingToComment)
             )
             comments = nativeSortCommentsNewestFirst(nativeInsertComment(newComment, into: comments))
             commentDraft = ""
@@ -28671,9 +28850,51 @@ private struct NativePlaceReviewCompactCard: View {
     }
 }
 
+private struct NativeInteractiveCommentBody: View {
+    let text: String
+    let onOpenMention: (String) -> Void
+
+    var body: some View {
+        Text(attributedText)
+            .font(nativeAppFont(size: 14, weight: .medium))
+            .tint(nativeAccent)
+            .environment(\.openURL, OpenURLAction { url in
+                guard
+                    url.scheme == "vibinn-mention",
+                    let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+                    let username = components.queryItems?.first(where: { $0.name == "username" })?.value,
+                    !username.isEmpty
+                else {
+                    return .systemAction
+                }
+                onOpenMention(username)
+                return .handled
+            })
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private var attributedText: AttributedString {
+        var output = AttributedString("")
+        for segment in nativeParseMentionSegments(from: text) {
+            var piece = AttributedString(segment.text)
+            if let username = segment.username {
+                piece.foregroundColor = nativeAccent
+                let encodedUsername = username.lowercased().addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? username.lowercased()
+                piece.link = URL(string: "vibinn-mention://open?username=\(encodedUsername)")
+            } else {
+                piece.foregroundColor = .white.opacity(0.9)
+            }
+            output.append(piece)
+        }
+        return output
+    }
+}
+
 private struct NativeCommentThreadList: View {
     let comments: [NativeComment]
     let onReply: (NativeComment) -> Void
+    let onOpenProfile: (NativeTravelerSummary) -> Void
+    let onOpenMention: (String) -> Void
 
     private var rows: [NativeFlattenedComment] {
         nativeFlattenComments(nativeSortCommentsNewestFirst(comments))
@@ -28683,7 +28904,7 @@ private struct NativeCommentThreadList: View {
         VStack(alignment: .leading, spacing: 18) {
             ForEach(rows) { row in
                 HStack(alignment: .top, spacing: 12) {
-                    commentAvatar(for: row.comment)
+                    commentAvatarButton(for: row.comment)
 
                     VStack(alignment: .leading, spacing: 4) {
                         commentHeader(for: row.comment)
@@ -28693,7 +28914,7 @@ private struct NativeCommentThreadList: View {
                             onReply(row.comment)
                         }
                         .buttonStyle(.plain)
-                        .font(nativeAppFont(size: 12, weight: .medium))
+                        .font(nativeAppFont(size: 12, weight: .black))
                         .foregroundStyle(.white.opacity(0.5))
                     }
 
@@ -28713,17 +28934,17 @@ private struct NativeCommentThreadList: View {
     @ViewBuilder
     private func commentHeader(for comment: NativeComment) -> some View {
         if let traveler = commentTravelerSummary(for: comment) {
-            NavigationLink {
-                NativeTravelerProfileScreen(initialTraveler: traveler)
+            Button {
+                onOpenProfile(traveler)
             } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text(comment.user)
-                        .font(nativeAppFont(size: 14, weight: .black))
+                        .font(nativeAppFont(size: 12, weight: .black))
                         .foregroundStyle(.white)
 
-                    Text(NativeAppState.relativeLabel(from: comment.createdAt))
+                    Text(nativeCommentTimestampLabel(from: comment.createdAt))
                         .font(nativeAppFont(size: 12, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.38))
+                        .foregroundStyle(.white.opacity(0.5))
                 }
                 .contentShape(Rectangle())
             }
@@ -28731,13 +28952,27 @@ private struct NativeCommentThreadList: View {
         } else {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(comment.user)
-                    .font(nativeAppFont(size: 14, weight: .black))
+                    .font(nativeAppFont(size: 12, weight: .black))
                     .foregroundStyle(.white)
 
-                Text(NativeAppState.relativeLabel(from: comment.createdAt))
+                Text(nativeCommentTimestampLabel(from: comment.createdAt))
                     .font(nativeAppFont(size: 12, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.38))
+                    .foregroundStyle(.white.opacity(0.5))
             }
+        }
+    }
+
+    @ViewBuilder
+    private func commentAvatarButton(for comment: NativeComment) -> some View {
+        if let traveler = commentTravelerSummary(for: comment) {
+            Button {
+                onOpenProfile(traveler)
+            } label: {
+                commentAvatar(for: comment)
+            }
+            .buttonStyle(.plain)
+        } else {
+            commentAvatar(for: comment)
         }
     }
 
@@ -28767,22 +29002,10 @@ private struct NativeCommentThreadList: View {
 
     @ViewBuilder
     private func commentBody(for row: NativeFlattenedComment) -> some View {
-        if let parentUsername = row.parentUsername, !parentUsername.isEmpty {
-            (
-                Text("@\(parentUsername) ")
-                    .foregroundColor(nativeAccent)
-                +
-                Text(row.comment.body)
-                    .foregroundColor(.white.opacity(0.9))
-            )
-            .font(nativeAppFont(size: 14, weight: .medium))
-            .fixedSize(horizontal: false, vertical: true)
-        } else {
-            Text(row.comment.body)
-                .font(nativeAppFont(size: 14, weight: .medium))
-                .foregroundStyle(.white.opacity(0.9))
-                .fixedSize(horizontal: false, vertical: true)
-        }
+        NativeInteractiveCommentBody(
+            text: nativeCommentDisplayBody(for: row),
+            onOpenMention: onOpenMention
+        )
     }
 
     private func commentAvatar(for comment: NativeComment) -> some View {
@@ -28820,6 +29043,10 @@ private struct NativeCommentSheet: View {
     @EnvironmentObject private var appState: NativeAppState
     @Environment(\.dismiss) private var dismiss
     @FocusState private var isCommentFieldFocused: Bool
+    @State private var selectedCommentTraveler: NativeTravelerSummary?
+    @State private var mentionSuggestions: [NativeTravelerSummary] = []
+    @State private var isMentionSuggestionsLoading = false
+    @State private var mentionSearchTask: Task<Void, Never>?
 
     var body: some View {
         ZStack {
@@ -28837,18 +29064,32 @@ private struct NativeCommentSheet: View {
             .padding(.top, 14)
             .padding(.bottom, 12)
         }
-        .simultaneousGesture(
-            TapGesture().onEnded {
-                isCommentFieldFocused = false
-                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        .fullScreenCover(item: $selectedCommentTraveler) { traveler in
+            NavigationView {
+                NativeTravelerProfileScreen(initialTraveler: traveler)
             }
-        )
+            .navigationViewStyle(.stack)
+            .environmentObject(appState)
+        }
+        .onChange(of: replyingToComment?.id) { _ in
+            guard let replyingToComment else { return }
+            ensureReplyMention(for: replyingToComment.user)
+            DispatchQueue.main.async {
+                isCommentFieldFocused = true
+            }
+        }
+        .onChange(of: commentDraft) { newValue in
+            refreshMentionSuggestions(for: newValue)
+        }
+        .onDisappear {
+            mentionSearchTask?.cancel()
+        }
     }
 
     private var header: some View {
         ZStack {
             Text("Comments")
-                .font(nativeAppFont(size: 22, weight: .black))
+                .font(nativeAppFont(size: 16, weight: .black))
                 .foregroundStyle(.white)
 
             HStack {
@@ -28894,7 +29135,22 @@ private struct NativeCommentSheet: View {
             }
         } else {
             ScrollView(showsIndicators: false) {
-                NativeCommentThreadList(comments: comments, onReply: onReply)
+                NativeCommentThreadList(
+                    comments: comments,
+                    onReply: { comment in
+                        onReply(comment)
+                        ensureReplyMention(for: comment.user)
+                        DispatchQueue.main.async {
+                            isCommentFieldFocused = true
+                        }
+                    },
+                    onOpenProfile: { traveler in
+                        selectedCommentTraveler = traveler
+                    },
+                    onOpenMention: { username in
+                        openTravelerProfile(username: username)
+                    }
+                )
                     .padding(.top, 4)
                     .padding(.bottom, 16)
             }
@@ -28926,26 +29182,18 @@ private struct NativeCommentSheet: View {
                 .padding(.horizontal, 4)
             }
 
+            if !mentionSuggestions.isEmpty || isMentionSuggestionsLoading {
+                mentionSuggestionsPanel
+            }
+
             HStack(alignment: .center, spacing: 12) {
                 composerAvatar
 
-                HStack(alignment: .bottom, spacing: 10) {
-                    ZStack(alignment: .topLeading) {
-                        if commentDraft.isEmpty {
-                            Text("Write a comment..")
-                                .font(nativeAppFont(size: 14, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.35))
-                                .padding(.horizontal, 2)
-                                .padding(.top, 10)
-                        }
-
-                        TextEditor(text: $commentDraft)
-                            .font(nativeAppFont(size: 14, weight: .medium))
-                            .foregroundColor(.white)
-                            .frame(minHeight: composerHeight, maxHeight: composerHeight)
-                            .nativeHiddenTextEditorBackground()
-                            .background(Color.clear)
-                            .focused($isCommentFieldFocused)
+                HStack(alignment: .center, spacing: 10) {
+                    commentInputView
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        isCommentFieldFocused = true
                     }
 
                     Button {
@@ -28960,11 +29208,10 @@ private struct NativeCommentSheet: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(trimmedCommentDraft.isEmpty || isLoading)
-                    .padding(.bottom, 4)
                 }
                 .padding(.horizontal, 14)
                 .padding(.vertical, 8)
-                .frame(minHeight: composerHeight + 16)
+                .frame(minHeight: composerBubbleHeight)
                 .background(Color.white.opacity(0.08))
                 .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
             }
@@ -28976,12 +29223,247 @@ private struct NativeCommentSheet: View {
         commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var localMentionCandidates: [NativeTravelerSummary] {
+        let combined = appState.followedTravelers + appState.suggestedTravelers + comments.flatMap { nativeAllCommentTravelers(in: $0) }
+        var seen = Set<String>()
+        return combined.filter { traveler in
+            guard !traveler.id.isEmpty else { return false }
+            guard !seen.contains(traveler.id) else { return false }
+            seen.insert(traveler.id)
+            return true
+        }
+    }
+
+    @ViewBuilder
+    private var commentInputView: some View {
+        if #available(iOS 16.0, *) {
+            TextField(
+                "",
+                text: $commentDraft,
+                prompt: Text("Write a comment..")
+                    .foregroundColor(.white.opacity(0.35)),
+                axis: .vertical
+            )
+            .font(nativeAppFont(size: 14, weight: .medium))
+            .foregroundColor(.white)
+            .textInputAutocapitalization(.sentences)
+            .disableAutocorrection(false)
+            .lineLimit(1...3)
+            .frame(minHeight: composerHeight, maxHeight: composerHeight, alignment: .center)
+            .focused($isCommentFieldFocused)
+        } else {
+            ZStack(alignment: .leading) {
+                if commentDraft.isEmpty {
+                    Text("Write a comment..")
+                        .font(nativeAppFont(size: 14, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.35))
+                        .padding(.horizontal, 2)
+                }
+
+                TextEditor(text: $commentDraft)
+                    .font(nativeAppFont(size: 14, weight: .medium))
+                    .foregroundColor(.white)
+                    .frame(minHeight: composerHeight, maxHeight: composerHeight)
+                    .nativeHiddenTextEditorBackground()
+                    .background(Color.clear)
+                    .focused($isCommentFieldFocused)
+            }
+        }
+    }
+
+    private func ensureReplyMention(for username: String) {
+        let mention = "@\(username)"
+        let trimmedLeading = commentDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard !trimmedLeading.hasPrefix(mention) else { return }
+
+        if trimmedLeading.isEmpty {
+            commentDraft = "\(mention) "
+        } else {
+            commentDraft = "\(mention) \(trimmedLeading)"
+        }
+    }
+
+    @ViewBuilder
+    private var mentionSuggestionsPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if isMentionSuggestionsLoading && mentionSuggestions.isEmpty {
+                HStack(spacing: 10) {
+                    ProgressView()
+                        .tint(nativeAccent)
+                    Text("Finding people...")
+                        .font(nativeAppFont(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 12)
+            } else {
+                ForEach(Array(mentionSuggestions.prefix(5).enumerated()), id: \.element.id) { index, traveler in
+                    Button {
+                        applyMentionSuggestion(traveler.username)
+                    } label: {
+                        HStack(spacing: 10) {
+                            NativeAvatarCircle(
+                                url: traveler.avatar,
+                                fallbackText: traveler.displayName ?? traveler.username,
+                                size: 30,
+                                fontSize: 12
+                            )
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("@\(traveler.username)")
+                                    .font(nativeAppFont(size: 13, weight: .black))
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1)
+
+                                if let displayName = traveler.displayName, !displayName.isEmpty {
+                                    Text(displayName)
+                                        .font(nativeAppFont(size: 12, weight: .medium))
+                                        .foregroundStyle(.white.opacity(0.52))
+                                        .lineLimit(1)
+                                }
+                            }
+
+                            Spacer(minLength: 0)
+
+                            if appState.isFollowing(traveler.id) {
+                                Text("Following")
+                                    .font(nativeAppFont(size: 11, weight: .black))
+                                    .foregroundStyle(nativeAccent)
+                            }
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
+                        .background(index == 0 ? Color.white.opacity(0.02) : Color.clear)
+                    }
+                    .buttonStyle(.plain)
+
+                    if index < min(mentionSuggestions.count, 5) - 1 {
+                        Divider()
+                            .overlay(Color.white.opacity(0.06))
+                            .padding(.leading, 54)
+                    }
+                }
+            }
+        }
+        .background(Color.white.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func refreshMentionSuggestions(for draft: String) {
+        mentionSearchTask?.cancel()
+
+        guard let rawQuery = nativeActiveMentionQuery(in: draft) else {
+            mentionSuggestions = []
+            isMentionSuggestionsLoading = false
+            return
+        }
+
+        let normalizedQuery = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let seeded = rankedMentionCandidates(matching: normalizedQuery, remote: [])
+        mentionSuggestions = seeded
+
+        mentionSearchTask = Task {
+            if normalizedQuery.isEmpty {
+                await MainActor.run {
+                    self.isMentionSuggestionsLoading = false
+                    self.mentionSuggestions = seeded
+                }
+                return
+            }
+
+            await MainActor.run {
+                self.isMentionSuggestionsLoading = true
+            }
+
+            let remoteResults = (try? await appState.searchTravelers(query: normalizedQuery)) ?? []
+            guard !Task.isCancelled else { return }
+
+            await MainActor.run {
+                self.isMentionSuggestionsLoading = false
+                self.mentionSuggestions = rankedMentionCandidates(matching: normalizedQuery, remote: remoteResults)
+            }
+        }
+    }
+
+    private func rankedMentionCandidates(matching query: String, remote: [NativeTravelerSummary]) -> [NativeTravelerSummary] {
+        let merged = localMentionCandidates + remote
+        var seen = Set<String>()
+        let unique = merged.filter { traveler in
+            guard !seen.contains(traveler.id) else { return false }
+            seen.insert(traveler.id)
+            return true
+        }
+
+        let filtered = query.isEmpty
+            ? unique
+            : unique.filter { traveler in
+                traveler.username.lowercased().contains(query)
+                || (traveler.displayName?.lowercased().contains(query) ?? false)
+            }
+
+        return filtered.sorted { lhs, rhs in
+            let lhsFollowing = appState.isFollowing(lhs.id)
+            let rhsFollowing = appState.isFollowing(rhs.id)
+            if lhsFollowing != rhsFollowing { return lhsFollowing && !rhsFollowing }
+
+            let lhsExact = lhs.username.lowercased() == query
+            let rhsExact = rhs.username.lowercased() == query
+            if lhsExact != rhsExact { return lhsExact && !rhsExact }
+
+            let lhsPrefix = lhs.username.lowercased().hasPrefix(query)
+            let rhsPrefix = rhs.username.lowercased().hasPrefix(query)
+            if lhsPrefix != rhsPrefix { return lhsPrefix && !rhsPrefix }
+
+            return lhs.username.localizedCaseInsensitiveCompare(rhs.username) == .orderedAscending
+        }
+    }
+
+    private func applyMentionSuggestion(_ username: String) {
+        commentDraft = nativeReplacingActiveMention(in: commentDraft, with: username)
+        mentionSuggestions = []
+        isMentionSuggestionsLoading = false
+        DispatchQueue.main.async {
+            isCommentFieldFocused = true
+        }
+    }
+
+    private func openTravelerProfile(username: String) {
+        if let localMatch = rankedMentionCandidates(matching: username.lowercased(), remote: []).first(where: {
+            $0.username.caseInsensitiveCompare(username) == .orderedSame
+        }) {
+            selectedCommentTraveler = localMatch
+            return
+        }
+
+        mentionSearchTask?.cancel()
+        mentionSearchTask = Task {
+            let results = (try? await appState.searchTravelers(query: username)) ?? []
+            guard !Task.isCancelled else { return }
+
+            let exactMatch = results.first(where: { $0.username.caseInsensitiveCompare(username) == .orderedSame })
+            if let exactMatch {
+                await MainActor.run {
+                    selectedCommentTraveler = exactMatch
+                }
+            }
+        }
+    }
+
     private var composerHeight: CGFloat {
         let length = trimmedCommentDraft.count
         if length > 80 || commentDraft.contains("\n") {
             return 68
         }
-        return 24
+        return 28
+    }
+
+    private var composerBubbleHeight: CGFloat {
+        trimmedCommentDraft.count > 80 || commentDraft.contains("\n") ? 84 : 46
     }
 
     private var composerAvatar: some View {
@@ -35062,7 +35544,12 @@ private struct NativeMomentFullscreenScaffold: View {
                                     }
                                     .frame(height: 76)
                             } else {
-                                NativeCommentThreadList(comments: comments, onReply: onReplyToComment)
+                                NativeCommentThreadList(
+                                    comments: comments,
+                                    onReply: onReplyToComment,
+                                    onOpenProfile: { _ in },
+                                    onOpenMention: { _ in }
+                                )
                             }
 
                         }
@@ -35379,7 +35866,7 @@ private struct NativeFeedMomentFullscreen: View {
                 targetId: targetId,
                 body: trimmed,
                 momentId: item.place?.momentId,
-                parentCommentId: replyingToComment?.id
+                parentCommentId: nativeCommentReplyParentId(for: replyingToComment)
             )
             comments = nativeSortCommentsNewestFirst(nativeInsertComment(newComment, into: comments))
             commentDraft = ""

@@ -10663,6 +10663,64 @@ async function createV2Notification(input: {
   }
 }
 
+function extractMentionedUsernames(body: string): string[] {
+  const matches = Array.from(body.matchAll(/(^|\s)@([a-z0-9._]{1,30})\b/gi));
+  const unique = new Set<string>();
+  for (const match of matches) {
+    const username = match[2]?.trim().toLowerCase();
+    if (username) {
+      unique.add(username);
+    }
+  }
+  return Array.from(unique);
+}
+
+async function resolveMentionedV2Users(usernames: string[]) {
+  if (usernames.length === 0) {
+    return [];
+  }
+
+  return prismaV2.user.findMany({
+    where: {
+      OR: usernames.map((username) => ({
+        username: {
+          equals: username,
+          mode: 'insensitive',
+        },
+      })),
+    },
+    select: {
+      id: true,
+      username: true,
+    },
+  });
+}
+
+async function notifyMentionedV2Users(input: {
+  mentionedUsernames: string[];
+  actorUserId: string;
+  actorName: string;
+  targetType: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
+  targetId: string;
+  body: string;
+  excludedUserIds: Set<string>;
+}) {
+  const mentionedUsers = await resolveMentionedV2Users(input.mentionedUsernames);
+  await Promise.all(
+    mentionedUsers
+      .filter((user) => !input.excludedUserIds.has(user.id))
+      .map((user) => createV2Notification({
+        userId: user.id,
+        actorUserId: input.actorUserId,
+        type: 'COMMENT',
+        targetType: input.targetType,
+        targetId: input.targetId,
+        title: `${input.actorName} mentioned you in a comment`,
+        body: input.body,
+      })),
+  );
+}
+
 function serializeV2CommentTree(comments: Array<{
   id: string;
   userId: string;
@@ -10798,7 +10856,13 @@ async function listV2Notifications(userId: string) {
         messageKind = 'follow';
         break;
       case 'COMMENT':
-        messageKind = 'comment_visited';
+        if (item.title.toLowerCase().includes('mentioned you')) {
+          messageKind = 'comment_mention';
+        } else if (item.title.toLowerCase().includes('replied to your comment')) {
+          messageKind = 'comment_reply';
+        } else {
+          messageKind = 'comment_visited';
+        }
         break;
       case 'VIBIN':
         messageKind = 'vibin_visited';
@@ -11093,11 +11157,9 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         return;
       }
 
-      if (parentComment.parentCommentId) {
-        res.status(400).json({ error: 'Nested replies are limited to one level' });
-        return;
-      }
     }
+
+    const effectiveParentCommentId = parentComment?.parentCommentId ?? trimmedParentCommentId;
 
     const comment = await prismaV2.comment.create({
       data: {
@@ -11106,7 +11168,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         targetId,
         body: body.trim(),
         momentId: resolvedMomentId ?? null,
-        parentCommentId: trimmedParentCommentId,
+        parentCommentId: effectiveParentCommentId,
       },
       include: {
         user: {
@@ -11127,8 +11189,10 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
       ? (targetId !== req.authV2UserId ? targetId : null)
       : await resolveV2TargetOwner(targetType, targetId);
 
+    const actorName = comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId);
+    const notifiedUserIds = new Set<string>([req.authV2UserId!]);
+
     if (notificationUserId && notificationUserId !== req.authV2UserId) {
-      const actorName = comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId);
       await createV2Notification({
         userId: notificationUserId,
         actorUserId: req.authV2UserId!,
@@ -11138,6 +11202,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         title: `${actorName} commented on your moment`,
         body: comment.body,
       });
+      notifiedUserIds.add(notificationUserId);
     }
 
     if (
@@ -11145,7 +11210,6 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
       && parentComment.userId !== req.authV2UserId
       && parentComment.userId !== notificationUserId
     ) {
-      const actorName = comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId);
       await createV2Notification({
         userId: parentComment.userId,
         actorUserId: req.authV2UserId!,
@@ -11155,7 +11219,18 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         title: `${actorName} replied to your comment`,
         body: comment.body,
       });
+      notifiedUserIds.add(parentComment.userId);
     }
+
+    await notifyMentionedV2Users({
+      mentionedUsernames: extractMentionedUsernames(comment.body),
+      actorUserId: req.authV2UserId!,
+      actorName,
+      targetType,
+      targetId,
+      body: comment.body,
+      excludedUserIds: notifiedUserIds,
+    });
 
     res.json({
       comment: {
@@ -16243,11 +16318,9 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
           return;
         }
 
-        if (parentComment.parentCommentId) {
-          res.status(400).json({ error: 'Nested replies are limited to one level' });
-          return;
-        }
       }
+
+      const effectiveParentCommentId = parentComment?.parentCommentId ?? trimmedParentCommentId;
 
       const comment = await prismaV2.comment.create({
         data: {
@@ -16256,7 +16329,7 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
           targetId,
           body: body.trim(),
           momentId: resolvedMomentId ?? null,
-          parentCommentId: trimmedParentCommentId,
+          parentCommentId: effectiveParentCommentId,
         },
         include: {
           user: {
@@ -16275,8 +16348,10 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
         ? (targetId !== req.authV2UserId ? targetId : null)
         : await resolveV2TargetOwner(targetType, targetId);
 
+      const actorName = comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId);
+      const notifiedUserIds = new Set<string>([req.authV2UserId]);
+
       if (notificationUserId && notificationUserId !== req.authV2UserId) {
-        const actorName = comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId);
         await createV2Notification({
           userId: notificationUserId,
           actorUserId: req.authV2UserId,
@@ -16286,6 +16361,7 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
           title: `${actorName} commented on your moment`,
           body: comment.body,
         });
+        notifiedUserIds.add(notificationUserId);
       }
 
       if (
@@ -16293,7 +16369,6 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
         && parentComment.userId !== req.authV2UserId
         && parentComment.userId !== notificationUserId
       ) {
-        const actorName = comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId);
         await createV2Notification({
           userId: parentComment.userId,
           actorUserId: req.authV2UserId,
@@ -16303,7 +16378,18 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
           title: `${actorName} replied to your comment`,
           body: comment.body,
         });
+        notifiedUserIds.add(parentComment.userId);
       }
+
+      await notifyMentionedV2Users({
+        mentionedUsernames: extractMentionedUsernames(comment.body),
+        actorUserId: req.authV2UserId,
+        actorName,
+        targetType,
+        targetId,
+        body: comment.body,
+        excludedUserIds: notifiedUserIds,
+      });
 
       res.json({
         comment: {
