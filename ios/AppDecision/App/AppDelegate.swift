@@ -2425,7 +2425,9 @@ private enum NativeDiaryGalleryFilterPanel: Identifiable {
 
 struct NativeComment: Decodable, Identifiable {
     let id: String
+    let userId: String?
     let user: String
+    let displayName: String?
     let avatarURL: String?
     let body: String
     let createdAt: String
@@ -2434,7 +2436,9 @@ struct NativeComment: Decodable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case id
+        case userId
         case user
+        case displayName
         case avatarURL = "avatarUrl"
         case body
         case createdAt
@@ -2444,7 +2448,9 @@ struct NativeComment: Decodable, Identifiable {
 
     init(
         id: String,
+        userId: String? = nil,
         user: String,
+        displayName: String? = nil,
         avatarURL: String? = nil,
         body: String,
         createdAt: String,
@@ -2452,7 +2458,9 @@ struct NativeComment: Decodable, Identifiable {
         replies: [NativeComment]? = nil
     ) {
         self.id = id
+        self.userId = userId
         self.user = user
+        self.displayName = displayName
         self.avatarURL = avatarURL
         self.body = body
         self.createdAt = createdAt
@@ -2472,7 +2480,9 @@ private func nativeSortCommentsNewestFirst(_ comments: [NativeComment]) -> [Nati
         .map { comment in
             NativeComment(
                 id: comment.id,
+                userId: comment.userId,
                 user: comment.user,
+                displayName: comment.displayName,
                 avatarURL: comment.avatarURL,
                 body: comment.body,
                 createdAt: comment.createdAt,
@@ -2519,7 +2529,9 @@ private func nativeInsertComment(_ newComment: NativeComment, into comments: [Na
         nextReplies.append(newComment)
         return NativeComment(
             id: comment.id,
+            userId: comment.userId,
             user: comment.user,
+            displayName: comment.displayName,
             avatarURL: comment.avatarURL,
             body: comment.body,
             createdAt: comment.createdAt,
@@ -28674,16 +28686,7 @@ private struct NativeCommentThreadList: View {
                     commentAvatar(for: row.comment)
 
                     VStack(alignment: .leading, spacing: 4) {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            Text(row.comment.user)
-                                .font(nativeAppFont(size: 14, weight: .black))
-                                .foregroundStyle(.white)
-
-                            Text(NativeAppState.relativeLabel(from: row.comment.createdAt))
-                                .font(nativeAppFont(size: 12, weight: .medium))
-                                .foregroundStyle(.white.opacity(0.38))
-                        }
-
+                        commentHeader(for: row.comment)
                         commentBody(for: row)
 
                         Button("Reply") {
@@ -28705,6 +28708,61 @@ private struct NativeCommentThreadList: View {
                 .padding(.leading, CGFloat(row.depth) * 22)
             }
         }
+    }
+
+    @ViewBuilder
+    private func commentHeader(for comment: NativeComment) -> some View {
+        if let traveler = commentTravelerSummary(for: comment) {
+            NavigationLink {
+                NativeTravelerProfileScreen(initialTraveler: traveler)
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text(comment.user)
+                        .font(nativeAppFont(size: 14, weight: .black))
+                        .foregroundStyle(.white)
+
+                    Text(NativeAppState.relativeLabel(from: comment.createdAt))
+                        .font(nativeAppFont(size: 12, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.38))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(comment.user)
+                    .font(nativeAppFont(size: 14, weight: .black))
+                    .foregroundStyle(.white)
+
+                Text(NativeAppState.relativeLabel(from: comment.createdAt))
+                    .font(nativeAppFont(size: 12, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.38))
+            }
+        }
+    }
+
+    private func commentTravelerSummary(for comment: NativeComment) -> NativeTravelerSummary? {
+        guard let userId = comment.userId?.trimmingCharacters(in: .whitespacesAndNewlines), !userId.isEmpty else {
+            return nil
+        }
+
+        return NativeTravelerSummary(
+            id: userId,
+            username: comment.user,
+            displayName: comment.displayName,
+            avatar: comment.avatarURL,
+            bio: nil,
+            descriptor: nil,
+            matchScore: nil,
+            followersCount: nil,
+            followingCount: nil,
+            recentSavedPlaces: nil,
+            recentCollections: nil,
+            travelHistory: [],
+            visitedPlacesCount: nil,
+            savedPlacesCount: nil,
+            collectionsCount: nil
+        )
     }
 
     @ViewBuilder
