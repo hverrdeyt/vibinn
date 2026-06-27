@@ -10669,11 +10669,12 @@ function serializeV2CommentTree(comments: Array<{
   parentCommentId: string | null;
   body: string;
   createdAt: Date;
-  user: { username: string | null };
+  user: { username: string | null; avatarUrl: string | null };
 }>) {
   type SerializedV2Comment = {
     id: string;
     user: string;
+    avatarUrl: string | null;
     body: string;
     createdAt: string;
     parentCommentId: string | null;
@@ -10686,6 +10687,7 @@ function serializeV2CommentTree(comments: Array<{
     commentMap.set(comment.id, {
       id: comment.id,
       user: comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId),
+      avatarUrl: comment.user.avatarUrl ?? null,
       body: comment.body,
       createdAt: comment.createdAt.toISOString(),
       parentCommentId: comment.parentCommentId,
@@ -11013,11 +11015,12 @@ app.get('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, res
         targetType: targetType as 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION',
         targetId,
       },
-      orderBy: { createdAt: 'asc' },
+      orderBy: { createdAt: 'desc' },
       include: {
         user: {
           select: {
             username: true,
+            avatarUrl: true,
           },
         },
       },
@@ -11104,6 +11107,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         user: {
           select: {
             username: true,
+            avatarUrl: true,
           },
         },
       },
@@ -11151,6 +11155,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
       comment: {
         id: comment.id,
         user: comment.user.username ?? buildV2TravelerUsernameFallback(comment.userId),
+        avatarUrl: comment.user.avatarUrl ?? null,
         body: comment.body,
         createdAt: comment.createdAt.toISOString(),
         parentCommentId: comment.parentCommentId,
