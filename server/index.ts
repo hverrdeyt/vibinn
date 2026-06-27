@@ -10449,7 +10449,11 @@ app.patch('/api/v2/profile/me', async (req: AuthenticatedRequest, res) => {
       bio,
     });
     if (!legacyDbAccessDisabled) {
-      await ensureLegacyUserForV2User(req.authV2UserId);
+      try {
+        await ensureLegacyUserForV2User(req.authV2UserId);
+      } catch (error) {
+        console.error('v2 profile legacy sync failed', error);
+      }
     }
 
     const onboarding = await getMyOnboardingState(req.authV2UserId);
