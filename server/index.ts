@@ -1922,13 +1922,48 @@ async function buildV2HomepageRecentMemories(userId: string, requestOrigin?: str
   });
 
   const social = await loadV2MomentSocialState(moments.map((moment) => moment.id), userId);
+  const storedPlaces = moments.length > 0
+    ? await prismaV2.place.findMany({
+        where: {
+          id: { in: Array.from(new Set(moments.map((moment) => moment.placeId))) },
+        },
+        select: {
+          id: true,
+          googlePlaceId: true,
+          name: true,
+          address: true,
+          city: true,
+          country: true,
+          neighborhood: true,
+          category: true,
+          primaryImageUrl: true,
+          latitude: true,
+          longitude: true,
+          mapsUrl: true,
+        },
+      })
+    : [];
+  const storedPlaceMap = new Map(
+    storedPlaces.map((place) => [place.id, mapStoredV2PlaceForClient(place)] as const),
+  );
 
   return {
-    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
-      commentCount: social.commentCounts[moment.id] ?? 0,
-      likeCount: social.likeCounts[moment.id] ?? 0,
-      isVibed: social.vibedMomentIds.has(moment.id),
-    }, social.latestCommentByMoment.get(moment.id) ?? null)),
+    moments: moments.map((moment) => {
+      const mappedMoment = mapV2MomentForClient(moment, requestOrigin, {
+        commentCount: social.commentCounts[moment.id] ?? 0,
+        likeCount: social.likeCounts[moment.id] ?? 0,
+        isVibed: social.vibedMomentIds.has(moment.id),
+        recentVibers: social.recentVibersByMoment.get(moment.id) ?? [],
+      }, social.latestCommentByMoment.get(moment.id) ?? null);
+
+      return {
+        ...mappedMoment,
+        place: mergeStoredV2PlaceIntoClientPlace(
+          mappedMoment.place,
+          storedPlaceMap.get(moment.placeId),
+        ),
+      };
+    }),
   };
 }
 
@@ -1941,13 +1976,48 @@ async function buildV2DiaryMoments(userId: string, requestOrigin?: string) {
     ],
   });
   const social = await loadV2MomentSocialState(moments.map((moment) => moment.id), userId);
+  const storedPlaces = moments.length > 0
+    ? await prismaV2.place.findMany({
+        where: {
+          id: { in: Array.from(new Set(moments.map((moment) => moment.placeId))) },
+        },
+        select: {
+          id: true,
+          googlePlaceId: true,
+          name: true,
+          address: true,
+          city: true,
+          country: true,
+          neighborhood: true,
+          category: true,
+          primaryImageUrl: true,
+          latitude: true,
+          longitude: true,
+          mapsUrl: true,
+        },
+      })
+    : [];
+  const storedPlaceMap = new Map(
+    storedPlaces.map((place) => [place.id, mapStoredV2PlaceForClient(place)] as const),
+  );
 
   return {
-    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
-      commentCount: social.commentCounts[moment.id] ?? 0,
-      likeCount: social.likeCounts[moment.id] ?? 0,
-      isVibed: social.vibedMomentIds.has(moment.id),
-    }, social.latestCommentByMoment.get(moment.id) ?? null)),
+    moments: moments.map((moment) => {
+      const mappedMoment = mapV2MomentForClient(moment, requestOrigin, {
+        commentCount: social.commentCounts[moment.id] ?? 0,
+        likeCount: social.likeCounts[moment.id] ?? 0,
+        isVibed: social.vibedMomentIds.has(moment.id),
+        recentVibers: social.recentVibersByMoment.get(moment.id) ?? [],
+      }, social.latestCommentByMoment.get(moment.id) ?? null);
+
+      return {
+        ...mappedMoment,
+        place: mergeStoredV2PlaceIntoClientPlace(
+          mappedMoment.place,
+          storedPlaceMap.get(moment.placeId),
+        ),
+      };
+    }),
   };
 }
 
