@@ -31024,6 +31024,7 @@ private struct NativeTravelerProfileScreen: View {
         )
         .navigationTitle(isOwnProfilePresentation ? "" : "@\(traveler.username)")
         .navigationBarTitleDisplayMode(.inline)
+        .navigationBarBackButtonHidden(!isOwnProfilePresentation)
         .task {
             await loadTravelerProfile()
             updateMapRegion()
@@ -31059,6 +31060,17 @@ private struct NativeTravelerProfileScreen: View {
         }
         .sheet(isPresented: $showShareSheet) {
             NativeShareSheet(items: [isOwnProfilePresentation ? nativeMyProfileShareMessage(username: traveler.username) : nativeTravelerProfileShareMessage(username: traveler.username)])
+        }
+        .toolbar {
+            if !isOwnProfilePresentation {
+                ToolbarItem(placement: .topBarLeading) {
+                    standardProfileBackButton
+                }
+
+                ToolbarItem(placement: .topBarTrailing) {
+                    standardProfileShareButton
+                }
+            }
         }
         .sheet(isPresented: $showEditProfileSheet) {
             if let user = appState.currentUser {
@@ -31175,6 +31187,42 @@ private struct NativeTravelerProfileScreen: View {
         Text("My Profile")
             .font(nativePixelAccentFont(size: 22))
             .foregroundStyle(nativeAccent)
+    }
+
+    private var standardProfileBackButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(nativeAppFont(size: 16, weight: .black))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(Color.white.opacity(0.08))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var standardProfileShareButton: some View {
+        Button {
+            appState.trackAnalytics(
+                .shareProfile,
+                properties: [
+                    "profile_user_id": traveler.id,
+                    "profile_username": traveler.username,
+                    "source": NativeAnalyticsSource.userProfile,
+                ]
+            )
+            showShareSheet = true
+        } label: {
+            Image(systemName: "square.and.arrow.up")
+                .font(nativeAppFont(size: 16, weight: .black))
+                .foregroundStyle(.white)
+                .frame(width: 36, height: 36)
+                .background(Color.white.opacity(0.08))
+                .clipShape(Circle())
+        }
+        .buttonStyle(.plain)
     }
 
     private var ownProfileInlineHeader: some View {
