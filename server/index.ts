@@ -10054,7 +10054,7 @@ app.get('/api/health', (_, res) => {
 
 app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
   try {
-    if (req.authV2UserId && !req.authUserId) {
+    if (req.authV2UserId && (legacyDbAccessDisabled || !req.authUserId)) {
       const profile = await getMyProfile(req.authV2UserId);
       res.json({
         user: mapV2UserToLegacyAuthUser(profile.user),
@@ -10072,6 +10072,14 @@ app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
     });
 
     if (!user) {
+      if (req.authV2UserId) {
+        const profile = await getMyProfile(req.authV2UserId);
+        res.json({
+          user: mapV2UserToLegacyAuthUser(profile.user),
+        });
+        return;
+      }
+
       res.status(401).json({ error: 'Unauthorized' });
       return;
     }

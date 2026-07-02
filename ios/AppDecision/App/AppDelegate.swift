@@ -3717,7 +3717,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
 
     private func shouldClearSession(for error: Error) -> Bool {
         let nsError = error as NSError
-        return nsError.domain == "NativeAPI" && nsError.code == 401
+        guard nsError.domain == "NativeAPI" else { return false }
+        return nsError.code == 401 || nsError.code == 500
     }
 
     private func unsupportedLegacyFeatureError(_ featureName: String) -> NSError {
