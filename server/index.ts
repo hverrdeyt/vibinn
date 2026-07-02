@@ -10057,7 +10057,7 @@ app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
     if (req.authV2UserId && (legacyDbAccessDisabled || !req.authUserId)) {
       const profile = await getMyProfile(req.authV2UserId);
       res.json({
-        user: mapV2UserToLegacyAuthUser(profile.user),
+        user: mapV2UserToLegacyAuthUser(profile),
       });
       return;
     }
@@ -10075,7 +10075,7 @@ app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
       if (req.authV2UserId) {
         const profile = await getMyProfile(req.authV2UserId);
         res.json({
-          user: mapV2UserToLegacyAuthUser(profile.user),
+          user: mapV2UserToLegacyAuthUser(profile),
         });
         return;
       }
