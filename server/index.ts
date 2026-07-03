@@ -991,6 +991,10 @@ function mapV2TravelerSummaryForClient(user: {
 }, counts?: {
   followersCount?: number;
   visitedPlacesCount?: number;
+}, recommendation?: {
+  reason?: string | null;
+  priority?: number | null;
+  mutualCount?: number | null;
 }) {
   return {
     id: user.id,
@@ -1007,10 +1011,222 @@ function mapV2TravelerSummaryForClient(user: {
     visitedPlacesCount: counts?.visitedPlacesCount ?? 0,
     savedPlacesCount: 0,
     collectionsCount: 0,
+    recommendationReason: recommendation?.reason ?? null,
+    recommendationPriority: recommendation?.priority ?? null,
+    mutualCount: recommendation?.mutualCount ?? null,
   };
 }
 
+async function buildV2SuggestedTravelerRecommendations(
+  userId: string,
+  options?: {
+    phoneNumbers?: string[];
+    limit?: number;
+  },
+) {
+  const limit = Math.max(1, Math.min(options?.limit ?? 12, 24));
+  const viewer = await prismaV2.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      inviteRedemption: {
+        select: {
+          inviteCodeId: true,
+          inviteCode: {
+            select: {
+              ownerUserId: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!viewer) {
+    return [];
+  }
+
+  const [follows, blocksGiven, blocksReceived, matchedContacts] = await Promise.all([
+    prismaV2.follow.findMany({
+      where: { sourceUserId: userId },
+      select: { targetUserId: true },
+    }),
+    prismaV2.userBlock.findMany({
+      where: { sourceUserId: userId },
+      select: { targetUserId: true },
+    }),
+    prismaV2.userBlock.findMany({
+      where: { targetUserId: userId },
+      select: { sourceUserId: true },
+    }),
+    options?.phoneNumbers?.length
+      ? matchRegisteredContacts({
+          userId,
+          phoneNumbers: options.phoneNumbers,
+        })
+      : Promise.resolve({ matchedUsers: [] }),
+  ]);
+
+  const followedUserIds = follows.map((follow) => follow.targetUserId);
+  const excludedUserIds = new Set<string>([
+    userId,
+    ...followedUserIds,
+    ...blocksGiven.map((item) => item.targetUserId),
+    ...blocksReceived.map((item) => item.sourceUserId),
+  ]);
+
+  const inviterUserId = viewer.inviteRedemption?.inviteCode.ownerUserId ?? null;
+  const sameInviteCodeId = viewer.inviteRedemption?.inviteCodeId ?? null;
+  const [sameInviteRedemptions, mutualFollowCounts, followerCounts] = await Promise.all([
+    sameInviteCodeId
+      ? prismaV2.inviteRedemption.findMany({
+          where: {
+            inviteCodeId: sameInviteCodeId,
+            userId: { not: userId },
+          },
+          select: { userId: true },
+        })
+      : Promise.resolve([]),
+    followedUserIds.length > 0
+      ? prismaV2.follow.groupBy({
+          by: ['targetUserId'],
+          where: {
+            sourceUserId: { in: followedUserIds },
+            targetUserId: { notIn: Array.from(excludedUserIds) },
+          },
+          _count: { _all: true },
+        })
+      : Promise.resolve([]),
+    prismaV2.follow.groupBy({
+      by: ['targetUserId'],
+      where: {
+        targetUserId: { notIn: Array.from(excludedUserIds) },
+      },
+      _count: { _all: true },
+    }),
+  ]);
+
+  const sameInviteUserIds = new Set(sameInviteRedemptions.map((item) => item.userId));
+  const contactUserIds = new Set(matchedContacts.matchedUsers.map((item) => item.id));
+  const mutualCountMap = new Map(mutualFollowCounts.map((item) => [item.targetUserId, item._count._all]));
+  const followerCountMap = new Map(followerCounts.map((item) => [item.targetUserId, item._count._all]));
+
+  const prioritizedCandidateIds = new Set<string>();
+  if (inviterUserId && !excludedUserIds.has(inviterUserId)) {
+    prioritizedCandidateIds.add(inviterUserId);
+  }
+  for (const candidateId of sameInviteUserIds) {
+    if (!excludedUserIds.has(candidateId)) {
+      prioritizedCandidateIds.add(candidateId);
+    }
+  }
+  for (const candidateId of contactUserIds) {
+    if (!excludedUserIds.has(candidateId)) {
+      prioritizedCandidateIds.add(candidateId);
+    }
+  }
+  for (const [candidateId, mutualCount] of mutualCountMap.entries()) {
+    if (mutualCount > 0 && !excludedUserIds.has(candidateId)) {
+      prioritizedCandidateIds.add(candidateId);
+    }
+  }
+  for (const candidateId of Array.from(followerCountMap.entries())
+    .sort((left, right) => right[1] - left[1])
+    .slice(0, 40)
+    .map(([candidateId]) => candidateId)) {
+    if (!excludedUserIds.has(candidateId)) {
+      prioritizedCandidateIds.add(candidateId);
+    }
+  }
+
+  if (prioritizedCandidateIds.size === 0) {
+    return [];
+  }
+
+  const users = await prismaV2.user.findMany({
+    where: {
+      id: { in: Array.from(prioritizedCandidateIds) },
+      status: 'ACTIVE',
+      username: { not: null },
+    },
+    select: {
+      id: true,
+      username: true,
+      displayName: true,
+      avatarUrl: true,
+      cityLabel: true,
+      updatedAt: true,
+    },
+  });
+
+  const visitedCounts = await prismaV2.moment.groupBy({
+    by: ['userId'],
+    where: {
+      userId: { in: users.map((user) => user.id) },
+      visibility: 'PUBLIC',
+    },
+    _count: { _all: true },
+  });
+  const visitedCountMap = new Map(visitedCounts.map((item) => [item.userId, item._count._all]));
+
+  const recommendations = users
+    .map((user) => {
+      let priority = 4;
+      let reason = `${followerCountMap.get(user.id) ?? 0} followers`;
+      if (inviterUserId === user.id) {
+        priority = 0;
+        reason = 'Invited you to Vibinn';
+      } else if (sameInviteUserIds.has(user.id)) {
+        priority = 1;
+        reason = 'Same mutual invitation';
+      } else if (contactUserIds.has(user.id)) {
+        priority = 2;
+        reason = 'From your contact';
+      } else if ((mutualCountMap.get(user.id) ?? 0) > 0) {
+        priority = 3;
+        const mutualCount = mutualCountMap.get(user.id) ?? 0;
+        reason = mutualCount == 1 ? '1 mutual' : `${mutualCount} mutuals`;
+      }
+
+      return {
+        traveler: mapV2TravelerSummaryForClient(
+          user,
+          {
+            followersCount: followerCountMap.get(user.id) ?? 0,
+            visitedPlacesCount: visitedCountMap.get(user.id) ?? 0,
+          },
+          {
+            reason,
+            priority,
+            mutualCount: mutualCountMap.get(user.id) ?? 0,
+          },
+        ),
+        priority,
+        mutualCount: mutualCountMap.get(user.id) ?? 0,
+        followersCount: followerCountMap.get(user.id) ?? 0,
+        updatedAt: user.updatedAt.getTime(),
+      };
+    })
+    .sort((left, right) => {
+      if (left.priority !== right.priority) {
+        return left.priority - right.priority;
+      }
+      if (left.priority === 3 && left.mutualCount !== right.mutualCount) {
+        return right.mutualCount - left.mutualCount;
+      }
+      if (left.followersCount !== right.followersCount) {
+        return right.followersCount - left.followersCount;
+      }
+      return right.updatedAt - left.updatedAt;
+    })
+    .slice(0, limit)
+    .map((item) => item.traveler);
+
+  return recommendations;
+}
+
 async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
+  const suggestedTravelers = await buildV2SuggestedTravelerRecommendations(userId, { limit: 12 });
   const follows = await prismaV2.follow.findMany({
     where: { sourceUserId: userId },
     orderBy: { createdAt: 'desc' },
@@ -1031,7 +1247,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
   if (followedUserIds.length === 0) {
     return {
       followedTravelers: [],
-      suggestedTravelers: [],
+      suggestedTravelers,
       items: [],
       fallbackItems: [],
       suggestedItems: [],
@@ -1151,7 +1367,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
 
   return {
     followedTravelers,
-    suggestedTravelers: [],
+    suggestedTravelers,
     items,
     fallbackItems: [],
     suggestedItems: [],
@@ -10552,6 +10768,33 @@ app.post('/api/v2/contacts/match', async (req: AuthenticatedRequest, res) => {
       res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
       return;
     }
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/travelers/suggestions', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { phoneNumbers } = req.body as {
+      phoneNumbers?: string[];
+    };
+
+    if (phoneNumbers !== undefined && !Array.isArray(phoneNumbers)) {
+      res.status(400).json({ error: 'phoneNumbers must be an array when provided', code: 'SUGGESTED_TRAVELERS_PHONE_NUMBERS_INVALID' });
+      return;
+    }
+
+    const travelers = await buildV2SuggestedTravelerRecommendations(req.authV2UserId, {
+      phoneNumbers,
+      limit: 12,
+    });
+
+    res.json({ travelers });
+  } catch (error) {
     handleError(res, error);
   }
 });
