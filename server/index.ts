@@ -2122,6 +2122,16 @@ function topPlacesRelativeDistanceLabel(latitude?: number | null, longitude?: nu
   return `${roundedLat}, ${roundedLon}`;
 }
 
+function compactUniqueStrings(values: Array<string | null | undefined>) {
+  return Array.from(
+    new Set(
+      values
+        .map((value) => value?.trim())
+        .filter((value): value is string => Boolean(value)),
+    ),
+  );
+}
+
 type V2TopPlaceMomentRow = {
   id: string;
   userId: string;
@@ -2234,7 +2244,7 @@ async function buildV2TopPlacesPayload(input: {
     visitedPlacesCount: traveler._count.moments,
   });
 
-  const cityBuckets = new Map<string, { id: string; label: string; count: number }>();
+  const cityBuckets = new Map<string, { id: string; label: string; count: number; countryName: string | null }>();
   const groupedPlaces = new Map<string, {
     placeId: string;
     name: string;
@@ -2259,6 +2269,13 @@ async function buildV2TopPlacesPayload(input: {
 
   const nowMs = Date.now();
   const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
+  const allCityLabels = compactUniqueStrings(
+    moments.map((moment) => normalizeTopPlacesCityLabel({
+      explicitCity: moment.placeRecord.city,
+      placeLocation: moment.placeLocation,
+    })),
+  );
+  const allCountryLabels = compactUniqueStrings(moments.map((moment) => moment.placeRecord.country));
 
   const eligibleMoments = moments.filter((moment) => {
     const cityLabel = normalizeTopPlacesCityLabel({
@@ -2266,7 +2283,12 @@ async function buildV2TopPlacesPayload(input: {
       placeLocation: moment.placeLocation,
     });
     const cityKey = normalizeTopPlacesCityKey(cityLabel);
-    const cityBucket = cityBuckets.get(cityKey) ?? { id: cityKey || 'unknown', label: cityLabel, count: 0 };
+    const cityBucket = cityBuckets.get(cityKey) ?? {
+      id: cityKey || 'unknown',
+      label: cityLabel,
+      count: 0,
+      countryName: moment.placeRecord.country?.trim() || null,
+    };
     cityBucket.count += 1;
     cityBuckets.set(cityKey, cityBucket);
 
@@ -2427,6 +2449,7 @@ async function buildV2TopPlacesPayload(input: {
       id: 'all',
       label: 'All',
       count: moments.length,
+      countryName: null,
     },
     ...Array.from(cityBuckets.values())
       .sort((lhs, rhs) => {
@@ -2439,6 +2462,7 @@ async function buildV2TopPlacesPayload(input: {
         id: city.id,
         label: city.label,
         count: city.count,
+        countryName: city.countryName,
       })),
   ];
 
@@ -2450,6 +2474,9 @@ async function buildV2TopPlacesPayload(input: {
       totalPlaces: rankedPlaces.length,
       selectedCityKey: requestedCityKey || null,
       selectedCityLabel: selectedCity?.label ?? null,
+      leadingCities: allCityLabels.slice(0, 2),
+      remainingCityCount: Math.max(0, allCityLabels.length - 2),
+      countryCount: allCountryLabels.length,
     },
     cityOptions,
     places: rankedPayload,

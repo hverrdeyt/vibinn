@@ -1194,12 +1194,16 @@ private struct NativeTopPlacesSummary: Decodable {
     let totalPlaces: Int
     let selectedCityKey: String?
     let selectedCityLabel: String?
+    let leadingCities: [String]
+    let remainingCityCount: Int
+    let countryCount: Int
 }
 
 private struct NativeTopPlacesCityOption: Decodable, Identifiable, Hashable {
     let id: String
     let label: String
     let count: Int
+    let countryName: String?
 }
 
 private struct NativeTopPlacesTieGroup: Decodable, Identifiable {
@@ -11875,10 +11879,6 @@ private struct NativeHomepageShellScreen: View {
 
     private var homepageTopPlacesCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("This is your top places list in the last 1 month.")
-                .font(nativeAppFont(size: 12, weight: .medium))
-                .foregroundStyle(.black)
-
             if let payload = appState.homepageTopPlaces, !payload.places.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(payload.places.prefix(3).enumerated()), id: \.element.id) { item in
@@ -11947,20 +11947,13 @@ private struct NativeHomepageShellScreen: View {
             homepageTopPlacesThumbnail(place)
 
             VStack(alignment: .leading, spacing: 2) {
-                if index == 0, let quote = place.quote, !quote.isEmpty {
-                    Text("“\(quote)”")
-                        .font(nativeAppFont(size: 11, weight: .medium))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                }
-
                 Text(place.name)
-                    .font(nativeAppFont(size: 12, weight: .black))
+                    .font(nativeAppFont(size: 14, weight: .black))
                     .foregroundStyle(.white)
                     .lineLimit(1)
 
                 Text(place.cityLabel)
-                    .font(nativeAppFont(size: 10, weight: .medium))
+                    .font(nativeAppFont(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.55))
                     .lineLimit(1)
             }
@@ -11969,11 +11962,11 @@ private struct NativeHomepageShellScreen: View {
             Spacer(minLength: 8)
 
             Text("\(place.rank)")
-                .font(nativePixelAccentFont(size: 18))
+                .font(nativePixelAccentFont(size: 14))
                 .foregroundStyle(.white)
                 .padding(.trailing, 14)
         }
-        .frame(height: 68)
+        .frame(height: 60)
         .background(Color.black)
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
@@ -11992,7 +11985,7 @@ private struct NativeHomepageShellScreen: View {
                     )
             }
         }
-        .frame(width: 76, height: 68)
+        .frame(width: 76, height: 60)
         .clipped()
     }
 
@@ -13622,6 +13615,7 @@ private struct NativeTopPlacesScreen: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedMoment: NativeMoment?
+    @State private var shareIconIndex = 0
 
     private enum Mode {
         case byYou
@@ -13642,27 +13636,45 @@ private struct NativeTopPlacesScreen: View {
         return "Check out \(username)'s top places on Vibinn. Current #1: \(firstPlace). https://vibinn.club/\(username)"
     }
 
+    private var shareBadgeNames: [String] {
+        [
+            "HomepageShareInstagram",
+            "HomepageShareTikTok",
+            "HomepageShareWhatsApp"
+        ]
+    }
+
     var body: some View {
-        ZStack {
+        ZStack(alignment: .topLeading) {
             Color.black.ignoresSafeArea()
 
-            VStack(alignment: .leading, spacing: 20) {
-                header
-                modePicker
+            ScrollView(.vertical, showsIndicators: false) {
+                VStack(alignment: .leading, spacing: 12) {
+                    titleHeader
+                    modePicker
 
-                if mode == .byFriends {
-                    friendsSelector
+                    if mode == .byYou, let payload {
+                        topSummary(payload)
+                    }
+
+                    if mode == .byFriends {
+                        friendsSelector
+                    }
+
+                    if let payload, !payload.cityOptions.isEmpty {
+                        citySelector(payload.cityOptions)
+                    }
+
+                    content
                 }
-
-                if let payload, !payload.cityOptions.isEmpty {
-                    citySelector(payload.cityOptions)
-                }
-
-                content
+                .padding(.horizontal, 20)
+                .padding(.top, 96)
+                .padding(.bottom, 28)
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 18)
-            .padding(.bottom, 28)
+
+            backButton
+                .padding(.leading, 20)
+                .padding(.top, 18)
         }
         .task {
             if selectedTravelerId == nil {
@@ -13685,41 +13697,43 @@ private struct NativeTopPlacesScreen: View {
         .onChange(of: selectedCityId) { _ in
             Task { await load() }
         }
+        .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
+            guard !shareBadgeNames.isEmpty else { return }
+            shareIconIndex = (shareIconIndex + 1) % shareBadgeNames.count
+        }
         .fullScreenCover(item: $selectedMoment) { moment in
             NativeDecisionHistoryMomentFullscreen(moment: moment)
                 .environmentObject(appState)
         }
     }
 
-    private var header: some View {
-        HStack(alignment: .top) {
-            Button {
-                dismiss()
-            } label: {
-                Circle()
-                    .fill(Color.white.opacity(0.09))
-                    .frame(width: 52, height: 52)
-                    .overlay(
-                        Image(systemName: "arrow.left")
-                            .font(nativeAppFont(size: 20, weight: .black))
-                            .foregroundStyle(.white)
-                    )
-            }
-            .buttonStyle(.plain)
+    private var backButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Circle()
+                .fill(Color.white.opacity(0.09))
+                .frame(width: 52, height: 52)
+                .overlay(
+                    Image(systemName: "arrow.left")
+                        .font(nativeAppFont(size: 20, weight: .black))
+                        .foregroundStyle(.white)
+                )
+        }
+        .buttonStyle(.plain)
+    }
 
+    private var titleHeader: some View {
+        HStack {
+            Text("TOP PLACES")
+                .font(nativePixelAccentFont(size: 24))
+                .foregroundStyle(nativeAccent)
             Spacer(minLength: 0)
         }
-        .overlay(alignment: .bottomLeading) {
-            Text("TOP PLACES")
-                .font(nativePixelAccentFont(size: 32))
-                .foregroundStyle(nativeAccent)
-                .offset(y: 84)
-        }
-        .padding(.bottom, 70)
     }
 
     private var modePicker: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             pickerButton(title: "By you", active: mode == .byYou) {
                 mode = .byYou
             }
@@ -13731,59 +13745,71 @@ private struct NativeTopPlacesScreen: View {
     }
 
     private var friendsSelector: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 18) {
-                ForEach(followedTravelers) { traveler in
-                    Button {
-                        selectedTravelerId = traveler.id
-                    } label: {
-                        VStack(spacing: 8) {
-                            ZStack {
-                                if let avatar = traveler.avatar, !avatar.isEmpty {
-                                    NativeRemoteImage(url: avatar)
-                                } else {
-                                    RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                        .fill(Color.white.opacity(0.08))
-                                        .overlay(
-                                            Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
-                                                .font(nativeAppFont(size: 18, weight: .black))
-                                                .foregroundStyle(.white)
-                                        )
+        Group {
+            if followedTravelers.isEmpty {
+                EmptyView()
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 12) {
+                        ForEach(followedTravelers) { traveler in
+                            Button {
+                                selectedTravelerId = traveler.id
+                            } label: {
+                                VStack(spacing: 8) {
+                                    ZStack {
+                                        if let avatar = traveler.avatar, !avatar.isEmpty {
+                                            NativeRemoteImage(url: avatar)
+                                        } else {
+                                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                                .fill(Color.white.opacity(0.08))
+                                                .overlay(
+                                                    Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
+                                                        .font(nativeAppFont(size: 16, weight: .black))
+                                                        .foregroundStyle(.white)
+                                                )
+                                        }
+                                    }
+                                    .frame(width: 48, height: 48)
+                                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                            .stroke((selectedTravelerId == traveler.id ? nativeAccent : Color.clear), lineWidth: 3)
+                                    )
+
+                                    Text(traveler.username)
+                                        .font(nativeAppFont(size: 12, weight: .medium))
+                                        .foregroundStyle(selectedTravelerId == traveler.id ? .white : .white.opacity(0.45))
+                                        .lineLimit(1)
                                 }
                             }
-                            .frame(width: 64, height: 64)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .stroke((selectedTravelerId == traveler.id ? nativeAccent : Color.clear), lineWidth: 3)
-                            )
-
-                            Text(traveler.username)
-                                .font(nativeAppFont(size: 12, weight: .medium))
-                                .foregroundStyle(selectedTravelerId == traveler.id ? .white : .white.opacity(0.45))
-                                .lineLimit(1)
+                            .buttonStyle(.plain)
                         }
                     }
-                    .buttonStyle(.plain)
                 }
+                .frame(height: 84)
             }
         }
-        .frame(height: 100)
     }
 
     private func citySelector(_ cities: [NativeTopPlacesCityOption]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 ForEach(cities) { city in
                     let isActive = city.id == selectedCityId
+                    let title = [nativeFlagEmoji(for: city.countryName), city.label]
+                        .compactMap { value in
+                            guard let value, !value.isEmpty else { return nil }
+                            return value
+                        }
+                        .joined(separator: " ")
                     Button {
                         selectedCityId = city.id
                     } label: {
-                        Text(city.label)
-                            .font(nativeAppFont(size: 14, weight: .black))
+                        Text(title)
+                            .font(nativeAppFont(size: 12, weight: .black))
                             .foregroundStyle(isActive ? .black : .white.opacity(0.84))
-                            .padding(.horizontal, 18)
-                            .padding(.vertical, 12)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
                             .background(isActive ? nativeAccent : Color.white.opacity(0.08))
                             .clipShape(Capsule())
                     }
@@ -13816,83 +13842,66 @@ private struct NativeTopPlacesScreen: View {
                     subtitle: "Add more food memories to start ranking places."
                 )
             } else {
-                ScrollView(.vertical, showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        topSummary(payload)
-
-                        ForEach(payload.places) { place in
-                            Button {
-                                selectedMoment = place.moments.first
-                            } label: {
-                                topPlacesListRow(place)
-                            }
-                            .buttonStyle(.plain)
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(payload.places) { place in
+                        Button {
+                            selectedMoment = place.moments.first
+                        } label: {
+                            topPlacesListRow(place)
                         }
-
-                        HStack(spacing: 12) {
-                            Button {
-                                UIPasteboard.general.string = shareCopy
-                                appState.showToast(message: "Share copy copied", icon: "square.and.arrow.up.fill")
-                            } label: {
-                                Text("Share")
-                                    .font(nativeAppFont(size: 15, weight: .black))
-                                    .foregroundStyle(.white)
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 54)
-                                    .background(Color.white.opacity(0.08))
-                                    .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-
-                            Button {
-                                dismiss()
-                                appState.activeTab = .feed
-                            } label: {
-                                Text("Go to feed")
-                                    .font(nativeAppFont(size: 15, weight: .black))
-                                    .foregroundStyle(.black)
-                                    .frame(maxWidth: .infinity)
-                                    .frame(height: 54)
-                                    .background(nativeAccent)
-                                    .clipShape(Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
+                        .buttonStyle(.plain)
                     }
-                    .padding(.bottom, 28)
                 }
             }
         }
     }
 
     private func topSummary(_ payload: NativeTopPlacesResponse) -> some View {
-        HStack(alignment: .center, spacing: 14) {
+        HStack(alignment: .center, spacing: 12) {
             ZStack {
                 if let avatar = payload.traveler.avatar, !avatar.isEmpty {
                     NativeRemoteImage(url: avatar)
                 } else {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
                         .fill(Color.white.opacity(0.08))
                         .overlay(
                             Text(nativeAvatarInitials(from: payload.traveler.displayName ?? payload.traveler.username))
-                                .font(nativeAppFont(size: 20, weight: .black))
+                                .font(nativeAppFont(size: 18, weight: .black))
                                 .foregroundStyle(.white)
                         )
                 }
             }
-            .frame(width: 72, height: 72)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .frame(width: 48, height: 48)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Built from \(payload.summary.totalPlaces) places")
-                    .font(nativeAppFont(size: 18, weight: .black))
+                    .font(nativeAppFont(size: 14, weight: .black))
                     .foregroundStyle(.white)
 
                 Text(summarySubtitle(payload))
-                    .font(nativeAppFont(size: 14, weight: .medium))
+                    .font(nativeAppFont(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.55))
                     .fixedSize(horizontal: false, vertical: true)
             }
+
+            Spacer(minLength: 0)
+
+            Button {
+                UIPasteboard.general.string = shareCopy
+                appState.showToast(message: "Share copy copied", icon: "square.and.arrow.up.fill")
+            } label: {
+                Image(shareBadgeNames[shareIconIndex % shareBadgeNames.count])
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: 24, height: 24)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .frame(width: 40, height: 40)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -13900,30 +13909,44 @@ private struct NativeTopPlacesScreen: View {
         if let selectedCity = payload.summary.selectedCityLabel, !selectedCity.isEmpty {
             return "Filtered to \(selectedCity) from \(payload.summary.totalMoments) memories."
         }
-        return "Across \(payload.summary.totalMoments) memories."
+
+        let leadingCities = payload.summary.leadingCities
+        let cityText: String
+        if leadingCities.isEmpty {
+            cityText = "Across your memories"
+        } else if payload.summary.remainingCityCount > 0 {
+            let remaining = payload.summary.remainingCityCount == 1 ? "1 more city" : "\(payload.summary.remainingCityCount) more cities"
+            cityText = "Across \(leadingCities.joined(separator: ", ")) and \(remaining)"
+        } else {
+            cityText = "Across \(leadingCities.joined(separator: ", "))"
+        }
+
+        let countryCount = max(payload.summary.countryCount, 1)
+        let countryText = countryCount == 1 ? "in 1 country" : "in \(countryCount) countries"
+        return "\(cityText) \(countryText)"
     }
 
     private func topPlacesListRow(_ place: NativeTopPlaceEntry) -> some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 12) {
             Text("\(place.rank)")
-                .font(nativePixelAccentFont(size: 24))
+                .font(nativePixelAccentFont(size: 14))
                 .foregroundStyle(place.rank == 1 ? nativeAccent : .white)
-                .frame(width: 40, alignment: .leading)
+                .frame(width: 28, alignment: .leading)
 
             HStack(spacing: 0) {
                 topPlaceHero(place)
-                    .frame(width: 110, height: 110)
+                    .frame(width: 75, height: 75)
 
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 4) {
                     if let quote = place.quote, !quote.isEmpty {
                         Text("“\(quote)”")
-                            .font(nativeAppFont(size: 12, weight: .medium))
+                            .font(nativeAppFont(size: 14, weight: .medium))
                             .foregroundStyle(.white.opacity(0.9))
                             .lineLimit(1)
                     }
 
                     Text(place.name)
-                        .font(nativeAppFont(size: 15, weight: .black))
+                        .font(nativeAppFont(size: 14, weight: .black))
                         .foregroundStyle(.white)
                         .lineLimit(2)
 
@@ -13932,57 +13955,35 @@ private struct NativeTopPlacesScreen: View {
                         .foregroundStyle(.white.opacity(0.55))
                         .lineLimit(2)
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 14)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
 
                 Spacer(minLength: 0)
             }
             .background(Color.white.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
     }
 
     private func topPlaceHero(_ place: NativeTopPlaceEntry) -> some View {
-        let icon = nativeMomentRatingMeta(label: place.dominantRatingLabel, fallbackRating: nil)?.icon
-
-        return ZStack(alignment: .center) {
-            Group {
-                if let url = place.thumbnailUrl, !url.isEmpty {
-                    NativeRemoteImage(url: url)
-                } else {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.white.opacity(0.10))
-                }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-            if let icon {
-                ZStack {
-                    Group {
-                        Image(systemName: icon)
-                        Image(systemName: icon).offset(x: -2, y: 0)
-                        Image(systemName: icon).offset(x: 2, y: 0)
-                        Image(systemName: icon).offset(x: 0, y: -2)
-                        Image(systemName: icon).offset(x: 0, y: 2)
-                    }
-                    .font(nativeAppFont(size: 24, weight: .black))
-                    .foregroundStyle(.black)
-
-                    Image(systemName: icon)
-                        .font(nativeAppFont(size: 24, weight: .black))
-                        .foregroundStyle(nativeAccent)
-                }
+        Group {
+            if let url = place.thumbnailUrl, !url.isEmpty {
+                NativeRemoteImage(url: url)
+            } else {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(0.10))
             }
         }
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func pickerButton(title: String, active: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(nativeAppFont(size: 16, weight: .black))
+                .font(nativeAppFont(size: 12, weight: .black))
                 .foregroundStyle(active ? .black : .white.opacity(0.84))
-                .padding(.horizontal, 20)
-                .frame(height: 54)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
                 .background(active ? nativeAccent : Color.white.opacity(0.08))
                 .clipShape(Capsule())
         }
@@ -14043,6 +14044,37 @@ private func nativePrimaryCity(from location: String) -> String? {
         .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
     guard let city, !city.isEmpty else { return nil }
     return city
+}
+
+private func nativeFlagEmoji(for countryName: String?) -> String? {
+    guard let countryName = countryName?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !countryName.isEmpty else {
+        return nil
+    }
+
+    switch countryName {
+    case "united states", "united states of america", "usa", "us":
+        return "🇺🇸"
+    case "indonesia":
+        return "🇮🇩"
+    case "japan":
+        return "🇯🇵"
+    case "singapore":
+        return "🇸🇬"
+    case "south korea", "korea", "republic of korea":
+        return "🇰🇷"
+    case "france":
+        return "🇫🇷"
+    case "italy":
+        return "🇮🇹"
+    case "thailand":
+        return "🇹🇭"
+    case "malaysia":
+        return "🇲🇾"
+    case "united kingdom", "uk", "great britain":
+        return "🇬🇧"
+    default:
+        return nil
+    }
 }
 
 private func nativeCityKey(for place: NativePlace) -> String? {
