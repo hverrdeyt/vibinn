@@ -1225,8 +1225,100 @@ async function buildV2SuggestedTravelerRecommendations(
   return recommendations;
 }
 
+async function buildV2SuggestedFeedItems(
+  userId: string,
+  suggestedTravelers: Array<ReturnType<typeof mapV2TravelerSummaryForClient>>,
+  requestOrigin?: string,
+) {
+  if (suggestedTravelers.length === 0) {
+    return [];
+  }
+
+  const travelerMap = new Map(suggestedTravelers.map((traveler) => [traveler.id, traveler] as const));
+  const suggestedUserIds = suggestedTravelers.map((traveler) => traveler.id);
+
+  const rawMoments = await prismaV2.moment.findMany({
+    where: {
+      userId: { in: suggestedUserIds },
+      visibility: 'PUBLIC',
+    },
+    orderBy: [
+      { visitedAt: 'desc' },
+      { createdAt: 'desc' },
+    ],
+    take: Math.max(24, suggestedTravelers.length * 4),
+  });
+
+  if (rawMoments.length === 0) {
+    return [];
+  }
+
+  const social = await loadV2MomentSocialState(rawMoments.map((moment) => moment.id), userId);
+  const followedPlaceVisitCounts = await loadV2FollowedPlaceVisitCounts(
+    userId,
+    Array.from(new Set(rawMoments.map((moment) => moment.placeId))),
+  );
+
+  const pickedUserIds = new Set<string>();
+  const suggestedItems = [];
+
+  for (const moment of rawMoments) {
+    if (pickedUserIds.has(moment.userId)) continue;
+    const traveler = travelerMap.get(moment.userId);
+    if (!traveler) continue;
+
+    const mappedMoment = mapV2MomentForClient(moment, requestOrigin, {
+      likeCount: social.likeCounts[moment.id] ?? 0,
+      commentCount: social.commentCounts[moment.id] ?? 0,
+      isVibed: social.vibedMomentIds.has(moment.id),
+      recentVibers: social.recentVibersByMoment.get(moment.id) ?? [],
+    }, null, {
+      followedVisitorCount: followedPlaceVisitCounts.get(moment.placeId) ?? 0,
+    });
+
+    if (mappedMoment.visibility !== 'public') continue;
+
+    suggestedItems.push({
+      id: `suggested-visited-${moment.id}`,
+      type: 'visited',
+      traveler,
+      timestampLabel: formatRelativeActivityLabelV2(moment.visitedAt),
+      sortTimestamp: moment.visitedAt.toISOString(),
+      place: mappedMoment.place,
+      collection: null,
+      caption: mappedMoment.caption,
+      visibility: mappedMoment.visibility,
+      isVibed: social.vibedMomentIds.has(moment.id),
+      vibinCount: social.likeCounts[moment.id] ?? 0,
+      recentVibers: social.recentVibersByMoment.get(moment.id) ?? [],
+    });
+    pickedUserIds.add(moment.userId);
+
+    if (suggestedItems.length >= 12) {
+      break;
+    }
+  }
+
+  return suggestedItems.sort((left, right) => {
+    const leftPriority = left.traveler.recommendationPriority ?? 999
+    const rightPriority = right.traveler.recommendationPriority ?? 999
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority;
+    }
+
+    const leftMutual = left.traveler.mutualCount ?? 0;
+    const rightMutual = right.traveler.mutualCount ?? 0;
+    if (leftMutual !== rightMutual) {
+      return rightMutual - leftMutual;
+    }
+
+    return new Date(right.sortTimestamp).getTime() - new Date(left.sortTimestamp).getTime();
+  });
+}
+
 async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
   const suggestedTravelers = await buildV2SuggestedTravelerRecommendations(userId, { limit: 12 });
+  const suggestedItems = await buildV2SuggestedFeedItems(userId, suggestedTravelers, requestOrigin);
   const follows = await prismaV2.follow.findMany({
     where: { sourceUserId: userId },
     orderBy: { createdAt: 'desc' },
@@ -1250,7 +1342,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
       suggestedTravelers,
       items: [],
       fallbackItems: [],
-      suggestedItems: [],
+      suggestedItems,
     };
   }
 
@@ -1370,7 +1462,7 @@ async function buildV2FollowingFeed(userId: string, requestOrigin?: string) {
     suggestedTravelers,
     items,
     fallbackItems: [],
-    suggestedItems: [],
+    suggestedItems,
   };
 }
 
