@@ -2027,6 +2027,436 @@ function startOfMonthUtc(date = new Date()) {
   return next;
 }
 
+function normalizeTopPlacesWindow(value: unknown): 'month' | 'all' {
+  if (typeof value !== 'string') {
+    return 'all';
+  }
+  return value.trim().toLowerCase() === 'month' ? 'month' : 'all';
+}
+
+function normalizeTopPlacesCityKey(value: string | null | undefined) {
+  return value?.trim().toLowerCase().replace(/\s+/g, ' ') ?? '';
+}
+
+function normalizeTopPlacesCityLabel(input: {
+  explicitCity?: string | null;
+  placeLocation?: string | null;
+}) {
+  const explicitCity = input.explicitCity?.trim();
+  if (explicitCity) {
+    return explicitCity;
+  }
+
+  const location = input.placeLocation?.trim();
+  if (!location) {
+    return 'Unknown city';
+  }
+
+  const firstSegment = location
+    .split(',')
+    .map((item) => item.trim())
+    .find(Boolean);
+
+  return firstSegment || location;
+}
+
+function topPlacesRatingWeight(label: string | null | undefined) {
+  switch ((label ?? '').trim().toLowerCase()) {
+    case 'recommended':
+      return 8;
+    case 'liked':
+      return 5.5;
+    case 'not_bad':
+    case 'ok':
+      return 3;
+    case 'disliked':
+      return 0.5;
+    default:
+      return 4;
+  }
+}
+
+function topPlacesRevisitWeight(value: string | null | undefined) {
+  switch ((value ?? '').trim().toLowerCase()) {
+    case 'yes':
+      return 3.5;
+    case 'maybe':
+      return 1.5;
+    case 'no':
+      return -0.75;
+    default:
+      return 0;
+  }
+}
+
+function topPlacesDominantLabel(values: Array<string | null | undefined>, fallback: string) {
+  const counts = new Map<string, number>();
+  values.forEach((value) => {
+    const normalized = value?.trim();
+    if (!normalized) {
+      return;
+    }
+    counts.set(normalized, (counts.get(normalized) ?? 0) + 1);
+  });
+
+  if (counts.size === 0) {
+    return fallback;
+  }
+
+  return Array.from(counts.entries())
+    .sort((lhs, rhs) => {
+      if (lhs[1] !== rhs[1]) {
+        return rhs[1] - lhs[1];
+      }
+      return lhs[0].localeCompare(rhs[0]);
+    })[0]?.[0] ?? fallback;
+}
+
+function topPlacesRelativeDistanceLabel(latitude?: number | null, longitude?: number | null) {
+  if (typeof latitude !== 'number' || typeof longitude !== 'number') {
+    return null;
+  }
+
+  const roundedLat = Math.round(latitude * 10) / 10;
+  const roundedLon = Math.round(longitude * 10) / 10;
+  return `${roundedLat}, ${roundedLon}`;
+}
+
+type V2TopPlaceMomentRow = {
+  id: string;
+  userId: string;
+  placeId: string;
+  placeName: string;
+  placeLocation: string;
+  placeAddress: string | null;
+  placeNeighborhood: string | null;
+  placeCategory: string | null;
+  placeGooglePlaceId: string | null;
+  autocompleteSessionToken: string | null;
+  placeLatitude: number | null;
+  placeLongitude: number | null;
+  visitedAt: Date;
+  caption: string;
+  uploadedMedia: string[];
+  rating: number | null;
+  ratingLabel: string | null;
+  wouldRevisit: string | null;
+  visibility: 'PUBLIC' | 'FRIENDS' | 'PRIVATE';
+  createdAt: Date;
+  placeRecord: {
+    city: string | null;
+    country: string | null;
+    primaryImageUrl: string | null;
+  };
+};
+
+async function resolveTopPlacesTraveler(viewerUserId: string, requestedTravelerId?: string | null) {
+  const travelerId = requestedTravelerId?.trim() || viewerUserId;
+  if (travelerId === viewerUserId) {
+    return travelerId;
+  }
+
+  const follow = await prismaV2.follow.findUnique({
+    where: {
+      sourceUserId_targetUserId: {
+        sourceUserId: viewerUserId,
+        targetUserId: travelerId,
+      },
+    },
+    select: { id: true },
+  });
+
+  return follow ? travelerId : null;
+}
+
+async function buildV2TopPlacesPayload(input: {
+  viewerUserId: string;
+  travelerId?: string | null;
+  requestOrigin: string;
+  cityKey?: string | null;
+  window?: 'month' | 'all';
+  limit?: number;
+}) {
+  const resolvedTravelerId = await resolveTopPlacesTraveler(input.viewerUserId, input.travelerId);
+  if (!resolvedTravelerId) {
+    return null;
+  }
+
+  const window = input.window ?? 'all';
+  const requestedCityKey = normalizeTopPlacesCityKey(input.cityKey);
+  const limit = Math.max(1, Math.min(input.limit ?? 24, 50));
+  const visitedAtFilter = window === 'month' ? { gte: startOfMonthUtc(new Date()) } : undefined;
+
+  const [traveler, moments] = await Promise.all([
+    prismaV2.user.findUnique({
+      where: { id: resolvedTravelerId },
+      select: {
+        id: true,
+        username: true,
+        displayName: true,
+        avatarUrl: true,
+        cityLabel: true,
+        _count: {
+          select: {
+            followers: true,
+            moments: true,
+          },
+        },
+      },
+    }),
+    prismaV2.moment.findMany({
+      where: {
+        userId: resolvedTravelerId,
+        ...(visitedAtFilter ? { visitedAt: visitedAtFilter } : {}),
+      },
+      orderBy: [
+        { visitedAt: 'desc' },
+        { createdAt: 'desc' },
+      ],
+      include: {
+        placeRecord: {
+          select: {
+            city: true,
+            country: true,
+            primaryImageUrl: true,
+          },
+        },
+      },
+    }),
+  ]);
+
+  if (!traveler || !traveler.username) {
+    return null;
+  }
+
+  const mappedTraveler = mapV2TravelerSummaryForClient(traveler, {
+    followersCount: traveler._count.followers,
+    visitedPlacesCount: traveler._count.moments,
+  });
+
+  const cityBuckets = new Map<string, { id: string; label: string; count: number }>();
+  const groupedPlaces = new Map<string, {
+    placeId: string;
+    name: string;
+    cityLabel: string;
+    locationLabel: string;
+    address: string | null;
+    latitude: number | null;
+    longitude: number | null;
+    thumbnailUrl: string | null;
+    score: number;
+    ratingContribution: number;
+    revisitContribution: number;
+    frequencyContribution: number;
+    recencyContribution: number;
+    dominantRatingLabel: string;
+    dominantWouldRevisit: string;
+    momentCount: number;
+    latestVisitedAtIso: string;
+    latestCaption: string | null;
+    moments: ReturnType<typeof mapV2MomentForClient>[];
+  }>();
+
+  const nowMs = Date.now();
+  const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000;
+
+  const eligibleMoments = moments.filter((moment) => {
+    const cityLabel = normalizeTopPlacesCityLabel({
+      explicitCity: moment.placeRecord.city,
+      placeLocation: moment.placeLocation,
+    });
+    const cityKey = normalizeTopPlacesCityKey(cityLabel);
+    const cityBucket = cityBuckets.get(cityKey) ?? { id: cityKey || 'unknown', label: cityLabel, count: 0 };
+    cityBucket.count += 1;
+    cityBuckets.set(cityKey, cityBucket);
+
+    if (!requestedCityKey) {
+      return true;
+    }
+    return cityKey === requestedCityKey;
+  });
+
+  for (const moment of eligibleMoments as V2TopPlaceMomentRow[]) {
+    const cityLabel = normalizeTopPlacesCityLabel({
+      explicitCity: moment.placeRecord.city,
+      placeLocation: moment.placeLocation,
+    });
+    const mappedMoment = mapV2MomentForClient(moment, input.requestOrigin);
+    const ratingScore = topPlacesRatingWeight(moment.ratingLabel);
+    const revisitScore = topPlacesRevisitWeight(moment.wouldRevisit);
+    const ageMs = Math.max(0, nowMs - moment.visitedAt.getTime());
+    const recencyScore = Math.max(0, 0.8 - ((ageMs / ninetyDaysMs) * 0.8));
+    const placeId = moment.placeId;
+
+    if (!groupedPlaces.has(placeId)) {
+      groupedPlaces.set(placeId, {
+        placeId,
+        name: moment.placeName,
+        cityLabel,
+        locationLabel: moment.placeLocation,
+        address: moment.placeAddress,
+        latitude: moment.placeLatitude,
+        longitude: moment.placeLongitude,
+        thumbnailUrl: mappedMoment.uploadedMedia?.[0] ?? moment.placeRecord.primaryImageUrl ?? null,
+        score: 0,
+        ratingContribution: 0,
+        revisitContribution: 0,
+        frequencyContribution: 0,
+        recencyContribution: 0,
+        dominantRatingLabel: 'liked',
+        dominantWouldRevisit: 'maybe',
+        momentCount: 0,
+        latestVisitedAtIso: moment.visitedAt.toISOString(),
+        latestCaption: moment.caption.trim() || null,
+        moments: [],
+      });
+    }
+
+    const entry = groupedPlaces.get(placeId)!;
+    entry.score += ratingScore + revisitScore + recencyScore;
+    entry.ratingContribution += ratingScore;
+    entry.revisitContribution += revisitScore;
+    entry.recencyContribution += recencyScore;
+    entry.momentCount += 1;
+    if (moment.visitedAt.toISOString() > entry.latestVisitedAtIso) {
+      entry.latestVisitedAtIso = moment.visitedAt.toISOString();
+      entry.latestCaption = moment.caption.trim() || entry.latestCaption;
+      entry.thumbnailUrl = mappedMoment.uploadedMedia?.[0] ?? entry.thumbnailUrl;
+    }
+    entry.moments.push(mappedMoment);
+  }
+
+  const rankedPlaces = Array.from(groupedPlaces.values())
+    .map((entry) => {
+      const frequencyContribution = entry.momentCount > 1
+        ? ((entry.momentCount - 1) * 2.25)
+        : 0;
+      entry.frequencyContribution = frequencyContribution;
+      entry.score += frequencyContribution;
+      entry.moments.sort((lhs, rhs) =>
+        (rhs.visitedAtIso ?? rhs.visitedDate).localeCompare(lhs.visitedAtIso ?? lhs.visitedDate),
+      );
+      entry.dominantRatingLabel = topPlacesDominantLabel(entry.moments.map((moment) => moment.ratingLabel), 'liked');
+      entry.dominantWouldRevisit = topPlacesDominantLabel(entry.moments.map((moment) => moment.wouldRevisit), 'maybe');
+
+      const latestQuote = entry.latestCaption?.trim() || null;
+      const normalizedRatingLabel = entry.dominantRatingLabel.replace(/_/g, ' ');
+      const summaryLine = entry.momentCount > 1
+        ? `Visited ${entry.momentCount} times and rated ${normalizedRatingLabel}`
+        : `Rated ${normalizedRatingLabel}`;
+
+      return {
+        placeId: entry.placeId,
+        name: entry.name,
+        cityLabel: entry.cityLabel,
+        locationLabel: entry.locationLabel,
+        address: entry.address,
+        thumbnailUrl: entry.thumbnailUrl,
+        score: Math.round(entry.score * 100) / 100,
+        scoreBreakdown: {
+          rating: Math.round(entry.ratingContribution * 100) / 100,
+          revisit: Math.round(entry.revisitContribution * 100) / 100,
+          frequency: Math.round(entry.frequencyContribution * 100) / 100,
+          recency: Math.round(entry.recencyContribution * 100) / 100,
+        },
+        dominantRatingLabel: entry.dominantRatingLabel,
+        dominantWouldRevisit: entry.dominantWouldRevisit,
+        momentCount: entry.momentCount,
+        latestVisitedAtIso: entry.latestVisitedAtIso,
+        quote: latestQuote,
+        summaryLine,
+        distanceLabel: topPlacesRelativeDistanceLabel(entry.latitude, entry.longitude),
+        moments: entry.moments.slice(0, 3),
+      };
+    })
+    .sort((lhs, rhs) => {
+      if (Math.abs(lhs.score - rhs.score) > 0.001) {
+        return rhs.score - lhs.score;
+      }
+      if (lhs.momentCount !== rhs.momentCount) {
+        return rhs.momentCount - lhs.momentCount;
+      }
+      return rhs.latestVisitedAtIso.localeCompare(lhs.latestVisitedAtIso);
+    });
+
+  let currentRank = 0;
+  let previousScore: number | null = null;
+  const rankedPayload = rankedPlaces.slice(0, limit).map((place) => {
+    if (previousScore === null || Math.abs(previousScore - place.score) > 0.001) {
+      currentRank += 1;
+      previousScore = place.score;
+    }
+
+    return {
+      rank: currentRank,
+      placeId: place.placeId,
+      name: place.name,
+      cityLabel: place.cityLabel,
+      locationLabel: place.locationLabel,
+      address: place.address,
+      thumbnailUrl: place.thumbnailUrl,
+      score: place.score,
+      scoreBreakdown: place.scoreBreakdown,
+      dominantRatingLabel: place.dominantRatingLabel,
+      dominantWouldRevisit: place.dominantWouldRevisit,
+      momentCount: place.momentCount,
+      latestVisitedAtIso: place.latestVisitedAtIso,
+      quote: place.quote,
+      summaryLine: place.summaryLine,
+      distanceLabel: place.distanceLabel,
+      moments: place.moments,
+    };
+  });
+
+  const tieGroups = Object.values(
+    rankedPlaces.slice(0, limit).reduce<Record<string, typeof rankedPlaces>>((accumulator, item) => {
+      const key = item.score.toFixed(2);
+      accumulator[key] = [...(accumulator[key] ?? []), item];
+      return accumulator;
+    }, {}),
+  )
+    .filter((group) => group.length > 1)
+    .map((group) => ({
+      score: group[0]?.score ?? 0,
+      placeIds: group.map((item) => item.placeId),
+    }));
+
+  const selectedCity = requestedCityKey ? (cityBuckets.get(requestedCityKey) ?? null) : null;
+  const cityOptions = [
+    {
+      id: 'all',
+      label: 'All',
+      count: moments.length,
+    },
+    ...Array.from(cityBuckets.values())
+      .sort((lhs, rhs) => {
+        if (lhs.count !== rhs.count) {
+          return rhs.count - lhs.count;
+        }
+        return lhs.label.localeCompare(rhs.label);
+      })
+      .map((city) => ({
+        id: city.id,
+        label: city.label,
+        count: city.count,
+      })),
+  ];
+
+  return {
+    traveler: mappedTraveler,
+    summary: {
+      window,
+      totalMoments: eligibleMoments.length,
+      totalPlaces: rankedPlaces.length,
+      selectedCityKey: requestedCityKey || null,
+      selectedCityLabel: selectedCity?.label ?? null,
+    },
+    cityOptions,
+    places: rankedPayload,
+    tieGroups,
+  };
+}
+
 async function buildV2HomepageOverview(userId: string) {
   const now = new Date();
   const weekStart = startOfWeekUtc(now);
@@ -10531,6 +10961,34 @@ app.get('/api/v2/home/recent-memories', async (req: AuthenticatedRequest, res) =
 
     const requestOrigin = `${getRequestOrigin(req)}`;
     const payload = await buildV2HomepageRecentMemories(req.authV2UserId, requestOrigin);
+    res.json(payload);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.get('/api/v2/top-places', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const requestOrigin = `${getRequestOrigin(req)}`;
+    const travelerId = typeof req.query.travelerId === 'string' ? req.query.travelerId : undefined;
+    const cityKey = typeof req.query.city === 'string' ? req.query.city : undefined;
+    const window = normalizeTopPlacesWindow(req.query.window);
+    const limit = typeof req.query.limit === 'string' ? Number(req.query.limit) : undefined;
+
+    const payload = await buildV2TopPlacesPayload({
+      viewerUserId: req.authV2UserId!,
+      travelerId,
+      requestOrigin,
+      cityKey,
+      window,
+      limit: Number.isFinite(limit) ? limit : undefined,
+    });
+
+    if (!payload) {
+      res.status(404).json({ error: 'Top places unavailable' });
+      return;
+    }
+
     res.json(payload);
   } catch (error) {
     handleError(res, error);
