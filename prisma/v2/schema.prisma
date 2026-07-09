@@ -72,80 +72,81 @@ enum MomentVisibility {
 }
 
 model User {
-  id                  String            @id @default(cuid())
-  phoneNumberE164     String            @unique
-  displayName         String?
-  username            String?           @unique
-  avatarUrl           String?
-  bio                 String?
-  cityLabel           String?
-  cityLatitude        Float?
-  cityLongitude       Float?
-  citySource          String?
+  id                      String     @id @default(cuid())
+  phoneNumberE164         String     @unique
+  displayName             String?
+  username                String?    @unique
+  avatarUrl               String?
+  bio                     String?
+  cityLabel               String?
+  cityLatitude            Float?
+  cityLongitude           Float?
+  citySource              String?
   nearbyDetectionMonthKey String?
-  nearbyDetectionCount Int              @default(0)
-  status              UserStatus        @default(PENDING_PROFILE)
-  onboardingCompleted Boolean           @default(false)
-  lastLoginAt         DateTime?
-  createdAt           DateTime          @default(now())
-  updatedAt           DateTime          @updatedAt
+  nearbyDetectionCount    Int        @default(0)
+  status                  UserStatus @default(PENDING_PROFILE)
+  onboardingCompleted     Boolean    @default(false)
+  lastLoginAt             DateTime?
+  createdAt               DateTime   @default(now())
+  updatedAt               DateTime   @updatedAt
 
-  sessions            Session[]
-  ownedInviteCode     InviteCode?
-  inviteRedemption    InviteRedemption?
-  onboardingState     UserOnboardingState?
-  moments             Moment[]
-  preferences         UserPreference?
-  accountSettings     UserAccountSettings?
-  privacySettings     UserPrivacySettings?
-  bookmarks           Bookmark[]
-  dismissedPlaces     DismissedPlace[]
-  collections         Collection[]
-  following           Follow[]          @relation("V2FollowSource")
-  followers           Follow[]          @relation("V2FollowTarget")
-  blocksGiven         UserBlock[]       @relation("V2UserBlockSource")
-  blocksReceived      UserBlock[]       @relation("V2UserBlockTarget")
-  reportsGiven        UserReport[]      @relation("V2UserReportReporter")
-  reportsReceived     UserReport[]      @relation("V2UserReportTargetUser")
-  notificationPrefs   UserNotificationSettings?
-  pushDevices         UserPushDevice[]
-  comments            Comment[]
-  sentVibins          Vibin[]           @relation("V2VibinSender")
-  receivedVibins      Vibin[]           @relation("V2VibinReceiver")
-  notifications       Notification[]    @relation("V2NotificationRecipient")
-  sentNotifications   Notification[]    @relation("V2NotificationActor")
+  sessions          Session[]
+  ownedInviteCode   InviteCode?
+  inviteRedemption  InviteRedemption?
+  onboardingState   UserOnboardingState?
+  moments           Moment[]
+  preferences       UserPreference?
+  accountSettings   UserAccountSettings?
+  privacySettings   UserPrivacySettings?
+  bookmarks         Bookmark[]
+  dismissedPlaces   DismissedPlace[]
+  collections       Collection[]
+  following         Follow[]                     @relation("V2FollowSource")
+  followers         Follow[]                     @relation("V2FollowTarget")
+  blocksGiven       UserBlock[]                  @relation("V2UserBlockSource")
+  blocksReceived    UserBlock[]                  @relation("V2UserBlockTarget")
+  reportsGiven      UserReport[]                 @relation("V2UserReportReporter")
+  reportsReceived   UserReport[]                 @relation("V2UserReportTargetUser")
+  notificationPrefs UserNotificationSettings?
+  pushDevices       UserPushDevice[]
+  comments          Comment[]
+  sentVibins        Vibin[]                      @relation("V2VibinSender")
+  receivedVibins    Vibin[]                      @relation("V2VibinReceiver")
+  notifications     Notification[]               @relation("V2NotificationRecipient")
+  sentNotifications Notification[]               @relation("V2NotificationActor")
+  topPlaceTieBreaks TopPlaceTieBreakPreference[]
 }
 
 model Session {
-  id          String    @id @default(cuid())
-  userId      String
-  tokenHash   String    @unique
-  expiresAt   DateTime
-  lastSeenAt  DateTime  @default(now())
-  revokedAt   DateTime?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id         String    @id @default(cuid())
+  userId     String
+  tokenHash  String    @unique
+  expiresAt  DateTime
+  lastSeenAt DateTime  @default(now())
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
 
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, expiresAt])
   @@index([expiresAt])
 }
 
 model OtpRequest {
-  id                String     @id @default(cuid())
+  id                String           @id @default(cuid())
   phoneNumberE164   String
   purpose           OtpPurpose
   provider          OtpProvider
-  providerRequestId String     @unique
+  providerRequestId String           @unique
   status            OtpRequestStatus @default(PENDING)
   expiresAt         DateTime
   consumedAt        DateTime?
   lastAttemptAt     DateTime?
-  attemptCount      Int        @default(0)
-  resendCount       Int        @default(0)
-  createdAt         DateTime   @default(now())
-  updatedAt         DateTime   @updatedAt
+  attemptCount      Int              @default(0)
+  resendCount       Int              @default(0)
+  createdAt         DateTime         @default(now())
+  updatedAt         DateTime         @updatedAt
 
   @@index([phoneNumberE164, purpose, createdAt])
   @@index([status, expiresAt])
@@ -153,109 +154,109 @@ model OtpRequest {
 }
 
 model InviteCode {
-  id              String             @id @default(cuid())
-  ownerUserId     String             @unique
-  code            String             @unique
-  label           String?
-  status          InviteCodeStatus   @default(ACTIVE)
-  maxRedemptions  Int?
-  redeemedCount   Int                @default(0)
-  expiresAt       DateTime?
-  createdAt       DateTime           @default(now())
-  updatedAt       DateTime           @updatedAt
+  id             String           @id @default(cuid())
+  ownerUserId    String           @unique
+  code           String           @unique
+  label          String?
+  status         InviteCodeStatus @default(ACTIVE)
+  maxRedemptions Int?
+  redeemedCount  Int              @default(0)
+  expiresAt      DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
 
-  owner           User               @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
-  redemptions     InviteRedemption[]
+  owner       User               @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  redemptions InviteRedemption[]
 
   @@index([status, expiresAt])
 }
 
 model InviteRedemption {
-  id                   String      @id @default(cuid())
-  inviteCodeId         String
-  userId               String      @unique
-  phoneNumberE164      String
-  redeemedAt           DateTime    @default(now())
-  createdAt            DateTime    @default(now())
+  id              String   @id @default(cuid())
+  inviteCodeId    String
+  userId          String   @unique
+  phoneNumberE164 String
+  redeemedAt      DateTime @default(now())
+  createdAt       DateTime @default(now())
 
-  inviteCode           InviteCode  @relation(fields: [inviteCodeId], references: [id], onDelete: Restrict)
-  user                 User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  inviteCode InviteCode @relation(fields: [inviteCodeId], references: [id], onDelete: Restrict)
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([inviteCodeId, redeemedAt])
   @@index([phoneNumberE164, redeemedAt])
 }
 
 model WaitlistEntry {
-  id              String    @id @default(cuid())
-  phoneNumberE164 String    @unique
+  id              String   @id @default(cuid())
+  phoneNumberE164 String   @unique
   source          String?
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 model UserOnboardingState {
-  id                     String         @id @default(cuid())
-  userId                 String         @unique
-  currentStep            OnboardingStep @default(WELCOME)
-  completedSteps         String[]       @default([])
-  skippedSteps           String[]       @default([])
-  inviteCodeValidated    Boolean        @default(false)
-  inviteCodeValidatedAt  DateTime?
-  phoneVerifiedAt        DateTime?
-  profileCompletedAt     DateTime?
-  locationDecisionAt     DateTime?
-  contactsDecisionAt     DateTime?
-  firstPlaceLoggedAt     DateTime?
-  inviteShareSeenAt      DateTime?
-  createdAt              DateTime       @default(now())
-  updatedAt              DateTime       @updatedAt
+  id                    String         @id @default(cuid())
+  userId                String         @unique
+  currentStep           OnboardingStep @default(WELCOME)
+  completedSteps        String[]       @default([])
+  skippedSteps          String[]       @default([])
+  inviteCodeValidated   Boolean        @default(false)
+  inviteCodeValidatedAt DateTime?
+  phoneVerifiedAt       DateTime?
+  profileCompletedAt    DateTime?
+  locationDecisionAt    DateTime?
+  contactsDecisionAt    DateTime?
+  firstPlaceLoggedAt    DateTime?
+  inviteShareSeenAt     DateTime?
+  createdAt             DateTime       @default(now())
+  updatedAt             DateTime       @updatedAt
 
-  user                   User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Place {
-  id                         String    @id @default(cuid())
-  googlePlaceId              String?   @unique
-  name                       String
-  address                    String?
-  city                       String?
-  country                    String?
-  neighborhood               String?
-  category                   String
-  shortFormattedAddress      String?
-  googleTypes                String[]  @default([])
-  googlePrimaryType          String?
+  id                           String    @id @default(cuid())
+  googlePlaceId                String?   @unique
+  name                         String
+  address                      String?
+  city                         String?
+  country                      String?
+  neighborhood                 String?
+  category                     String
+  shortFormattedAddress        String?
+  googleTypes                  String[]  @default([])
+  googlePrimaryType            String?
   googlePrimaryTypeDisplayName String?
-  latitude                   Float?
-  longitude                  Float?
-  rating                     Float?
-  userRatingCount            Int?
-  priceLevel                 Int?
-  openingHours               String[]  @default([])
-  currentOpeningHours        String[]  @default([])
-  servesBreakfast            Boolean?
-  servesLunch                Boolean?
-  servesDinner               Boolean?
-  servesBeer                 Boolean?
-  servesWine                 Boolean?
-  servesBrunch               Boolean?
-  servesDessert              Boolean?
-  servesCoffee               Boolean?
-  servesCocktails            Boolean?
-  goodForGroups              Boolean?
-  goodForWatchingSports      Boolean?
-  outdoorSeating             Boolean?
-  mapsUrl                    String?
-  websiteUri                 String?
-  primaryImageUrl            String?
-  lastGoogleFetchedAt        DateTime?
-  createdAt                  DateTime  @default(now())
-  updatedAt                  DateTime  @updatedAt
+  latitude                     Float?
+  longitude                    Float?
+  rating                       Float?
+  userRatingCount              Int?
+  priceLevel                   Int?
+  openingHours                 String[]  @default([])
+  currentOpeningHours          String[]  @default([])
+  servesBreakfast              Boolean?
+  servesLunch                  Boolean?
+  servesDinner                 Boolean?
+  servesBeer                   Boolean?
+  servesWine                   Boolean?
+  servesBrunch                 Boolean?
+  servesDessert                Boolean?
+  servesCoffee                 Boolean?
+  servesCocktails              Boolean?
+  goodForGroups                Boolean?
+  goodForWatchingSports        Boolean?
+  outdoorSeating               Boolean?
+  mapsUrl                      String?
+  websiteUri                   String?
+  primaryImageUrl              String?
+  lastGoogleFetchedAt          DateTime?
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
 
-  moments                    Moment[]
-  bookmarks                  Bookmark[]
-  dismissedByUsers           DismissedPlace[]
-  collectionPlaces           CollectionPlace[]
+  moments          Moment[]
+  bookmarks        Bookmark[]
+  dismissedByUsers DismissedPlace[]
+  collectionPlaces CollectionPlace[]
 }
 
 model UserPreference {
@@ -267,7 +268,7 @@ model UserPreference {
   skippedPreferences  Boolean  @default(false)
   updatedAt           DateTime @updatedAt
 
-  user                User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model UserAccountSettings {
@@ -276,7 +277,7 @@ model UserAccountSettings {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model UserPrivacySettings {
@@ -286,19 +287,34 @@ model UserPrivacySettings {
   momentVisibility  MomentVisibility @default(PUBLIC)
   updatedAt         DateTime         @updatedAt
 
-  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model TopPlaceTieBreakPreference {
+  id               String   @id @default(cuid())
+  userId           String
+  lowerPlaceId     String
+  higherPlaceId    String
+  preferredPlaceId String
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, lowerPlaceId, higherPlaceId])
+  @@index([userId, preferredPlaceId])
 }
 
 model Bookmark {
-  id        String   @id @default(cuid())
+  id        String    @id @default(cuid())
   userId    String
   placeId   String
   source    String?
   expiresAt DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  place     Place    @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
 
   @@unique([userId, placeId])
   @@index([expiresAt])
@@ -311,46 +327,46 @@ model DismissedPlace {
   reason    String?
   createdAt DateTime @default(now())
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  place     Place    @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  place Place @relation(fields: [placeId], references: [id], onDelete: Cascade)
 
   @@unique([userId, placeId])
 }
 
 model Collection {
-  id           String            @id @default(cuid())
-  userId       String
-  title        String
-  description  String?
+  id            String   @id @default(cuid())
+  userId        String
+  title         String
+  description   String?
   coverImageUrl String?
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  user         User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  places       CollectionPlace[]
+  user   User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  places CollectionPlace[]
 }
 
 model CollectionPlace {
-  id           String     @id @default(cuid())
+  id           String @id @default(cuid())
   collectionId String
   placeId      String
-  sortOrder    Int        @default(0)
+  sortOrder    Int    @default(0)
 
-  collection   Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
-  place        Place      @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  collection Collection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  place      Place      @relation(fields: [placeId], references: [id], onDelete: Cascade)
 
   @@unique([collectionId, placeId])
 }
 
 model Follow {
-  id            String   @id @default(cuid())
-  sourceUserId  String
-  targetUserId  String
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id           String   @id @default(cuid())
+  sourceUserId String
+  targetUserId String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
-  sourceUser    User     @relation("V2FollowSource", fields: [sourceUserId], references: [id], onDelete: Cascade)
-  targetUser    User     @relation("V2FollowTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+  sourceUser User @relation("V2FollowSource", fields: [sourceUserId], references: [id], onDelete: Cascade)
+  targetUser User @relation("V2FollowTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
 
   @@unique([sourceUserId, targetUserId])
   @@index([sourceUserId, createdAt])
@@ -358,14 +374,14 @@ model Follow {
 }
 
 model UserBlock {
-  id            String   @id @default(cuid())
-  sourceUserId  String
-  targetUserId  String
-  reason        String?
-  createdAt     DateTime @default(now())
+  id           String   @id @default(cuid())
+  sourceUserId String
+  targetUserId String
+  reason       String?
+  createdAt    DateTime @default(now())
 
-  sourceUser    User     @relation("V2UserBlockSource", fields: [sourceUserId], references: [id], onDelete: Cascade)
-  targetUser    User     @relation("V2UserBlockTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
+  sourceUser User @relation("V2UserBlockSource", fields: [sourceUserId], references: [id], onDelete: Cascade)
+  targetUser User @relation("V2UserBlockTarget", fields: [targetUserId], references: [id], onDelete: Cascade)
 
   @@unique([sourceUserId, targetUserId])
   @@index([sourceUserId, createdAt])
@@ -373,17 +389,17 @@ model UserBlock {
 }
 
 model UserReport {
-  id            String     @id @default(cuid())
-  reporterId    String
-  targetType    TargetType
-  targetId      String
-  targetUserId  String?
-  reason        String
-  details       String?
-  createdAt     DateTime   @default(now())
+  id           String     @id @default(cuid())
+  reporterId   String
+  targetType   TargetType
+  targetId     String
+  targetUserId String?
+  reason       String
+  details      String?
+  createdAt    DateTime   @default(now())
 
-  reporter      User       @relation("V2UserReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
-  targetUser    User?      @relation("V2UserReportTargetUser", fields: [targetUserId], references: [id], onDelete: SetNull)
+  reporter   User  @relation("V2UserReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetUser User? @relation("V2UserReportTargetUser", fields: [targetUserId], references: [id], onDelete: SetNull)
 
   @@index([reporterId, createdAt])
   @@index([targetType, targetId, createdAt])
@@ -398,27 +414,27 @@ model UserNotificationSettings {
   recommendationEnabled Boolean  @default(true)
   updatedAt             DateTime @updatedAt
 
-  user                  User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model UserPushDevice {
-  id          String   @id @default(cuid())
-  userId      String
-  fcmToken    String   @unique
-  platform    String
-  appVersion  String?
-  isActive    Boolean  @default(true)
-  lastSeenAt  DateTime @default(now())
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String   @id @default(cuid())
+  userId     String
+  fcmToken   String   @unique
+  platform   String
+  appVersion String?
+  isActive   Boolean  @default(true)
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, isActive])
 }
 
 model Moment {
-  id                       String    @id @default(cuid())
+  id                       String           @id @default(cuid())
   userId                   String
   placeId                  String
   placeName                String
@@ -432,38 +448,38 @@ model Moment {
   placeLongitude           Float?
   visitedAt                DateTime
   caption                  String
-  uploadedMedia            String[]  @default([])
+  uploadedMedia            String[]         @default([])
   rating                   Int?
   ratingLabel              String?
   wouldRevisit             String?
   visibility               MomentVisibility @default(PUBLIC)
-  vibeTags                 String[]  @default([])
-  createdAt                DateTime  @default(now())
-  updatedAt                DateTime  @updatedAt
+  vibeTags                 String[]         @default([])
+  createdAt                DateTime         @default(now())
+  updatedAt                DateTime         @updatedAt
 
-  user                     User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  placeRecord              Place     @relation(fields: [placeId], references: [id], onDelete: Cascade)
-  comments                 Comment[]
-  vibins                   Vibin[]
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  placeRecord Place     @relation(fields: [placeId], references: [id], onDelete: Cascade)
+  comments    Comment[]
+  vibins      Vibin[]
 
   @@index([userId, visitedAt])
   @@index([placeGooglePlaceId])
 }
 
 model Comment {
-  id         String     @id @default(cuid())
-  userId     String
-  momentId   String?
+  id              String     @id @default(cuid())
+  userId          String
+  momentId        String?
   parentCommentId String?
-  targetType TargetType
-  targetId   String
-  body       String
-  createdAt  DateTime   @default(now())
+  targetType      TargetType
+  targetId        String
+  body            String
+  createdAt       DateTime   @default(now())
 
-  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  moment     Moment?    @relation(fields: [momentId], references: [id], onDelete: SetNull)
-  parentComment Comment? @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: SetNull)
-  replies      Comment[] @relation("CommentReplies")
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  moment        Moment?   @relation(fields: [momentId], references: [id], onDelete: SetNull)
+  parentComment Comment?  @relation("CommentReplies", fields: [parentCommentId], references: [id], onDelete: SetNull)
+  replies       Comment[] @relation("CommentReplies")
 
   @@index([targetType, targetId, createdAt])
   @@index([userId, createdAt])
@@ -480,9 +496,9 @@ model Vibin {
   targetId       String
   createdAt      DateTime   @default(now())
 
-  sender         User       @relation("V2VibinSender", fields: [senderUserId], references: [id], onDelete: Cascade)
-  receiver       User?      @relation("V2VibinReceiver", fields: [receiverUserId], references: [id], onDelete: SetNull)
-  moment         Moment?    @relation(fields: [momentId], references: [id], onDelete: SetNull)
+  sender   User    @relation("V2VibinSender", fields: [senderUserId], references: [id], onDelete: Cascade)
+  receiver User?   @relation("V2VibinReceiver", fields: [receiverUserId], references: [id], onDelete: SetNull)
+  moment   Moment? @relation(fields: [momentId], references: [id], onDelete: SetNull)
 
   @@unique([senderUserId, targetType, targetId])
   @@index([targetType, targetId, createdAt])
@@ -491,7 +507,7 @@ model Vibin {
 }
 
 model Notification {
-  id          String            @id @default(cuid())
+  id          String           @id @default(cuid())
   userId      String
   actorUserId String?
   type        NotificationType
@@ -500,11 +516,11 @@ model Notification {
   title       String
   body        String
   readAt      DateTime?
-  createdAt   DateTime          @default(now())
-  updatedAt   DateTime          @updatedAt
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
 
-  user        User              @relation("V2NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
-  actorUser   User?             @relation("V2NotificationActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+  user      User  @relation("V2NotificationRecipient", fields: [userId], references: [id], onDelete: Cascade)
+  actorUser User? @relation("V2NotificationActor", fields: [actorUserId], references: [id], onDelete: SetNull)
 
   @@index([userId, createdAt])
   @@index([userId, readAt, createdAt])

@@ -1252,6 +1252,28 @@ private struct NativeTopPlacesResponse: Decodable {
     let tieGroups: [NativeTopPlacesTieGroup]
 }
 
+private struct NativeTopPlacesTiePrompt: Identifiable {
+    let places: [NativeTopPlaceEntry]
+    let groupId: String
+
+    var id: String {
+        groupId
+    }
+}
+
+private struct NativeTopPlacesDisplayEntry: Identifiable {
+    let place: NativeTopPlaceEntry
+    let rank: Int
+    let isUnresolvedTie: Bool
+
+    var id: String { place.id }
+}
+
+private struct NativeTopPlaceTieBreakRequest: Encodable {
+    let preferredPlaceId: String
+    let otherPlaceId: String
+}
+
 private struct NativeHomepageFixedTopHeightPreferenceKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
 
@@ -4368,6 +4390,21 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         )
     }
 
+    func submitTopPlaceTieBreak(
+        preferredPlaceId: String,
+        otherPlaceId: String
+    ) async throws {
+        guard usesV2Session, let token = authToken, currentUser != nil else {
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        try await api.submitV2TopPlaceTieBreak(
+            token: token,
+            preferredPlaceId: preferredPlaceId,
+            otherPlaceId: otherPlaceId
+        )
+    }
+
     func refreshV2DiaryMoments() async {
         guard let token = authToken, currentUser != nil else {
             diaryMoments = []
@@ -7342,6 +7379,23 @@ private struct NativeAPIClient {
             path: "/api/v2/top-places\(query)",
             method: "GET",
             token: token
+        )
+    }
+
+    func submitV2TopPlaceTieBreak(
+        token: String,
+        preferredPlaceId: String,
+        otherPlaceId: String
+    ) async throws {
+        let body = NativeTopPlaceTieBreakRequest(
+            preferredPlaceId: preferredPlaceId,
+            otherPlaceId: otherPlaceId
+        )
+        let _: NativeEmptyResponse = try await request(
+            path: "/api/v2/top-places/tie-break",
+            method: "POST",
+            token: token,
+            body: body
         )
     }
 
@@ -13615,6 +13669,9 @@ private struct NativeTopPlacesScreen: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var selectedMoment: NativeMoment?
+    @State private var selectedTiePrompt: NativeTopPlacesTiePrompt?
+    @State private var resolvedTieSelections: [String: String] = [:]
+    @State private var isSubmittingTieBreak = false
     @State private var shareIconIndex = 0
 
     private enum Mode {
@@ -13687,14 +13744,17 @@ private struct NativeTopPlacesScreen: View {
                 selectedTravelerId = followedTravelers.first?.id
             }
             selectedCityId = "all"
+            resolvedTieSelections = [:]
             Task { await load() }
         }
         .onChange(of: selectedTravelerId) { _ in
             guard mode == .byFriends else { return }
             selectedCityId = "all"
+            resolvedTieSelections = [:]
             Task { await load() }
         }
         .onChange(of: selectedCityId) { _ in
+            resolvedTieSelections = [:]
             Task { await load() }
         }
         .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
@@ -13704,6 +13764,37 @@ private struct NativeTopPlacesScreen: View {
         .fullScreenCover(item: $selectedMoment) { moment in
             NativeDecisionHistoryMomentFullscreen(moment: moment)
                 .environmentObject(appState)
+        }
+        .sheet(item: $selectedTiePrompt) { prompt in
+            NativeTopPlacesTieBreakSheet(
+                prompt: prompt,
+                isSubmitting: isSubmittingTieBreak,
+                onSelectPlace: { preferredPlaceId in
+                    guard let otherPlaceId = prompt.places.first(where: { $0.placeId != preferredPlaceId })?.placeId else {
+                        return
+                    }
+
+                    isSubmittingTieBreak = true
+                    do {
+                        try await appState.submitTopPlaceTieBreak(
+                            preferredPlaceId: preferredPlaceId,
+                            otherPlaceId: otherPlaceId
+                        )
+                        resolvedTieSelections[prompt.groupId] = preferredPlaceId
+                        selectedTiePrompt = nil
+                        payload = try await appState.fetchTopPlaces(
+                            travelerId: activeTravelerId,
+                            cityKey: selectedCityId == "all" ? nil : selectedCityId,
+                            window: "all",
+                            limit: 20
+                        )
+                        appState.showToast(message: "Top places updated", icon: "checkmark.circle.fill")
+                    } catch {
+                        appState.showToast(message: "Could not save your pick", icon: "exclamationmark.triangle.fill")
+                    }
+                    isSubmittingTieBreak = false
+                }
+            )
         }
     }
 
@@ -13842,14 +13933,38 @@ private struct NativeTopPlacesScreen: View {
                     subtitle: "Add more food memories to start ranking places."
                 )
             } else {
+                let displayedPlaces = topPlacesDisplayEntries(payload: payload)
                 VStack(alignment: .leading, spacing: 12) {
-                    ForEach(payload.places) { place in
+                    ForEach(Array(displayedPlaces.enumerated()), id: \.element.id) { item in
+                        let entry = item.element
                         Button {
-                            selectedMoment = place.moments.first
+                            selectedMoment = entry.place.moments.first
                         } label: {
-                            topPlacesListRow(place)
+                            topPlacesListRow(entry.place, rank: entry.rank, hasTie: entry.isUnresolvedTie)
                         }
                         .buttonStyle(.plain)
+
+                        if mode == .byYou && shouldShowTieBreak(after: item.offset, displayedPlaces: displayedPlaces, payload: payload) {
+                            HStack(spacing: 12) {
+                                Color.clear
+                                    .frame(width: 28)
+
+                                Button {
+                                    selectedTiePrompt = tiePrompt(after: item.offset, displayedPlaces: displayedPlaces, payload: payload)
+                                } label: {
+                                    Text("Pick one")
+                                        .font(nativeAppFont(size: 14, weight: .black))
+                                        .foregroundStyle(.white)
+                                        .frame(maxWidth: .infinity)
+                                        .frame(height: 48)
+                                        .overlay(
+                                            Capsule()
+                                                .stroke(Color.white.opacity(0.5), lineWidth: 1)
+                                        )
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
                 }
             }
@@ -13926,16 +14041,17 @@ private struct NativeTopPlacesScreen: View {
         return "\(cityText) \(countryText)"
     }
 
-    private func topPlacesListRow(_ place: NativeTopPlaceEntry) -> some View {
+    private func topPlacesListRow(_ place: NativeTopPlaceEntry, rank: Int, hasTie: Bool) -> some View {
         HStack(spacing: 12) {
-            Text("\(place.rank)")
+            Text("\(rank)")
                 .font(nativePixelAccentFont(size: 14))
-                .foregroundStyle(place.rank == 1 ? nativeAccent : .white)
+                .foregroundStyle(hasTie ? nativeAccent : .white)
                 .frame(width: 28, alignment: .leading)
 
             HStack(spacing: 0) {
                 topPlaceHero(place)
-                    .frame(width: 75, height: 75)
+                    .frame(width: 75)
+                    .frame(maxHeight: .infinity)
 
                 VStack(alignment: .leading, spacing: 4) {
                     if let quote = place.quote, !quote.isEmpty {
@@ -13960,6 +14076,7 @@ private struct NativeTopPlacesScreen: View {
 
                 Spacer(minLength: 0)
             }
+            .frame(minHeight: 95)
             .background(Color.white.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
@@ -13974,7 +14091,7 @@ private struct NativeTopPlacesScreen: View {
                     .fill(Color.white.opacity(0.10))
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(NativeTopPlacesThumbnailShape(cornerRadius: 12))
     }
 
     private func pickerButton(title: String, active: Bool, action: @escaping () -> Void) -> some View {
@@ -14013,6 +14130,75 @@ private struct NativeTopPlacesScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func tieGroup(for placeId: String, payload: NativeTopPlacesResponse) -> NativeTopPlacesTieGroup? {
+        payload.tieGroups.first { $0.placeIds.contains(placeId) }
+    }
+
+    private func topPlacesDisplayEntries(payload: NativeTopPlacesResponse) -> [NativeTopPlacesDisplayEntry] {
+        var orderedPlaces = payload.places
+
+        for group in payload.tieGroups {
+            guard let preferredPlaceId = resolvedTieSelections[group.id] else { continue }
+            let groupPlaces = orderedPlaces.filter { group.placeIds.contains($0.placeId) }
+            guard groupPlaces.count > 1 else { continue }
+
+            let reordered = groupPlaces.sorted { left, right in
+                if left.placeId == preferredPlaceId { return true }
+                if right.placeId == preferredPlaceId { return false }
+                return group.placeIds.firstIndex(of: left.placeId) ?? 0 < group.placeIds.firstIndex(of: right.placeId) ?? 0
+            }
+
+            var iterator = reordered.makeIterator()
+            orderedPlaces = orderedPlaces.map { place in
+                guard group.placeIds.contains(place.placeId) else { return place }
+                return iterator.next() ?? place
+            }
+        }
+
+        var entries: [NativeTopPlacesDisplayEntry] = []
+        var nextRank = 1
+        var index = 0
+
+        while index < orderedPlaces.count {
+            let place = orderedPlaces[index]
+            if let group = tieGroup(for: place.placeId, payload: payload),
+               resolvedTieSelections[group.id] == nil {
+                let groupPlaces = orderedPlaces.filter { group.placeIds.contains($0.placeId) }
+                for tiedPlace in groupPlaces {
+                    entries.append(NativeTopPlacesDisplayEntry(place: tiedPlace, rank: nextRank, isUnresolvedTie: true))
+                }
+                nextRank += groupPlaces.count
+                index += groupPlaces.count
+            } else {
+                entries.append(NativeTopPlacesDisplayEntry(place: place, rank: nextRank, isUnresolvedTie: false))
+                nextRank += 1
+                index += 1
+            }
+        }
+
+        return entries
+    }
+
+    private func shouldShowTieBreak(after index: Int, displayedPlaces: [NativeTopPlacesDisplayEntry], payload: NativeTopPlacesResponse) -> Bool {
+        guard displayedPlaces.indices.contains(index) else { return false }
+        let place = displayedPlaces[index].place
+        guard let group = tieGroup(for: place.placeId, payload: payload) else { return false }
+        guard resolvedTieSelections[group.id] == nil else { return false }
+        let groupIndices = displayedPlaces.enumerated().compactMap { offset, item in
+            group.placeIds.contains(item.place.placeId) ? offset : nil
+        }
+        return groupIndices.last == index
+    }
+
+    private func tiePrompt(after index: Int, displayedPlaces: [NativeTopPlacesDisplayEntry], payload: NativeTopPlacesResponse) -> NativeTopPlacesTiePrompt? {
+        guard displayedPlaces.indices.contains(index) else { return nil }
+        let place = displayedPlaces[index].place
+        guard let group = tieGroup(for: place.placeId, payload: payload) else { return nil }
+        let tiedPlaces = displayedPlaces.map(\.place).filter { group.placeIds.contains($0.placeId) }
+        guard tiedPlaces.count >= 2 else { return nil }
+        return NativeTopPlacesTiePrompt(places: Array(tiedPlaces.prefix(2)), groupId: group.id)
+    }
+
     private func load() async {
         if mode == .byFriends && selectedTravelerId == nil {
             payload = nil
@@ -14033,6 +14219,159 @@ private struct NativeTopPlacesScreen: View {
             errorMessage = nil
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct NativeTopPlacesThumbnailShape: Shape {
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let radius = min(cornerRadius, min(rect.width, rect.height) / 2)
+
+        path.move(to: CGPoint(x: rect.minX + radius, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.minX + radius, y: rect.maxY))
+        path.addArc(
+            center: CGPoint(x: rect.minX + radius, y: rect.maxY - radius),
+            radius: radius,
+            startAngle: .degrees(90),
+            endAngle: .degrees(180),
+            clockwise: false
+        )
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + radius))
+        path.addArc(
+            center: CGPoint(x: rect.minX + radius, y: rect.minY + radius),
+            radius: radius,
+            startAngle: .degrees(180),
+            endAngle: .degrees(270),
+            clockwise: false
+        )
+        path.closeSubpath()
+        return path
+    }
+}
+
+private struct NativeTopPlacesTieBreakSheet: View {
+    let prompt: NativeTopPlacesTiePrompt
+    let isSubmitting: Bool
+    let onSelectPlace: (String) async -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            Text("This or that?")
+                .font(nativeAppFont(size: 18, weight: .black))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, alignment: .center)
+
+            HStack(spacing: 12) {
+                ForEach(prompt.places.prefix(2)) { place in
+                    tieBreakCard(place: place)
+                }
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 20)
+        .padding(.bottom, 24)
+        .frame(maxWidth: .infinity, alignment: .top)
+        .background(Color.black)
+        .modifier(NativeTopPlacesTieBreakSheetPresentationModifier())
+    }
+
+    private func tieBreakCard(place: NativeTopPlaceEntry) -> some View {
+        let moment = place.moments.first
+
+        VStack(alignment: .leading, spacing: 10) {
+            Group {
+                if let mediaURL = moment?.uploadedMedia?.first, !mediaURL.isEmpty {
+                    NativeRemoteImage(url: mediaURL)
+                } else if let mediaURL = moment?.place.image, !mediaURL.isEmpty {
+                    NativeRemoteImage(url: mediaURL)
+                } else {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.white.opacity(0.08))
+                }
+            }
+            .frame(height: 156)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+            Text(moment?.caption ?? place.name)
+                .font(nativeAppFont(size: 14, weight: .medium))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+
+            Text(place.name)
+                .font(nativeAppFont(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.55))
+                .lineLimit(1)
+
+            Button {
+                Task {
+                    await onSelectPlace(place.placeId)
+                }
+            } label: {
+                Circle()
+                    .fill(nativeAccent)
+                    .frame(width: 44, height: 44)
+                    .overlay(
+                        Circle()
+                            .stroke(Color.black, lineWidth: 3)
+                    )
+                    .overlay(
+                        Image(systemName: "checkmark")
+                            .font(nativeAppFont(size: 20, weight: .black))
+                            .foregroundStyle(.black)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(isSubmitting)
+            .frame(maxWidth: .infinity, alignment: .center)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .background(Color.white.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard !isSubmitting else { return }
+            Task {
+                await onSelectPlace(place.placeId)
+            }
+        }
+        .allowsHitTesting(!isSubmitting)
+    }
+}
+
+private struct NativeTopPlacesTieBreakSheetPresentationModifier: ViewModifier {
+    @State private var measuredHeight: CGFloat = 360
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        let measuredContent = content.background(
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        measuredHeight = max(280, proxy.size.height)
+                    }
+                    .onChange(of: proxy.size.height) { newValue in
+                        measuredHeight = max(280, newValue)
+                    }
+            }
+        )
+
+        if #available(iOS 16.4, *) {
+            measuredContent
+                .presentationDetents([.height(measuredHeight)])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+        } else if #available(iOS 16.0, *) {
+            measuredContent
+                .presentationDetents([.height(measuredHeight)])
+                .presentationDragIndicator(.visible)
+        } else {
+            measuredContent
         }
     }
 }

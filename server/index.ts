@@ -2160,6 +2160,23 @@ type V2TopPlaceMomentRow = {
   };
 };
 
+type V2TopPlaceTieBreakPreferenceRow = {
+  lowerPlaceId: string;
+  higherPlaceId: string;
+  preferredPlaceId: string;
+};
+
+function normalizeTopPlaceTieBreakPair(placeIdA: string, placeIdB: string) {
+  const left = placeIdA.trim();
+  const right = placeIdB.trim();
+  if (!left || !right || left === right) {
+    return null;
+  }
+  return left < right
+    ? { lowerPlaceId: left, higherPlaceId: right }
+    : { lowerPlaceId: right, higherPlaceId: left };
+}
+
 async function resolveTopPlacesTraveler(viewerUserId: string, requestedTravelerId?: string | null) {
   const travelerId = requestedTravelerId?.trim() || viewerUserId;
   if (travelerId === viewerUserId) {
@@ -2238,6 +2255,14 @@ async function buildV2TopPlacesPayload(input: {
   if (!traveler || !traveler.username) {
     return null;
   }
+
+  const tieBreakPreferences = resolvedTravelerId
+    ? await prismaV2.$queryRaw<V2TopPlaceTieBreakPreferenceRow[]>(Prisma.sql`
+        SELECT "lowerPlaceId", "higherPlaceId", "preferredPlaceId"
+        FROM "TopPlaceTieBreakPreference"
+        WHERE "userId" = ${resolvedTravelerId}
+      `)
+    : [];
 
   const mappedTraveler = mapV2TravelerSummaryForClient(traveler, {
     followersCount: traveler._count.followers,
@@ -2389,11 +2414,41 @@ async function buildV2TopPlacesPayload(input: {
         summaryLine,
         distanceLabel: topPlacesRelativeDistanceLabel(entry.latitude, entry.longitude),
         moments: entry.moments.slice(0, 3),
+        tieBreakWins: 0,
       };
-    })
+    });
+
+  const rankedPlacesByScore = rankedPlaces.reduce<Map<string, typeof rankedPlaces>>((accumulator, place) => {
+    const key = place.score.toFixed(2);
+    const current = accumulator.get(key) ?? [];
+    current.push(place);
+    accumulator.set(key, current);
+    return accumulator;
+  }, new Map());
+
+  for (const group of rankedPlacesByScore.values()) {
+    if (group.length < 2) {
+      continue;
+    }
+    const groupPlaceIds = new Set(group.map((place) => place.placeId));
+    for (const preference of tieBreakPreferences) {
+      if (!groupPlaceIds.has(preference.lowerPlaceId) || !groupPlaceIds.has(preference.higherPlaceId)) {
+        continue;
+      }
+      const preferredPlace = group.find((place) => place.placeId === preference.preferredPlaceId);
+      if (preferredPlace) {
+        preferredPlace.tieBreakWins += 1;
+      }
+    }
+  }
+
+  rankedPlaces
     .sort((lhs, rhs) => {
       if (Math.abs(lhs.score - rhs.score) > 0.001) {
         return rhs.score - lhs.score;
+      }
+      if (lhs.tieBreakWins !== rhs.tieBreakWins) {
+        return rhs.tieBreakWins - lhs.tieBreakWins;
       }
       if (lhs.momentCount !== rhs.momentCount) {
         return rhs.momentCount - lhs.momentCount;
@@ -2403,10 +2458,17 @@ async function buildV2TopPlacesPayload(input: {
 
   let currentRank = 0;
   let previousScore: number | null = null;
+  let previousTieBreakWins: number | null = null;
   const rankedPayload = rankedPlaces.slice(0, limit).map((place) => {
-    if (previousScore === null || Math.abs(previousScore - place.score) > 0.001) {
+    if (
+      previousScore === null
+      || Math.abs(previousScore - place.score) > 0.001
+      || previousTieBreakWins === null
+      || previousTieBreakWins !== place.tieBreakWins
+    ) {
       currentRank += 1;
       previousScore = place.score;
+      previousTieBreakWins = place.tieBreakWins;
     }
 
     return {
@@ -2432,7 +2494,7 @@ async function buildV2TopPlacesPayload(input: {
 
   const tieGroups = Object.values(
     rankedPlaces.slice(0, limit).reduce<Record<string, typeof rankedPlaces>>((accumulator, item) => {
-      const key = item.score.toFixed(2);
+      const key = `${item.score.toFixed(2)}:${item.tieBreakWins}`;
       accumulator[key] = [...(accumulator[key] ?? []), item];
       return accumulator;
     }, {}),
@@ -10758,6 +10820,63 @@ app.get('/api/auth/session', async (req: AuthenticatedRequest, res) => {
     }
 
     res.json({ user: await mapUserForClientWithTasteState(user) });
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
+app.post('/api/v2/top-places/tie-break', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    const preferredPlaceId = typeof req.body?.preferredPlaceId === 'string' ? req.body.preferredPlaceId.trim() : '';
+    const otherPlaceId = typeof req.body?.otherPlaceId === 'string' ? req.body.otherPlaceId.trim() : '';
+    const normalizedPair = normalizeTopPlaceTieBreakPair(preferredPlaceId, otherPlaceId);
+
+    if (!normalizedPair || ![normalizedPair.lowerPlaceId, normalizedPair.higherPlaceId].includes(preferredPlaceId)) {
+      res.status(400).json({ error: 'Invalid tie-break selection' });
+      return;
+    }
+
+    const ownedPlaces = await prismaV2.moment.groupBy({
+      by: ['placeId'],
+      where: {
+        userId: req.authV2UserId!,
+        placeId: {
+          in: [normalizedPair.lowerPlaceId, normalizedPair.higherPlaceId],
+        },
+      },
+    });
+
+    if (ownedPlaces.length < 2) {
+      res.status(400).json({ error: 'Both places must belong to your top places list' });
+      return;
+    }
+
+    await prismaV2.$executeRaw(Prisma.sql`
+      INSERT INTO "TopPlaceTieBreakPreference" (
+        "id",
+        "userId",
+        "lowerPlaceId",
+        "higherPlaceId",
+        "preferredPlaceId",
+        "createdAt",
+        "updatedAt"
+      )
+      VALUES (
+        ${crypto.randomUUID()},
+        ${req.authV2UserId!},
+        ${normalizedPair.lowerPlaceId},
+        ${normalizedPair.higherPlaceId},
+        ${preferredPlaceId},
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP
+      )
+      ON CONFLICT ("userId", "lowerPlaceId", "higherPlaceId")
+      DO UPDATE SET
+        "preferredPlaceId" = EXCLUDED."preferredPlaceId",
+        "updatedAt" = CURRENT_TIMESTAMP
+    `);
+
+    res.json({ success: true });
   } catch (error) {
     handleError(res, error);
   }
