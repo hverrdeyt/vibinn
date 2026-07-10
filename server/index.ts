@@ -11614,6 +11614,80 @@ async function createV2Notification(input: {
   }
 }
 
+async function notifyV2FollowersAboutNewMoment(input: {
+  actorUserId: string;
+  momentId: string;
+  visibility: 'PUBLIC' | 'FRIENDS' | 'PRIVATE';
+}) {
+  if (input.visibility === 'PRIVATE') {
+    return;
+  }
+
+  const actor = await prismaV2.user.findUnique({
+    where: { id: input.actorUserId },
+    select: {
+      id: true,
+      username: true,
+      displayName: true,
+    },
+  });
+
+  if (!actor) {
+    return;
+  }
+
+  const followerRows = await prismaV2.follow.findMany({
+    where: { targetUserId: input.actorUserId },
+    select: { sourceUserId: true },
+  });
+
+  const followerIds = Array.from(new Set(
+    followerRows
+      .map((row) => row.sourceUserId)
+      .filter((userId) => userId && userId !== input.actorUserId),
+  ));
+
+  if (followerIds.length === 0) {
+    return;
+  }
+
+  let recipientIds = followerIds;
+  if (input.visibility === 'FRIENDS') {
+    const followingRows = await prismaV2.follow.findMany({
+      where: {
+        sourceUserId: input.actorUserId,
+        targetUserId: { in: followerIds },
+      },
+      select: { targetUserId: true },
+    });
+
+    const mutualIds = new Set(followingRows.map((row) => row.targetUserId));
+    recipientIds = followerIds.filter((userId) => mutualIds.has(userId));
+  }
+
+  if (recipientIds.length === 0) {
+    return;
+  }
+
+  const actorName =
+    actor.displayName
+    ?? actor.username
+    ?? buildV2TravelerUsernameFallback(actor.id);
+
+  await Promise.all(
+    recipientIds.map((userId) => sendV2PushNotification({
+      userId,
+      title: `${actorName} shared a new memory`,
+      body: 'Open to see their latest memory',
+      data: {
+        type: 'MOMENT_POSTED',
+        targetType: 'MOMENT',
+        targetId: input.momentId,
+      },
+    })),
+  );
+}
+
 function extractMentionedUsernames(body: string): string[] {
   const matches = Array.from(body.matchAll(/(^|\s)@([a-z0-9._]{1,30})\b/gi));
   const unique = new Set<string>();
@@ -13887,8 +13961,14 @@ app.post('/api/moments', requireSessionAuth, async (req: AuthenticatedRequest, r
           visibility,
           vibeTags: Array.isArray(payload.vibeTags)
             ? payload.vibeTags.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
-            : [],
+          : [],
         },
+      });
+
+      await notifyV2FollowersAboutNewMoment({
+        actorUserId: req.authV2UserId!,
+        momentId: moment.id,
+        visibility: moment.visibility,
       });
 
       const requestOrigin = `${getRequestOrigin(req)}`;
@@ -14078,8 +14158,14 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
         visibility,
         vibeTags: Array.isArray(payload.vibeTags)
           ? payload.vibeTags.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
-          : [],
+        : [],
       },
+    });
+
+    await notifyV2FollowersAboutNewMoment({
+      actorUserId: req.authV2UserId!,
+      momentId: moment.id,
+      visibility: moment.visibility,
     });
 
     await updateMyOnboardingState({
