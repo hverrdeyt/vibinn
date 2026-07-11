@@ -333,6 +333,19 @@ private enum NativePostAuthAction {
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate, NativeMessagingDelegateProtocol {
     fileprivate weak var appState: NativeAppState?
 
+    private func registerForRemoteNotificationsIfAuthorized(application: UIApplication) {
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                DispatchQueue.main.async {
+                    application.registerForRemoteNotifications()
+                }
+            default:
+                break
+            }
+        }
+    }
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
@@ -346,18 +359,13 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         #if canImport(FirebaseMessaging)
         Messaging.messaging().delegate = self
         #endif
-        UNUserNotificationCenter.current().getNotificationSettings { settings in
-            switch settings.authorizationStatus {
-            case .authorized, .provisional, .ephemeral:
-                DispatchQueue.main.async {
-                    application.registerForRemoteNotifications()
-                }
-            default:
-                break
-            }
-        }
+        registerForRemoteNotificationsIfAuthorized(application: application)
         application.setMinimumBackgroundFetchInterval(UIApplication.backgroundFetchIntervalMinimum)
         return true
+    }
+
+    func applicationDidBecomeActive(_ application: UIApplication) {
+        registerForRemoteNotificationsIfAuthorized(application: application)
     }
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -430,15 +438,24 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
         let content = notification.request.content
+        let pushType = (content.userInfo["type"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let targetType = (content.userInfo["targetType"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let targetId = (content.userInfo["targetId"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         NotificationCenter.default.post(
             name: nativeForegroundPushNotification,
             object: nil,
             userInfo: [
                 "title": content.title,
                 "body": content.body,
+                "type": pushType,
+                "targetType": targetType,
+                "targetId": targetId,
             ]
         )
-        completionHandler([.badge, .sound])
+        completionHandler([.banner, .list, .badge, .sound])
     }
 
     func application(
@@ -522,6 +539,17 @@ private enum NativeAnalyticsEvent: String {
     case visitUserProfile = "Visit User Profile"
     case visitPlaceDetails = "Visit Place Details"
     case clickForYourInspiration = "Click For Your Inspiration"
+    case shareMyFoodRecap = "Share my food recap"
+    case viewCardMyTopPlaces = "View card my top places"
+    case visitTopPlacesList = "Visit top places list"
+    case shareMyTopPlace = "Share my top place"
+    case viewCardFriends = "View card friends"
+    case viewCardYourCode = "View card your code"
+    case clickShareCode = "Click share code"
+    case viewCardSuggestion = "View card suggestion"
+    case chooseImageFromHomepage = "Choose image from homepage"
+    case downloadTemplateFoodRecap = "Download template food recap"
+    case downloadTemplateMyPlaces = "Download template my places"
 }
 
 private enum NativeAnalyticsSource {
@@ -1267,8 +1295,16 @@ private struct NativeTopPlacesTiePrompt: Identifiable {
     let groupId: String
 
     var id: String {
-        groupId
+        let pairId = places.prefix(2).map(\.placeId).joined(separator: ":")
+        return "\(groupId):\(pairId)"
     }
+}
+
+private enum NativeHomepagePosterShareKind: String, Identifiable {
+    case monthlyRecap
+    case topPlaces
+
+    var id: String { rawValue }
 }
 
 private struct NativeTopPlacesDisplayEntry: Identifiable {
@@ -1362,6 +1398,7 @@ private struct NativePlace: Decodable, Identifiable {
     let name: String
     let location: String
     let address: String?
+    let city: String? = nil
     let neighborhood: String?
     let category: String?
     let description: String?
@@ -2140,9 +2177,49 @@ private struct NativeTravelerSummary: Decodable, Identifiable {
     let visitedPlacesCount: Int?
     let savedPlacesCount: Int?
     let collectionsCount: Int?
-    let recommendationReason: String? = nil
-    let recommendationPriority: Int? = nil
-    let mutualCount: Int? = nil
+    let recommendationReason: String?
+    let recommendationPriority: Int?
+    let mutualCount: Int?
+
+    init(
+        id: String,
+        username: String,
+        displayName: String?,
+        avatar: String?,
+        bio: String?,
+        descriptor: String?,
+        matchScore: Int?,
+        followersCount: Int?,
+        followingCount: Int?,
+        recentSavedPlaces: [NativeTravelerSavedEntry]?,
+        recentCollections: [NativeCollection]?,
+        travelHistory: [NativeTravelHistoryGroup],
+        visitedPlacesCount: Int?,
+        savedPlacesCount: Int?,
+        collectionsCount: Int?,
+        recommendationReason: String? = nil,
+        recommendationPriority: Int? = nil,
+        mutualCount: Int? = nil
+    ) {
+        self.id = id
+        self.username = username
+        self.displayName = displayName
+        self.avatar = avatar
+        self.bio = bio
+        self.descriptor = descriptor
+        self.matchScore = matchScore
+        self.followersCount = followersCount
+        self.followingCount = followingCount
+        self.recentSavedPlaces = recentSavedPlaces
+        self.recentCollections = recentCollections
+        self.travelHistory = travelHistory
+        self.visitedPlacesCount = visitedPlacesCount
+        self.savedPlacesCount = savedPlacesCount
+        self.collectionsCount = collectionsCount
+        self.recommendationReason = recommendationReason
+        self.recommendationPriority = recommendationPriority
+        self.mutualCount = mutualCount
+    }
 }
 
 private struct NativeFeedSavedDrop: Decodable, Identifiable {
@@ -2449,7 +2526,7 @@ private struct NativeHomepageFoodDetectionResult {
 }
 
 private let nativeHomepageFoodPhotoAssetIDsDefaultsKey = "club.vibinn.homepage.food-photo-asset-ids"
-private let nativeHomepageFoodPhotoScanLimit = 100
+private let nativeHomepageFoodPhotoScanLimit = 180
 private let nativeHomepageRecentPhotoPreviewLimit = 12
 private let nativeHomepageFoodKeywords = [
     "food", "dish", "meal", "plate", "cuisine", "restaurant", "brunch", "breakfast",
@@ -2461,7 +2538,9 @@ private let nativeHomepageFoodKeywords = [
     "wine", "espresso", "latte", "cappuccino", "cafe", "dining table", "tableware",
     "cutlery", "menu item", "fast food", "street food", "fried food", "seafood",
     "recipe", "cup", "mug", "glass", "charcuterie", "steak", "sweets", "pastries",
-    "dumpling", "sashimi", "omelet", "toast", "grill", "barbecue", "bento", "croissant"
+    "dumpling", "sashimi", "omelet", "toast", "grill", "barbecue", "bento", "croissant",
+    "plated food", "dishware", "table", "dining", "buffet", "banquet", "brasserie",
+    "cafeteria", "takeout", "takeaway", "snack food", "serving tray", "tray"
 ]
 
 private func nativeHomepageFoodDetectionResult(for image: UIImage) -> NativeHomepageFoodDetectionResult? {
@@ -2479,11 +2558,11 @@ private func nativeHomepageFoodDetectionResult(for image: UIImage) -> NativeHome
     var bestScore = 0.0
     var matchedLabels: [String] = []
 
-    let topLabels = labels.prefix(4).map {
+    let topLabels = labels.prefix(6).map {
         "\($0.identifier) \(Int(($0.confidence * 100).rounded()))%"
     }
 
-    for (index, observation) in labels.prefix(20).enumerated() {
+    for (index, observation) in labels.prefix(40).enumerated() {
         let normalized = observation.identifier.lowercased().replacingOccurrences(of: "_", with: " ")
         guard nativeHomepageFoodKeywords.contains(where: { normalized.contains($0) }) else { continue }
         let rankBoost = max(0.0, 1.0 - (Double(index) * 0.08))
@@ -3488,8 +3567,18 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     }
 
     @Published var isBootstrapping = true
-    @Published var currentUser: NativeAuthUser?
-    @Published var activeTab: NativeTab = .discover
+    @Published var currentUser: NativeAuthUser? {
+        didSet {
+            syncFeedSeenState()
+        }
+    }
+    @Published var activeTab: NativeTab = .discover {
+        didSet {
+            if activeTab == .feed {
+                markFeedAsViewed()
+            }
+        }
+    }
     @Published var selectedLocation = NativeLocationOption(id: "boston", label: "Boston")
     @Published var selectedInterests: [String] = []
     @Published var selectedVibe: String?
@@ -3519,11 +3608,17 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var homepageOverview: NativeHomepageOverview?
     @Published var homepageRecentMemories: [NativeMoment] = []
     @Published var homepageTopPlaces: NativeTopPlacesResponse?
+    @Published var isHomepageRecentMemoriesLoading = false
+    @Published var isHomepageTopPlacesLoading = false
     @Published var diaryMoments: [NativeMoment] = []
+    @Published var isDiaryMomentsLoading = false
     @Published var ownFeedItemsCache: [NativeFeedItem] = []
     @Published var followedTravelers: [NativeTravelerSummary] = []
     @Published var suggestedTravelers: [NativeTravelerSummary] = []
+    @Published var isSuggestedTravelersLoading = false
     @Published var feedItems: [NativeFeedItem] = []
+    @Published var hasUnseenFeedItems = false
+    @Published var isFeedLoading = false
     @Published var fallbackFeedItems: [NativeFeedItem] = []
     @Published var suggestedFeedItems: [NativeFeedItem] = []
     @Published var blockedTravelerIds: Set<String> = []
@@ -3571,6 +3666,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private let hasPromptedForPushAfterContentActionKeyPrefix = "vibinn_native_push_prompt_after_content_action"
     private let hasShownSecondMemoryProfileSharePromptKeyPrefix = "vibinn_native_second_memory_profile_share_prompt"
     private let dismissedSuggestedTravelerIdsKeyPrefix = "vibinn_native_dismissed_suggested_travelers"
+    private let lastSeenFeedTimestampKeyPrefix = "vibinn_native_last_seen_feed_timestamp"
     private let locationManager = CLLocationManager()
     private let geocoder = CLGeocoder()
     private var floatingTabBarHideDepth = 0
@@ -4358,6 +4454,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
         guard usesV2Session else { return }
 
+        isHomepageRecentMemoriesLoading = true
+        defer { isHomepageRecentMemoriesLoading = false }
         do {
             let response = try await api.getV2HomepageRecentMemories(token: token)
             homepageRecentMemories = nativeStableUniqueMomentsNewestFirst(response.moments)
@@ -4376,6 +4474,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
         guard usesV2Session else { return }
 
+        isHomepageTopPlacesLoading = true
+        defer { isHomepageTopPlacesLoading = false }
         do {
             homepageTopPlaces = try await api.getV2TopPlaces(
                 token: token,
@@ -4433,6 +4533,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         }
         guard usesV2Session else { return }
 
+        isDiaryMomentsLoading = true
+        defer { isDiaryMomentsLoading = false }
         do {
             let response = try await api.getV2Moments(token: token)
             let sortedMoments = nativeStableUniqueMomentsNewestFirst(response.moments)
@@ -4494,6 +4596,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             return
         }
 
+        isSuggestedTravelersLoading = true
+        defer { isSuggestedTravelersLoading = false }
         do {
             let travelers = try await api.getV2SuggestedTravelers(token: token, phoneNumbers: phoneNumbers)
             suggestedTravelers = filteredSuggestedTravelers(travelers)
@@ -5526,6 +5630,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         feedErrorMessage = nil
         guard let token = authToken else { return }
 
+        isFeedLoading = true
+        defer { isFeedLoading = false }
         do {
             let response = try await (usesV2Session ? api.getV2Feed(token: token) : api.getFeed(token: token))
             followedTravelers = response.followedTravelers
@@ -5566,6 +5672,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             feedItems = response.items.compactMap(mapFeedItem)
             fallbackFeedItems = (response.fallbackItems ?? []).compactMap(mapFeedItem)
             suggestedFeedItems = (response.suggestedItems ?? []).compactMap(mapFeedItem)
+            syncFeedSeenState()
             refreshWidgetSnapshot()
             nativeLogger.log("refreshFeed success followed=\(self.followedTravelers.count, privacy: .public) suggested=\(self.suggestedTravelers.count, privacy: .public) items=\(self.feedItems.count, privacy: .public)")
         } catch {
@@ -5582,9 +5689,52 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             feedItems = []
             fallbackFeedItems = []
             suggestedFeedItems = []
+            syncFeedSeenState()
             feedErrorMessage = "Could not refresh feed right now."
             refreshWidgetSnapshot()
         }
+    }
+
+    private var latestFeedItemTimestamp: Date? {
+        feedItems.map(\.sortTimestamp).max()
+    }
+
+    private var lastSeenFeedTimestampKey: String? {
+        guard let userId = currentUser?.id, !userId.isEmpty else { return nil }
+        return "\(lastSeenFeedTimestampKeyPrefix)_\(userId)"
+    }
+
+    private func storedLastSeenFeedTimestamp() -> Date? {
+        guard let key = lastSeenFeedTimestampKey else { return nil }
+        let raw = UserDefaults.standard.string(forKey: key)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !raw.isEmpty else { return nil }
+        return ISO8601DateFormatter().date(from: raw)
+    }
+
+    private func syncFeedSeenState() {
+        guard currentUser != nil else {
+            hasUnseenFeedItems = false
+            return
+        }
+        guard let latestTimestamp = latestFeedItemTimestamp else {
+            hasUnseenFeedItems = false
+            return
+        }
+        guard let seenTimestamp = storedLastSeenFeedTimestamp() else {
+            hasUnseenFeedItems = !feedItems.isEmpty && activeTab != .feed
+            return
+        }
+        hasUnseenFeedItems = latestTimestamp > seenTimestamp && activeTab != .feed
+    }
+
+    func markFeedAsViewed() {
+        guard let key = lastSeenFeedTimestampKey else {
+            hasUnseenFeedItems = false
+            return
+        }
+        let seenTimestamp = latestFeedItemTimestamp ?? Date()
+        UserDefaults.standard.set(ISO8601DateFormatter().string(from: seenTimestamp), forKey: key)
+        hasUnseenFeedItems = false
     }
 
     func loadActiveTabIfNeeded() async {
@@ -6796,6 +6946,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let body = (notification.userInfo?["body"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let pushType = (notification.userInfo?["type"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
         let message: String
         if !title.isEmpty && !body.isEmpty {
@@ -6811,6 +6963,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         showToast(message: message, icon: "bell.badge.fill")
         Task { [weak self] in
             await self?.refreshNotificationUnreadCount()
+            if pushType == "MOMENT_POSTED" {
+                await self?.refreshFeed()
+            }
         }
     }
 
@@ -9189,13 +9344,81 @@ private struct NativeLoadingScreen: View {
         ZStack {
             Color.black.ignoresSafeArea()
             VStack(spacing: 16) {
-                ProgressView()
-                    .tint(nativeAccent)
-                Text("Loading Vibinn")
-                    .font(nativeAppFont(size: 18, weight: .bold))
-                    .foregroundStyle(.white)
+                NativeCyclingFoodLoadingView(
+                    logoTint: .white,
+                    iconSize: 42,
+                    label: "Loading Vibinn",
+                    labelColor: .white
+                )
             }
         }
+    }
+}
+
+private struct NativeCyclingFoodLoadingView: View {
+    let logoTint: Color
+    let iconSize: CGFloat
+    var label: String? = nil
+    var labelColor: Color? = nil
+
+    @State private var cycleIndex = 0
+
+    private let foodEmojis = ["🍕", "🍝", "🍜", "🍣", "🌮", "🥐"]
+
+    private var totalFrames: Int {
+        foodEmojis.count * 2
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ZStack {
+                if cycleIndex.isMultiple(of: 2) {
+                    Image("VibinnLoadingLogo")
+                        .renderingMode(.template)
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(logoTint)
+                        .frame(width: iconSize, height: iconSize)
+                        .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                } else {
+                    let emojiIndex = (cycleIndex / 2) % foodEmojis.count
+                    Text(foodEmojis[emojiIndex])
+                        .font(.system(size: iconSize * 0.9))
+                        .transition(.opacity.combined(with: .scale(scale: 0.92)))
+                }
+            }
+            .frame(width: iconSize, height: iconSize)
+            .animation(.easeInOut(duration: 0.22), value: cycleIndex)
+
+            if let label, !label.isEmpty {
+                Text(label)
+                    .font(nativeAppFont(size: 18, weight: .bold))
+                    .foregroundStyle(labelColor ?? logoTint)
+            }
+        }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            cycleIndex = (cycleIndex + 1) % max(totalFrames, 1)
+        }
+    }
+}
+
+private struct NativeInlineStageLoadingState: View {
+    let accentStyle: Bool
+
+    var body: some View {
+        VStack(spacing: 12) {
+            Spacer(minLength: 0)
+
+            NativeCyclingFoodLoadingView(
+                logoTint: accentStyle ? .black : .white,
+                iconSize: 42,
+                label: "Loading",
+                labelColor: accentStyle ? .black.opacity(0.82) : .white.opacity(0.88)
+            )
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 
@@ -9692,6 +9915,7 @@ private struct NativeDiaryScreen: View {
     @State private var openGalleryFilterPanel: NativeDiaryGalleryFilterPanel? = nil
     @State private var isKeyboardVisible = false
     @State private var selectedMoment: NativeMoment?
+    @State private var showTopPlacesScreen = false
     @State private var mapRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 40.7128, longitude: -74.0060),
         span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25)
@@ -9765,7 +9989,7 @@ private struct NativeDiaryScreen: View {
                         diaryFloatingModePicker
                     }
                     .padding(.horizontal, 20)
-                    .padding(.bottom, appState.showFloatingTabBar ? 112 : max(16, geometry.safeAreaInsets.bottom + 16))
+                    .padding(.bottom, appState.showFloatingTabBar ? 84 : max(12, geometry.safeAreaInsets.bottom + 12))
                     .ignoresSafeArea(.keyboard, edges: .bottom)
                 }
             }
@@ -9822,6 +10046,10 @@ private struct NativeDiaryScreen: View {
             .fullScreenCover(item: $selectedMoment) { moment in
                 NativeDecisionHistoryMomentFullscreen(moment: moment)
             }
+            .fullScreenCover(isPresented: $showTopPlacesScreen) {
+                NativeTopPlacesScreen(initialMode: .byYou)
+                    .environmentObject(appState)
+            }
         }
     }
 
@@ -9829,38 +10057,31 @@ private struct NativeDiaryScreen: View {
         HStack(alignment: .top) {
             Text("DIARY")
                 .font(nativePixelAccentFont(size: 24))
-                .foregroundStyle(nativeAccent.opacity(0.88))
+                .foregroundStyle(.white)
             Spacer(minLength: 0)
+            Button {
+                showTopPlacesScreen = true
+            } label: {
+                Image(systemName: "list.bullet.rectangle.portrait")
+                    .font(nativeAppFont(size: 18, weight: .bold))
+                    .foregroundStyle(.white)
+                    .frame(width: 46, height: 46)
+                    .background(nativeSurface)
+                    .overlay(
+                        Circle().stroke(nativeBorder, lineWidth: 1)
+                    )
+                    .clipShape(Circle())
+            }
+            .buttonStyle(.plain)
         }
     }
 
     private var diaryFloatingModePicker: some View {
-        HStack(spacing: 8) {
-            ForEach(NativeDiaryViewMode.allCases) { mode in
-                Button {
-                    activeMode = mode
-                } label: {
-                    nativeFloatingModeAssetIcon(
-                        named: diaryModeAssetName(for: mode),
-                        isActive: activeMode == mode
-                    )
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                        .background(activeMode == mode ? Color.white : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(8)
-        .background(Color.black.opacity(0.7))
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        NativeExpandableFloatingModePicker(
+            modes: NativeDiaryViewMode.allCases,
+            activeMode: $activeMode,
+            assetName: diaryModeAssetName(for:)
         )
-        .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 10)
     }
 
     private func diaryModeAssetName(for mode: NativeDiaryViewMode) -> String {
@@ -10601,12 +10822,15 @@ private struct NativeHomepageShellScreen: View {
     @State private var showAllChallenges = false
     @State private var showNotificationsSheet = false
     @State private var showHomepageShareSheet = false
+    @State private var homepageShareSheetItems: [Any] = []
+    @State private var homepagePosterShareKind: NativeHomepagePosterShareKind?
     @State private var showBuildYourCircleScreen = false
     @State private var showTopPlacesScreen = false
     @State private var selectedHeroPhoto: NativePickedPhotoAsset?
     @State private var selectedHomepageMoment: NativeMoment?
     @State private var selectedHomepageFeedItem: NativeFeedItem?
     @State private var homepageInviteShareSummary: NativeV2InviteCodeSummary?
+    @State private var homepageInviteRedeemedActors: [NativeNotificationActor] = []
     @State private var homepageInviteShareMessage = nativeInviteShareMessage(code: nil)
     @State private var homepageMonthlyShareMessage = "Check out my food memories on Vibinn: https://vibinn.club"
     @State private var homepageTopPlacesShareMessage = "Check out my top places on Vibinn: https://vibinn.club"
@@ -10618,11 +10842,13 @@ private struct NativeHomepageShellScreen: View {
     @State private var homepageStageReady = false
     @State private var hasResolvedHomepageFixedTopHeight = false
     @State private var updatingHomepageSuggestedTravelerIds: Set<String> = []
+    @State private var lastTrackedHomepageStage: HomepageStage?
 
     private enum HomepageStage: CaseIterable {
         case recap
         case places
         case updates
+        case invite
         case challenges
     }
 
@@ -10657,6 +10883,8 @@ private struct NativeHomepageShellScreen: View {
             let bottomReserve: CGFloat = appState.showFloatingTabBar ? 108 : 32
             let fallbackFixedTopHeight: CGFloat = 188
             let stageDividerHeight: CGFloat = 20
+            let topCoverBleed = max(1 / UIScreen.main.scale, 2 / UIScreen.main.scale)
+            let statusBarCoverHeight = proxy.safeAreaInsets.top + topPadding + topCoverBleed
             let measuredFixedTopHeight = homepageFixedTopHeight > 0 ? homepageFixedTopHeight : fallbackFixedTopHeight
             let stageHeight = max(
                 260,
@@ -10667,25 +10895,38 @@ private struct NativeHomepageShellScreen: View {
                     - stageDividerHeight
             )
 
-            VStack(alignment: .leading, spacing: 0) {
-                homepageFixedTopSection
+            ZStack(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 0) {
+                    homepageFixedTopSection
+                        .zIndex(2)
 
-                homepageStageTransitionGradient
-                    .frame(height: stageDividerHeight)
+                    homepageStageTransitionGradient
+                        .frame(height: stageDividerHeight)
+                        .zIndex(2)
 
-                Group {
-                    if homepageStageReady {
-                        homepageStageViewport
-                    } else {
-                        Color.clear
+                    Group {
+                        if homepageStageReady {
+                            homepageStageViewport
+                        } else {
+                            Color.clear
+                        }
                     }
+                    .frame(height: stageHeight)
+                    .zIndex(1)
                 }
-                .frame(height: stageHeight)
+                .padding(.horizontal, horizontalPadding)
+                .padding(.top, topPadding)
+                .padding(.bottom, bottomReserve)
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+
+                Rectangle()
+                    .fill(Color.black)
+                    .frame(height: statusBarCoverHeight)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .ignoresSafeArea(edges: .top)
+                    .allowsHitTesting(false)
+                    .zIndex(3)
             }
-            .padding(.horizontal, horizontalPadding)
-            .padding(.top, topPadding)
-            .padding(.bottom, bottomReserve)
-            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             .background(Color.black.ignoresSafeArea())
         }
         .onPreferenceChange(NativeHomepageFixedTopHeightPreferenceKey.self) { value in
@@ -10712,7 +10953,11 @@ private struct NativeHomepageShellScreen: View {
             .environmentObject(appState)
         }
         .sheet(isPresented: $showHomepageShareSheet) {
-            NativeShareSheet(items: [homepageMonthlyShareMessage])
+            NativeShareSheet(items: homepageShareSheetItems)
+        }
+        .fullScreenCover(item: $homepagePosterShareKind) { kind in
+            NativePosterShareScreen(kind: kind)
+                .environmentObject(appState)
         }
         .fullScreenCover(isPresented: $showBuildYourCircleScreen) {
             NativeBuildYourCircleScreen(source: NativeAnalyticsSource.homepage)
@@ -10764,12 +11009,21 @@ private struct NativeHomepageShellScreen: View {
         .onChange(of: photoAuthorizationStatus) { _ in
             refreshHomepagePhotoPreviewIfNeeded()
         }
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+            guard hasHomepagePhotoAccess else { return }
+            refreshHomepagePhotoPreviewIfNeeded()
+        }
         .onChange(of: homepageStageProgress) { newValue in
             let targetIndex = Int(newValue.rounded())
             let resolvedStage = homepageStages[max(0, min(homepageStages.count - 1, targetIndex))]
             if activeHomepageStage != resolvedStage {
                 activeHomepageStage = resolvedStage
             }
+        }
+        .onChange(of: activeHomepageStage) { newValue in
+            guard lastTrackedHomepageStage != newValue else { return }
+            lastTrackedHomepageStage = newValue
+            trackHomepageStageViewed(newValue)
         }
         .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
             homepageMonthlyShareIconIndex = (homepageMonthlyShareIconIndex + 1) % homepageMonthlyShareBadges.count
@@ -10789,6 +11043,7 @@ private struct NativeHomepageShellScreen: View {
             homepageWordmarkHeader
             homepageUploadShortcutCard
         }
+        .background(Color.black)
         .background(
             GeometryReader { proxy in
                 Color.clear.preference(
@@ -11150,7 +11405,7 @@ private struct NativeHomepageShellScreen: View {
     }
 
     private var homepageStages: [HomepageStage] {
-        [.recap, .places, .updates, .challenges]
+        [.recap, .places, .updates, .invite, .challenges]
     }
 
     private var activeHomepageStageIndex: Int {
@@ -11174,14 +11429,16 @@ private struct NativeHomepageShellScreen: View {
             return "TOP PLACES"
         case .updates:
             return "FRIENDS"
+        case .invite:
+            return "YOUR CODE"
         case .challenges:
-            return "SUGGESTED\nFRIEND"
+            return "SUGGESTED\nPOSTS"
         }
     }
 
     private func homepageStageStyle(for stage: HomepageStage) -> HomepageStageCardStyle {
         switch stage {
-        case .updates, .challenges:
+        case .updates, .invite, .challenges:
             return .dark
         case .recap, .places:
             return .accent
@@ -11203,7 +11460,7 @@ private struct NativeHomepageShellScreen: View {
             style: style,
             isCurrent: mode == .current,
             topPadding: index == 0 ? 24 : 18,
-            titleSpacing: stage == .updates ? 12 : ((stage == .challenges) ? 8 : 18),
+            titleSpacing: stage == .updates ? 12 : ((stage == .invite || stage == .challenges) ? 8 : 18),
             titleLineLimit: (stage == .updates || stage == .challenges) ? 2 : 1
         ) {
             homepageStageContent(for: stage, style: style)
@@ -11271,8 +11528,10 @@ private struct NativeHomepageShellScreen: View {
             homepageTopPlacesCard
         case .updates:
             homepageCircleUpdatesCard
+        case .invite:
+            homepageInviteProgressCard
         case .challenges:
-            homepageSuggestedFriendsCard
+            homepageSuggestedPostsCard
         }
     }
 
@@ -11628,13 +11887,19 @@ private struct NativeHomepageShellScreen: View {
 
     private var homepageMonthlyRecapCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if homepageCurrentMonthMoments.isEmpty {
+            if homepageCurrentMonthMoments.isEmpty && homepageMonthlyContentIsLoading {
+                NativeInlineStageLoadingState(accentStyle: true)
+            } else if homepageCurrentMonthMoments.isEmpty {
                 homepageMonthlyRecapEmptyState
             } else {
                 homepageMonthlyRecapFilledState
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private var homepageMonthlyContentIsLoading: Bool {
+        appState.isDiaryMomentsLoading || appState.isHomepageRecentMemoriesLoading
     }
 
     private var homepageMonthlyRecapFilledState: some View {
@@ -11699,8 +11964,9 @@ private struct NativeHomepageShellScreen: View {
             Spacer(minLength: 12)
 
             Button {
+                appState.trackAnalytics(.shareMyFoodRecap, properties: ["source": NativeAnalyticsSource.homepage])
                 homepageMonthlyShareMessage = homepageMonthlyRecapShareMessage
-                showHomepageShareSheet = true
+                homepagePosterShareKind = .monthlyRecap
             } label: {
                 HStack(spacing: 8) {
                     homepageMonthlyShareBadge
@@ -11869,7 +12135,9 @@ private struct NativeHomepageShellScreen: View {
         maxContentWidth: CGFloat
     ) -> CGFloat {
         guard count > 1 else { return 0 }
-        return max(0, (maxContentWidth - thumbnailSize) / CGFloat(count - 1))
+        let maxVisibleCount: CGFloat = 5
+        let packedRevealWidth = max(0, (maxContentWidth - thumbnailSize) / (maxVisibleCount - 1))
+        return packedRevealWidth
     }
 
     private func homepageMonthlyThumbnailStripWidth(
@@ -11953,7 +12221,9 @@ private struct NativeHomepageShellScreen: View {
 
     private var homepageTopPlacesCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let payload = appState.homepageTopPlaces, !payload.places.isEmpty {
+            if appState.isHomepageTopPlacesLoading && (appState.homepageTopPlaces?.places.isEmpty ?? true) {
+                NativeInlineStageLoadingState(accentStyle: true)
+            } else if let payload = appState.homepageTopPlaces, !payload.places.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(payload.places.prefix(3).enumerated()), id: \.element.id) { item in
                         homepageTopPlacesRow(item.element, index: item.offset)
@@ -11978,8 +12248,9 @@ private struct NativeHomepageShellScreen: View {
                 Spacer(minLength: 12)
 
                 Button {
+                    appState.trackAnalytics(.shareMyTopPlace, properties: ["source": NativeAnalyticsSource.homepage])
                     homepageMonthlyShareMessage = homepageTopPlacesShareCopy
-                    showHomepageShareSheet = true
+                    homepagePosterShareKind = .topPlaces
                 } label: {
                     HStack(spacing: 8) {
                         homepageMonthlyShareBadge
@@ -12144,6 +12415,11 @@ private struct NativeHomepageShellScreen: View {
                     .font(nativePixelAccentFont(size: 16))
                     .foregroundStyle(.white)
             }
+            .contentShape(Rectangle())
+            .onTapGesture(count: 3) {
+                nativeHaptic(.selection)
+                appState.showSecondMemoryProfileSharePrompt = true
+            }
 
             Spacer(minLength: 16)
 
@@ -12160,18 +12436,19 @@ private struct NativeHomepageShellScreen: View {
                         .overlay(
                             Circle().stroke(nativeBorder, lineWidth: 1)
                         )
+                        .overlay(alignment: .topTrailing) {
+                            if appState.notificationUnreadCount > 0 {
+                                Circle()
+                                    .fill(Color.red)
+                                    .frame(width: 10, height: 10)
+                                    .overlay(
+                                        Circle()
+                                            .stroke(Color.black.opacity(0.28), lineWidth: 1)
+                                    )
+                                    .offset(x: 1, y: -1)
+                            }
+                        }
                         .clipShape(Circle())
-
-                    if appState.notificationUnreadCount > 0 {
-                        Text(appState.notificationUnreadCount > 99 ? "99+" : "\(appState.notificationUnreadCount)")
-                            .font(nativeAppFont(size: 9, weight: .black))
-                            .foregroundStyle(.black)
-                            .padding(.horizontal, appState.notificationUnreadCount > 9 ? 6 : 4)
-                            .frame(height: 16)
-                            .background(.white)
-                            .clipShape(Capsule())
-                            .offset(x: 4, y: -4)
-                    }
                 }
             }
             .buttonStyle(.plain)
@@ -12243,7 +12520,7 @@ private struct NativeHomepageShellScreen: View {
                     Spacer(minLength: 0)
 
                     Button {
-                        UIPasteboard.general.string = homepageInviteShareMessage
+                        UIPasteboard.general.string = homepageInviteShareMessageResolved
                         appState.showToast(message: "Invite text copied", icon: "doc.on.doc.fill")
                     } label: {
                         Image(systemName: "doc.on.doc")
@@ -12338,7 +12615,9 @@ private struct NativeHomepageShellScreen: View {
 
     private var homepageCircleUpdatesCard: some View {
         Group {
-            if homepageCircleFeedItems.isEmpty {
+            if appState.isFeedLoading && homepageCircleFeedItems.isEmpty && appState.followedTravelers.isEmpty {
+                NativeInlineStageLoadingState(accentStyle: false)
+            } else if homepageCircleFeedItems.isEmpty {
                 homepageCircleUpdatesEmptyState
             } else {
                 homepageCircleUpdatesFilledState
@@ -12364,7 +12643,7 @@ private struct NativeHomepageShellScreen: View {
                 .multilineTextAlignment(.center)
 
             Button {
-                showBuildYourCircleScreen = true
+                appState.activeTab = .chat
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "person.badge.plus")
@@ -12400,16 +12679,7 @@ private struct NativeHomepageShellScreen: View {
             Spacer(minLength: 0)
 
             HStack(alignment: .center, spacing: 12) {
-                Button {
-                    showBuildYourCircleScreen = true
-                } label: {
-                    Text("Invite a friend")
-                        .font(nativeAppFont(size: 14, weight: .black))
-                        .foregroundStyle(.white)
-                }
-                .buttonStyle(.plain)
-
-                Spacer(minLength: 12)
+                Spacer(minLength: 0)
 
                 Button {
                     appState.activeTab = .chat
@@ -12538,22 +12808,224 @@ private struct NativeHomepageShellScreen: View {
         }
     }
 
-    private var homepageSuggestedFriendItems: [NativeTravelerSummary] {
-        Array(appState.suggestedTravelers.prefix(4))
+    private var homepageSuggestedPostItems: [NativeFeedItem] {
+        appState.suggestedFeedItems
+            .filter { $0.type == .visited && $0.place != nil && ($0.visibility?.lowercased() ?? "public") == "public" }
+            .sorted { lhs, rhs in
+                let lhsPriority = lhs.traveler.recommendationPriority ?? 999
+                let rhsPriority = rhs.traveler.recommendationPriority ?? 999
+                if lhsPriority != rhsPriority {
+                    return lhsPriority < rhsPriority
+                }
+                let lhsMutual = lhs.traveler.mutualCount ?? 0
+                let rhsMutual = rhs.traveler.mutualCount ?? 0
+                if lhsMutual != rhsMutual {
+                    return lhsMutual > rhsMutual
+                }
+                return lhs.sortTimestamp > rhs.sortTimestamp
+            }
+            .prefix(4)
+            .map { $0 }
     }
 
-    private var homepageSuggestedFriendsCard: some View {
+    private var homepageInviteUsageLimit: Int {
+        let resolved = homepageInviteShareSummary?.usageLimit
+            ?? homepageInviteShareSummary?.remainingUses.map { $0 + (homepageInviteShareSummary?.usageCount ?? 0) }
+            ?? 5
+        return max(1, resolved)
+    }
+
+    private var homepageInviteUsedCount: Int {
+        max(homepageInviteShareSummary?.usageCount ?? homepageInviteRedeemedActors.count, homepageInviteRedeemedActors.count)
+    }
+
+    private var homepageInviteSlotIndices: [Int] {
+        Array(0..<homepageInviteUsageLimit)
+    }
+
+    private var homepageInviteProgressCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Vibinn is for limited user only, but you can help your friend to join by using your code.")
+                .font(nativeAppFont(size: 14, weight: .medium))
+                .foregroundStyle(.white.opacity(0.5))
+                .fixedSize(horizontal: false, vertical: true)
+
+            HStack(spacing: 12) {
+                Text(homepageInviteCodeString)
+                    .font(nativeAppFont(size: 20, weight: .medium))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .padding(.leading, 18)
+                    .padding(.trailing, 116)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(height: 64)
+                    .background(Color.white.opacity(0.14))
+                    .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+                    .overlay(alignment: .trailing) {
+                Button {
+                    appState.trackAnalytics(.clickShareCode, properties: ["source": NativeAnalyticsSource.homepage])
+                    homepageShareSheetItems = [homepageInviteShareMessageResolved]
+                    showHomepageShareSheet = true
+                } label: {
+                    Text("Share")
+                        .font(nativeAppFont(size: 14, weight: .black))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 22)
+                        .frame(height: 48)
+                        .background(nativeAccent)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                    .padding(.trailing, 8)
+                    }
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Joined friend")
+                    .font(nativeAppFont(size: 16, weight: .black))
+                    .foregroundStyle(.white)
+
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 18) {
+                        ForEach(homepageInviteSlotIndices, id: \.self) { index in
+                            homepageInviteSlotView(index: index)
+                        }
+                    }
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func homepageInviteSlotView(index: Int) -> some View {
+        if let actor = homepageInviteRedeemedActors[safe: index] {
+            NavigationLink {
+                NativeTravelerProfileScreen(
+                    initialTraveler: NativeTravelerSummary(
+                        id: actor.id,
+                        username: actor.username,
+                        displayName: actor.displayName,
+                        avatar: actor.avatar,
+                        bio: nil,
+                        descriptor: nil,
+                        matchScore: nil,
+                        followersCount: nil,
+                        followingCount: nil,
+                        recentSavedPlaces: [],
+                        recentCollections: [],
+                        travelHistory: [],
+                        visitedPlacesCount: nil,
+                        savedPlacesCount: nil,
+                        collectionsCount: nil
+                    )
+                )
+            } label: {
+                homepageInviteRedeemedSlot(actor: actor)
+            }
+            .buttonStyle(.plain)
+        } else if index < homepageInviteUsedCount {
+            homepageInviteUnknownRedeemedSlot(index: index)
+        } else {
+            homepageInviteOpenSlot(index: index)
+        }
+    }
+
+    private func homepageInviteRedeemedSlot(actor: NativeNotificationActor) -> some View {
+        let trimmedDisplayName = actor.displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let label = trimmedDisplayName.isEmpty ? actor.username : trimmedDisplayName
+
+        return VStack(alignment: .leading, spacing: 8) {
+            Group {
+                if let avatar = actor.avatar, !avatar.isEmpty {
+                    NativeRemoteImage(url: avatar)
+                } else {
+                    RoundedRectangle(cornerRadius: 20, style: .continuous)
+                        .fill(Color.white.opacity(0.12))
+                        .overlay(
+                            Text(nativeAvatarInitials(from: actor.displayName ?? actor.username))
+                                .font(nativeAppFont(size: 22, weight: .black))
+                                .foregroundStyle(.white)
+                        )
+                }
+            }
+            .frame(width: 72, height: 72)
+            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+
+            Text(label)
+                .font(nativeAppFont(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(width: 72, alignment: .center)
+        }
+        .frame(width: 72, alignment: .top)
+    }
+
+    private func homepageInviteUnknownRedeemedSlot(index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .fill(Color.white.opacity(0.08))
+                .frame(width: 72, height: 72)
+                .overlay(
+                    Image(systemName: "checkmark")
+                        .font(nativeAppFont(size: 22, weight: .black))
+                        .foregroundStyle(nativeAccent)
+                )
+
+            Text("Joined")
+                .font(nativeAppFont(size: 12, weight: .semibold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(width: 72, alignment: .center)
+        }
+        .frame(width: 72, alignment: .top)
+    }
+
+    private func homepageInviteOpenSlot(index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(style: StrokeStyle(lineWidth: 3, dash: [8, 7]))
+                .foregroundStyle(Color.white.opacity(0.38))
+                .frame(width: 72, height: 72)
+                .overlay(
+                    Image(systemName: "plus")
+                        .font(nativeAppFont(size: 22, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.62))
+                )
+
+            Text("Invite \(index + 1)")
+                .font(nativeAppFont(size: 12, weight: .medium))
+                .foregroundStyle(.white.opacity(0.6))
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+                .frame(width: 72, alignment: .center)
+        }
+        .frame(width: 72, alignment: .top)
+    }
+
+    private var homepageInviteShareMessageResolved: String {
+        "Try Vibinn to create a food diary. Use my code to sign up: \(homepageInviteCodeString). Download: \(nativeAppStoreURL)"
+    }
+
+    private var homepageSuggestedPostsCard: some View {
         Group {
-            if homepageSuggestedFriendItems.isEmpty {
-                homepageSuggestedFriendsEmptyState
+            if appState.isFeedLoading && homepageSuggestedPostItems.isEmpty {
+                NativeInlineStageLoadingState(accentStyle: false)
+            } else if homepageSuggestedPostItems.isEmpty {
+                homepageSuggestedPostsEmptyState
             } else {
-                homepageSuggestedFriendsFilledState
+                homepageSuggestedPostsFilledState
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var homepageSuggestedFriendsEmptyState: some View {
+    private var homepageSuggestedPostsEmptyState: some View {
         VStack(spacing: 16) {
             Spacer(minLength: 0)
 
@@ -12564,7 +13036,7 @@ private struct NativeHomepageShellScreen: View {
                 .frame(width: 96, height: 96)
                 .foregroundStyle(.white.opacity(0.42))
 
-            Text("We’ll suggest people you may know here.")
+            Text("We’ll suggest public posts you may like here.")
                 .font(nativeAppFont(size: 14, weight: .regular))
                 .foregroundStyle(.white.opacity(0.92))
                 .multilineTextAlignment(.center)
@@ -12574,14 +13046,135 @@ private struct NativeHomepageShellScreen: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var homepageSuggestedFriendsFilledState: some View {
+    private var homepageSuggestedPostsFilledState: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(homepageSuggestedFriendItems) { traveler in
-                homepageSuggestedFriendRow(traveler)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 18) {
+                    ForEach(homepageSuggestedPostItems) { item in
+                        homepageSuggestedPostCard(item)
+                    }
+                }
             }
+            .padding(.trailing, -18)
 
             Spacer(minLength: 0)
         }
+    }
+
+    private func homepageSuggestedPostCard(_ item: NativeFeedItem) -> some View {
+        let traveler = item.traveler
+        let isUpdating = updatingHomepageSuggestedTravelerIds.contains(traveler.id)
+        let mediaURL = item.uploadedMediaUrls?.first(where: { !$0.isEmpty })
+            ?? item.place?.userMediaUrls?.first(where: { !$0.isEmpty })
+            ?? item.place?.momentMedia?.first?.url
+            ?? item.place?.image
+        let caption = (item.caption?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? item.caption?.trimmingCharacters(in: .whitespacesAndNewlines)
+            : nil) ?? item.place?.momentCaption ?? item.place?.name ?? "Recent memory"
+        let placeLine = [item.place?.name, item.place.map(homepageCityLabel(for:))]
+            .compactMap { value in
+                guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
+                return trimmed
+            }
+            .joined(separator: ", ")
+        let reason = homepageSuggestedPostReason(for: traveler)
+
+        return VStack(alignment: .leading, spacing: 4) {
+            Button {
+                selectedHomepageFeedItem = item
+            } label: {
+                VStack(alignment: .leading, spacing: 0) {
+                    ZStack(alignment: .topLeading) {
+                        Group {
+                            if let mediaURL, !mediaURL.isEmpty {
+                                NativeRemoteImage(url: mediaURL)
+                            } else {
+                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    .fill(Color.white.opacity(0.08))
+                                    .overlay(
+                                        Image(systemName: "photo")
+                                            .font(nativeAppFont(size: 24, weight: .black))
+                                            .foregroundStyle(.white.opacity(0.28))
+                                    )
+                            }
+                        }
+                        .frame(width: 156, height: 156)
+                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                        )
+
+                        homepageCircleAvatarBadge(traveler)
+                            .padding(.top, 6)
+                            .padding(.leading, 6)
+
+                        homepageCircleRatingBadge(
+                            label: item.place?.momentRatingLabel,
+                            rating: item.place?.momentRating
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    }
+                    .frame(width: 156, height: 156)
+
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(caption)
+                            .font(nativeAppFont(size: 14, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+
+                        if !placeLine.isEmpty {
+                            Text(placeLine)
+                                .font(nativeAppFont(size: 12, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.5))
+                                .lineLimit(1)
+                        }
+
+                        Text(reason)
+                            .font(nativeAppFont(size: 12, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.92))
+                            .lineLimit(1)
+                    }
+                    .padding(.vertical, 8)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                guard !isUpdating else { return }
+                updatingHomepageSuggestedTravelerIds.insert(traveler.id)
+                Task {
+                    defer {
+                        Task { @MainActor in
+                            updatingHomepageSuggestedTravelerIds.remove(traveler.id)
+                        }
+                    }
+                    do {
+                        _ = try await appState.toggleFollow(for: traveler, refreshFeedAfter: true)
+                    } catch {
+                        await MainActor.run {
+                            appState.showToast(message: "Could not follow right now.", icon: "exclamationmark.circle.fill")
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "person.badge.plus")
+                        .font(nativeAppFont(size: 15, weight: .black))
+                    Text(isUpdating ? "..." : "Follow")
+                        .font(nativeAppFont(size: 14, weight: .black))
+                }
+                .foregroundStyle(.black)
+                .frame(maxWidth: .infinity)
+                .frame(height: 38)
+                .background(nativeAccent)
+                .clipShape(Capsule())
+            }
+            .buttonStyle(.plain)
+            .disabled(isUpdating)
+            .opacity(isUpdating ? 0.72 : 1)
+        }
+        .frame(width: 156, alignment: .leading)
     }
 
     private func homepageSuggestedFriendRow(_ traveler: NativeTravelerSummary) -> some View {
@@ -12665,6 +13258,34 @@ private struct NativeHomepageShellScreen: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
+    private func homepageSuggestedPostReason(for traveler: NativeTravelerSummary) -> String {
+        let rawReason = traveler.recommendationReason?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        switch rawReason {
+        case "Invited you to Vibinn":
+            return "Invite circle"
+        case "Same mutual invitation":
+            return "Same invite circle"
+        case "From your contact":
+            return "In your contacts"
+        default:
+            break
+        }
+
+        if let mutualCount = traveler.mutualCount, mutualCount > 0 {
+            return mutualCount == 1
+                ? "1 mutual"
+                : "\(mutualCount) mutuals"
+        }
+
+        if rawReason.hasSuffix("followers") {
+            return "Trending"
+        }
+
+        return "Suggested"
+    }
+
     private func handleHomepageSuggestedFollowTap(_ traveler: NativeTravelerSummary) {
         guard !updatingHomepageSuggestedTravelerIds.contains(traveler.id) else { return }
         updatingHomepageSuggestedTravelerIds.insert(traveler.id)
@@ -12712,6 +13333,38 @@ private struct NativeHomepageShellScreen: View {
         } catch {
             nativeLogger.error("homepage invite module failed \(nativeDescribeError(error), privacy: .public)")
         }
+
+        do {
+            let notifications = try await appState.fetchNotifications()
+            await MainActor.run {
+                homepageInviteRedeemedActors = homepageInviteActors(from: notifications)
+            }
+        } catch {
+            nativeLogger.error("homepage invite notifications failed \(nativeDescribeError(error), privacy: .public)")
+        }
+    }
+
+    private func homepageInviteActors(from notifications: [NativeNotificationItem]) -> [NativeNotificationActor] {
+        var orderedActors: [NativeNotificationActor] = []
+        var seenActorIDs: Set<String> = []
+
+        let sortedNotifications = notifications.sorted { lhs, rhs in
+            let lhsDate = NativeAppState.date(from: lhs.createdAt ?? lhs.time) ?? .distantPast
+            let rhsDate = NativeAppState.date(from: rhs.createdAt ?? rhs.time) ?? .distantPast
+            return lhsDate > rhsDate
+        }
+
+        for notification in sortedNotifications {
+            let isInviteRedeemed = notification.messageKind == "invite_redeemed"
+                || notification.notificationType == "INVITE_REDEEMED"
+            guard isInviteRedeemed else { continue }
+            guard let actor = notification.traveler ?? notification.actor else { continue }
+            guard !seenActorIDs.contains(actor.id) else { continue }
+            seenActorIDs.insert(actor.id)
+            orderedActors.append(actor)
+        }
+
+        return orderedActors
     }
 
     private func homepageCircleFeedCard(_ item: NativeFeedItem) -> some View {
@@ -12959,6 +13612,10 @@ private struct NativeHomepageShellScreen: View {
 
         if let candidate = homepageDisplayedUploadCandidates[safe: index] {
             nativeHaptic(.selection)
+            appState.trackAnalytics(.chooseImageFromHomepage, properties: [
+                "source": NativeAnalyticsSource.homepage,
+                "slot_index": index
+            ])
             appState.presentCheckInFlow(prefilledPhotoAsset: candidate.pickedPhoto)
         } else {
             handleHeroActionTap()
@@ -13640,6 +14297,77 @@ private struct NativeHomepageShellScreen: View {
         return first
     }
 
+    private func homepageCityLabel(for place: NativePlace) -> String {
+        let explicitCity = place.city?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !explicitCity.isEmpty {
+            return explicitCity
+        }
+
+        let location = place.location.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !location.isEmpty {
+            let parts = location
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            if let first = parts.first {
+                return first
+            }
+
+            return location
+        }
+
+        let rawAddress = place.address?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !rawAddress.isEmpty {
+            let parts = rawAddress
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+
+            if parts.count >= 3,
+               nativeLooksLikeCountry(parts[parts.count - 1]),
+               nativeLooksLikeStateOrPostal(parts[parts.count - 2]) {
+                return parts[parts.count - 3]
+            }
+
+            if parts.count >= 2,
+               !nativeLooksLikeStateOrPostal(parts[parts.count - 2]) {
+                return parts[parts.count - 2]
+            }
+
+            if let first = parts.first {
+                return first
+            }
+        }
+
+        return ""
+    }
+
+    private func nativeLooksLikeCountry(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed.count <= 3 { return true }
+        let lowered = trimmed.lowercased()
+        return lowered == "usa"
+            || lowered == "united states"
+            || lowered == "indonesia"
+            || lowered == "singapore"
+            || lowered == "japan"
+            || lowered == "malaysia"
+    }
+
+    private func nativeLooksLikeStateOrPostal(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        if trimmed.range(of: #"^[A-Z]{2}\s*\d{0,10}([-\s]\d{0,10})?$"#, options: .regularExpression) != nil {
+            return true
+        }
+        if trimmed.range(of: #"^\d{4,10}([-\s]\d{2,10})?$"#, options: .regularExpression) != nil {
+            return true
+        }
+        return false
+    }
+
     private func homepagePlaceMetaLine(for place: NativePlace, shortAddress: String) -> String {
         let segments = [place.category?.trimmingCharacters(in: .whitespacesAndNewlines), shortAddress]
             .compactMap { value -> String? in
@@ -13676,6 +14404,26 @@ private struct NativeHomepageShellScreen: View {
     private func trackHomepageViewed() {
         appState.trackAnalytics(.viewHomepage)
     }
+
+    private func trackHomepageStageViewed(_ stage: HomepageStage) {
+        switch stage {
+        case .recap:
+            return
+        case .places:
+            appState.trackAnalytics(.viewCardMyTopPlaces, properties: ["source": NativeAnalyticsSource.homepage])
+        case .updates:
+            appState.trackAnalytics(.viewCardFriends, properties: ["source": NativeAnalyticsSource.homepage])
+        case .invite:
+            appState.trackAnalytics(.viewCardYourCode, properties: ["source": NativeAnalyticsSource.homepage])
+        case .challenges:
+            appState.trackAnalytics(.viewCardSuggestion, properties: ["source": NativeAnalyticsSource.homepage])
+        }
+    }
+}
+
+private enum NativeTopPlacesInitialMode {
+    case byYou
+    case byFriends
 }
 
 private struct NativeTopPlacesScreen: View {
@@ -13690,13 +14438,23 @@ private struct NativeTopPlacesScreen: View {
     @State private var errorMessage: String?
     @State private var selectedMoment: NativeMoment?
     @State private var selectedTiePrompt: NativeTopPlacesTiePrompt?
-    @State private var resolvedTieSelections: [String: String] = [:]
     @State private var isSubmittingTieBreak = false
     @State private var shareIconIndex = 0
+    @State private var posterShareKind: NativeHomepagePosterShareKind?
+    @State private var hasTrackedTopPlacesListView = false
 
     private enum Mode {
         case byYou
         case byFriends
+    }
+
+    init(initialMode: NativeTopPlacesInitialMode = .byYou) {
+        switch initialMode {
+        case .byYou:
+            _mode = State(initialValue: .byYou)
+        case .byFriends:
+            _mode = State(initialValue: .byFriends)
+        }
     }
 
     private var followedTravelers: [NativeTravelerSummary] {
@@ -13705,12 +14463,6 @@ private struct NativeTopPlacesScreen: View {
 
     private var activeTravelerId: String? {
         mode == .byYou ? nil : selectedTravelerId
-    }
-
-    private var shareCopy: String {
-        let username = payload?.traveler.username ?? appState.currentUser?.username ?? "vibinn"
-        let firstPlace = payload?.places.first?.name ?? "my top places"
-        return "Check out \(username)'s top places on Vibinn. Current #1: \(firstPlace). https://vibinn.club/\(username)"
     }
 
     private var shareBadgeNames: [String] {
@@ -13726,7 +14478,7 @@ private struct NativeTopPlacesScreen: View {
             Color.black.ignoresSafeArea()
 
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 16) {
                     titleHeader
                     modePicker
 
@@ -13754,6 +14506,10 @@ private struct NativeTopPlacesScreen: View {
                 .padding(.top, 18)
         }
         .task {
+            if !hasTrackedTopPlacesListView {
+                hasTrackedTopPlacesListView = true
+                appState.trackAnalytics(.visitTopPlacesList, properties: ["source": NativeAnalyticsSource.homepage])
+            }
             if selectedTravelerId == nil {
                 selectedTravelerId = followedTravelers.first?.id
             }
@@ -13764,17 +14520,14 @@ private struct NativeTopPlacesScreen: View {
                 selectedTravelerId = followedTravelers.first?.id
             }
             selectedCityId = "all"
-            resolvedTieSelections = [:]
             Task { await load() }
         }
         .onChange(of: selectedTravelerId) { _ in
             guard mode == .byFriends else { return }
             selectedCityId = "all"
-            resolvedTieSelections = [:]
             Task { await load() }
         }
         .onChange(of: selectedCityId) { _ in
-            resolvedTieSelections = [:]
             Task { await load() }
         }
         .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
@@ -13783,6 +14536,10 @@ private struct NativeTopPlacesScreen: View {
         }
         .fullScreenCover(item: $selectedMoment) { moment in
             NativeDecisionHistoryMomentFullscreen(moment: moment)
+                .environmentObject(appState)
+        }
+        .fullScreenCover(item: $posterShareKind) { kind in
+            NativePosterShareScreen(kind: kind)
                 .environmentObject(appState)
         }
         .sheet(item: $selectedTiePrompt) { prompt in
@@ -13800,14 +14557,14 @@ private struct NativeTopPlacesScreen: View {
                             preferredPlaceId: preferredPlaceId,
                             otherPlaceId: otherPlaceId
                         )
-                        resolvedTieSelections[prompt.groupId] = preferredPlaceId
-                        selectedTiePrompt = nil
-                        payload = try await appState.fetchTopPlaces(
+                        let refreshedPayload = try await appState.fetchTopPlaces(
                             travelerId: activeTravelerId,
                             cityKey: selectedCityId == "all" ? nil : selectedCityId,
                             window: "all",
                             limit: 20
                         )
+                        payload = refreshedPayload
+                        selectedTiePrompt = nextTiePrompt(in: refreshedPayload, preferredGroupId: prompt.groupId)
                         appState.showToast(message: "Top places updated", icon: "checkmark.circle.fill")
                     } catch {
                         appState.showToast(message: "Could not save your pick", icon: "exclamationmark.triangle.fill")
@@ -14023,8 +14780,7 @@ private struct NativeTopPlacesScreen: View {
             Spacer(minLength: 0)
 
             Button {
-                UIPasteboard.general.string = shareCopy
-                appState.showToast(message: "Share copy copied", icon: "square.and.arrow.up.fill")
+                posterShareKind = .topPlaces
             } label: {
                 Image(shareBadgeNames[shareIconIndex % shareBadgeNames.count])
                     .resizable()
@@ -14091,12 +14847,13 @@ private struct NativeTopPlacesScreen: View {
                         .foregroundStyle(.white.opacity(0.55))
                         .lineLimit(2)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
+                .padding(.leading, 16)
+                .padding(.trailing, 12)
+                .padding(.vertical, 8)
 
                 Spacer(minLength: 0)
             }
-            .frame(minHeight: 95)
+            .frame(minHeight: 75)
             .background(Color.white.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
@@ -14155,34 +14912,14 @@ private struct NativeTopPlacesScreen: View {
     }
 
     private func topPlacesDisplayEntries(payload: NativeTopPlacesResponse) -> [NativeTopPlacesDisplayEntry] {
-        var orderedPlaces = payload.places
-
-        for group in payload.tieGroups {
-            guard let preferredPlaceId = resolvedTieSelections[group.id] else { continue }
-            let groupPlaces = orderedPlaces.filter { group.placeIds.contains($0.placeId) }
-            guard groupPlaces.count > 1 else { continue }
-
-            let reordered = groupPlaces.sorted { left, right in
-                if left.placeId == preferredPlaceId { return true }
-                if right.placeId == preferredPlaceId { return false }
-                return group.placeIds.firstIndex(of: left.placeId) ?? 0 < group.placeIds.firstIndex(of: right.placeId) ?? 0
-            }
-
-            var iterator = reordered.makeIterator()
-            orderedPlaces = orderedPlaces.map { place in
-                guard group.placeIds.contains(place.placeId) else { return place }
-                return iterator.next() ?? place
-            }
-        }
-
         var entries: [NativeTopPlacesDisplayEntry] = []
         var nextRank = 1
         var index = 0
+        let orderedPlaces = payload.places
 
         while index < orderedPlaces.count {
             let place = orderedPlaces[index]
-            if let group = tieGroup(for: place.placeId, payload: payload),
-               resolvedTieSelections[group.id] == nil {
+            if let group = tieGroup(for: place.placeId, payload: payload) {
                 let groupPlaces = orderedPlaces.filter { group.placeIds.contains($0.placeId) }
                 for tiedPlace in groupPlaces {
                     entries.append(NativeTopPlacesDisplayEntry(place: tiedPlace, rank: nextRank, isUnresolvedTie: true))
@@ -14203,7 +14940,6 @@ private struct NativeTopPlacesScreen: View {
         guard displayedPlaces.indices.contains(index) else { return false }
         let place = displayedPlaces[index].place
         guard let group = tieGroup(for: place.placeId, payload: payload) else { return false }
-        guard resolvedTieSelections[group.id] == nil else { return false }
         let groupIndices = displayedPlaces.enumerated().compactMap { offset, item in
             group.placeIds.contains(item.place.placeId) ? offset : nil
         }
@@ -14217,6 +14953,28 @@ private struct NativeTopPlacesScreen: View {
         let tiedPlaces = displayedPlaces.map(\.place).filter { group.placeIds.contains($0.placeId) }
         guard tiedPlaces.count >= 2 else { return nil }
         return NativeTopPlacesTiePrompt(places: Array(tiedPlaces.prefix(2)), groupId: group.id)
+    }
+
+    private func nextTiePrompt(in payload: NativeTopPlacesResponse, preferredGroupId: String? = nil) -> NativeTopPlacesTiePrompt? {
+        let prioritizedGroups: [NativeTopPlacesTieGroup]
+        if let preferredGroupId,
+           let preferredGroup = payload.tieGroups.first(where: { $0.id == preferredGroupId }) {
+            prioritizedGroups = [preferredGroup] + payload.tieGroups.filter { $0.id != preferredGroupId }
+        } else {
+            prioritizedGroups = payload.tieGroups
+        }
+
+        for group in prioritizedGroups {
+            let tiedPlaces = payload.places.filter { group.placeIds.contains($0.placeId) }
+            if tiedPlaces.count >= 2 {
+                return NativeTopPlacesTiePrompt(
+                    places: Array(tiedPlaces.prefix(2)),
+                    groupId: group.id
+                )
+            }
+        }
+
+        return nil
     }
 
     private func load() async {
@@ -14240,6 +14998,14 @@ private struct NativeTopPlacesScreen: View {
         } catch {
             errorMessage = error.localizedDescription
         }
+    }
+}
+
+private struct NativeRoundedThumbnailShape: Shape {
+    let cornerRadius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).path(in: rect)
     }
 }
 
@@ -14303,7 +15069,7 @@ private struct NativeTopPlacesTieBreakSheet: View {
     private func tieBreakCard(place: NativeTopPlaceEntry) -> some View {
         let moment = place.moments.first
 
-        VStack(alignment: .leading, spacing: 10) {
+        return VStack(alignment: .leading, spacing: 10) {
             Group {
                 if let mediaURL = moment?.uploadedMedia?.first, !mediaURL.isEmpty {
                     NativeRemoteImage(url: mediaURL)
@@ -15739,6 +16505,7 @@ private struct NativeNotificationMomentFullscreen: View {
             username: moment.traveler?.username,
             avatarURL: moment.traveler?.avatar,
             avatarFallback: moment.traveler?.displayName ?? moment.traveler?.username ?? "V",
+            headerLinkTraveler: nativeTravelerSummary(from: moment.traveler),
             timestampLabel: NativeAppState.relativeLabel(from: moment.visitedAtIso ?? moment.visitedDate),
             ratingMeta: ratingMeta,
             wouldRevisit: moment.wouldRevisit,
@@ -20040,6 +20807,34 @@ private struct NativeDebugFrame: View {
     }
 }
 
+private struct NativePosterLocalDebugFrame: View {
+    let label: String
+    let color: Color
+
+    var body: some View {
+        GeometryReader { proxy in
+            let size = proxy.size
+            ZStack(alignment: .topLeading) {
+                Rectangle()
+                    .stroke(color.opacity(0.9), lineWidth: 2)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(label)
+                    Text("w=\(Int(size.width)) h=\(Int(size.height))")
+                }
+                .font(nativeAppFont(size: 10, weight: .black))
+                .foregroundStyle(color)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+                .background(Color.black.opacity(0.62))
+                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                .padding(6)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 private struct NativeAuthLandingButton: View {
     enum IconSource {
         case none
@@ -21223,6 +22018,7 @@ private struct NativeMainTabView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
             Task {
+                await appState.refreshFeed()
                 await appState.refreshChatUnreadCount()
                 await appState.refreshNotificationUnreadCount()
             }
@@ -21876,6 +22672,13 @@ private struct NativeFloatingTabBar: View {
                         Image(systemName: item.icon)
                             .font(nativeAppFont(size: 20, weight: .black))
                             .foregroundStyle(activeTab == item.tab ? .white : .white.opacity(0.4))
+                    }
+
+                    if item.tab == .feed && appState.hasUnseenFeedItems && activeTab != .feed {
+                        Circle()
+                            .fill(Color.red)
+                            .frame(width: 8, height: 8)
+                            .offset(y: 14)
                     }
                 }
                 .frame(width: 42, height: 42)
@@ -29551,9 +30354,16 @@ private struct NativeFeedScreen: View {
     @EnvironmentObject private var appState: NativeAppState
     private enum FeedViewMode: String, CaseIterable, Identifiable {
         case posts = "Posts"
+        case gallery = "Gallery"
         case maps = "Maps"
 
         var id: String { rawValue }
+    }
+
+    private struct FeedGallerySection: Identifiable {
+        let id: String
+        let title: String
+        let items: [NativeFeedItem]
     }
 
     private enum FeedMapTimeFilter: String, CaseIterable, Identifiable {
@@ -29576,9 +30386,11 @@ private struct NativeFeedScreen: View {
     @State private var isMatchingContacts = false
     @State private var contactsSearchText = ""
     @State private var updatingFollowContactIds = Set<String>()
+    @State private var updatingSuggestedTravelerIds = Set<String>()
     @State private var activeFeedMode: FeedViewMode = .posts
     @State private var activeFeedMapFilter: FeedMapTimeFilter = .thisWeek
     @State private var selectedFeedDetailItem: NativeFeedItem?
+    @State private var showTopPlacesScreen = false
     @State private var feedMapRegion = MKCoordinateRegion(
         center: CLLocationCoordinate2D(latitude: 40.7128, longitude: -74.0060),
         span: MKCoordinateSpan(latitudeDelta: 0.25, longitudeDelta: 0.25)
@@ -29634,6 +30446,54 @@ private struct NativeFeedScreen: View {
         appState.feedItems.sorted { $0.sortTimestamp > $1.sortTimestamp }
     }
 
+    private var galleryFeedSections: [FeedGallerySection] {
+        let calendar = Calendar.current
+        let now = Date()
+        let startOfThisWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+        let startOfLastWeek = calendar.date(byAdding: .weekOfYear, value: -1, to: startOfThisWeek) ?? startOfThisWeek
+        let startOfThisMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
+        let startOfLastMonth = calendar.date(byAdding: .month, value: -1, to: startOfThisMonth) ?? startOfThisMonth
+
+        let grouped = Dictionary(grouping: followedFeedItems) { item -> String in
+            let date = item.sortTimestamp
+            if date >= startOfThisWeek {
+                return "This week"
+            }
+            if date >= startOfLastWeek && date < startOfThisWeek {
+                return "Last week"
+            }
+            if date >= startOfLastMonth && date < startOfThisMonth {
+                return "Last month"
+            }
+
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = .current
+            formatter.dateFormat = calendar.component(.year, from: date) == calendar.component(.year, from: now)
+                ? "MMMM"
+                : "MMMM yyyy"
+            return formatter.string(from: date)
+        }
+
+        let orderedTitles = grouped.keys.sorted { lhs, rhs in
+            feedGalleryDateClusterSortKey(for: lhs, now: now) > feedGalleryDateClusterSortKey(for: rhs, now: now)
+        }
+
+        return orderedTitles.compactMap { title in
+            guard let items = grouped[title], !items.isEmpty else { return nil }
+            return FeedGallerySection(
+                id: "feed-gallery-\(title)",
+                title: title,
+                items: items.sorted { lhs, rhs in
+                    if lhs.sortTimestamp != rhs.sortTimestamp {
+                        return lhs.sortTimestamp > rhs.sortTimestamp
+                    }
+                    return lhs.id < rhs.id
+                }
+            )
+        }
+    }
+
     private var mappedFeedItems: [NativeFeedItem] {
         filteredFeedItemsByTime(activeFeedMapFilter).filter {
             $0.place?.latitude != nil && $0.place?.longitude != nil
@@ -29644,13 +30504,28 @@ private struct NativeFeedScreen: View {
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
                 ScrollView(showsIndicators: false) {
-                    LazyVStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 18) {
                         HStack(alignment: .top, spacing: 14) {
                             Text("FEED")
                                 .font(nativePixelAccentFont(size: 24))
-                                .foregroundStyle(nativeAccent.opacity(0.88))
+                                .foregroundStyle(.white)
 
                             Spacer(minLength: 0)
+
+                            Button {
+                                showTopPlacesScreen = true
+                            } label: {
+                                Image(systemName: "list.bullet.rectangle.portrait")
+                                    .font(nativeAppFont(size: 18, weight: .bold))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 46, height: 46)
+                                    .background(nativeSurface)
+                                    .overlay(
+                                        Circle().stroke(nativeBorder, lineWidth: 1)
+                                    )
+                                    .clipShape(Circle())
+                            }
+                            .buttonStyle(.plain)
 
                             NavigationLink {
                                 NativePeopleSearchScreen()
@@ -29687,6 +30562,7 @@ private struct NativeFeedScreen: View {
                         }
 
                         feedBodyContent
+                            .id(activeFeedMode)
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
@@ -29704,7 +30580,7 @@ private struct NativeFeedScreen: View {
                         feedFloatingModePicker
                     }
                     .padding(.horizontal, 20)
-                    .padding(.bottom, appState.showFloatingTabBar ? 112 : max(16, geometry.safeAreaInsets.bottom + 16))
+                    .padding(.bottom, appState.showFloatingTabBar ? 84 : max(12, geometry.safeAreaInsets.bottom + 12))
                     .ignoresSafeArea(.keyboard, edges: .bottom)
                 }
             }
@@ -29719,6 +30595,7 @@ private struct NativeFeedScreen: View {
                 Task {
                     await ensureInviteShareMessageLoaded()
                     await appState.refreshFeed()
+                    await refreshSuggestedTravelersForFeed()
                     await refreshFeedContactsIfPossible(force: false)
                     updateFeedMapRegion()
                 }
@@ -29740,6 +30617,10 @@ private struct NativeFeedScreen: View {
             }
             .fullScreenCover(item: $selectedFeedDetailItem) { item in
                 NativeFeedMomentFullscreen(item: item)
+                    .environmentObject(appState)
+            }
+            .fullScreenCover(isPresented: $showTopPlacesScreen) {
+                NativeTopPlacesScreen(initialMode: .byFriends)
                     .environmentObject(appState)
             }
             .onChange(of: contactsSearchText) { _ in
@@ -29767,32 +30648,11 @@ private struct NativeFeedScreen: View {
     }
 
     private var feedFloatingModePicker: some View {
-        HStack(spacing: 8) {
-            ForEach(FeedViewMode.allCases) { mode in
-                Button {
-                    activeFeedMode = mode
-                } label: {
-                    nativeFloatingModeAssetIcon(
-                        named: feedModeAssetName(for: mode),
-                        isActive: activeFeedMode == mode
-                    )
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                        .background(activeFeedMode == mode ? Color.white : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(8)
-        .background(Color.black.opacity(0.7))
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        NativeExpandableFloatingModePicker(
+            modes: FeedViewMode.allCases,
+            activeMode: $activeFeedMode,
+            assetName: feedModeAssetName(for:)
         )
-        .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 10)
     }
 
     @ViewBuilder
@@ -29822,6 +30682,8 @@ private struct NativeFeedScreen: View {
         switch mode {
         case .posts:
             return "FloatingModeTimeline"
+        case .gallery:
+            return "FloatingModeGallery"
         case .maps:
             return "FloatingModeMaps"
         }
@@ -29874,6 +30736,38 @@ private struct NativeFeedScreen: View {
                     }
                 }
             }
+        case .gallery:
+            if galleryFeedSections.isEmpty {
+                followedEmptyState(
+                    title: "No gallery posts from your circle yet",
+                    body: "Once the people you follow share a memory, it will show up here."
+                )
+            } else {
+                VStack(alignment: .leading, spacing: 18) {
+                    ForEach(galleryFeedSections) { section in
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text(section.title)
+                                .font(nativeAppFont(size: 15, weight: .black))
+                                .foregroundStyle(.white)
+
+                            LazyVGrid(columns: [
+                                GridItem(.flexible(), spacing: 8),
+                                GridItem(.flexible(), spacing: 8),
+                                GridItem(.flexible(), spacing: 8),
+                            ], spacing: 8) {
+                                ForEach(section.items) { item in
+                                    Button {
+                                        selectedFeedDetailItem = item
+                                    } label: {
+                                        feedGalleryCard(item)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         case .maps:
             if mappedFeedItems.isEmpty {
                 followedEmptyState(
@@ -29891,6 +30785,113 @@ private struct NativeFeedScreen: View {
                         .padding(.horizontal, 20)
                 }
             }
+        }
+    }
+
+    private func feedGalleryCard(_ item: NativeFeedItem) -> some View {
+        let ratingMeta = nativeMomentRatingMeta(label: item.place?.momentRatingLabel, fallbackRating: item.place?.momentRating)
+        let mediaURL = item.uploadedMediaUrls?.first(where: { !$0.isEmpty })
+            ?? item.place?.userMediaUrls?.first(where: { !$0.isEmpty })
+            ?? item.place?.momentMedia?.first?.url
+            ?? item.place?.image
+
+        return ZStack(alignment: .topLeading) {
+            Group {
+                if let mediaURL, !mediaURL.isEmpty {
+                    NativeRemoteImage(url: mediaURL)
+                } else {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                        .overlay(
+                            Image(systemName: "photo")
+                                .font(nativeAppFont(size: 22, weight: .black))
+                                .foregroundStyle(.white.opacity(0.3))
+                        )
+                }
+            }
+            .aspectRatio(1, contentMode: .fill)
+
+            feedGalleryAvatarBadge(item.traveler)
+                .padding(.top, 6)
+                .padding(.leading, 6)
+
+            if let ratingMeta {
+                ZStack {
+                    Group {
+                        Image(systemName: ratingMeta.icon)
+                        Image(systemName: ratingMeta.icon).offset(x: -2, y: 0)
+                        Image(systemName: ratingMeta.icon).offset(x: 2, y: 0)
+                        Image(systemName: ratingMeta.icon).offset(x: 0, y: -2)
+                        Image(systemName: ratingMeta.icon).offset(x: 0, y: 2)
+                    }
+                    .font(nativeAppFont(size: 22, weight: .black))
+                    .foregroundStyle(.black)
+
+                    Image(systemName: ratingMeta.icon)
+                        .font(nativeAppFont(size: 22, weight: .black))
+                        .foregroundStyle(nativeAccent)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func feedGalleryAvatarBadge(_ traveler: NativeTravelerSummary) -> some View {
+        Group {
+            if let avatarURL = traveler.avatar, !avatarURL.isEmpty {
+                NativeRemoteImage(url: avatarURL)
+            } else {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
+                            .font(nativeAppFont(size: 12, weight: .black))
+                            .foregroundStyle(.white)
+                    )
+            }
+        }
+        .frame(width: 35, height: 35)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(Color.black, lineWidth: 2)
+        )
+    }
+
+    private func feedGalleryDateClusterSortKey(for title: String, now: Date) -> Date {
+        let calendar = Calendar.current
+        switch title {
+        case "This week":
+            return calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+        case "Last week":
+            let startOfThisWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
+            return calendar.date(byAdding: .weekOfYear, value: -1, to: startOfThisWeek) ?? now
+        case "Last month":
+            let startOfThisMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
+            return calendar.date(byAdding: .month, value: -1, to: startOfThisMonth) ?? now
+        default:
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.timeZone = .current
+            formatter.dateFormat = "MMMM yyyy"
+            if let fullDate = formatter.date(from: title) {
+                return fullDate
+            }
+            formatter.dateFormat = "MMMM"
+            if let monthOnly = formatter.date(from: title) {
+                let month = calendar.component(.month, from: monthOnly)
+                var components = calendar.dateComponents([.year], from: now)
+                components.month = month
+                components.day = 1
+                return calendar.date(from: components) ?? .distantPast
+            }
+            return .distantPast
         }
     }
 
@@ -29989,21 +30990,174 @@ private struct NativeFeedScreen: View {
                 }
             )
 
-            if !appState.suggestedFeedItems.isEmpty {
+            if !appState.suggestedTravelers.isEmpty || appState.isSuggestedTravelersLoading {
                 VStack(alignment: .leading, spacing: 12) {
-                    NativeSectionTitle("A couple more suggestions")
-                    ForEach(Array(appState.suggestedFeedItems.prefix(2).enumerated()), id: \.element.id) { index, item in
-                        VStack(spacing: 22) {
-                            NativeFeedCard(item: item)
-                            if index < min(appState.suggestedFeedItems.count, 2) - 1 {
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.08))
-                                    .frame(height: 1)
-                            }
+                    Text("Suggested people")
+                        .font(nativeAppFont(size: 18, weight: .black))
+                        .foregroundStyle(.white)
+
+                    if appState.isSuggestedTravelersLoading && appState.suggestedTravelers.isEmpty {
+                        ForEach(0..<5, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .fill(Color.white.opacity(0.06))
+                                .frame(height: 72)
+                        }
+                    } else {
+                        ForEach(Array(appState.suggestedTravelers.prefix(10).enumerated()), id: \.element.id) { _, traveler in
+                            feedSuggestedTravelerRow(traveler)
                         }
                     }
                 }
             }
+        }
+    }
+
+    private func refreshSuggestedTravelersForFeed() async {
+        let phoneNumbers = await nativeLoadAuthorizedContactPhoneNumbersAsync(limit: 400)
+        await appState.refreshSuggestedTravelers(phoneNumbers: phoneNumbers.isEmpty ? nil : phoneNumbers)
+    }
+
+    private func feedSuggestedTravelerRow(_ traveler: NativeTravelerSummary) -> some View {
+        let isUpdating = updatingSuggestedTravelerIds.contains(traveler.id)
+        let displayName = traveler.displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let reason = feedSuggestedTravelerReason(for: traveler)
+
+        return HStack(alignment: .center, spacing: 12) {
+            NavigationLink {
+                NativeTravelerProfileScreen(initialTraveler: traveler)
+            } label: {
+                HStack(alignment: .center, spacing: 12) {
+                    feedSuggestedTravelerAvatar(traveler)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(traveler.username)
+                            .font(nativeAppFont(size: 14, weight: .black))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+
+                        if !displayName.isEmpty {
+                            Text(displayName)
+                                .font(nativeAppFont(size: 12, weight: .medium))
+                                .foregroundStyle(.white.opacity(0.5))
+                                .lineLimit(1)
+                        }
+
+                        Text(reason)
+                            .font(nativeAppFont(size: 12, weight: .medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            HStack(alignment: .center, spacing: 10) {
+                Button {
+                    handleFeedSuggestedFollowTap(traveler)
+                } label: {
+                    Text(isUpdating ? "..." : "Follow")
+                        .font(nativeAppFont(size: 14, weight: .black))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 18)
+                        .frame(height: 36)
+                        .background(nativeAccent)
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .disabled(isUpdating)
+                .opacity(isUpdating ? 0.72 : 1)
+
+                Button {
+                    handleFeedSuggestedDismissTap(traveler)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(nativeAppFont(size: 12, weight: .black))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .disabled(isUpdating)
+                .opacity(isUpdating ? 0.4 : 1)
+            }
+        }
+        .padding(10)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private func feedSuggestedTravelerAvatar(_ traveler: NativeTravelerSummary) -> some View {
+        Group {
+            if let avatar = traveler.avatar, !avatar.isEmpty {
+                NativeRemoteImage(url: avatar)
+            } else {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
+                            .font(nativeAppFont(size: 14, weight: .black))
+                            .foregroundStyle(.white)
+                    )
+            }
+        }
+        .frame(width: 48, height: 48)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private func feedSuggestedTravelerReason(for traveler: NativeTravelerSummary) -> String {
+        let rawReason = traveler.recommendationReason?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        switch rawReason {
+        case "Invited you to Vibinn":
+            return "Invited you"
+        case "Same mutual invitation":
+            return "Same invite circle"
+        case "From your contact":
+            return "From your contacts"
+        default:
+            break
+        }
+
+        if let mutualCount = traveler.mutualCount, mutualCount > 0 {
+            return mutualCount == 1 ? "1 mutual" : "\(mutualCount) mutuals"
+        }
+
+        if rawReason.hasSuffix("followers") {
+            return "Trending"
+        }
+
+        return "Suggested"
+    }
+
+    private func handleFeedSuggestedFollowTap(_ traveler: NativeTravelerSummary) {
+        guard !updatingSuggestedTravelerIds.contains(traveler.id) else { return }
+        updatingSuggestedTravelerIds.insert(traveler.id)
+
+        Task {
+            defer {
+                Task { @MainActor in
+                    updatingSuggestedTravelerIds.remove(traveler.id)
+                }
+            }
+
+            do {
+                _ = try await appState.toggleFollow(for: traveler, refreshFeedAfter: true)
+                await refreshSuggestedTravelersForFeed()
+            } catch {
+                await MainActor.run {
+                    appState.showToast(message: "Could not follow right now.", icon: "exclamationmark.circle.fill")
+                }
+            }
+        }
+    }
+
+    private func handleFeedSuggestedDismissTap(_ traveler: NativeTravelerSummary) {
+        guard !updatingSuggestedTravelerIds.contains(traveler.id) else { return }
+        appState.dismissSuggestedTraveler(traveler.id)
+        Task {
+            await refreshSuggestedTravelersForFeed()
         }
     }
 
@@ -30421,7 +31575,7 @@ private struct NativeNoFriendsFeedIntroCard: View {
         NativeSurfaceCard {
             VStack(alignment: .leading, spacing: 18) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Your feed starts with people you know.")
+                    Text("Follow your friends")
                         .font(nativeAppFont(size: 24, weight: .black))
                         .foregroundStyle(.white)
                     Text("Follow close friends from your contacts to see their latest memories.")
@@ -30431,7 +31585,7 @@ private struct NativeNoFriendsFeedIntroCard: View {
                 }
 
                 Button(action: onFindFriends) {
-                    Text("Find friends from contacts")
+                    Text("Find from contacts")
                         .font(nativeAppFont(size: 15, weight: .black))
                         .foregroundStyle(.black)
                         .frame(maxWidth: .infinity)
@@ -33020,9 +34174,6 @@ private struct NativeFeedPlaceAttachment: View {
     // When provided, it becomes the single source of truth for the visited horizontal scroller.
     let uploadedMediaUrls: [String]
     let destination: () -> NativePlaceDetailScreen
-    @State private var showFullscreenGallery = false
-    @State private var fullscreenGalleryStartIndex = 0
-
     // Explicit initializer to ensure the `uploadedMediaUrls` label is always available and the trailing
     // closure is unambiguously `destination`.
     init(
@@ -33130,12 +34281,6 @@ private struct NativeFeedPlaceAttachment: View {
                         visitedPlaceInfoCard
                     }
                     .buttonStyle(.plain)
-                }
-                .fullScreenCover(isPresented: $showFullscreenGallery) {
-                    NativeFullscreenMediaGallery(
-                        urls: visitedUploadedUrls,
-                        startIndex: fullscreenGalleryStartIndex
-                    )
                 }
 
             case .collection:
@@ -33281,39 +34426,27 @@ private struct NativeFeedPlaceAttachment: View {
     }
 
     private func visitedPrimaryMedia(url: String) -> some View {
-        Button {
-            fullscreenGalleryStartIndex = 0
-            showFullscreenGallery = true
-        } label: {
-            NativeRemoteImage(url: url)
-                .frame(maxWidth: .infinity)
-                .aspectRatio(1, contentMode: .fit)
-                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(nativeBorder, lineWidth: 1)
-                )
-        }
-        .buttonStyle(.plain)
+        NativeRemoteImage(url: url)
+            .frame(maxWidth: .infinity)
+            .aspectRatio(1, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(nativeBorder, lineWidth: 1)
+            )
     }
 
     private func visitedMediaScroller(urls: [String]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ForEach(Array(urls.enumerated()), id: \.offset) { index, url in
-                    Button {
-                        fullscreenGalleryStartIndex = index
-                        showFullscreenGallery = true
-                    } label: {
-                        NativeRemoteImage(url: url)
-                            .frame(width: 240, height: 320) // 3:4 (2x larger)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                    .stroke(nativeBorder, lineWidth: 1)
-                            )
-                    }
-                    .buttonStyle(.plain)
+                ForEach(Array(urls.enumerated()), id: \.offset) { _, url in
+                    NativeRemoteImage(url: url)
+                        .frame(width: 240, height: 320) // 3:4 (2x larger)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(nativeBorder, lineWidth: 1)
+                        )
                 }
             }
         }
@@ -33656,16 +34789,1932 @@ private struct NativeShareSheet: UIViewControllerRepresentable {
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
 
+@MainActor
+private func nativeRenderViewToImage<Content: View>(_ content: Content, size: CGSize) -> UIImage {
+    let controller = UIHostingController(rootView: content.ignoresSafeArea())
+    controller.view.backgroundColor = .clear
+    controller.view.frame = CGRect(origin: .zero, size: size)
+    controller.view.bounds = CGRect(origin: .zero, size: size)
+    controller.view.insetsLayoutMarginsFromSafeArea = false
+    controller.view.layoutMargins = .zero
+
+    let window = UIWindow(frame: controller.view.bounds)
+    window.isHidden = true
+    window.rootViewController = controller
+    window.layoutIfNeeded()
+    controller.view.setNeedsLayout()
+    controller.view.layoutIfNeeded()
+
+    let renderer = UIGraphicsImageRenderer(size: size)
+    return renderer.image { _ in
+        controller.view.drawHierarchy(in: controller.view.bounds, afterScreenUpdates: true)
+    }
+}
+
+private func nativeLoadPosterUIImage(from rawURL: String?) async throws -> UIImage? {
+    guard let resolved = nativeResolvedImageURL(rawURL), let url = URL(string: resolved) else {
+        return nil
+    }
+    let (data, response) = try await URLSession.shared.data(from: url)
+    if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+        throw NSError(domain: "NativePosterShare", code: http.statusCode)
+    }
+    return UIImage(data: data)
+}
+
+private func nativeLoadMonthlyRecapMomentImages(_ moments: [NativeMoment]) async throws -> [String: UIImage] {
+    var resolved: [String: UIImage] = [:]
+    for moment in moments {
+        let preferredURL = moment.uploadedMedia?.first(where: { !$0.isEmpty }) ?? moment.place.image
+        if let image = try await nativeLoadPosterUIImage(from: preferredURL) {
+            resolved[moment.id] = image
+        }
+    }
+    return resolved
+}
+
+private func nativeLoadTopPlacesPosterImages(_ places: [NativeTopPlaceEntry]) async throws -> [String: UIImage] {
+    var resolved: [String: UIImage] = [:]
+    for place in places {
+        if let image = try await nativeLoadPosterUIImage(from: place.thumbnailUrl) {
+            resolved[place.placeId] = image
+        }
+    }
+    return resolved
+}
+
+private func nativeEnsurePhotoLibraryAddAuthorization() async -> Bool {
+    let current = PHPhotoLibrary.authorizationStatus(for: .addOnly)
+    switch current {
+    case .authorized, .limited:
+        return true
+    case .notDetermined:
+        return await withCheckedContinuation { continuation in
+            PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+                continuation.resume(returning: status == .authorized || status == .limited)
+            }
+        }
+    default:
+        return false
+    }
+}
+
+private func nativeWritePosterVideo(
+    outputURL: URL,
+    size: CGSize,
+    duration: Double,
+    fps: Int,
+    frameRenderer: @escaping (Double) async -> UIImage
+) async throws {
+    let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
+    let settings: [String: Any] = [
+        AVVideoCodecKey: AVVideoCodecType.h264,
+        AVVideoWidthKey: Int(size.width),
+        AVVideoHeightKey: Int(size.height)
+    ]
+    let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+    input.expectsMediaDataInRealTime = false
+
+    let attributes: [String: Any] = [
+        kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32ARGB),
+        kCVPixelBufferWidthKey as String: Int(size.width),
+        kCVPixelBufferHeightKey as String: Int(size.height)
+    ]
+    let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: attributes)
+
+    guard writer.canAdd(input) else {
+        throw NSError(domain: "NativePosterShare", code: 20)
+    }
+    writer.add(input)
+
+    guard writer.startWriting() else {
+        throw writer.error ?? NSError(domain: "NativePosterShare", code: 21)
+    }
+    writer.startSession(atSourceTime: .zero)
+
+    let frameCount = max(Int(duration * Double(fps)), 1)
+    let frameDuration = CMTime(value: 1, timescale: CMTimeScale(fps))
+
+    for frameIndex in 0..<frameCount {
+        while !input.isReadyForMoreMediaData {
+            try await Task.sleep(nanoseconds: 2_000_000)
+        }
+
+        let progress = min(Double(frameIndex) / Double(fps), duration)
+        let image = await frameRenderer(progress)
+        guard let pixelBuffer = nativePosterPixelBuffer(from: image, size: size) else {
+            throw NSError(domain: "NativePosterShare", code: 22)
+        }
+        let presentationTime = CMTimeMultiply(frameDuration, multiplier: Int32(frameIndex))
+        adaptor.append(pixelBuffer, withPresentationTime: presentationTime)
+    }
+
+    input.markAsFinished()
+
+    try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+        writer.finishWriting {
+            if let error = writer.error {
+                continuation.resume(throwing: error)
+            } else {
+                continuation.resume(returning: ())
+            }
+        }
+    }
+}
+
+private func nativePosterPixelBuffer(from image: UIImage, size: CGSize) -> CVPixelBuffer? {
+    let attributes = [
+        kCVPixelBufferCGImageCompatibilityKey: true,
+        kCVPixelBufferCGBitmapContextCompatibilityKey: true
+    ] as CFDictionary
+
+    var pixelBuffer: CVPixelBuffer?
+    let status = CVPixelBufferCreate(
+        kCFAllocatorDefault,
+        Int(size.width),
+        Int(size.height),
+        kCVPixelFormatType_32ARGB,
+        attributes,
+        &pixelBuffer
+    )
+    guard status == kCVReturnSuccess, let pixelBuffer else { return nil }
+
+    CVPixelBufferLockBaseAddress(pixelBuffer, [])
+    defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, []) }
+
+    guard
+        let context = CGContext(
+            data: CVPixelBufferGetBaseAddress(pixelBuffer),
+            width: Int(size.width),
+            height: Int(size.height),
+            bitsPerComponent: 8,
+            bytesPerRow: CVPixelBufferGetBytesPerRow(pixelBuffer),
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipFirst.rawValue
+        )
+    else {
+        return nil
+    }
+
+    context.clear(CGRect(origin: .zero, size: size))
+    if let cgImage = image.cgImage {
+        context.draw(cgImage, in: CGRect(origin: .zero, size: size))
+    } else {
+        UIGraphicsPushContext(context)
+        image.draw(in: CGRect(origin: .zero, size: size))
+        UIGraphicsPopContext()
+    }
+
+    return pixelBuffer
+}
+
+private enum NativePosterExportKind {
+    case image
+    case video
+}
+
+private struct NativePosterPreparedAsset {
+    let cacheKey: String
+    let kind: NativePosterExportKind
+    let primaryURL: URL
+    let previewImageURL: URL?
+
+    var previewImage: UIImage? {
+        guard let previewImageURL else { return nil }
+        return UIImage(contentsOfFile: previewImageURL.path)
+    }
+}
+
+private let nativeShareLayoutDebugMode = false
+
+private struct NativePosterShareScreen: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @EnvironmentObject private var appState: NativeAppState
+
+    let kind: NativeHomepagePosterShareKind
+
+    @State private var selectedPosterIndex = 0
+    @State private var isPreparingExport = false
+    @State private var preparedAsset: NativePosterPreparedAsset? = nil
+    @State private var shareSheetItems: [Any] = []
+    @State private var showShareSheet = false
+    @State private var showMessageComposer = false
+    @State private var messageComposerBody = ""
+    @State private var messageComposerAttachments: [URL] = []
+    @State private var posterPreviewImages: [String: UIImage] = [:]
+    @State private var posterPreviewLoadingKeys: Set<String> = []
+    @State private var topPlacesSharePayload: NativeTopPlacesResponse? = nil
+
+    private let posterSize = CGSize(width: 292, height: 520)
+
+    private var posterPlaceholders: [Int] {
+        switch kind {
+        case .monthlyRecap:
+            return [0, 1]
+        case .topPlaces:
+            return [0]
+        }
+    }
+
+    private var actions: [NativePosterShareAction] {
+        [
+            NativePosterShareAction(id: "more", title: "More", systemIcon: "square.and.arrow.up"),
+            NativePosterShareAction(id: "download", title: "Download", systemIcon: "arrow.down")
+        ]
+    }
+
+    private var shareContextLabel: String {
+        switch kind {
+        case .monthlyRecap:
+            return "Monthly recap"
+        case .topPlaces:
+            return "Top places"
+        }
+    }
+
+    private var monthlyRecapMoments: [NativeMoment] {
+        let source: [NativeMoment]
+        if !appState.diaryMoments.isEmpty {
+            source = appState.diaryMoments
+        } else if !appState.myMoments.isEmpty {
+            source = appState.myMoments
+        } else {
+            source = appState.homepageRecentMemories
+        }
+
+        let now = Date()
+        let calendar = Calendar.current
+        return nativeStableUniqueMomentsNewestFirst(source)
+            .filter { moment in
+                let date = NativeAppState.date(from: moment.visitedAtIso ?? moment.visitedDate) ?? .distantPast
+                return calendar.isDate(date, equalTo: now, toGranularity: .month)
+                    && calendar.isDate(date, equalTo: now, toGranularity: .year)
+            }
+            .map { $0 }
+    }
+
+    private var monthlyRecapTitle: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMMM"
+        return formatter.string(from: Date())
+    }
+
+    private var monthlyRecapYearLabel: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMMM yyyy"
+        return formatter.string(from: Date()).uppercased()
+    }
+
+    private var monthlyRecapProfilePath: String {
+        let username = appState.currentUser?.username.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return username.isEmpty ? "vibinn.club" : "vibinn.club/\(username)"
+    }
+
+    private var topPlacesPayload: NativeTopPlacesResponse? {
+        topPlacesSharePayload ?? appState.homepageTopPlaces
+    }
+
+    private var topPlacesPosterEntries: [NativeTopPlaceEntry] {
+        Array((topPlacesPayload?.places ?? []).prefix(5))
+    }
+
+    private var topPlacesPosterMonthYearLabel: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "MMMM yyyy"
+        return formatter.string(from: Date())
+    }
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(alignment: .top) {
+                    Text("SHARE")
+                        .font(nativePixelAccentFont(size: 24))
+                        .foregroundStyle(nativeAccent)
+
+                    Spacer(minLength: 12)
+
+                    Button {
+                        dismiss()
+                    } label: {
+                        Circle()
+                            .fill(Color.white.opacity(0.1))
+                            .frame(width: 40, height: 40)
+                            .overlay(
+                                Image(systemName: "xmark")
+                                    .font(nativeAppFont(size: 16, weight: .medium))
+                                    .foregroundStyle(.white)
+                                    .frame(width: 24, height: 24)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.top, 24)
+                .padding(.horizontal, 20)
+
+                Spacer(minLength: 20)
+
+                posterCarousel
+
+                posterProgress
+                    .padding(.top, 20)
+
+                Spacer(minLength: 28)
+
+                actionGrid
+                    .padding(.bottom, 28)
+            }
+
+            if isPreparingExport {
+                Color.black.opacity(0.42)
+                    .ignoresSafeArea()
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .tint(.white)
+                    Text("Preparing media...")
+                        .font(nativeAppFont(size: 14, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
+                .background(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .fill(Color.black.opacity(0.82))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                )
+            }
+        }
+        .navigationBarHidden(true)
+        .sheet(isPresented: $showShareSheet) {
+            NativeShareSheet(items: shareSheetItems)
+        }
+        .sheet(isPresented: $showMessageComposer) {
+            NativeMessageComposer(
+                recipients: [],
+                body: messageComposerBody,
+                attachmentURLs: messageComposerAttachments
+            ) { _ in
+                messageComposerAttachments = []
+            }
+        }
+        .task {
+            await loadTopPlacesSharePayloadIfNeeded()
+        }
+    }
+
+    private var posterCarousel: some View {
+        TabView(selection: $selectedPosterIndex) {
+            ForEach(posterPlaceholders, id: \.self) { index in
+                posterPreviewCard(index: index)
+                    .frame(width: posterSize.width, height: posterSize.height)
+                    .tag(index)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                    .padding(.horizontal, 28)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: .never))
+        .frame(height: posterSize.height)
+    }
+
+    @ViewBuilder
+    private func posterPreviewCard(index: Int) -> some View {
+        let previewKey = posterPreviewCacheKey(for: index)
+        if let image = posterPreviewImages[previewKey] {
+            Image(uiImage: image)
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .overlay {
+                    if nativeShareLayoutDebugMode {
+                        NativePosterLocalDebugFrame(label: "SHARE POSTER \(index + 1)", color: .red)
+                    }
+                }
+        } else {
+            posterTemplateView(index: index)
+                .task {
+                    await generatePosterPreviewIfNeeded(for: index)
+                }
+                .overlay {
+                    if posterPreviewLoadingKeys.contains(previewKey) {
+                        ProgressView()
+                            .tint(.white)
+                    }
+                }
+        }
+    }
+
+    @ViewBuilder
+    private func posterTemplateView(
+        index: Int,
+        fixedProgress: Double? = nil,
+        avatarImageOverride: UIImage? = nil,
+        momentImageOverrides: [String: UIImage] = [:]
+    ) -> some View {
+        if kind == .monthlyRecap {
+            if index == 0 {
+                NativeMonthlyRecapCollagePoster(
+                    size: posterSize,
+                    monthTitle: monthlyRecapTitle,
+                    yearLabel: monthlyRecapYearLabel,
+                    profilePath: monthlyRecapProfilePath,
+                    moments: monthlyRecapMoments,
+                    momentImageOverrides: momentImageOverrides
+                )
+            } else {
+                NativeMonthlyRecapJournalPoster(
+                    size: posterSize,
+                    monthTitle: monthlyRecapTitle,
+                    yearLabel: monthlyRecapYearLabel,
+                    profilePath: monthlyRecapProfilePath,
+                    moments: monthlyRecapMoments,
+                    momentImageOverrides: momentImageOverrides
+                )
+            }
+        } else {
+            if let payload = topPlacesPayload, !topPlacesPosterEntries.isEmpty {
+                NativeTopPlacesPoster(
+                    size: posterSize,
+                    monthYearLabel: topPlacesPosterMonthYearLabel,
+                    profilePath: monthlyRecapProfilePath,
+                    traveler: payload.traveler,
+                    places: topPlacesPosterEntries,
+                    avatarImageOverride: avatarImageOverride,
+                    placeImageOverrides: momentImageOverrides
+                )
+            } else {
+                topPlacesPosterPlaceholder(index: index)
+            }
+        }
+    }
+
+    private func posterPreviewCacheKey(for index: Int) -> String {
+        switch kind {
+        case .monthlyRecap:
+            let ids = monthlyRecapMoments.map(\.id).joined(separator: ",")
+            return "\(kind.rawValue)-preview-\(index)-\(ids)-\(appState.currentUser?.id ?? "anon")"
+        case .topPlaces:
+            let ids = topPlacesPosterEntries.map { "\($0.placeId):\($0.rank)" }.joined(separator: ",")
+            return "\(kind.rawValue)-preview-\(index)-\(ids)-\(appState.currentUser?.id ?? "anon")"
+        }
+    }
+
+    @MainActor
+    private func loadTopPlacesSharePayloadIfNeeded() async {
+        guard kind == .topPlaces else { return }
+        guard topPlacesSharePayload == nil else { return }
+        do {
+            topPlacesSharePayload = try await appState.fetchTopPlaces(
+                travelerId: nil,
+                cityKey: nil,
+                window: "all",
+                limit: 20
+            )
+        } catch {
+            return
+        }
+    }
+
+    @MainActor
+    private func generatePosterPreviewIfNeeded(for index: Int) async {
+        let previewKey = posterPreviewCacheKey(for: index)
+        if posterPreviewImages[previewKey] != nil || posterPreviewLoadingKeys.contains(previewKey) {
+            return
+        }
+
+        posterPreviewLoadingKeys.insert(previewKey)
+        defer { posterPreviewLoadingKeys.remove(previewKey) }
+
+        do {
+            let image: UIImage
+            switch kind {
+            case .topPlaces:
+                let avatarImage = try await nativeLoadPosterUIImage(from: topPlacesPayload?.traveler.avatar)
+                let placeImageOverrides = try await nativeLoadTopPlacesPosterImages(topPlacesPosterEntries)
+                image = nativeRenderViewToImage(
+                    posterTemplateView(
+                        index: index,
+                        avatarImageOverride: avatarImage,
+                        momentImageOverrides: placeImageOverrides
+                    )
+                        .frame(width: posterSize.width, height: posterSize.height),
+                    size: posterSize
+                )
+            case .monthlyRecap:
+                let imageOverrides = try await nativeLoadMonthlyRecapMomentImages(monthlyRecapMoments)
+                image = nativeRenderViewToImage(
+                    posterTemplateView(
+                        index: index,
+                        momentImageOverrides: imageOverrides
+                    )
+                    .frame(width: posterSize.width, height: posterSize.height),
+                    size: posterSize
+                )
+            }
+            posterPreviewImages[previewKey] = image
+        } catch {
+            return
+        }
+    }
+
+    private var posterProgress: some View {
+        HStack(spacing: 12) {
+            ForEach(posterPlaceholders, id: \.self) { index in
+                Circle()
+                    .fill(index == selectedPosterIndex ? nativeAccent : Color.white.opacity(0.28))
+                    .frame(width: 8, height: 8)
+            }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var actionGrid: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .top, spacing: 0) {
+                ForEach(actions) { action in
+                    Button {
+                        handleShareAction(action)
+                    } label: {
+                        VStack(spacing: 10) {
+                            ZStack {
+                                if let assetName = action.assetName {
+                                    if action.cropsToCircle {
+                                        Image(assetName)
+                                            .resizable()
+                                            .interpolation(.high)
+                                            .scaledToFill()
+                                            .frame(width: 48, height: 48)
+                                            .clipShape(Circle())
+                                    } else {
+                                        Image(assetName)
+                                            .resizable()
+                                            .interpolation(.high)
+                                            .scaledToFit()
+                                            .frame(width: 48, height: 48)
+                                    }
+                                } else if let systemIcon = action.systemIcon {
+                                    Circle()
+                                        .fill(Color.white.opacity(0.1))
+                                        .frame(width: 48, height: 48)
+                                        .overlay(
+                                            Image(systemName: systemIcon)
+                                                .font(nativeAppFont(size: 28, weight: .medium))
+                                                .foregroundStyle(.white)
+                                        )
+                                }
+                            }
+
+                            Text(action.title)
+                                .font(nativeAppFont(size: 12, weight: .medium))
+                                .foregroundStyle(.white)
+                                .multilineTextAlignment(.center)
+                                .lineLimit(2)
+                                .frame(width: 92)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isPreparingExport)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func topPlacesPosterPlaceholder(index: Int) -> some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(Color.white.opacity(0.82))
+            .overlay(
+                Text("\(shareContextLabel) poster \(index + 1)")
+                    .font(nativeAppFont(size: 14, weight: .medium))
+                    .foregroundStyle(.black.opacity(0.18))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(Color.white.opacity(0.04), lineWidth: 1)
+            )
+            .overlay {
+                if nativeShareLayoutDebugMode {
+                    NativePosterLocalDebugFrame(label: "TOP PLACES POSTER \(index + 1)", color: .cyan)
+                }
+            }
+    }
+
+    private var preparedAssetCacheKey: String {
+        switch kind {
+        case .monthlyRecap:
+            let ids = monthlyRecapMoments.map(\.id).joined(separator: ",")
+            return "\(kind.rawValue)-\(selectedPosterIndex)-\(ids)-\(appState.currentUser?.id ?? "anon")"
+        case .topPlaces:
+            return "\(kind.rawValue)-\(selectedPosterIndex)"
+        }
+    }
+
+    private func handleShareAction(_ action: NativePosterShareAction) {
+        Task {
+            await performShareAction(action)
+        }
+    }
+
+    @MainActor
+    private func performShareAction(_ action: NativePosterShareAction) async {
+        guard !isPreparingExport else { return }
+        isPreparingExport = true
+        defer { isPreparingExport = false }
+
+        do {
+            let asset = try await prepareAssetIfNeeded()
+            switch action.id {
+            case "more":
+                trackPosterDownloadIntent(actionId: action.id)
+                presentShareSheet(items: [asset.primaryURL])
+            case "download":
+                trackPosterDownloadIntent(actionId: action.id)
+                try await savePreparedAssetToPhotoLibrary(asset)
+                appState.showToast(message: asset.kind == .video ? "Video saved" : "Image saved", icon: "arrow.down.circle.fill")
+            case "instagram_stories":
+                presentShareSheet(items: [asset.primaryURL])
+            case "whatsapp":
+                presentShareSheet(items: [asset.primaryURL])
+            case "threads":
+                if asset.kind == .image, let appURL = URL(string: "threads://share"), UIApplication.shared.canOpenURL(appURL) {
+                    presentShareSheet(items: [asset.primaryURL])
+                } else if let appURL = URL(string: "threads://share?text=\(shareContextLabel.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")"),
+                          UIApplication.shared.canOpenURL(appURL) {
+                    await UIApplication.shared.open(appURL)
+                } else {
+                    presentShareSheet(items: [asset.primaryURL])
+                }
+            case "message":
+                guard MFMessageComposeViewController.canSendText() else {
+                    appState.showToast(message: "Message is unavailable", icon: "exclamationmark.circle.fill")
+                    return
+                }
+                messageComposerBody = ""
+                messageComposerAttachments = [asset.primaryURL]
+                showMessageComposer = true
+            case "tiktok":
+                presentShareSheet(items: [asset.primaryURL])
+            default:
+                presentShareSheet(items: [asset.primaryURL])
+            }
+        } catch {
+            appState.showToast(message: "Could not prepare media right now", icon: "exclamationmark.triangle.fill")
+        }
+    }
+
+    @MainActor
+    private func presentShareSheet(items: [Any]) {
+        shareSheetItems = items
+        showShareSheet = true
+    }
+
+    private func trackPosterDownloadIntent(actionId: String) {
+        let properties: [String: Any] = [
+            "source": NativeAnalyticsSource.homepage,
+            "action_id": actionId,
+            "template_index": selectedPosterIndex
+        ]
+        switch kind {
+        case .monthlyRecap:
+            appState.trackAnalytics(.downloadTemplateFoodRecap, properties: properties)
+        case .topPlaces:
+            appState.trackAnalytics(.downloadTemplateMyPlaces, properties: properties)
+        }
+    }
+
+    private func prepareAssetIfNeeded() async throws -> NativePosterPreparedAsset {
+        if let preparedAsset, preparedAsset.cacheKey == preparedAssetCacheKey, FileManager.default.fileExists(atPath: preparedAsset.primaryURL.path) {
+            return preparedAsset
+        }
+
+        let nextAsset: NativePosterPreparedAsset
+        switch kind {
+        case .topPlaces:
+            nextAsset = try await prepareTopPlacesImageAsset()
+        case .monthlyRecap:
+            nextAsset = try await prepareMonthlyRecapImageAsset(index: selectedPosterIndex)
+        }
+
+        await MainActor.run {
+            preparedAsset = nextAsset
+        }
+        return nextAsset
+    }
+
+    private func prepareTopPlacesImageAsset() async throws -> NativePosterPreparedAsset {
+        let avatarImage = try await nativeLoadPosterUIImage(from: topPlacesPayload?.traveler.avatar)
+        let placeImageOverrides = try await nativeLoadTopPlacesPosterImages(topPlacesPosterEntries)
+        let image = await MainActor.run {
+            nativeRenderViewToImage(
+                posterTemplateView(
+                    index: selectedPosterIndex,
+                    avatarImageOverride: avatarImage,
+                    momentImageOverrides: placeImageOverrides
+                )
+                    .frame(width: posterSize.width, height: posterSize.height),
+                size: posterSize
+            )
+        }
+        let imageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vibinn-top-places-\(UUID().uuidString)")
+            .appendingPathExtension("png")
+        guard let data = image.pngData() else {
+            throw NSError(domain: "NativePosterShare", code: 10)
+        }
+        try data.write(to: imageURL, options: .atomic)
+        return NativePosterPreparedAsset(
+            cacheKey: preparedAssetCacheKey,
+            kind: .image,
+            primaryURL: imageURL,
+            previewImageURL: imageURL
+        )
+    }
+
+    private func prepareMonthlyRecapVideoAsset() async throws -> NativePosterPreparedAsset {
+        let avatarImage = try await nativeLoadPosterUIImage(from: appState.currentUser?.avatarUrl)
+        let imageOverrides = try await nativeLoadMonthlyRecapMomentImages(monthlyRecapMoments)
+
+        let previewImage = await MainActor.run {
+            nativeRenderViewToImage(
+                posterTemplateView(
+                    index: 0,
+                    fixedProgress: 2.35,
+                    avatarImageOverride: avatarImage,
+                    momentImageOverrides: imageOverrides
+                )
+                .frame(width: posterSize.width, height: posterSize.height),
+                size: posterSize
+            )
+        }
+
+        let previewURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vibinn-monthly-recap-preview-\(UUID().uuidString)")
+            .appendingPathExtension("png")
+        if let previewData = previewImage.pngData() {
+            try previewData.write(to: previewURL, options: .atomic)
+        }
+
+        let videoURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vibinn-monthly-recap-\(UUID().uuidString)")
+            .appendingPathExtension("mp4")
+        if FileManager.default.fileExists(atPath: videoURL.path) {
+            try FileManager.default.removeItem(at: videoURL)
+        }
+
+        try await nativeWritePosterVideo(
+            outputURL: videoURL,
+            size: posterSize,
+            duration: 6,
+            fps: 24
+        ) { progress in
+            await MainActor.run {
+                nativeRenderViewToImage(
+                    posterTemplateView(
+                        index: 0,
+                        fixedProgress: progress,
+                        avatarImageOverride: avatarImage,
+                        momentImageOverrides: imageOverrides
+                    )
+                    .frame(width: posterSize.width, height: posterSize.height),
+                    size: posterSize
+                )
+            }
+        }
+
+        return NativePosterPreparedAsset(
+            cacheKey: preparedAssetCacheKey,
+            kind: .video,
+            primaryURL: videoURL,
+            previewImageURL: previewURL
+        )
+    }
+
+    private func prepareMonthlyRecapImageAsset(index: Int) async throws -> NativePosterPreparedAsset {
+        let imageOverrides = try await nativeLoadMonthlyRecapMomentImages(monthlyRecapMoments)
+        let image = await MainActor.run {
+            nativeRenderViewToImage(
+                posterTemplateView(index: index, momentImageOverrides: imageOverrides)
+                .frame(width: posterSize.width, height: posterSize.height),
+                size: posterSize
+            )
+        }
+
+        let imageURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("vibinn-monthly-recap-\(index)-\(UUID().uuidString)")
+            .appendingPathExtension("png")
+        guard let data = image.pngData() else {
+            throw NSError(domain: "NativePosterShare", code: 13)
+        }
+        try data.write(to: imageURL, options: .atomic)
+        return NativePosterPreparedAsset(
+            cacheKey: preparedAssetCacheKey,
+            kind: .image,
+            primaryURL: imageURL,
+            previewImageURL: imageURL
+        )
+    }
+
+    private func savePreparedAssetToPhotoLibrary(_ asset: NativePosterPreparedAsset) async throws {
+        let authorized = await nativeEnsurePhotoLibraryAddAuthorization()
+        guard authorized else {
+            throw NSError(domain: "NativePosterShare", code: 11)
+        }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            PHPhotoLibrary.shared().performChanges({
+                switch asset.kind {
+                case .image:
+                    if let image = asset.previewImage {
+                        PHAssetChangeRequest.creationRequestForAsset(from: image)
+                    }
+                case .video:
+                    PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: asset.primaryURL)
+                }
+            }) { success, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else if success {
+                    continuation.resume(returning: ())
+                } else {
+                    continuation.resume(throwing: NSError(domain: "NativePosterShare", code: 12))
+                }
+            }
+        }
+    }
+
+    private func shareToInstagramStories(_ asset: NativePosterPreparedAsset) async throws {
+        guard let appURL = URL(string: "instagram-stories://share"), UIApplication.shared.canOpenURL(appURL) else {
+            if let webURL = URL(string: "https://www.instagram.com/") {
+                openURL(webURL)
+            }
+            return
+        }
+
+        var pasteboardItems: [String: Any] = [:]
+        switch asset.kind {
+        case .image:
+            if let imageData = asset.previewImage?.pngData() {
+                pasteboardItems["com.instagram.sharedSticker.backgroundImage"] = imageData
+            }
+        case .video:
+            let videoData = try Data(contentsOf: asset.primaryURL)
+            pasteboardItems["com.instagram.sharedSticker.backgroundVideo"] = videoData
+        }
+
+        UIPasteboard.general.setItems(
+            [pasteboardItems],
+            options: [.expirationDate: Date().addingTimeInterval(60 * 5)]
+        )
+        await UIApplication.shared.open(appURL)
+    }
+}
+
+private struct NativePosterShareAction: Identifiable {
+    let id: String
+    let title: String
+    var systemIcon: String? = nil
+    var assetName: String? = nil
+    var cropsToCircle = false
+}
+
+private struct NativeMonthlyRecapAnimatedPoster: View {
+    let size: CGSize
+    let monthTitle: String
+    let yearLabel: String
+    let profilePath: String
+    let username: String
+    let avatarURL: String?
+    let avatarFallback: String
+    let moments: [NativeMoment]
+    var fixedProgress: Double? = nil
+    var avatarImageOverride: UIImage? = nil
+    var momentImageOverrides: [String: UIImage] = [:]
+
+    @State private var animationStartDate = Date()
+
+    private let designCanvas = CGSize(width: 491.63, height: 874)
+
+    private var previewMoments: [NativeMoment] {
+        Array(moments.prefix(3))
+    }
+
+    private var totalDuration: Double {
+        max(5.6, 4.0 + Double(max(previewMoments.count - 1, 0)))
+    }
+
+    var body: some View {
+        Group {
+            if let fixedProgress {
+                content(progress: fixedProgress)
+            } else {
+                TimelineView(.animation(minimumInterval: 1.0 / 24.0)) { timeline in
+                    let elapsed = timeline.date.timeIntervalSince(animationStartDate)
+                    let progress = elapsed.truncatingRemainder(dividingBy: totalDuration)
+                    content(progress: progress)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func content(progress: Double) -> some View {
+        ZStack(alignment: .topLeading) {
+            Color(red: 213 / 255, green: 1.0, blue: 49 / 255)
+
+            ForEach(Array(previewMoments.enumerated()), id: \.element.id) { index, moment in
+                recapMomentCard(moment: moment, index: index, progress: progress)
+            }
+
+            Text("\(monthTitle) food")
+                .font(nativeAppFont(size: scaledFont(32), weight: .black))
+                .foregroundStyle(.black)
+                .position(scaledPoint(x: 174, y: 277))
+                .opacity(opacity(in: progress, start: 0.0, duration: 0.28))
+                .overlay {
+                    if nativeShareLayoutDebugMode {
+                        NativeDebugFrame(label: "RECAP MONTH", color: .orange)
+                    }
+                }
+
+            Text("RECAP")
+                .font(nativePixelAccentFont(size: scaledFont(64)))
+                .foregroundStyle(.black)
+                .position(scaledPoint(x: 39.3, y: 299.57))
+                .opacity(opacity(in: progress, start: 0.3, duration: 0.3))
+                .scaleEffect(scale(in: progress, start: 0.3, duration: 0.32, from: 0.94, to: 1))
+                .overlay {
+                    if nativeShareLayoutDebugMode {
+                        NativeDebugFrame(label: "RECAP TITLE", color: .yellow)
+                    }
+                }
+
+            Image("VibinnLoadingLogo")
+                .resizable()
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: scaledLength(48), height: scaledLength(48))
+                .rotationEffect(.degrees(5))
+                .position(scaledPoint(x: 316, y: 238))
+                .opacity(opacity(in: progress, start: 0.62, duration: 0.24))
+                .overlay {
+                    if nativeShareLayoutDebugMode {
+                        NativeDebugFrame(label: "RECAP LOGO", color: .mint)
+                    }
+                }
+
+            HStack(spacing: scaledLength(12)) {
+                avatarBadge
+
+                (Text("by ")
+                    .font(nativeAppFont(size: scaledFont(16), weight: .medium))
+                    .foregroundColor(.black)
+                +
+                Text(username)
+                    .font(nativeAppFont(size: scaledFont(16), weight: .black))
+                    .foregroundColor(.black))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+            }
+            .position(scaledPoint(x: 164, y: 402))
+            .opacity(opacity(in: progress, start: 1.0, duration: 0.42))
+            .scaleEffect(scale(in: progress, start: 1.0, duration: 0.42, from: 0.88, to: 1))
+            .overlay {
+                if nativeShareLayoutDebugMode {
+                    NativeDebugFrame(label: "RECAP USER", color: .green)
+                }
+            }
+
+            bottomGlassBar
+                .position(scaledPoint(x: 62, y: 780))
+                .opacity(opacity(in: progress, start: 0.92, duration: 0.35))
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativeDebugFrame(label: "RECAP CANVAS", color: .red)
+            }
+        }
+        .onAppear {
+            animationStartDate = Date()
+        }
+    }
+
+    private var avatarBadge: some View {
+        Group {
+            if let avatarImageOverride {
+                Image(uiImage: avatarImageOverride)
+                    .resizable()
+                    .scaledToFill()
+            } else if let avatarURL, !avatarURL.isEmpty {
+                NativeRemoteImage(url: avatarURL)
+            } else {
+                RoundedRectangle(cornerRadius: scaledLength(16), style: .continuous)
+                    .fill(Color.white.opacity(0.22))
+                    .overlay(
+                        Text(nativeAvatarInitials(from: avatarFallback))
+                            .font(nativeAppFont(size: scaledFont(16), weight: .black))
+                            .foregroundStyle(.black)
+                    )
+            }
+        }
+        .frame(width: scaledLength(48), height: scaledLength(48))
+        .clipShape(RoundedRectangle(cornerRadius: scaledLength(16), style: .continuous))
+    }
+
+    private func recapMomentCard(moment: NativeMoment, index: Int, progress: Double) -> some View {
+        let windowStart = 2.0 + Double(index)
+        let blurStart = windowStart + 1.0
+        let blurEnd = windowStart + 2.0
+        let active = progress >= windowStart
+        let introProgress = normalized(progress, start: windowStart, end: windowStart + 0.25)
+        let blurProgress = normalized(progress, start: blurStart, end: blurEnd)
+        let remainingDuration = max(totalDuration - windowStart, 0.01)
+        let shrinkProgress = min(max((progress - windowStart) / remainingDuration, 0), 1)
+        let slot = recapMomentSlot(for: moment, index: index)
+
+        return VStack(alignment: .leading, spacing: scaledLength(10)) {
+            ZStack {
+                Group {
+                    if let override = momentImageOverrides[moment.id] {
+                        Image(uiImage: override)
+                            .resizable()
+                            .scaledToFill()
+                    } else if let mediaURL = moment.uploadedMedia?.first(where: { !$0.isEmpty }) {
+                        NativeRemoteImage(url: mediaURL)
+                    } else if let placeImage = moment.place.image, !placeImage.isEmpty {
+                        NativeRemoteImage(url: placeImage)
+                    } else {
+                        RoundedRectangle(cornerRadius: scaledLength(40), style: .continuous)
+                            .fill(Color.white.opacity(0.15))
+                    }
+                }
+                .frame(width: scaledLength(148), height: scaledLength(148))
+                .clipShape(RoundedRectangle(cornerRadius: scaledLength(40), style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: scaledLength(40), style: .continuous)
+                        .stroke(Color.black.opacity(0.82), lineWidth: 3)
+                )
+                .shadow(color: .black.opacity(0.22), radius: 10, x: 0, y: 6)
+
+                if let ratingMeta = nativeMomentRatingMeta(label: moment.ratingLabel, fallbackRating: moment.rating) {
+                    ZStack {
+                        Group {
+                            Image(systemName: ratingMeta.icon)
+                            Image(systemName: ratingMeta.icon).offset(x: -2.5, y: 0)
+                            Image(systemName: ratingMeta.icon).offset(x: 2.5, y: 0)
+                            Image(systemName: ratingMeta.icon).offset(x: 0, y: -2.5)
+                            Image(systemName: ratingMeta.icon).offset(x: 0, y: 2.5)
+                        }
+                        .font(nativeAppFont(size: scaledFont(40), weight: .black))
+                        .foregroundStyle(.black)
+
+                        Image(systemName: ratingMeta.icon)
+                            .font(nativeAppFont(size: scaledFont(40), weight: .black))
+                            .foregroundStyle(nativeAccent)
+                    }
+                }
+            }
+
+            Text(recapCaption(for: moment))
+                .font(nativeAppFont(size: scaledFont(18), weight: .medium))
+                .foregroundStyle(.black)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .padding(.leading, scaledLength(6))
+        }
+        .frame(width: scaledLength(170), alignment: .leading)
+        .position(slot.center)
+        .rotationEffect(.degrees(slot.rotation))
+        .scaleEffect(lerp(from: 1, to: 0.8, progress: shrinkProgress))
+        .blur(radius: lerp(from: 0, to: 8, progress: blurProgress))
+        .opacity(active ? lerp(from: 0, to: 1, progress: introProgress) : 0)
+        .zIndex(Double(index + 1))
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativeDebugFrame(label: "RECAP MOMENT \(index + 1)", color: .blue)
+            }
+        }
+    }
+
+    private var bottomGlassBar: some View {
+        HStack(spacing: 0) {
+            Text(profilePath)
+                .font(nativeAppFont(size: scaledFont(14), weight: .medium))
+                .foregroundStyle(.black)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+
+            Spacer(minLength: scaledLength(16))
+
+            Text(yearLabel)
+                .font(nativePixelAccentFont(size: scaledFont(14)))
+                .foregroundStyle(.black)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .padding(.horizontal, scaledLength(18))
+        .frame(width: scaledLength(374), height: scaledLength(52), alignment: .leading)
+        .background(.ultraThinMaterial.opacity(0.55))
+        .overlay(
+            RoundedRectangle(cornerRadius: scaledLength(26), style: .continuous)
+                .stroke(Color.white.opacity(0.5), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: scaledLength(26), style: .continuous))
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativeDebugFrame(label: "RECAP FOOTER", color: .pink)
+            }
+        }
+    }
+
+    private func recapCaption(for moment: NativeMoment) -> String {
+        let caption = moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !caption.isEmpty {
+            return caption
+        }
+        return moment.place.name
+    }
+
+    private func opacity(in progress: Double, start: Double, duration: Double) -> Double {
+        normalized(progress, start: start, end: start + duration)
+    }
+
+    private func scale(in progress: Double, start: Double, duration: Double, from: Double, to: Double) -> Double {
+        lerp(from: from, to: to, progress: normalized(progress, start: start, end: start + duration))
+    }
+
+    private func normalized(_ value: Double, start: Double, end: Double) -> Double {
+        guard end > start else { return value >= end ? 1 : 0 }
+        return min(max((value - start) / (end - start), 0), 1)
+    }
+
+    private func lerp(from: Double, to: Double, progress: Double) -> Double {
+        from + ((to - from) * progress)
+    }
+
+    private func scaledPoint(x: Double, y: Double) -> CGPoint {
+        CGPoint(x: x * size.width / designCanvas.width, y: y * size.height / designCanvas.height)
+    }
+
+    private func scaledLength(_ value: Double) -> CGFloat {
+        CGFloat(value * min(size.width / designCanvas.width, size.height / designCanvas.height))
+    }
+
+    private func scaledFont(_ value: Double) -> CGFloat {
+        scaledLength(value)
+    }
+
+    private func recapMomentSlot(for moment: NativeMoment, index: Int) -> (center: CGPoint, rotation: Double) {
+        let candidates: [((Double, Double), Double)] = [
+            ((94, 140), -5),
+            ((378, 176), 5),
+            ((181, 622), -5),
+            ((332, 556), 5),
+            ((109, 534), 5)
+        ]
+        let key = abs(moment.id.hashValue ^ index)
+        let chosen = candidates[key % candidates.count]
+        return (
+            center: scaledPoint(x: chosen.0.0, y: chosen.0.1),
+            rotation: chosen.1
+        )
+    }
+}
+
+private struct NativeMonthlyRecapCollagePoster: View {
+    let size: CGSize
+    let monthTitle: String
+    let yearLabel: String
+    let profilePath: String
+    let moments: [NativeMoment]
+    var momentImageOverrides: [String: UIImage] = [:]
+
+    private let designCanvas = CGSize(width: 491.63, height: 874)
+
+    private var displayMoments: [NativeMoment] {
+        Array(moments.prefix(5))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.white
+
+            ForEach(Array(displayMoments.enumerated()), id: \.offset) { index, moment in
+                collageMomentCard(moment: moment, index: index)
+            }
+
+            VStack(alignment: .leading, spacing: 0) {
+                Text("my food recap")
+                    .font(nativeAppFont(size: scaledFont(32), weight: .black))
+                    .foregroundColor(.black)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                Text("in \(monthTitle.lowercased()).")
+                    .font(nativeAppFont(size: scaledFont(32), weight: .medium))
+                    .foregroundColor(.black)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .frame(width: scaledLength(250), alignment: .leading)
+            .position(scaledPoint(x: 140, y: 338))
+            .overlay {
+                if nativeShareLayoutDebugMode {
+                    NativePosterLocalDebugFrame(label: "COLLAGE TITLE", color: .orange)
+                }
+            }
+
+            Image("VibinnLoadingLogo")
+                .resizable()
+                .renderingMode(.original)
+                .interpolation(.high)
+                .scaledToFit()
+                .frame(width: scaledLength(48), height: scaledLength(48))
+                .rotationEffect(.degrees(5))
+                .position(scaledPoint(x: 47, y: 404))
+                .overlay {
+                    if nativeShareLayoutDebugMode {
+                        NativePosterLocalDebugFrame(label: "COLLAGE LOGO", color: .mint)
+                    }
+                }
+
+            if nativeShareLayoutDebugMode {
+                ZStack(alignment: .topLeading) {
+                    Circle()
+                        .fill(Color.red)
+                        .frame(width: scaledLength(8), height: scaledLength(8))
+                        .position(scaledPoint(x: 47, y: 404))
+
+                    Text("LOGO @ 47,404")
+                        .font(nativeAppFont(size: scaledFont(10), weight: .black))
+                        .foregroundStyle(.red)
+                        .padding(.horizontal, scaledLength(6))
+                        .padding(.vertical, scaledLength(4))
+                        .background(Color.white.opacity(0.9))
+                        .clipShape(RoundedRectangle(cornerRadius: scaledLength(8), style: .continuous))
+                        .position(scaledPoint(x: 92, y: 438))
+                }
+            }
+
+            footerLabel
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .padding(.bottom, scaledLength(34))
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.black.opacity(0.04), lineWidth: 1)
+        )
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativePosterLocalDebugFrame(label: "COLLAGE CANVAS", color: .red)
+            }
+        }
+    }
+
+    private func collageMomentCard(moment: NativeMoment, index: Int) -> some View {
+        let slot = collageSlot(index: index)
+        let imageSize = scaledLength(slot.size)
+
+        return VStack(alignment: .leading, spacing: scaledLength(8)) {
+            Group {
+                if let override = momentImageOverrides[moment.id] {
+                    Image(uiImage: override)
+                        .resizable()
+                        .scaledToFill()
+                } else if let mediaURL = moment.uploadedMedia?.first(where: { !$0.isEmpty }) {
+                    NativeRemoteImage(url: mediaURL)
+                } else if let placeImage = moment.place.image, !placeImage.isEmpty {
+                    NativeRemoteImage(url: placeImage)
+                } else {
+                    RoundedRectangle(cornerRadius: scaledLength(40), style: .continuous)
+                        .fill(Color.black.opacity(0.08))
+                }
+            }
+            .frame(width: imageSize, height: imageSize)
+            .clipShape(RoundedRectangle(cornerRadius: scaledLength(40), style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: scaledLength(40), style: .continuous)
+                    .stroke(Color.black, lineWidth: scaledLength(3))
+            )
+            .overlay {
+                if let ratingMeta = nativeMomentRatingMeta(label: moment.ratingLabel, fallbackRating: moment.rating) {
+                    ZStack {
+                        Group {
+                            Image(systemName: ratingMeta.icon)
+                            Image(systemName: ratingMeta.icon).offset(x: -2.5, y: 0)
+                            Image(systemName: ratingMeta.icon).offset(x: 2.5, y: 0)
+                            Image(systemName: ratingMeta.icon).offset(x: 0, y: -2.5)
+                            Image(systemName: ratingMeta.icon).offset(x: 0, y: 2.5)
+                        }
+                        .font(nativeAppFont(size: scaledFont(40), weight: .black))
+                        .foregroundStyle(.black)
+
+                        Image(systemName: ratingMeta.icon)
+                            .font(nativeAppFont(size: scaledFont(40), weight: .black))
+                            .foregroundStyle(nativeAccent)
+                    }
+                }
+            }
+
+            Text(collageCaption(for: moment))
+                .font(nativeAppFont(size: scaledFont(slot.captionSize), weight: .medium))
+                .foregroundStyle(.black)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .frame(width: imageSize, alignment: .leading)
+        }
+        .frame(width: imageSize, alignment: .leading)
+        .position(slot.center)
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativePosterLocalDebugFrame(label: "COLLAGE MOMENT \(index + 1)", color: .blue)
+            }
+        }
+    }
+
+    private var footerLabel: some View {
+        Text(profilePath.uppercased())
+            .font(nativePixelAccentFont(size: scaledFont(12)))
+            .foregroundStyle(.black)
+            .lineLimit(1)
+            .minimumScaleFactor(0.75)
+            .frame(width: scaledLength(330), height: scaledLength(26), alignment: .center)
+            .overlay {
+                if nativeShareLayoutDebugMode {
+                    NativePosterLocalDebugFrame(label: "COLLAGE FOOTER", color: .pink)
+                }
+            }
+    }
+
+    private func collageCaption(for moment: NativeMoment) -> String {
+        let caption = moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !caption.isEmpty {
+            return caption
+        }
+        return moment.place.name
+    }
+
+    private func collageSlot(index: Int) -> (center: CGPoint, size: Double, captionSize: Double) {
+        let slots: [(x: Double, y: Double, size: Double, captionSize: Double)] = [
+            (x: 112, y: 162, size: 152, captionSize: 18),
+            (x: 392, y: 86, size: 152, captionSize: 18),
+            (x: 392, y: 448, size: 152, captionSize: 18),
+            (x: 112, y: 618, size: 152, captionSize: 18),
+            (x: 432, y: 706, size: 152, captionSize: 18)
+        ]
+        let chosen = slots[min(index, slots.count - 1)]
+        return (
+            center: scaledPoint(x: chosen.x, y: chosen.y),
+            size: chosen.size,
+            captionSize: chosen.captionSize
+        )
+    }
+
+    private func scaledPoint(x: Double, y: Double) -> CGPoint {
+        CGPoint(x: x * size.width / designCanvas.width, y: y * size.height / designCanvas.height)
+    }
+
+    private func scaledLength(_ value: Double) -> CGFloat {
+        CGFloat(value * min(size.width / designCanvas.width, size.height / designCanvas.height))
+    }
+
+    private func scaledFont(_ value: Double) -> CGFloat {
+        scaledLength(value)
+    }
+}
+
+private struct NativeMonthlyRecapJournalPoster: View {
+    let size: CGSize
+    let monthTitle: String
+    let yearLabel: String
+    let profilePath: String
+    let moments: [NativeMoment]
+    var momentImageOverrides: [String: UIImage] = [:]
+
+    private let designCanvas = CGSize(width: 491.63, height: 874)
+
+    private var displayMoments: [NativeMoment] {
+        Array(moments.prefix(6))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.white
+
+            ForEach(Array(displayMoments.enumerated()), id: \.element.id) { index, moment in
+                journalMomentCard(moment: moment, index: index)
+            }
+
+            VStack(spacing: scaledLength(2)) {
+                HStack(alignment: .bottom, spacing: scaledLength(8)) {
+                    Text("my food")
+                        .font(nativeAppFont(size: scaledFont(28), weight: .regular))
+                        .foregroundStyle(.black)
+
+                    Image("VibinnLoadingLogo")
+                        .resizable()
+                        .interpolation(.high)
+                        .scaledToFit()
+                        .frame(width: scaledLength(24), height: scaledLength(24))
+                        .rotationEffect(.degrees(5))
+                        .offset(y: scaledLength(-2))
+                }
+
+                Text("JOURNAL")
+                    .font(nativePixelAccentFont(size: scaledFont(34)))
+                    .tracking(scaledLength(0.8))
+                    .foregroundStyle(.black)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.9)
+                    .fixedSize(horizontal: true, vertical: false)
+
+                Text(yearLabel)
+                    .font(nativeAppFont(size: scaledFont(16), weight: .black))
+                    .tracking(scaledLength(1.6))
+                    .foregroundStyle(.black)
+            }
+            .multilineTextAlignment(.center)
+            .frame(width: scaledLength(270))
+            .position(scaledPoint(x: 232, y: 369))
+            .overlay {
+                if nativeShareLayoutDebugMode {
+                    NativePosterLocalDebugFrame(label: "JOURNAL TITLE", color: .orange)
+                }
+            }
+
+            Text(journalFooterPath)
+                .font(nativeAppFont(size: scaledFont(15), weight: .black, design: .monospaced))
+                .tracking(scaledLength(2.2))
+                .foregroundStyle(.black)
+                .frame(width: scaledLength(320), alignment: .center)
+                .position(scaledPoint(x: 246, y: 824))
+                .overlay {
+                    if nativeShareLayoutDebugMode {
+                        NativePosterLocalDebugFrame(label: "JOURNAL FOOTER", color: .pink)
+                    }
+                }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.black.opacity(0.04), lineWidth: 1)
+        )
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativePosterLocalDebugFrame(label: "JOURNAL CANVAS", color: .red)
+            }
+        }
+    }
+
+    private func journalMomentCard(moment: NativeMoment, index: Int) -> some View {
+        let slot = journalSlot(index: index)
+        let imageWidth = scaledLength(slot.width)
+        let imageHeight = scaledLength(slot.height)
+        let caption = journalCaption(for: moment)
+
+        return VStack(alignment: .leading, spacing: scaledLength(slot.captionGap)) {
+            Group {
+                if let override = momentImageOverrides[moment.id] {
+                    Image(uiImage: override)
+                        .resizable()
+                        .scaledToFill()
+                } else if let mediaURL = moment.uploadedMedia?.first(where: { !$0.isEmpty }) {
+                    NativeRemoteImage(url: mediaURL)
+                } else if let placeImage = moment.place.image, !placeImage.isEmpty {
+                    NativeRemoteImage(url: placeImage)
+                } else {
+                    RoundedRectangle(cornerRadius: 0, style: .continuous)
+                        .fill(Color.black.opacity(0.08))
+                }
+            }
+            .frame(width: imageWidth, height: imageHeight)
+            .clipped()
+
+            Text(caption)
+                .font(nativeAppFont(size: scaledFont(slot.captionSize), weight: .medium))
+                .foregroundStyle(.black)
+                .lineLimit(1)
+                .minimumScaleFactor(0.72)
+                .frame(width: imageWidth, alignment: slot.captionAlignment)
+                .rotationEffect(.degrees(slot.captionRotation))
+                .offset(x: scaledLength(slot.captionOffsetX), y: scaledLength(slot.captionOffsetY))
+        }
+        .frame(width: imageWidth, alignment: .leading)
+        .position(scaledPoint(x: slot.centerX, y: slot.centerY))
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativePosterLocalDebugFrame(label: "JOURNAL MOMENT \(index + 1)", color: .blue)
+            }
+        }
+    }
+
+    private var journalFooterPath: String {
+        profilePath.replacingOccurrences(of: "/", with: " / ").lowercased()
+    }
+
+    private func journalCaption(for moment: NativeMoment) -> String {
+        let caption = moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !caption.isEmpty {
+            return caption.lowercased()
+        }
+        return moment.place.name.lowercased()
+    }
+
+    private func journalSlot(index: Int) -> (
+        centerX: Double,
+        centerY: Double,
+        width: Double,
+        height: Double,
+        captionSize: Double,
+        captionGap: Double,
+        captionRotation: Double,
+        captionOffsetX: Double,
+        captionOffsetY: Double,
+        captionAlignment: Alignment
+    ) {
+        let slots: [(
+            Double, Double, Double, Double, Double, Double, Double, Double, Double, Alignment
+        )] = [
+            (84, 169, 148, 148, 15, 10, 0, 0, 0, .leading),
+            (381, 95, 148, 148, 15, 10, -90, -60, 54, .leading),
+            (474, 359, 148, 148, 15, 10, 0, -22, 0, .leading),
+            (100, 522, 148, 148, 15, 10, 0, 0, 0, .center),
+            (389, 657, 148, 148, 15, 10, 0, -26, 0, .leading),
+            (12, 753, 148, 148, 15, 10, 0, 116, 0, .leading)
+        ]
+
+        let chosen = slots[min(index, slots.count - 1)]
+        return (
+            centerX: chosen.0,
+            centerY: chosen.1,
+            width: chosen.2,
+            height: chosen.3,
+            captionSize: chosen.4,
+            captionGap: chosen.5,
+            captionRotation: chosen.6,
+            captionOffsetX: chosen.7,
+            captionOffsetY: chosen.8,
+            captionAlignment: chosen.9
+        )
+    }
+
+    private func scaledPoint(x: Double, y: Double) -> CGPoint {
+        CGPoint(x: x * size.width / designCanvas.width, y: y * size.height / designCanvas.height)
+    }
+
+    private func scaledLength(_ value: Double) -> CGFloat {
+        CGFloat(value * min(size.width / designCanvas.width, size.height / designCanvas.height))
+    }
+
+    private func scaledFont(_ value: Double) -> CGFloat {
+        scaledLength(value)
+    }
+}
+
+private struct NativeTopPlacesPoster: View {
+    let size: CGSize
+    let monthYearLabel: String
+    let profilePath: String
+    let traveler: NativeTravelerSummary
+    let places: [NativeTopPlaceEntry]
+    var avatarImageOverride: UIImage? = nil
+    var placeImageOverrides: [String: UIImage] = [:]
+
+    private let designCanvas = CGSize(width: 491.63, height: 874)
+    private let primaryRowHeight: Double = 124
+    private let secondaryRowHeight: Double = 90
+    private let primaryImageWidth: Double = 148
+    private let secondaryImageWidth: Double = 72
+
+    private var posterPlaces: [NativeTopPlaceEntry?] {
+        let filled = Array(places.prefix(5)).map(Optional.some)
+        return filled + Array(repeating: nil, count: max(0, 5 - filled.count))
+    }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.black
+
+            VStack(alignment: .leading, spacing: scaledLength(18)) {
+                Text("MY TOP\nPLACES")
+                    .font(nativePixelAccentFont(size: scaledFont(40)))
+                    .foregroundStyle(.white)
+                    .lineSpacing(scaledLength(-8))
+
+                HStack(spacing: scaledLength(12)) {
+                    avatarView
+
+                    Text(traveler.username)
+                        .font(nativeAppFont(size: scaledFont(16), weight: .black))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                }
+
+                Text(monthYearLabel)
+                    .font(nativeAppFont(size: scaledFont(26), weight: .black))
+                    .foregroundStyle(.white)
+                    .padding(.top, scaledLength(12))
+
+                VStack(alignment: .leading, spacing: scaledLength(12)) {
+                    if let place = posterPlaces[0] {
+                        primaryPlaceRow(place, rank: place.rank)
+                    } else {
+                        primaryPlacePlaceholder(rank: 1)
+                    }
+
+                    ForEach(1..<5, id: \.self) { index in
+                        if let place = posterPlaces[index] {
+                            secondaryPlaceRow(place, rank: place.rank)
+                        } else {
+                            secondaryPlacePlaceholder(rank: index + 1)
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, scaledLength(24))
+            .padding(.top, scaledLength(28))
+            .padding(.bottom, scaledLength(84))
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+            footer
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                .padding(.horizontal, scaledLength(24))
+                .padding(.bottom, scaledLength(26))
+
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.05), lineWidth: 1)
+        )
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativePosterLocalDebugFrame(label: "TOP PLACES CANVAS", color: .cyan)
+            }
+        }
+    }
+
+    private var avatarView: some View {
+        Group {
+            if let avatarImageOverride {
+                Image(uiImage: avatarImageOverride)
+                    .resizable()
+                    .scaledToFill()
+            } else if let avatar = traveler.avatar, !avatar.isEmpty {
+                NativeRemoteImage(url: avatar)
+            } else {
+                RoundedRectangle(cornerRadius: scaledLength(12), style: .continuous)
+                    .fill(Color.white.opacity(0.1))
+                    .overlay(
+                        Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
+                            .font(nativeAppFont(size: scaledFont(14), weight: .black))
+                            .foregroundStyle(.white)
+                    )
+            }
+        }
+        .frame(width: scaledLength(30), height: scaledLength(30))
+        .clipShape(RoundedRectangle(cornerRadius: scaledLength(10), style: .continuous))
+    }
+
+    private func primaryPlaceRow(_ place: NativeTopPlaceEntry, rank: Int) -> some View {
+        HStack(spacing: scaledLength(10)) {
+            placeThumbnail(place, width: primaryImageWidth, height: primaryRowHeight, cornerRadius: 18, integratedIntoCard: false)
+
+            VStack(alignment: .leading, spacing: scaledLength(8)) {
+                rankNumber(rank, prominent: true)
+
+                VStack(alignment: .leading, spacing: scaledLength(4)) {
+                    Text(placeDisplayQuote(place))
+                        .font(nativeAppFont(size: scaledFont(13), weight: .medium))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .lineLimit(1)
+
+                    Text(place.name)
+                        .font(nativeAppFont(size: scaledFont(14), weight: .black))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    Text(place.cityLabel)
+                        .font(nativeAppFont(size: scaledFont(12), weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(1)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, scaledLength(18))
+            .padding(.vertical, scaledLength(12))
+            .frame(maxWidth: .infinity, minHeight: scaledLength(primaryRowHeight), maxHeight: scaledLength(primaryRowHeight), alignment: .topLeading)
+            .background(Color.white.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: scaledLength(20), style: .continuous))
+        }
+        .frame(height: scaledLength(primaryRowHeight))
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativePosterLocalDebugFrame(label: "TOP PLACE \(rank)", color: .yellow)
+            }
+        }
+    }
+
+    private func secondaryPlaceRow(_ place: NativeTopPlaceEntry, rank: Int) -> some View {
+        HStack(spacing: scaledLength(10)) {
+            rankNumber(rank, prominent: false)
+                .frame(width: scaledLength(26), alignment: .leading)
+
+            HStack(spacing: 0) {
+                placeThumbnail(place, width: secondaryImageWidth, height: secondaryRowHeight, cornerRadius: 18, integratedIntoCard: true)
+
+                VStack(alignment: .leading, spacing: scaledLength(2)) {
+                    Text(placeDisplayQuote(place))
+                        .font(nativeAppFont(size: scaledFont(11), weight: .medium))
+                        .foregroundStyle(.white.opacity(0.92))
+                        .lineLimit(1)
+
+                    Text(place.name)
+                        .font(nativeAppFont(size: scaledFont(12), weight: .black))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    Text(place.cityLabel)
+                        .font(nativeAppFont(size: scaledFont(10), weight: .medium))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(1)
+                }
+                .padding(.horizontal, scaledLength(14))
+                .padding(.vertical, scaledLength(10))
+                .frame(maxWidth: .infinity, minHeight: scaledLength(secondaryRowHeight), maxHeight: scaledLength(secondaryRowHeight), alignment: .leading)
+            }
+            .frame(maxWidth: .infinity, minHeight: scaledLength(secondaryRowHeight), maxHeight: scaledLength(secondaryRowHeight), alignment: .leading)
+            .background(Color.white.opacity(0.12))
+            .clipShape(RoundedRectangle(cornerRadius: scaledLength(18), style: .continuous))
+        }
+        .frame(height: scaledLength(secondaryRowHeight))
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativePosterLocalDebugFrame(label: "TOP PLACE \(rank)", color: .yellow)
+            }
+        }
+    }
+
+    private func primaryPlacePlaceholder(rank: Int) -> some View {
+        HStack(spacing: scaledLength(10)) {
+            RoundedRectangle(cornerRadius: scaledLength(18), style: .continuous)
+                .fill(Color.white.opacity(0.04))
+                .frame(width: scaledLength(primaryImageWidth), height: scaledLength(primaryRowHeight))
+
+            RoundedRectangle(cornerRadius: scaledLength(20), style: .continuous)
+                .fill(Color.white.opacity(0.06))
+                .frame(maxWidth: .infinity, minHeight: scaledLength(primaryRowHeight), maxHeight: scaledLength(primaryRowHeight))
+        }
+        .frame(height: scaledLength(primaryRowHeight))
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativePosterLocalDebugFrame(label: "TOP PLACE \(rank) EMPTY", color: .yellow)
+            }
+        }
+    }
+
+    private func secondaryPlacePlaceholder(rank: Int) -> some View {
+        HStack(spacing: scaledLength(10)) {
+            Color.clear
+                .frame(width: scaledLength(26))
+
+            HStack(spacing: 0) {
+                RoundedRectangle(cornerRadius: scaledLength(18), style: .continuous)
+                    .fill(Color.white.opacity(0.04))
+                    .frame(width: scaledLength(secondaryImageWidth), height: scaledLength(secondaryRowHeight))
+                    .clipShape(NativeTopPlacesThumbnailShape(cornerRadius: scaledLength(18)))
+
+                RoundedRectangle(cornerRadius: scaledLength(18), style: .continuous)
+                    .fill(Color.white.opacity(0.06))
+                    .frame(maxWidth: .infinity, minHeight: scaledLength(secondaryRowHeight), maxHeight: scaledLength(secondaryRowHeight))
+            }
+        }
+        .frame(height: scaledLength(secondaryRowHeight))
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativePosterLocalDebugFrame(label: "TOP PLACE \(rank) EMPTY", color: .yellow)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func placeThumbnail(
+        _ place: NativeTopPlaceEntry,
+        width: Double,
+        height: Double,
+        cornerRadius: Double,
+        integratedIntoCard: Bool
+    ) -> some View {
+        let content = Group {
+            if let override = placeImageOverrides[place.placeId] {
+                Image(uiImage: override)
+                    .resizable()
+                    .scaledToFill()
+            } else if let url = place.thumbnailUrl, !url.isEmpty {
+                NativeRemoteImage(url: url)
+            } else {
+                RoundedRectangle(cornerRadius: scaledLength(12), style: .continuous)
+                    .fill(Color.white.opacity(0.08))
+            }
+        }
+        .frame(width: scaledLength(width), height: scaledLength(height))
+
+        if integratedIntoCard {
+            content
+                .clipShape(NativeTopPlacesThumbnailShape(cornerRadius: scaledLength(cornerRadius)))
+        } else {
+            content
+                .clipShape(NativeRoundedThumbnailShape(cornerRadius: scaledLength(cornerRadius)))
+        }
+    }
+
+    private func rankNumber(_ rank: Int, prominent: Bool) -> some View {
+        Text("\(rank)")
+            .font(nativePixelAccentFont(size: scaledFont(prominent ? 22 : 18)))
+            .foregroundStyle(nativeAccent)
+    }
+
+    private func placeDisplayQuote(_ place: NativeTopPlaceEntry) -> String {
+        let quote = place.quote?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return quote.isEmpty ? " " : "“\(quote)”"
+    }
+
+    private var footer: some View {
+        HStack(alignment: .center, spacing: scaledLength(10)) {
+            HStack(spacing: scaledLength(8)) {
+                Image("VibinnLoadingLogo")
+                    .resizable()
+                    .interpolation(.high)
+                    .scaledToFit()
+                    .frame(width: scaledLength(20), height: scaledLength(20))
+
+                Text("VIBINN")
+                    .font(nativePixelAccentFont(size: scaledFont(20)))
+                    .foregroundStyle(.white)
+            }
+
+            Spacer(minLength: scaledLength(16))
+
+            Text(profilePath)
+                .font(nativeAppFont(size: scaledFont(14), weight: .medium))
+                .foregroundStyle(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(height: scaledLength(24))
+        .overlay {
+            if nativeShareLayoutDebugMode {
+                NativePosterLocalDebugFrame(label: "TOP PLACES FOOTER", color: .pink)
+            }
+        }
+    }
+
+    private func scaledPoint(x: Double, y: Double) -> CGPoint {
+        CGPoint(x: x * size.width / designCanvas.width, y: y * size.height / designCanvas.height)
+    }
+
+    private func scaledLength(_ value: Double) -> CGFloat {
+        CGFloat(value * min(size.width / designCanvas.width, size.height / designCanvas.height))
+    }
+
+    private func scaledFont(_ value: Double) -> CGFloat {
+        scaledLength(value)
+    }
+}
+
 private struct NativeSecondMemoryProfileShareSheet: View {
     @EnvironmentObject private var appState: NativeAppState
-    @State private var showShareSheet = false
+    @Environment(\.openURL) private var openURL
+    @State private var showMessageComposer = false
 
     private var shareMessage: String {
         nativeMyProfileShareMessage(username: appState.currentUser?.username)
     }
 
+    private var profileLink: String {
+        let trimmedUsername = appState.currentUser?.username.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmedUsername.isEmpty {
+            return "https://vibinn.club"
+        }
+        return "https://vibinn.club/\(trimmedUsername)"
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 24) {
             Capsule()
                 .fill(Color.white.opacity(0.16))
                 .frame(width: 44, height: 5)
@@ -33675,70 +36724,159 @@ private struct NativeSecondMemoryProfileShareSheet: View {
             Text("Share your profile")
                 .font(nativeAppFont(size: 28, weight: .black))
                 .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .multilineTextAlignment(.center)
 
-            Text("You just posted again. Send your Vibinn profile to a friend so they can follow your food diary.")
+            Text("Share your food journey to your friends. Copy link below and send.")
                 .font(nativeAppFont(size: 15, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.68))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .center)
 
-            Text(shareMessage)
+            Text(profileLink.replacingOccurrences(of: "https://", with: ""))
                 .font(nativeAppFont(size: 13, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.54))
+                .foregroundStyle(.white)
                 .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 18, style: .continuous)
-                        .fill(Color.white.opacity(0.06))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(nativeBorder, lineWidth: 1)
-                        )
+                        .fill(Color.white.opacity(0.2))
                 )
 
-            Button {
-                showShareSheet = true
-            } label: {
-                Text("Share profile")
-                    .font(nativeAppFont(size: 16, weight: .black))
-                    .foregroundStyle(.black)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
-                    .background(nativeAccent)
-                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-            }
-            .buttonStyle(.plain)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(alignment: .top, spacing: 18) {
+                    profileShareActionButton(
+                        title: "Copy link",
+                        systemIcon: "doc.on.doc",
+                        action: handleCopyLink
+                    )
 
-            Button {
-                UIPasteboard.general.string = shareMessage
-                appState.showToast(message: "Profile text copied", icon: "doc.on.doc.fill")
-                appState.dismissSecondMemoryProfileSharePrompt()
-            } label: {
-                Text("Copy text")
-                    .font(nativeAppFont(size: 15, weight: .black))
-                    .foregroundStyle(.white.opacity(0.82))
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 14)
-                    .background(Color.white.opacity(0.06))
-                    .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    profileShareActionButton(
+                        title: "Whatsapp",
+                        assetName: "HomepageShareWhatsApp",
+                        action: handleWhatsAppShare
+                    )
+
+                    profileShareActionButton(
+                        title: "Message",
+                        systemIcon: "message.fill",
+                        action: handleMessageShare
+                    )
+
+                    profileShareActionButton(
+                        title: "Threads",
+                        assetName: "HomepageShareThreads",
+                        cropsToCircle: true,
+                        action: handleThreadsShare
+                    )
+                }
             }
-            .buttonStyle(.plain)
 
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 20)
         .padding(.bottom, 18)
         .background(Color.black.ignoresSafeArea())
-        .sheet(isPresented: $showShareSheet, onDismiss: {
-            appState.dismissSecondMemoryProfileSharePrompt()
-        }) {
-            NativeShareSheet(items: [shareMessage])
+        .sheet(isPresented: $showMessageComposer) {
+            NativeMessageComposer(
+                recipients: [],
+                body: shareMessage
+            ) { _ in
+                appState.dismissSecondMemoryProfileSharePrompt()
+            }
         }
+    }
+
+    @ViewBuilder
+    private func profileShareActionButton(
+        title: String,
+        systemIcon: String? = nil,
+        assetName: String? = nil,
+        cropsToCircle: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 10) {
+                ZStack {
+                    if let assetName {
+                        if cropsToCircle {
+                            Image(assetName)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaledToFill()
+                                .frame(width: 64, height: 64)
+                                .clipShape(Circle())
+                        } else {
+                            Image(assetName)
+                                .resizable()
+                                .interpolation(.high)
+                                .scaledToFit()
+                                .frame(width: 64, height: 64)
+                        }
+                    } else if let systemIcon {
+                        Circle()
+                            .fill(Color.white.opacity(0.1))
+                            .frame(width: 64, height: 64)
+                            .overlay(
+                                Image(systemName: systemIcon)
+                                    .font(nativeAppFont(size: 28, weight: .medium))
+                                    .foregroundStyle(.white)
+                            )
+                    }
+                }
+
+                Text(title)
+                    .font(nativeAppFont(size: 14, weight: .medium))
+                    .foregroundStyle(.white)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .frame(width: 76)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func handleCopyLink() {
+        UIPasteboard.general.string = profileLink
+        appState.showToast(message: "Link copied", icon: "doc.on.doc.fill")
+    }
+
+    private func handleWhatsAppShare() {
+        let encoded = shareMessage.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        if let appURL = URL(string: "whatsapp://send?text=\(encoded)"),
+           UIApplication.shared.canOpenURL(appURL) {
+            UIApplication.shared.open(appURL)
+        } else if let webURL = URL(string: "https://wa.me/?text=\(encoded)") {
+            openURL(webURL)
+        }
+        appState.dismissSecondMemoryProfileSharePrompt()
+    }
+
+    private func handleMessageShare() {
+        guard MFMessageComposeViewController.canSendText() else {
+            appState.showToast(message: "Message is unavailable", icon: "exclamationmark.circle.fill")
+            return
+        }
+        showMessageComposer = true
+    }
+
+    private func handleThreadsShare() {
+        let encoded = shareMessage.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        if let appURL = URL(string: "threads://share?text=\(encoded)"),
+           UIApplication.shared.canOpenURL(appURL) {
+            UIApplication.shared.open(appURL)
+        } else if let webURL = URL(string: "https://www.threads.net/intent/post?text=\(encoded)") {
+            openURL(webURL)
+        }
+        appState.dismissSecondMemoryProfileSharePrompt()
     }
 }
 
 private struct NativeMessageComposer: UIViewControllerRepresentable {
     let recipients: [String]
     let body: String
+    var attachmentURLs: [URL] = []
     let onComplete: (Bool) -> Void
 
     final class Coordinator: NSObject, MFMessageComposeViewControllerDelegate {
@@ -33766,6 +36904,9 @@ private struct NativeMessageComposer: UIViewControllerRepresentable {
         controller.messageComposeDelegate = context.coordinator
         controller.recipients = recipients
         controller.body = body
+        for url in attachmentURLs {
+            _ = controller.addAttachmentURL(url, withAlternateFilename: url.lastPathComponent)
+        }
         return controller
     }
 
@@ -34535,7 +37676,7 @@ private struct NativeTravelerProfileScreen: View {
                         travelerFloatingModePicker
                     }
                     .padding(.horizontal, 20)
-                    .padding(.bottom, appState.showFloatingTabBar ? 112 : max(16, geometry.safeAreaInsets.bottom + 16))
+                    .padding(.bottom, appState.showFloatingTabBar ? 84 : max(12, geometry.safeAreaInsets.bottom + 12))
                     .ignoresSafeArea(.keyboard, edges: .bottom)
                 }
             }
@@ -34702,7 +37843,7 @@ private struct NativeTravelerProfileScreen: View {
     private var ownProfileToolbarTitle: some View {
         Text("My Profile")
             .font(nativePixelAccentFont(size: 22))
-            .foregroundStyle(nativeAccent)
+            .foregroundStyle(.white)
     }
 
     private var standardProfileInlineHeader: some View {
@@ -34891,32 +38032,11 @@ private struct NativeTravelerProfileScreen: View {
     }
 
     private var travelerFloatingModePicker: some View {
-        HStack(spacing: 8) {
-            ForEach(NativeTravelerProfileContentMode.allCases) { mode in
-                Button {
-                    activeMode = mode
-                } label: {
-                    nativeFloatingModeAssetIcon(
-                        named: travelerModeAssetName(for: mode),
-                        isActive: activeMode == mode
-                    )
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 4)
-                        .background(activeMode == mode ? Color.white : Color.clear)
-                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(8)
-        .background(Color.black.opacity(0.7))
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        NativeExpandableFloatingModePicker(
+            modes: NativeTravelerProfileContentMode.allCases,
+            activeMode: $activeMode,
+            assetName: travelerModeAssetName(for:)
         )
-        .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 10)
     }
 
     @ViewBuilder
@@ -36084,26 +39204,22 @@ private struct NativePlaceDetailScreen: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .navigationBarHidden(false)
+        .navigationBarBackButtonHidden(true)
         .modifier(NativePlaceDetailNavigationChromeModifier())
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Group {
-                    if showsExplicitBackButton {
-                        Button {
-                            dismiss()
-                        } label: {
-                            Image(systemName: "chevron.left")
-                                .font(nativeAppFont(size: 16, weight: .black))
-                                .foregroundStyle(.white)
-                                .frame(width: 36, height: 36)
-                                .background(Color.white.opacity(0.08))
-                                .clipShape(Circle())
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        Color.clear
+                if !showsExplicitBackButton {
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(nativeAppFont(size: 16, weight: .black))
+                            .foregroundStyle(.white)
                             .frame(width: 36, height: 36)
+                            .background(Color.white.opacity(0.08))
+                            .clipShape(Circle())
                     }
+                    .buttonStyle(.plain)
                 }
             }
             ToolbarItem(placement: .principal) {
@@ -36397,7 +39513,7 @@ private struct NativePlaceDetailScreen: View {
                     }
                 }
                 .overlay(alignment: .topLeading) {
-                    if sheetState != .default, let topTag = topTagLabel {
+                    if sheetState == .collapsed, let topTag = topTagLabel {
                         Text(topTag)
                             .font(nativeAppFont(size: 12, weight: .black))
                             .foregroundStyle(.black)
@@ -37497,7 +40613,8 @@ private struct NativeHomepageStageScrollViewport<Content: View>: UIViewRepresent
         scrollView.showsHorizontalScrollIndicator = false
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.decelerationRate = .fast
-        scrollView.clipsToBounds = true
+        scrollView.clipsToBounds = false
+        scrollView.layer.masksToBounds = false
         scrollView.delaysContentTouches = false
         scrollView.canCancelContentTouches = true
         scrollView.keyboardDismissMode = .onDrag
@@ -37505,6 +40622,7 @@ private struct NativeHomepageStageScrollViewport<Content: View>: UIViewRepresent
         let hostingController = UIHostingController(rootView: content)
         hostingController.view.backgroundColor = .clear
         hostingController.view.translatesAutoresizingMaskIntoConstraints = false
+        hostingController.view.clipsToBounds = false
 
         context.coordinator.hostingController = hostingController
         context.coordinator.scrollView = scrollView
@@ -38618,6 +41736,27 @@ private func nativeMomentStableSortDate(_ moment: NativeMoment) -> Date {
     NativeAppState.date(from: moment.visitedAtIso ?? moment.visitedDate) ?? .distantPast
 }
 
+private func nativeTravelerSummary(from traveler: NativeMomentTravelerSummary?) -> NativeTravelerSummary? {
+    guard let traveler else { return nil }
+    return NativeTravelerSummary(
+        id: traveler.id,
+        username: traveler.username,
+        displayName: traveler.displayName,
+        avatar: traveler.avatar,
+        bio: nil,
+        descriptor: nil,
+        matchScore: nil,
+        followersCount: nil,
+        followingCount: nil,
+        recentSavedPlaces: nil,
+        recentCollections: nil,
+        travelHistory: [],
+        visitedPlacesCount: nil,
+        savedPlacesCount: nil,
+        collectionsCount: nil
+    )
+}
+
 private func nativeFloatingModeAssetIcon(named assetName: String, isActive: Bool) -> some View {
     Image(assetName)
         .renderingMode(.template)
@@ -38626,6 +41765,83 @@ private func nativeFloatingModeAssetIcon(named assetName: String, isActive: Bool
         .scaledToFit()
         .frame(width: 20, height: 20)
         .foregroundStyle(isActive ? .black : .white.opacity(0.42))
+}
+
+private struct NativeExpandableFloatingModePicker<Mode: Identifiable & Hashable>: View {
+    let modes: [Mode]
+    @Binding var activeMode: Mode
+    let assetName: (Mode) -> String
+
+    @State private var isExpanded = false
+    @State private var lastInteractionAt = Date()
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if isExpanded {
+                ForEach(modes) { mode in
+                    Button {
+                        withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                            activeMode = mode
+                        }
+                        registerInteraction()
+                    } label: {
+                        nativeFloatingModeAssetIcon(
+                            named: assetName(mode),
+                            isActive: activeMode == mode
+                        )
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 4)
+                        .background(activeMode == mode ? Color.white : Color.clear)
+                        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.asymmetric(
+                        insertion: .move(edge: .trailing).combined(with: .opacity),
+                        removal: .scale(scale: 0.92).combined(with: .opacity)
+                    ))
+                }
+            } else {
+                Button {
+                    withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                        isExpanded = true
+                    }
+                    registerInteraction()
+                } label: {
+                    nativeFloatingModeAssetIcon(
+                        named: assetName(activeMode),
+                        isActive: true
+                    )
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(8)
+        .background(Color.black.opacity(0.7))
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: .black.opacity(0.35), radius: 18, x: 0, y: 10)
+        .animation(.spring(response: 0.26, dampingFraction: 0.86), value: isExpanded)
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { now in
+            guard isExpanded else { return }
+            guard now.timeIntervalSince(lastInteractionAt) >= 10 else { return }
+            withAnimation(.spring(response: 0.26, dampingFraction: 0.86)) {
+                isExpanded = false
+            }
+        }
+    }
+
+    private func registerInteraction() {
+        lastInteractionAt = Date()
+    }
 }
 
 private func nativeStableSortedMomentsNewestFirst(_ moments: [NativeMoment]) -> [NativeMoment] {
@@ -38678,13 +41894,30 @@ private func nativeVisitedMomentPlaceMetaLine(for place: NativePlace, shortAddre
 }
 
 private func nativePrimaryPlaceImageURL(for place: NativePlace) -> String? {
-    if let image = place.placeMediaUrls?.first?.trimmingCharacters(in: .whitespacesAndNewlines), !image.isEmpty {
+    let blockedURLs = Set(
+        (place.userMediaUrls ?? [])
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        + (place.momentMedia ?? [])
+            .map { $0.url.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    )
+
+    if let image = place.placeMediaUrls?
+        .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        .first(where: { !$0.isEmpty && !blockedURLs.contains($0) }) {
         return image
     }
-    if let image = place.image?.trimmingCharacters(in: .whitespacesAndNewlines), !image.isEmpty {
+
+    if let image = place.images?
+        .map({ $0.trimmingCharacters(in: .whitespacesAndNewlines) })
+        .first(where: { !$0.isEmpty && !blockedURLs.contains($0) }) {
         return image
     }
-    if let image = place.images?.first?.trimmingCharacters(in: .whitespacesAndNewlines), !image.isEmpty {
+
+    if let image = place.image?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !image.isEmpty,
+       !blockedURLs.contains(image) {
         return image
     }
     return nil
@@ -38699,7 +41932,7 @@ private struct NativeMomentPlaceInfoCard: View {
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
             NativeRemoteImage(url: imageURL)
-                .frame(width: 58, height: 58)
+                .frame(width: 60, height: 60)
                 .clipped()
 
             HStack(alignment: .center, spacing: 12) {
@@ -38723,8 +41956,9 @@ private struct NativeMomentPlaceInfoCard: View {
                     .frame(width: 28, height: 28)
             }
             .padding(.horizontal, 16)
-            .padding(.vertical, 14)
+            .padding(.vertical, 10)
         }
+        .frame(minHeight: 60)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.white.opacity(0.08))
         .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -38823,8 +42057,6 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
     @ViewBuilder let placeSection: () -> PlaceSection
     @ViewBuilder let actions: () -> Actions
     @ViewBuilder let commentPreview: () -> CommentPreview
-    @State private var showMediaFullscreen = false
-
     init(
         displayName: String,
         username: String?,
@@ -38890,29 +42122,23 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
             }
 
             VStack(alignment: .leading, spacing: 20) {
-                Button {
-                    guard mediaURL != nil else { return }
-                    showMediaFullscreen = true
-                } label: {
-                    Group {
-                        if let mediaURL, !mediaURL.isEmpty {
-                            NativeRemoteImage(url: mediaURL)
-                        } else {
-                            RoundedRectangle(cornerRadius: 0, style: .continuous)
-                                .fill(Color.white.opacity(0.06))
-                                .overlay(
-                                    Image(systemName: "photo")
-                                        .font(nativeAppFont(size: 22, weight: .black))
-                                        .foregroundStyle(.white.opacity(0.3))
-                                )
-                        }
-            }
-            .frame(maxWidth: .infinity)
-            .aspectRatio(1, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-            .clipped()
-        }
-                .buttonStyle(.plain)
+                Group {
+                    if let mediaURL, !mediaURL.isEmpty {
+                        NativeRemoteImage(url: mediaURL)
+                    } else {
+                        RoundedRectangle(cornerRadius: 0, style: .continuous)
+                            .fill(Color.white.opacity(0.06))
+                            .overlay(
+                                Image(systemName: "photo")
+                                    .font(nativeAppFont(size: 22, weight: .black))
+                                    .foregroundStyle(.white.opacity(0.3))
+                            )
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .clipped()
                 .padding(.horizontal, -20)
 
                 placeSection()
@@ -38921,15 +42147,6 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
 
                 commentPreview()
             }
-        }
-        .fullScreenCover(isPresented: $showMediaFullscreen) {
-            NativeFullscreenMediaGallery(
-                urls: mediaURL.map { [$0] } ?? [],
-                startIndex: 0,
-                placeName: placeName,
-                placeMetaLine: placeMetaLine,
-                placeImageURL: placeImageURL
-            )
         }
     }
 
@@ -38954,7 +42171,7 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack(alignment: .center, spacing: 6) {
-                    Text("@\(username ?? displayName)")
+                    Text(username ?? displayName)
                         .font(nativeAppFont(size: 14, weight: .black))
                         .foregroundStyle(.white)
                         .lineLimit(1)
@@ -38965,8 +42182,11 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
                                 .font(nativeAppFont(size: 14, weight: .medium))
                             Text(ratingMeta.label.lowercased())
                                 .font(nativeAppFont(size: 14, weight: .medium))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
                         }
                         .foregroundStyle(nativeAccent)
+                        .lineLimit(1)
                     }
                 }
 
@@ -39024,6 +42244,7 @@ private struct NativeMomentFullscreenScaffold: View {
     let username: String?
     let avatarURL: String?
     let avatarFallback: String
+    let headerLinkTraveler: NativeTravelerSummary?
     let timestampLabel: String
     let ratingMeta: (label: String, icon: String)?
     let wouldRevisit: String?
@@ -39053,7 +42274,7 @@ private struct NativeMomentFullscreenScaffold: View {
     @Binding var commentDraft: String
 
     @FocusState private var isCommentFieldFocused: Bool
-    @State private var showMediaFullscreen = false
+    @State private var selectedHeaderTraveler: NativeTravelerSummary?
 
     var body: some View {
         ZStack(alignment: .topTrailing) {
@@ -39066,36 +42287,7 @@ private struct NativeMomentFullscreenScaffold: View {
 
                     VStack(alignment: .leading, spacing: 20) {
                         HStack(alignment: .top, spacing: 10) {
-                            avatarSquare(size: 42)
-
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack(alignment: .center, spacing: 6) {
-                                    Text("@\(username ?? displayName)")
-                                        .font(nativeAppFont(size: 14, weight: .black))
-                                        .foregroundStyle(.white)
-                                        .lineLimit(1)
-
-                                    if let ratingMeta {
-                                        HStack(spacing: 4) {
-                                            Image(systemName: ratingMeta.icon)
-                                                .font(nativeAppFont(size: 14, weight: .medium))
-                                            Text(ratingMeta.label.lowercased())
-                                                .font(nativeAppFont(size: 14, weight: .medium))
-                                        }
-                                        .foregroundStyle(nativeAccent)
-                                    }
-                                }
-
-                                if let wouldRevisit {
-                                    HStack(spacing: 5) {
-                                        Image(systemName: "repeat")
-                                            .font(nativeAppFont(size: 12, weight: .medium))
-                                        Text(revisitLabel(for: wouldRevisit))
-                                            .font(nativeAppFont(size: 12, weight: .medium))
-                                    }
-                                    .foregroundStyle(.white.opacity(0.5))
-                                }
-                            }
+                            headerIdentityContent
 
                             Spacer(minLength: 8)
 
@@ -39127,29 +42319,23 @@ private struct NativeMomentFullscreenScaffold: View {
                         }
 
                         VStack(alignment: .leading, spacing: 20) {
-                            Button {
-                                guard mediaUrl != nil else { return }
-                                showMediaFullscreen = true
-                            } label: {
-                                Group {
-                                    if let mediaUrl, !mediaUrl.isEmpty {
-                                        NativeRemoteImage(url: mediaUrl)
-                                    } else {
-                                        RoundedRectangle(cornerRadius: 0, style: .continuous)
-                                            .fill(Color.white.opacity(0.06))
-                                            .overlay(
-                                                Image(systemName: "photo")
-                                                    .font(nativeAppFont(size: 22, weight: .black))
-                                                    .foregroundStyle(.white.opacity(0.3))
-                                            )
-                                    }
+                            Group {
+                                if let mediaUrl, !mediaUrl.isEmpty {
+                                    NativeRemoteImage(url: mediaUrl)
+                                } else {
+                                    RoundedRectangle(cornerRadius: 0, style: .continuous)
+                                        .fill(Color.white.opacity(0.06))
+                                        .overlay(
+                                            Image(systemName: "photo")
+                                                .font(nativeAppFont(size: 22, weight: .black))
+                                                .foregroundStyle(.white.opacity(0.3))
+                                        )
                                 }
-                                .frame(maxWidth: .infinity)
-                                .aspectRatio(1, contentMode: .fit)
-                                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                                .clipped()
                             }
-                            .buttonStyle(.plain)
+                            .frame(maxWidth: .infinity)
+                            .aspectRatio(1, contentMode: .fit)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .clipped()
                             .padding(.horizontal, -20)
 
                             if let placeName, let placeMetaLine, !placeName.isEmpty, !placeMetaLine.isEmpty {
@@ -39356,15 +42542,60 @@ private struct NativeMomentFullscreenScaffold: View {
             .padding(.top, 16)
             .padding(.trailing, 16)
         }
-        .fullScreenCover(isPresented: $showMediaFullscreen) {
-            NativeFullscreenMediaGallery(
-                urls: mediaUrl.map { [$0] } ?? [],
-                startIndex: 0,
-                placeName: placeName,
-                placeMetaLine: placeMetaLine,
-                placeImageURL: placeImageURL,
-                onPlaceTap: onPlaceTap
-            )
+        .fullScreenCover(item: $selectedHeaderTraveler) { traveler in
+            NativeTravelerProfileScreen(initialTraveler: traveler)
+        }
+    }
+
+    @ViewBuilder
+    private var headerIdentityContent: some View {
+        if let headerLinkTraveler {
+            Button {
+                selectedHeaderTraveler = headerLinkTraveler
+            } label: {
+                identityRow.contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        } else {
+            identityRow
+        }
+    }
+
+    private var identityRow: some View {
+        HStack(alignment: .top, spacing: 10) {
+            avatarSquare(size: 42)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(alignment: .center, spacing: 6) {
+                    Text(username ?? displayName)
+                        .font(nativeAppFont(size: 14, weight: .black))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    if let ratingMeta {
+                        HStack(spacing: 4) {
+                            Image(systemName: ratingMeta.icon)
+                                .font(nativeAppFont(size: 14, weight: .medium))
+                            Text(ratingMeta.label.lowercased())
+                                .font(nativeAppFont(size: 14, weight: .medium))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                        .foregroundStyle(nativeAccent)
+                        .lineLimit(1)
+                    }
+                }
+
+                if let wouldRevisit {
+                    HStack(spacing: 5) {
+                        Image(systemName: "repeat")
+                            .font(nativeAppFont(size: 12, weight: .medium))
+                        Text(revisitLabel(for: wouldRevisit))
+                            .font(nativeAppFont(size: 12, weight: .medium))
+                    }
+                    .foregroundStyle(.white.opacity(0.5))
+                }
+            }
         }
     }
 
@@ -39488,6 +42719,7 @@ private struct NativeFeedMomentFullscreen: View {
             username: item.traveler.username,
             avatarURL: item.traveler.avatar,
             avatarFallback: item.traveler.displayName ?? item.traveler.username,
+            headerLinkTraveler: item.traveler,
             timestampLabel: item.timestampLabel,
             ratingMeta: ratingMeta,
             wouldRevisit: item.place?.momentWouldRevisit,
@@ -40126,6 +43358,36 @@ private struct NativeCheckInScreen: View {
                             .font(nativeAppFont(size: 14, weight: .medium))
                             .foregroundStyle(.white.opacity(0.58))
                     }
+
+                    if appState.locationPermissionState != .authorized {
+                        HStack(alignment: .top, spacing: 10) {
+                            Image(systemName: "location.slash")
+                                .font(nativeAppFont(size: 14, weight: .black))
+                                .foregroundStyle(.white.opacity(0.72))
+                                .padding(.top, 2)
+
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text("Turn on location to find more accurate places nearby.")
+                                    .font(nativeAppFont(size: 13, weight: .medium))
+                                    .foregroundStyle(.white.opacity(0.72))
+                                    .fixedSize(horizontal: false, vertical: true)
+
+                                Button {
+                                    guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
+                                    UIApplication.shared.open(settingsURL)
+                                } label: {
+                                    Text("Open Settings")
+                                        .font(nativeAppFont(size: 13, weight: .black))
+                                        .foregroundStyle(.black)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 8)
+                                        .background(nativeAccent)
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
                 }
             }
 
@@ -40580,19 +43842,18 @@ private struct NativeCheckInScreen: View {
     }
 
     private var selectedMomentDateLabel: String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = .current
+        formatter.dateFormat = "dd MMM yyyy"
+
         if let capturedAt = selectedPhotoAsset?.capturedAt {
-            let formatter = DateFormatter()
-            formatter.dateStyle = .medium
-            formatter.timeStyle = .none
-            return formatter.string(from: capturedAt)
+            return "Photo taken \(formatter.string(from: capturedAt))"
         }
         if let date = Self.dateFromISODateString(resolvedVisitedDate) {
-            let formatter = DateFormatter()
-            formatter.dateStyle = .medium
-            formatter.timeStyle = .none
-            return formatter.string(from: date)
+            return "Photo taken \(formatter.string(from: date))"
         }
-        return resolvedVisitedDate
+        return "Photo taken \(resolvedVisitedDate)"
     }
 
     private func shortSummaryAddress(for place: NativePlace) -> String {
