@@ -11638,6 +11638,7 @@ async function notifyV2FollowersAboutNewMoment(input: {
   actorUserId: string;
   momentId: string;
   visibility: 'PUBLIC' | 'FRIENDS' | 'PRIVATE';
+  caption: string | null;
 }) {
   if (input.visibility === 'PRIVATE') {
     return;
@@ -11698,7 +11699,7 @@ async function notifyV2FollowersAboutNewMoment(input: {
     recipientIds.map((userId) => sendV2PushNotification({
       userId,
       title: `${actorName} shared a new memory`,
-      body: 'Open to see their latest memory',
+      body: input.caption?.trim() || '',
       data: {
         type: 'MOMENT_POSTED',
         targetType: 'MOMENT',
@@ -12053,6 +12054,23 @@ app.post('/api/v2/vibins/toggle', requireV2Auth, async (req: AuthenticatedReques
 
     const resolvedReceiverUserId = receiverUserId ?? await resolveV2TargetOwner(targetType, targetId);
     const resolvedMomentId = momentId ?? await resolveV2TargetMomentId(targetType, targetId);
+    const targetMoment = resolvedMomentId
+      ? await prismaV2.moment.findUnique({
+          where: { id: resolvedMomentId },
+          select: {
+            placeName: true,
+            placeRecord: {
+              select: {
+                name: true,
+              },
+            },
+          },
+        })
+      : null;
+    const targetMomentPlaceName =
+      targetMoment?.placeRecord?.name?.trim()
+      || targetMoment?.placeName?.trim()
+      || '';
 
     const existing = await prismaV2.vibin.findUnique({
       where: {
@@ -12098,7 +12116,7 @@ app.post('/api/v2/vibins/toggle', requireV2Auth, async (req: AuthenticatedReques
           targetType,
           targetId,
           title: `${actor.displayName ?? actor.username ?? buildV2TravelerUsernameFallback(actor.id)} liked your moment`,
-          body: 'Your moment got a new like.',
+          body: targetMomentPlaceName || 'Your moment got a new like.',
         });
       }
     }
@@ -13989,6 +14007,7 @@ app.post('/api/moments', requireSessionAuth, async (req: AuthenticatedRequest, r
         actorUserId: req.authV2UserId!,
         momentId: moment.id,
         visibility: moment.visibility,
+        caption: moment.caption,
       });
 
       const requestOrigin = `${getRequestOrigin(req)}`;
@@ -14186,6 +14205,7 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
       actorUserId: req.authV2UserId!,
       momentId: moment.id,
       visibility: moment.visibility,
+      caption: moment.caption,
     });
 
     await updateMyOnboardingState({
