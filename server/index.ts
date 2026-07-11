@@ -130,6 +130,7 @@ const FIREBASE_PROJECT_ID = process.env.FIREBASE_PROJECT_ID;
 const FIREBASE_CLIENT_EMAIL = process.env.FIREBASE_CLIENT_EMAIL;
 const FIREBASE_PRIVATE_KEY = process.env.FIREBASE_PRIVATE_KEY;
 const FIREBASE_SERVICE_ACCOUNT_JSON = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+let hasLoggedMissingFirebaseMessagingConfig = false;
 const UNSUPPORTED_CITY_GATE_ENABLED = String(process.env.UNSUPPORTED_CITY_GATE_ENABLED ?? 'false').toLowerCase() === 'true';
 const USE_STAGING_FIXED_OTP = APP_ENV === 'staging';
 const V2_OTP_CODE_LENGTH = Number(process.env.VONAGE_VERIFY_CODE_LENGTH || 4);
@@ -2886,6 +2887,11 @@ function getFirebaseMessagingClient() {
     console.error('Failed to initialize Firebase Admin SDK', error);
   }
 
+  if (!hasLoggedMissingFirebaseMessagingConfig) {
+    hasLoggedMissingFirebaseMessagingConfig = true;
+    console.error('Firebase Admin SDK unavailable for push notifications: missing or invalid Firebase server credentials');
+  }
+
   return null;
 }
 
@@ -2897,6 +2903,7 @@ async function sendPushNotification(input: {
 }) {
   const messaging = getFirebaseMessagingClient();
   if (!messaging) {
+    console.error('Push send skipped: Firebase messaging client unavailable', { userId: input.userId, type: input.data?.type ?? null });
     return;
   }
 
@@ -2918,6 +2925,12 @@ async function sendPushNotification(input: {
   ]);
 
   if (settings?.pushEnabled === false || devices.length === 0) {
+    console.warn('Push send skipped', {
+      userId: input.userId,
+      type: input.data?.type ?? null,
+      pushEnabled: settings?.pushEnabled ?? null,
+      deviceCount: devices.length,
+    });
     return;
   }
 
@@ -2965,6 +2978,7 @@ async function sendV2PushNotification(input: {
 }) {
   const messaging = getFirebaseMessagingClient();
   if (!messaging) {
+    console.error('V2 push send skipped: Firebase messaging client unavailable', { userId: input.userId, type: input.data?.type ?? null });
     return;
   }
 
@@ -2986,6 +3000,12 @@ async function sendV2PushNotification(input: {
   ]);
 
   if (settings?.pushEnabled === false || devices.length === 0) {
+    console.warn('V2 push send skipped', {
+      userId: input.userId,
+      type: input.data?.type ?? null,
+      pushEnabled: settings?.pushEnabled ?? null,
+      deviceCount: devices.length,
+    });
     return;
   }
 
