@@ -346,6 +346,16 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         #if canImport(FirebaseMessaging)
         Messaging.messaging().delegate = self
         #endif
+        UNUserNotificationCenter.current().getNotificationSettings { settings in
+            switch settings.authorizationStatus {
+            case .authorized, .provisional, .ephemeral:
+                DispatchQueue.main.async {
+                    application.registerForRemoteNotifications()
+                }
+            default:
+                break
+            }
+        }
         application.setMinimumBackgroundFetchInterval(UIApplication.backgroundFetchIntervalMinimum)
         return true
     }
@@ -3883,6 +3893,16 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             }
         }
         syncNotificationPermissionState(with: settings.authorizationStatus)
+        registerForRemoteNotificationsIfAuthorized(status: settings.authorizationStatus)
+    }
+
+    private func registerForRemoteNotificationsIfAuthorized(status: UNAuthorizationStatus) {
+        switch status {
+        case .authorized, .provisional, .ephemeral:
+            UIApplication.shared.registerForRemoteNotifications()
+        default:
+            break
+        }
     }
 
     var shouldShowLocationAccessCTA: Bool {

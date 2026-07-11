@@ -9,6 +9,8 @@ const VONAGE_VERIFY_CODE_LENGTH = Number(process.env.VONAGE_VERIFY_CODE_LENGTH |
 const VONAGE_VERIFY_PIN_EXPIRY_SECONDS = Number(process.env.VONAGE_VERIFY_PIN_EXPIRY_SECONDS || 300);
 const VONAGE_VERIFY_WORKFLOW_ID = Number(process.env.VONAGE_VERIFY_WORKFLOW_ID || 1);
 const V2_SESSION_TTL_MS = Number(process.env.V2_SESSION_TTL_MS || 1000 * 60 * 60 * 24 * 30);
+const V2_SESSION_NEVER_EXPIRES = String(process.env.V2_SESSION_NEVER_EXPIRES ?? 'true').toLowerCase() === 'true';
+const V2_SESSION_MAX_EXPIRES_AT = new Date('9999-12-31T23:59:59.999Z');
 const STAGING_FIXED_OTP_CODE = String(process.env.V2_STAGING_FIXED_OTP_CODE || '1234').trim();
 const USE_STAGING_FIXED_OTP = APP_ENV === 'staging';
 const APP_REVIEW_MODE_ENABLED = String(
@@ -478,6 +480,13 @@ function hashSessionToken(token: string) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
+function resolveV2SessionExpiresAt() {
+  if (V2_SESSION_NEVER_EXPIRES) {
+    return V2_SESSION_MAX_EXPIRES_AT;
+  }
+  return new Date(Date.now() + V2_SESSION_TTL_MS);
+}
+
 function mapUser(user: V2UserRecord) {
   return {
     id: user.id,
@@ -518,7 +527,8 @@ export async function getV2SessionFromToken(token: string) {
     },
   });
 
-  if (!session || session.revokedAt || session.expiresAt <= new Date()) {
+  const isExpired = !V2_SESSION_NEVER_EXPIRES && session?.expiresAt ? session.expiresAt <= new Date() : false;
+  if (!session || session.revokedAt || isExpired) {
     return null;
   }
 
@@ -1226,7 +1236,7 @@ export async function verifyOtp(input: VerifyOtpInput) {
       data: {
         userId: user.id,
         tokenHash: hashSessionToken(token),
-        expiresAt: new Date(Date.now() + V2_SESSION_TTL_MS),
+        expiresAt: resolveV2SessionExpiresAt(),
       },
     });
 
