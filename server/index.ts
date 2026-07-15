@@ -10838,6 +10838,11 @@ app.use(async (req: AuthenticatedRequest, _res, next) => {
     console.error(error);
   }
 
+  if (legacyDbAccessDisabled) {
+    next();
+    return;
+  }
+
   try {
     const session = await prisma.session.findUnique({
       where: { token },
@@ -12879,6 +12884,11 @@ async function optionalAuth(req: AuthenticatedRequest, _res: express.Response, n
     }
   } catch (error) {
     console.error(error);
+  }
+
+  if (legacyDbAccessDisabled) {
+    next();
+    return;
   }
 
   try {
