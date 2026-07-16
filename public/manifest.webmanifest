@@ -1,7 +1,7 @@
 {
-  "name": "Vibinn Club",
+  "name": "vibinn",
   "short_name": "Vibinn",
-  "description": "Find your travel vibe, save hidden gems, and meet travelers like you.",
+  "description": "Save your food photos as memories. Share them with your closest friends.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",

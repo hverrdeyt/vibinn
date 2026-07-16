@@ -4266,8 +4266,9 @@ export default function App() {
   ].sort((a, b) => b.sortTimestamp - a.sortTimestamp) : [];
 
   useEffect(() => {
-    const defaultTitle = 'Vibinn Club';
-    const defaultDescription = 'Turn your meals into a food diary.';
+    const defaultTitle = 'vibinn';
+    const defaultDescription = 'Save your food photos as memories. Share them with your closest friends.';
+    const defaultImage = `${window.location.origin}/vibinn-landing-share.png`;
 
     if (
       currentScreen === 'public-profile'
@@ -4305,9 +4306,11 @@ export default function App() {
     upsertDocumentMeta('property', 'og:title', defaultTitle);
     upsertDocumentMeta('property', 'og:description', defaultDescription);
     upsertDocumentMeta('property', 'og:type', 'website');
+    upsertDocumentMeta('property', 'og:image', defaultImage);
     upsertDocumentMeta('name', 'twitter:card', 'summary_large_image');
     upsertDocumentMeta('name', 'twitter:title', defaultTitle);
     upsertDocumentMeta('name', 'twitter:description', defaultDescription);
+    upsertDocumentMeta('name', 'twitter:image', defaultImage);
   }, [currentScreen, resolvedPublicProfileUser]);
 
   const renderScreen = () => {
