@@ -2023,6 +2023,7 @@ async function buildPublicProfileHtml(username: string, requestOrigin: string) {
 }
 
 async function buildLandingPublicPosts(requestOrigin: string) {
+  const fallbackAvatarUrl = `${requestOrigin}/brand/vibinn-logo-icon.png`;
   const moments = await prismaV2.moment.findMany({
     where: {
       visibility: 'PUBLIC',
@@ -2050,7 +2051,7 @@ async function buildLandingPublicPosts(requestOrigin: string) {
     orderBy: {
       visitedAt: 'desc',
     },
-    take: 24,
+    take: 60,
     select: {
       id: true,
       uploadedMedia: true,
@@ -2068,8 +2069,10 @@ async function buildLandingPublicPosts(requestOrigin: string) {
     .map((moment) => {
       const mediaUrl = resolveMomentMediaUrls(moment.uploadedMedia, requestOrigin)
         .find((url) => !url.toLowerCase().endsWith('.mp4'));
-      const avatarUrl = moment.user.avatarUrl ? resolveUploadedAssetUrl(moment.user.avatarUrl, requestOrigin) : null;
-      if (!mediaUrl || !avatarUrl) {
+      const avatarUrl = moment.user.avatarUrl
+        ? resolveUploadedAssetUrl(moment.user.avatarUrl, requestOrigin)
+        : fallbackAvatarUrl;
+      if (!mediaUrl) {
         return null;
       }
 
@@ -2100,7 +2103,8 @@ async function buildLandingPublicPosts(requestOrigin: string) {
       imageUrl: string;
       avatarUrl: string;
       ratingLabel: 'disliked' | 'not_bad' | 'liked' | 'recommended';
-    } => Boolean(entry));
+    } => Boolean(entry))
+    .slice(0, 24);
 }
 
 function getRequestOrigin(req: express.Request) {
