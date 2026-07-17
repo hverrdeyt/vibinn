@@ -342,13 +342,13 @@ export default function LandingPage({
         <div className="relative z-10 mx-auto flex min-h-[calc(100svh-9rem)] w-full max-w-6xl flex-col items-center justify-center">
           <div className="max-w-3xl text-center">
             <h1 className="mx-auto mt-5 max-w-[12ch] text-balance text-[2.8rem] font-black leading-[0.9] tracking-[-0.08em] text-white sm:text-[4.6rem]">
-              <span className="block text-black font-medium">A social</span>
+              <span className="block text-black font-medium">Share your</span>
               <span className="block h-3 sm:h-4" />
               <span className="landing-bbh-bartle block text-[0.82em] leading-[0.82] text-black">
                 Food
               </span>
               <span className="landing-bbh-bartle block text-[0.82em] leading-[0.82] text-black">
-                diary
+                life
               </span>
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg font-semibold leading-relaxed text-black/72 sm:text-[1.55rem]">
