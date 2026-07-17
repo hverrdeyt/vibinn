@@ -2032,20 +2032,6 @@ async function buildLandingPublicPosts(requestOrigin: string) {
       },
       user: {
         status: 'ACTIVE',
-        OR: [
-          {
-            privacySettings: {
-              is: {
-                profileVisibility: 'PUBLIC',
-              },
-            },
-          },
-          {
-            privacySettings: {
-              is: null,
-            },
-          },
-        ],
       },
     },
     orderBy: {
