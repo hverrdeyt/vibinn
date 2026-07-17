@@ -2024,73 +2024,108 @@ async function buildPublicProfileHtml(username: string, requestOrigin: string) {
 
 async function buildLandingPublicPosts(requestOrigin: string) {
   const fallbackAvatarUrl = `${requestOrigin}/brand/vibinn-logo-icon.png`;
-  const moments = await prismaV2.moment.findMany({
-    where: {
-      visibility: 'PUBLIC',
-      uploadedMedia: {
-        isEmpty: false,
-      },
-      user: {
-        status: 'ACTIVE',
-      },
-    },
-    orderBy: {
-      visitedAt: 'desc',
-    },
-    take: 60,
-    select: {
-      id: true,
-      uploadedMedia: true,
-      rating: true,
-      ratingLabel: true,
-      user: {
-        select: {
-          avatarUrl: true,
+  try {
+    const moments = await prismaV2.moment.findMany({
+      where: {
+        visibility: 'PUBLIC',
+        uploadedMedia: {
+          isEmpty: false,
+        },
+        user: {
+          status: 'ACTIVE',
         },
       },
-    },
-  });
+      orderBy: {
+        visitedAt: 'desc',
+      },
+      take: 60,
+      select: {
+        id: true,
+        uploadedMedia: true,
+        rating: true,
+        ratingLabel: true,
+        user: {
+          select: {
+            avatarUrl: true,
+          },
+        },
+      },
+    });
 
-  return moments
-    .map((moment) => {
-      const mediaUrl = resolveMomentMediaUrls(moment.uploadedMedia, requestOrigin)
-        .find((url) => !url.toLowerCase().endsWith('.mp4'));
-      const avatarUrl = moment.user.avatarUrl
-        ? resolveUploadedAssetUrl(moment.user.avatarUrl, requestOrigin)
-        : fallbackAvatarUrl;
-      if (!mediaUrl) {
-        return null;
-      }
-
-      const ratingLabel = (() => {
-        switch ((moment.ratingLabel ?? '').trim().toLowerCase()) {
-          case 'disliked':
-            return 'disliked';
-          case 'not_bad':
-            return 'not_bad';
-          case 'recommended':
-            return 'recommended';
-          case 'liked':
-            return 'liked';
-          default:
-            return (moment.rating ?? 5) >= 5 ? 'recommended' : 'liked';
+    const mappedPosts = moments
+      .map((moment) => {
+        const resolvedMedia = resolveMomentMediaUrls(moment.uploadedMedia, requestOrigin);
+        const mediaUrl = resolvedMedia.find((url) => !url.toLowerCase().endsWith('.mp4'));
+        const avatarUrl = moment.user.avatarUrl
+          ? resolveUploadedAssetUrl(moment.user.avatarUrl, requestOrigin)
+          : fallbackAvatarUrl;
+        if (!mediaUrl) {
+          return null;
         }
-      })();
 
-      return {
+        const ratingLabel = (() => {
+          switch ((moment.ratingLabel ?? '').trim().toLowerCase()) {
+            case 'disliked':
+              return 'disliked';
+            case 'not_bad':
+              return 'not_bad';
+            case 'recommended':
+              return 'recommended';
+            case 'liked':
+              return 'liked';
+            default:
+              return (moment.rating ?? 5) >= 5 ? 'recommended' : 'liked';
+          }
+        })();
+
+        return {
+          id: moment.id,
+          imageUrl: mediaUrl,
+          avatarUrl,
+          ratingLabel,
+          rawUploadedMedia: moment.uploadedMedia,
+          resolvedMedia,
+        };
+      })
+      .filter((entry): entry is {
+        id: string;
+        imageUrl: string;
+        avatarUrl: string;
+        ratingLabel: 'disliked' | 'not_bad' | 'liked' | 'recommended';
+        rawUploadedMedia: string[];
+        resolvedMedia: string[];
+      } => Boolean(entry));
+
+    console.log('landing_posts_debug', JSON.stringify({
+      requestOrigin,
+      candidateCount: moments.length,
+      validCount: mappedPosts.length,
+      sampleCandidates: moments.slice(0, 3).map((moment) => ({
         id: moment.id,
-        imageUrl: mediaUrl,
-        avatarUrl,
-        ratingLabel,
-      };
-    })
-    .filter((entry): entry is {
-      id: string;
-      imageUrl: string;
-      avatarUrl: string;
-      ratingLabel: 'disliked' | 'not_bad' | 'liked' | 'recommended';
-    } => Boolean(entry))
-    .slice(0, 24);
+        uploadedMedia: moment.uploadedMedia,
+        avatarUrlPresent: Boolean(moment.user.avatarUrl),
+        ratingLabel: moment.ratingLabel,
+      })),
+      sampleValidPosts: mappedPosts.slice(0, 3).map((post) => ({
+        id: post.id,
+        imageUrl: post.imageUrl,
+        avatarUrl: post.avatarUrl,
+        rawUploadedMedia: post.rawUploadedMedia,
+        resolvedMedia: post.resolvedMedia,
+      })),
+    }));
+
+    return mappedPosts
+      .slice(0, 24)
+      .map(({ rawUploadedMedia: _rawUploadedMedia, resolvedMedia: _resolvedMedia, ...post }) => post);
+  } catch (error) {
+    console.error('landing_posts_debug_error', {
+      requestOrigin,
+      message: error instanceof Error ? error.message : String(error),
+      stack: error instanceof Error ? error.stack : undefined,
+    });
+    throw error;
+  }
 }
 
 function getRequestOrigin(req: express.Request) {
