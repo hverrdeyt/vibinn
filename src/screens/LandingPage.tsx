@@ -188,17 +188,17 @@ function getLaneBounds(
 
 const socialLinks: SocialLink[] = [
   {
-    href: 'https://www.tiktok.com/@vibinnapp',
+    href: 'https://www.tiktok.com/@vibinnfood',
     label: 'TikTok',
     icon: <TikTokIcon />,
   },
   {
-    href: 'https://www.instagram.com/vibinnapp',
+    href: 'https://www.instagram.com/vibinnfood',
     label: 'Instagram',
     icon: <InstagramIcon />,
   },
   {
-    href: 'https://www.threads.com/@vibinnapp',
+    href: 'https://www.threads.com/@vibinnfood',
     label: 'Threads',
     icon: <ThreadsIcon />,
   },
@@ -224,7 +224,7 @@ export default function LandingPage({
   useEffect(() => {
     const controller = new AbortController();
 
-    void fetch(`${api.getBaseUrl()}/api/public/landing-posts`, {
+    void fetch('/api/public/landing-posts', {
       signal: controller.signal,
     })
       .then(async (response) => {
