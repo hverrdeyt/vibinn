@@ -57,10 +57,10 @@ const fallbackLandingPosts: LandingPublicPost[] = [
         ?? ((place.momentRating ?? 5) >= 5 ? 'recommended' : 'liked'),
     })),
   ))
-  .slice(0, 24);
+  .slice(0, 14);
 
 const landingCardSeeds: Array<Omit<FloatingPostConfig, 'image' | 'avatar' | 'rating'>> = Array.from(
-  { length: 24 },
+  { length: 14 },
   (_, index) => {
     const laneIndex = index % 4;
     const laneSlot = Math.floor(index / 4);
