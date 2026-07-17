@@ -2022,6 +2022,78 @@ async function buildPublicProfileHtml(username: string, requestOrigin: string) {
   });
 }
 
+async function buildLandingPublicPosts(requestOrigin: string) {
+  const moments = await prismaV2.moment.findMany({
+    where: {
+      visibility: 'PUBLIC',
+      uploadedMedia: {
+        isEmpty: false,
+      },
+      user: {
+        status: 'ACTIVE',
+        privacySettings: {
+          is: {
+            profileVisibility: 'PUBLIC',
+          },
+        },
+      },
+    },
+    orderBy: {
+      visitedAt: 'desc',
+    },
+    take: 24,
+    select: {
+      id: true,
+      uploadedMedia: true,
+      rating: true,
+      ratingLabel: true,
+      user: {
+        select: {
+          avatarUrl: true,
+        },
+      },
+    },
+  });
+
+  return moments
+    .map((moment) => {
+      const mediaUrl = resolveMomentMediaUrls(moment.uploadedMedia, requestOrigin)
+        .find((url) => !url.toLowerCase().endsWith('.mp4'));
+      const avatarUrl = moment.user.avatarUrl ? resolveUploadedAssetUrl(moment.user.avatarUrl, requestOrigin) : null;
+      if (!mediaUrl || !avatarUrl) {
+        return null;
+      }
+
+      const ratingLabel = (() => {
+        switch ((moment.ratingLabel ?? '').trim().toLowerCase()) {
+          case 'disliked':
+            return 'disliked';
+          case 'not_bad':
+            return 'not_bad';
+          case 'recommended':
+            return 'recommended';
+          case 'liked':
+            return 'liked';
+          default:
+            return (moment.rating ?? 5) >= 5 ? 'recommended' : 'liked';
+        }
+      })();
+
+      return {
+        id: moment.id,
+        imageUrl: mediaUrl,
+        avatarUrl,
+        ratingLabel,
+      };
+    })
+    .filter((entry): entry is {
+      id: string;
+      imageUrl: string;
+      avatarUrl: string;
+      ratingLabel: 'disliked' | 'not_bad' | 'liked' | 'recommended';
+    } => Boolean(entry));
+}
+
 function getRequestOrigin(req: express.Request) {
   const forwardedProtoHeader = req.get('x-forwarded-proto');
   const forwardedProto = forwardedProtoHeader?.split(',')[0]?.trim();
@@ -13431,6 +13503,17 @@ app.get('/api/profiles/:username/public/og-image', (req, res) => {
       res.setHeader('Content-Type', 'image/jpeg');
       res.setHeader('Cache-Control', 'public, max-age=900, s-maxage=900');
       res.send(imageBuffer);
+    })
+    .catch((error) => handleError(res, error));
+});
+
+app.get('/api/public/landing-posts', (req, res) => {
+  const requestOrigin = `${getRequestOrigin(req)}`;
+
+  void buildLandingPublicPosts(requestOrigin)
+    .then((posts) => {
+      res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+      res.json({ posts });
     })
     .catch((error) => handleError(res, error));
 });
