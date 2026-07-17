@@ -2057,7 +2057,7 @@ async function buildLandingPublicPosts(requestOrigin: string) {
         const resolvedMedia = resolveMomentMediaUrls(moment.uploadedMedia, requestOrigin);
         const mediaUrl = resolvedMedia.find((url) => !url.toLowerCase().endsWith('.mp4'));
         const avatarUrl = moment.user.avatarUrl
-          ? resolveUploadedAssetUrl(moment.user.avatarUrl, requestOrigin)
+          ? resolveMomentMediaUrls([moment.user.avatarUrl], requestOrigin)[0]
           : fallbackAvatarUrl;
         if (!mediaUrl) {
           return null;
