@@ -45,6 +45,12 @@
     padding-left: var(--safe-left);
     padding-right: var(--safe-right);
   }
+
+  html.landing-shell,
+  body.landing-shell,
+  #root.landing-shell {
+    background: #D3FF48;
+  }
 }
 
 @layer components {

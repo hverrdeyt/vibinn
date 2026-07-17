@@ -57,18 +57,54 @@ const fallbackLandingPosts: LandingPublicPost[] = [
         ?? ((place.momentRating ?? 5) >= 5 ? 'recommended' : 'liked'),
     })),
   ))
-  .slice(0, 8);
+  .slice(0, 24);
 
-const landingCardSeeds: Array<Omit<FloatingPostConfig, 'image' | 'avatar' | 'rating'>> = [
-  { x: 46, y: 72, width: 79, rotation: -8, delay: 0.2 },
-  { x: 980, y: 84, width: 73, rotation: 10, delay: 0.7 },
-  { x: 24, y: 360, width: 83, rotation: 6, delay: 1.2 },
-  { x: 1180, y: 320, width: 77, rotation: -12, delay: 0.5 },
-  { x: 120, y: 860, width: 74, rotation: 14, delay: 0.9 },
-  { x: 1030, y: 900, width: 82, rotation: -7, delay: 0.1 },
-  { x: 460, y: 56, width: 68, rotation: 16, delay: 1.5 },
-  { x: 690, y: 980, width: 71, rotation: -16, delay: 0.4 },
-];
+const landingCardSeeds: Array<Omit<FloatingPostConfig, 'image' | 'avatar' | 'rating'>> = Array.from(
+  { length: 24 },
+  (_, index) => {
+    const laneIndex = index % 4;
+    const laneSlot = Math.floor(index / 4);
+    const widthOptions = [68, 71, 73, 74, 77, 79, 82, 83];
+    const rotationOptions = [-16, -12, -8, -7, 6, 10, 14, 16];
+    const horizontalX = 28 + (laneSlot % 6) * 210 + (laneIndex % 2) * 22;
+    const verticalY = 58 + (laneSlot % 6) * 166 + (laneIndex % 2) * 18;
+
+    switch (laneIndex) {
+      case 0:
+        return {
+          x: horizontalX,
+          y: 44 + laneSlot * 10,
+          width: widthOptions[index % widthOptions.length],
+          rotation: rotationOptions[index % rotationOptions.length],
+          delay: index * 0.08,
+        };
+      case 1:
+        return {
+          x: 1120 + (laneSlot % 2) * 42,
+          y: verticalY,
+          width: widthOptions[(index + 2) % widthOptions.length],
+          rotation: rotationOptions[(index + 3) % rotationOptions.length],
+          delay: index * 0.08,
+        };
+      case 2:
+        return {
+          x: 94 + (laneSlot % 6) * 188,
+          y: 900 + laneSlot * 12,
+          width: widthOptions[(index + 4) % widthOptions.length],
+          rotation: rotationOptions[(index + 5) % rotationOptions.length],
+          delay: index * 0.08,
+        };
+      default:
+        return {
+          x: 22 + (laneSlot % 2) * 28,
+          y: 170 + laneSlot * 148,
+          width: widthOptions[(index + 1) % widthOptions.length],
+          rotation: rotationOptions[(index + 6) % rotationOptions.length],
+          delay: index * 0.08,
+        };
+    }
+  },
+);
 
 const LANDING_POST_REFERENCE_WIDTH = 132;
 
@@ -219,6 +255,28 @@ export default function LandingPage({
 
   useEffect(() => {
     trackEvent('Visit landing page', analyticsContextRef.current);
+  }, []);
+
+  useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const root = document.getElementById('root');
+    const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+    const previousThemeColor = themeColorMeta?.getAttribute('content');
+
+    html.classList.add('landing-shell');
+    body.classList.add('landing-shell');
+    root?.classList.add('landing-shell');
+    themeColorMeta?.setAttribute('content', '#D3FF48');
+
+    return () => {
+      html.classList.remove('landing-shell');
+      body.classList.remove('landing-shell');
+      root?.classList.remove('landing-shell');
+      if (previousThemeColor) {
+        themeColorMeta?.setAttribute('content', previousThemeColor);
+      }
+    };
   }, []);
 
   useEffect(() => {
