@@ -115,6 +115,7 @@ const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 const R2_ENDPOINT = process.env.R2_ENDPOINT;
 const R2_PUBLIC_URL = process.env.R2_PUBLIC_URL;
+const R2_OPERATION_TIMEOUT_MS = Number(process.env.R2_OPERATION_TIMEOUT_MS || 15000);
 const GOOGLE_NEARBY_FREE_MONTHLY_LIMIT = Number(process.env.GOOGLE_NEARBY_FREE_MONTHLY_LIMIT || 0);
 const TICKETMASTER_API_KEY = process.env.TICKETMASTER_API_KEY;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -280,6 +281,23 @@ function buildMomentObjectKey(userId: string, storageName: string) {
   const normalizedStorageName = storageName.trim();
   const prefix = APP_ENV === 'staging' ? 'staging/' : '';
   return `${prefix}moments/${normalizedUserId}/${normalizedStorageName}`;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
+  let timeoutId: NodeJS.Timeout | null = null;
+
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutId = setTimeout(() => {
+          reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 }
 
 function getAllowedGoogleClientIds() {
@@ -14629,9 +14647,25 @@ app.get('/api/media', async (req, res) => {
     }
 
     if (r2Client && R2_BUCKET_NAME) {
-      const object = await r2Client.send(new GetObjectCommand({
-        Bucket: R2_BUCKET_NAME,
-        Key: key,
+      const startedAt = Date.now();
+      console.log('media_fetch_start', JSON.stringify({
+        key,
+        bucket: R2_BUCKET_NAME,
+        requestOrigin: getRequestOrigin(req),
+      }));
+      const object = await withTimeout(
+        r2Client.send(new GetObjectCommand({
+          Bucket: R2_BUCKET_NAME,
+          Key: key,
+        })),
+        R2_OPERATION_TIMEOUT_MS,
+        `R2 GetObject ${key}`,
+      );
+      console.log('media_fetch_success', JSON.stringify({
+        key,
+        durationMs: Date.now() - startedAt,
+        contentType: object.ContentType ?? null,
+        contentLength: object.ContentLength ?? null,
       }));
 
       if (object.ContentType) {
@@ -14641,6 +14675,7 @@ app.get('/api/media', async (req, res) => {
 
       const body = object.Body as NodeJS.ReadableStream | undefined;
       if (!body) {
+        console.error('media_fetch_missing_body', JSON.stringify({ key }));
         res.status(404).json({ error: 'Media not found' });
         return;
       }
@@ -14690,12 +14725,30 @@ app.post('/api/uploads/media', requireSessionAuth, async (req: AuthenticatedRequ
       const objectKey = buildMomentObjectKey(uploadUserId, storageName);
 
       if (r2Client && R2_BUCKET_NAME) {
-        await r2Client.send(new PutObjectCommand({
-          Bucket: R2_BUCKET_NAME,
-          Key: objectKey,
-          Body: parsed.buffer,
-          ContentType: file.mimeType ?? parsed.mimeType,
-          CacheControl: 'public, max-age=31536000, immutable',
+        const startedAt = Date.now();
+        console.log('media_upload_start', JSON.stringify({
+          route: '/api/uploads/media',
+          objectKey,
+          byteLength: parsed.buffer.length,
+          mimeType: file.mimeType ?? parsed.mimeType,
+          uploadUserId,
+        }));
+        await withTimeout(
+          r2Client.send(new PutObjectCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: objectKey,
+            Body: parsed.buffer,
+            ContentType: file.mimeType ?? parsed.mimeType,
+            CacheControl: 'public, max-age=31536000, immutable',
+          })),
+          R2_OPERATION_TIMEOUT_MS,
+          `R2 PutObject ${objectKey}`,
+        );
+        console.log('media_upload_success', JSON.stringify({
+          route: '/api/uploads/media',
+          objectKey,
+          durationMs: Date.now() - startedAt,
+          byteLength: parsed.buffer.length,
         }));
       } else {
         await mkdir(UPLOADS_DIR, { recursive: true });
@@ -14749,12 +14802,30 @@ app.post('/api/v2/uploads/media', async (req: AuthenticatedRequest, res) => {
       const objectKey = buildMomentObjectKey(req.authV2UserId, storageName);
 
       if (r2Client && R2_BUCKET_NAME) {
-        await r2Client.send(new PutObjectCommand({
-          Bucket: R2_BUCKET_NAME,
-          Key: objectKey,
-          Body: parsed.buffer,
-          ContentType: file.mimeType ?? parsed.mimeType,
-          CacheControl: 'public, max-age=31536000, immutable',
+        const startedAt = Date.now();
+        console.log('media_upload_start', JSON.stringify({
+          route: '/api/v2/uploads/media',
+          objectKey,
+          byteLength: parsed.buffer.length,
+          mimeType: file.mimeType ?? parsed.mimeType,
+          uploadUserId: req.authV2UserId,
+        }));
+        await withTimeout(
+          r2Client.send(new PutObjectCommand({
+            Bucket: R2_BUCKET_NAME,
+            Key: objectKey,
+            Body: parsed.buffer,
+            ContentType: file.mimeType ?? parsed.mimeType,
+            CacheControl: 'public, max-age=31536000, immutable',
+          })),
+          R2_OPERATION_TIMEOUT_MS,
+          `R2 PutObject ${objectKey}`,
+        );
+        console.log('media_upload_success', JSON.stringify({
+          route: '/api/v2/uploads/media',
+          objectKey,
+          durationMs: Date.now() - startedAt,
+          byteLength: parsed.buffer.length,
         }));
       } else {
         await mkdir(UPLOADS_DIR, { recursive: true });
