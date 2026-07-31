@@ -11610,7 +11610,7 @@ private struct NativeHomepageShellScreen: View {
     private func homepageStageTitle(for stage: HomepageStage) -> String {
         switch stage {
         case .recap:
-            return "\(homepageCurrentMonthTitle) RECAP"
+            return "THIS MONTH"
         case .places:
             return "TOP PLACES"
         case .updates:
@@ -12111,7 +12111,8 @@ private struct NativeHomepageShellScreen: View {
             Spacer(minLength: 0)
 
             Button {
-                handleHeroActionTap()
+                nativeHaptic(.selection)
+                appState.presentCheckInFlow()
             } label: {
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
                     .fill(Color.white.opacity(0.86))
