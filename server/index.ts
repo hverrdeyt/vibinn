@@ -72,6 +72,7 @@ import {
   jumpMyOnboardingStateForDebug,
   joinPhoneWaitlist,
   matchRegisteredContacts,
+  redeemInviteCode,
   requestOtp,
   resetMyOnboardingStateForDebug,
   revokeV2Session,
@@ -145,6 +146,7 @@ function getAuthV2ErrorStatus(error: AuthV2Error) {
     case 'INVITE_CODE_EXPIRED':
     case 'INVITE_CODE_PAUSED':
     case 'INVITE_CODE_ALREADY_EXISTS':
+    case 'INVITE_ALREADY_REDEEMED':
     case 'OTP_REQUEST_INACTIVE':
     case 'OTP_REQUEST_EXPIRED':
       return 409;
@@ -12708,6 +12710,30 @@ app.get('/api/v2/invite-codes/me', async (req: AuthenticatedRequest, res) => {
   }
 });
 
+app.post('/api/v2/invite-codes/redeem', async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const { code } = req.body as { code?: string };
+    if (!code?.trim()) {
+      res.status(400).json({ error: 'code is required', code: 'INVITE_CODE_REQUIRED' });
+      return;
+    }
+
+    const result = await redeemInviteCode({ userId: req.authV2UserId, code });
+    res.json(result);
+  } catch (error) {
+    if (error instanceof AuthV2Error) {
+      res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
+      return;
+    }
+    handleError(res, error);
+  }
+});
+
 app.post('/api/v2/invite-codes/me', async (req: AuthenticatedRequest, res) => {
   try {
     if (!req.authV2UserId) {
@@ -14647,12 +14673,6 @@ app.get('/api/media', async (req, res) => {
     }
 
     if (r2Client && R2_BUCKET_NAME) {
-      const startedAt = Date.now();
-      console.log('media_fetch_start', JSON.stringify({
-        key,
-        bucket: R2_BUCKET_NAME,
-        requestOrigin: getRequestOrigin(req),
-      }));
       const object = await withTimeout(
         r2Client.send(new GetObjectCommand({
           Bucket: R2_BUCKET_NAME,
@@ -14661,12 +14681,6 @@ app.get('/api/media', async (req, res) => {
         R2_OPERATION_TIMEOUT_MS,
         `R2 GetObject ${key}`,
       );
-      console.log('media_fetch_success', JSON.stringify({
-        key,
-        durationMs: Date.now() - startedAt,
-        contentType: object.ContentType ?? null,
-        contentLength: object.ContentLength ?? null,
-      }));
 
       if (object.ContentType) {
         res.setHeader('Content-Type', object.ContentType);
@@ -14675,7 +14689,6 @@ app.get('/api/media', async (req, res) => {
 
       const body = object.Body as NodeJS.ReadableStream | undefined;
       if (!body) {
-        console.error('media_fetch_missing_body', JSON.stringify({ key }));
         res.status(404).json({ error: 'Media not found' });
         return;
       }
@@ -14725,14 +14738,6 @@ app.post('/api/uploads/media', requireSessionAuth, async (req: AuthenticatedRequ
       const objectKey = buildMomentObjectKey(uploadUserId, storageName);
 
       if (r2Client && R2_BUCKET_NAME) {
-        const startedAt = Date.now();
-        console.log('media_upload_start', JSON.stringify({
-          route: '/api/uploads/media',
-          objectKey,
-          byteLength: parsed.buffer.length,
-          mimeType: file.mimeType ?? parsed.mimeType,
-          uploadUserId,
-        }));
         await withTimeout(
           r2Client.send(new PutObjectCommand({
             Bucket: R2_BUCKET_NAME,
@@ -14744,12 +14749,6 @@ app.post('/api/uploads/media', requireSessionAuth, async (req: AuthenticatedRequ
           R2_OPERATION_TIMEOUT_MS,
           `R2 PutObject ${objectKey}`,
         );
-        console.log('media_upload_success', JSON.stringify({
-          route: '/api/uploads/media',
-          objectKey,
-          durationMs: Date.now() - startedAt,
-          byteLength: parsed.buffer.length,
-        }));
       } else {
         await mkdir(UPLOADS_DIR, { recursive: true });
         const absolutePath = path.join(UPLOADS_DIR, storageName);
@@ -14802,14 +14801,6 @@ app.post('/api/v2/uploads/media', async (req: AuthenticatedRequest, res) => {
       const objectKey = buildMomentObjectKey(req.authV2UserId, storageName);
 
       if (r2Client && R2_BUCKET_NAME) {
-        const startedAt = Date.now();
-        console.log('media_upload_start', JSON.stringify({
-          route: '/api/v2/uploads/media',
-          objectKey,
-          byteLength: parsed.buffer.length,
-          mimeType: file.mimeType ?? parsed.mimeType,
-          uploadUserId: req.authV2UserId,
-        }));
         await withTimeout(
           r2Client.send(new PutObjectCommand({
             Bucket: R2_BUCKET_NAME,
@@ -14821,12 +14812,6 @@ app.post('/api/v2/uploads/media', async (req: AuthenticatedRequest, res) => {
           R2_OPERATION_TIMEOUT_MS,
           `R2 PutObject ${objectKey}`,
         );
-        console.log('media_upload_success', JSON.stringify({
-          route: '/api/v2/uploads/media',
-          objectKey,
-          durationMs: Date.now() - startedAt,
-          byteLength: parsed.buffer.length,
-        }));
       } else {
         await mkdir(UPLOADS_DIR, { recursive: true });
         const absolutePath = path.join(UPLOADS_DIR, storageName);

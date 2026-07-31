@@ -1,0 +1,228 @@
+{
+  "info": {
+    "_postman_id": "8cb7d41d-933a-4e24-978f-f56860a1433c",
+    "name": "Vibinn Decision Mode",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Decision mode backend collection for session generation, swipe, swap, save, go-now, check-in, and today feed."
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3001" },
+    { "key": "authToken", "value": "" },
+    { "key": "sessionId", "value": "" },
+    { "key": "placeId", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Catalog",
+      "item": [
+        {
+          "name": "Get Decision Intents",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/catalog/intents",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "catalog", "intents"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sessions",
+      "item": [
+        {
+          "name": "Create Session",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}", "disabled": true }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"cityKey\": \"boston\",\n  \"intentId\": \"good_coffee\",\n  \"entryMode\": \"mood\",\n  \"latitude\": 42.3578,\n  \"longitude\": -71.1127\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/sessions",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "sessions"]
+            }
+          }
+        },
+        {
+          "name": "Get Session",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}", "disabled": true }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/sessions/{{sessionId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "sessions", "{{sessionId}}"]
+            }
+          }
+        },
+        {
+          "name": "Swipe Left",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}", "disabled": true }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"placeId\": \"{{placeId}}\",\n  \"direction\": \"left\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/sessions/{{sessionId}}/swipe",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "sessions", "{{sessionId}}", "swipe"]
+            }
+          }
+        },
+        {
+          "name": "Swipe Right",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}", "disabled": true }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"placeId\": \"{{placeId}}\",\n  \"direction\": \"right\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/sessions/{{sessionId}}/swipe",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "sessions", "{{sessionId}}", "swipe"]
+            }
+          }
+        },
+        {
+          "name": "Swap Option",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}", "disabled": true }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"replacePlaceId\": \"{{placeId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/sessions/{{sessionId}}/swap",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "sessions", "{{sessionId}}", "swap"]
+            }
+          }
+        },
+        {
+          "name": "Save Decision Place",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"placeId\": \"{{placeId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/sessions/{{sessionId}}/save",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "sessions", "{{sessionId}}", "save"]
+            }
+          }
+        },
+        {
+          "name": "Go Now",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}", "disabled": true }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"placeId\": \"{{placeId}}\",\n  \"mapProvider\": \"google_maps\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/sessions/{{sessionId}}/go-now",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "sessions", "{{sessionId}}", "go-now"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Check-in & Feed",
+      "item": [
+        {
+          "name": "Submit Decision Check-in",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sessionId\": \"{{sessionId}}\",\n  \"placeId\": \"{{placeId}}\",\n  \"ratingLabel\": \"liked\",\n  \"threeWordReview\": \"cozy easy coffee\",\n  \"uploadedMedia\": []\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/checkins",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "checkins"]
+            }
+          }
+        },
+        {
+          "name": "Get Today Feed",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{authToken}}" }
+            ],
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/feed/today",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "feed", "today"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Add Place",
+      "item": [
+        {
+          "name": "Attach Existing Place",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{authToken}}", "disabled": true }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"sessionId\": \"{{sessionId}}\",\n  \"placeId\": \"{{placeId}}\"\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/decision/add-place",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "decision", "add-place"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

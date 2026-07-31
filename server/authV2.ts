@@ -905,6 +905,73 @@ export async function getMyInviteCode(ownerUserId: string) {
   return inviteCode ? buildInviteCodeSummary(inviteCode) : null;
 }
 
+export async function redeemInviteCode(input: { userId: string; code: string }) {
+  const user = await prismaV2.user.findUnique({
+    where: { id: input.userId },
+    select: { id: true, phoneNumberE164: true },
+  });
+  if (!user) {
+    throw new AuthV2Error('USER_NOT_FOUND', 'User was not found');
+  }
+
+  const existingRedemption = await prismaV2.inviteRedemption.findUnique({
+    where: { userId: input.userId },
+  });
+  if (existingRedemption) {
+    throw new AuthV2Error('INVITE_ALREADY_REDEEMED', 'You have already redeemed an invite code');
+  }
+
+  const inviteCode = await prismaV2.$transaction(async (tx) => {
+    const activeInviteCode = await getActiveInviteCodeOrThrow(input.code, tx);
+
+    const nextRedeemedCount = activeInviteCode.redeemedCount + 1;
+    const nextStatus = activeInviteCode.maxRedemptions !== null && nextRedeemedCount >= activeInviteCode.maxRedemptions
+      ? 'EXHAUSTED'
+      : activeInviteCode.status;
+
+    await tx.inviteRedemption.create({
+      data: {
+        inviteCodeId: activeInviteCode.id,
+        userId: user.id,
+        phoneNumberE164: user.phoneNumberE164,
+      },
+    });
+
+    const updatedInviteCode = await tx.inviteCode.update({
+      where: { id: activeInviteCode.id },
+      data: {
+        redeemedCount: nextRedeemedCount,
+        status: nextStatus,
+      },
+    });
+
+    await tx.notification.create({
+      data: {
+        userId: activeInviteCode.ownerUserId,
+        actorUserId: user.id,
+        type: 'INVITE_REDEEMED',
+        targetType: 'PROFILE',
+        targetId: user.id,
+        title: 'Someone joined with your invite',
+        body: 'Your invite brought a new person into Vibinn.',
+      },
+    });
+
+    return updatedInviteCode;
+  });
+
+  const onboarding = await updateMyOnboardingState({
+    userId: user.id,
+    currentStep: 'PROFILE',
+    completedStep: 'INVITE_CONFIRMED',
+  });
+
+  return {
+    inviteCode: buildInviteCodeSummary(inviteCode),
+    onboarding,
+  };
+}
+
 export async function generateMyInviteCode(input: GenerateInviteCodeInput) {
   const existing = await prismaV2.inviteCode.findUnique({
     where: { ownerUserId: input.ownerUserId },
@@ -973,13 +1040,6 @@ export async function requestOtp(input: RequestOtpInput) {
     if (!existingUser) {
       throw new AuthV2Error('PHONE_NOT_REGISTERED', 'Phone number is not registered');
     }
-  }
-
-  if (requestedPurpose === 'SIGN_UP') {
-    if (!input.inviteCode?.trim()) {
-      throw new AuthV2Error('INVITE_CODE_REQUIRED', 'Invite code is required');
-    }
-    await getActiveInviteCodeOrThrow(input.inviteCode);
   }
 
   const now = new Date();
@@ -1104,19 +1164,15 @@ export async function verifyOtp(input: VerifyOtpInput) {
       | null = null;
 
     if (otpRequest.purpose === 'SIGN_UP') {
-      if (!input.inviteCode?.trim()) {
-        throw new AuthV2Error('INVITE_CODE_REQUIRED', 'Invite code is required');
-      }
       if (user) {
         throw new AuthV2Error('PHONE_ALREADY_REGISTERED', 'Phone number is already registered');
       }
 
-      const inviteCode = await getActiveInviteCodeOrThrow(input.inviteCode, tx);
       user = await tx.user.create({
         data: {
           phoneNumberE164: otpRequest.phoneNumberE164,
           displayName: input.displayName?.trim() || null,
-          status: input.displayName?.trim() ? 'ACTIVE' : 'PENDING_PROFILE',
+          status: 'PENDING_PROFILE',
           onboardingCompleted: false,
           lastLoginAt: now,
         },
@@ -1125,44 +1181,9 @@ export async function verifyOtp(input: VerifyOtpInput) {
       onboardingState = await tx.userOnboardingState.create({
         data: {
           userId: user.id,
-          currentStep: input.displayName?.trim() ? 'LOCATION_PERMISSION' : 'PROFILE',
-          completedSteps: ['INVITE_CONFIRMED', 'PHONE_VERIFICATION'],
-          inviteCodeValidated: true,
-          inviteCodeValidatedAt: now,
+          currentStep: 'INVITE_CONFIRMED',
+          completedSteps: ['PHONE_VERIFICATION'],
           phoneVerifiedAt: now,
-        },
-      });
-
-      const nextRedeemedCount = inviteCode.redeemedCount + 1;
-      const nextStatus = inviteCode.maxRedemptions !== null && nextRedeemedCount >= inviteCode.maxRedemptions
-        ? 'EXHAUSTED'
-        : inviteCode.status;
-
-      await tx.inviteRedemption.create({
-        data: {
-          inviteCodeId: inviteCode.id,
-          userId: user.id,
-          phoneNumberE164: user.phoneNumberE164,
-        },
-      });
-
-      await tx.inviteCode.update({
-        where: { id: inviteCode.id },
-        data: {
-          redeemedCount: nextRedeemedCount,
-          status: nextStatus,
-        },
-      });
-
-      await tx.notification.create({
-        data: {
-          userId: inviteCode.ownerUserId,
-          actorUserId: user.id,
-          type: 'INVITE_REDEEMED',
-          targetType: 'PROFILE',
-          targetId: user.id,
-          title: 'Someone joined with your invite',
-          body: 'Your invite brought a new person into Vibinn.',
         },
       });
     } else {

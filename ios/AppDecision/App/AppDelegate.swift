@@ -201,6 +201,26 @@ private func nativeResolvedAPIBaseURL() -> URL {
 #endif
 }
 
+private func nativeDescribeDecodingError(_ error: Error) -> String {
+    guard let decodingError = error as? DecodingError else {
+        return error.localizedDescription
+    }
+
+    switch decodingError {
+    case .typeMismatch(let type, let context):
+        return "typeMismatch(\(type)) path=\(context.codingPath.map(\.stringValue).joined(separator: ".")) debug=\(context.debugDescription)"
+    case .valueNotFound(let type, let context):
+        return "valueNotFound(\(type)) path=\(context.codingPath.map(\.stringValue).joined(separator: ".")) debug=\(context.debugDescription)"
+    case .keyNotFound(let key, let context):
+        let path = (context.codingPath.map(\.stringValue) + [key.stringValue]).joined(separator: ".")
+        return "keyNotFound(\(key.stringValue)) path=\(path) debug=\(context.debugDescription)"
+    case .dataCorrupted(let context):
+        return "dataCorrupted path=\(context.codingPath.map(\.stringValue).joined(separator: ".")) debug=\(context.debugDescription)"
+    @unknown default:
+        return error.localizedDescription
+    }
+}
+
 private func nativeNearestSupportedLocation(
     to coordinate: CLLocationCoordinate2D?
 ) -> NativeLocationOption? {
@@ -1101,6 +1121,11 @@ private struct NativeV2InviteValidationResponse: Decodable {
     let inviteCode: NativeV2InviteCodeSummary
 }
 
+private struct NativeV2RedeemInviteCodeResponse: Decodable {
+    let inviteCode: NativeV2InviteCodeSummary
+    let onboarding: NativeV2OnboardingPayload?
+}
+
 private struct NativeV2MyInviteCodeResponse: Decodable {
     let inviteCode: NativeV2InviteCodeSummary?
 }
@@ -1253,11 +1278,26 @@ private struct NativeTopPlacesTieGroup: Decodable, Identifiable {
     }
 }
 
+private struct NativeLossyDecodable<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
+    }
+}
+
 private struct NativeTopPlaceScoreBreakdown: Decodable {
     let rating: Double
     let revisit: Double
     let frequency: Double
     let recency: Double
+
+    init(rating: Double = 0, revisit: Double = 0, frequency: Double = 0, recency: Double = 0) {
+        self.rating = rating
+        self.revisit = revisit
+        self.frequency = frequency
+        self.recency = recency
+    }
 }
 
 private struct NativeTopPlaceEntry: Decodable, Identifiable {
@@ -1280,6 +1320,49 @@ private struct NativeTopPlaceEntry: Decodable, Identifiable {
     let moments: [NativeMoment]
 
     var id: String { placeId }
+
+    private enum CodingKeys: String, CodingKey {
+        case rank
+        case placeId
+        case name
+        case cityLabel
+        case locationLabel
+        case address
+        case thumbnailUrl
+        case score
+        case scoreBreakdown
+        case dominantRatingLabel
+        case dominantWouldRevisit
+        case momentCount
+        case latestVisitedAtIso
+        case quote
+        case summaryLine
+        case distanceLabel
+        case moments
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        rank = try container.decodeIfPresent(Int.self, forKey: .rank) ?? 0
+        placeId = try container.decodeIfPresent(String.self, forKey: .placeId) ?? UUID().uuidString
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? "Unknown place"
+        cityLabel = try container.decodeIfPresent(String.self, forKey: .cityLabel) ?? ""
+        locationLabel = try container.decodeIfPresent(String.self, forKey: .locationLabel) ?? cityLabel
+        address = try container.decodeIfPresent(String.self, forKey: .address)
+        thumbnailUrl = try container.decodeIfPresent(String.self, forKey: .thumbnailUrl)
+        score = try container.decodeIfPresent(Double.self, forKey: .score) ?? 0
+        scoreBreakdown = try container.decodeIfPresent(NativeTopPlaceScoreBreakdown.self, forKey: .scoreBreakdown)
+            ?? NativeTopPlaceScoreBreakdown()
+        dominantRatingLabel = try container.decodeIfPresent(String.self, forKey: .dominantRatingLabel) ?? "liked"
+        dominantWouldRevisit = try container.decodeIfPresent(String.self, forKey: .dominantWouldRevisit) ?? "maybe"
+        momentCount = try container.decodeIfPresent(Int.self, forKey: .momentCount) ?? 0
+        latestVisitedAtIso = try container.decodeIfPresent(String.self, forKey: .latestVisitedAtIso) ?? ""
+        quote = try container.decodeIfPresent(String.self, forKey: .quote)
+        summaryLine = try container.decodeIfPresent(String.self, forKey: .summaryLine) ?? ""
+        distanceLabel = try container.decodeIfPresent(String.self, forKey: .distanceLabel)
+        moments = (try? container.decode([NativeLossyDecodable<NativeMoment>].self, forKey: .moments))?
+            .compactMap(\.value) ?? []
+    }
 }
 
 private struct NativeTopPlacesResponse: Decodable {
@@ -1288,6 +1371,26 @@ private struct NativeTopPlacesResponse: Decodable {
     let cityOptions: [NativeTopPlacesCityOption]
     let places: [NativeTopPlaceEntry]
     let tieGroups: [NativeTopPlacesTieGroup]
+
+    private enum CodingKeys: String, CodingKey {
+        case traveler
+        case summary
+        case cityOptions
+        case places
+        case tieGroups
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        traveler = try container.decode(NativeTravelerSummary.self, forKey: .traveler)
+        summary = try container.decode(NativeTopPlacesSummary.self, forKey: .summary)
+        cityOptions = (try? container.decode([NativeLossyDecodable<NativeTopPlacesCityOption>].self, forKey: .cityOptions))?
+            .compactMap(\.value) ?? []
+        places = (try? container.decode([NativeLossyDecodable<NativeTopPlaceEntry>].self, forKey: .places))?
+            .compactMap(\.value) ?? []
+        tieGroups = (try? container.decode([NativeLossyDecodable<NativeTopPlacesTieGroup>].self, forKey: .tieGroups))?
+            .compactMap(\.value) ?? []
+    }
 }
 
 private struct NativeTopPlacesTiePrompt: Identifiable {
@@ -2243,6 +2346,28 @@ private struct NativeFeedResponse: Decodable {
     let items: [NativeServerFeedItem]
     let fallbackItems: [NativeServerFeedItem]?
     let suggestedItems: [NativeServerFeedItem]?
+
+    private enum CodingKeys: String, CodingKey {
+        case followedTravelers
+        case suggestedTravelers
+        case items
+        case fallbackItems
+        case suggestedItems
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        followedTravelers = (try? container.decode([NativeLossyDecodable<NativeTravelerSummary>].self, forKey: .followedTravelers))?
+            .compactMap(\.value) ?? []
+        suggestedTravelers = (try? container.decode([NativeLossyDecodable<NativeTravelerSummary>].self, forKey: .suggestedTravelers))?
+            .compactMap(\.value) ?? []
+        items = (try? container.decode([NativeLossyDecodable<NativeServerFeedItem>].self, forKey: .items))?
+            .compactMap(\.value) ?? []
+        fallbackItems = (try? container.decode([NativeLossyDecodable<NativeServerFeedItem>].self, forKey: .fallbackItems))?
+            .compactMap(\.value)
+        suggestedItems = (try? container.decode([NativeLossyDecodable<NativeServerFeedItem>].self, forKey: .suggestedItems))?
+            .compactMap(\.value)
+    }
 }
 
 private struct NativeServerFeedItem: Decodable, Identifiable {
@@ -2258,6 +2383,38 @@ private struct NativeServerFeedItem: Decodable, Identifiable {
     let isVibed: Bool?
     let vibinCount: Int?
     let recentVibers: [NativeNotificationActor]?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case type
+        case traveler
+        case timestampLabel
+        case sortTimestamp
+        case place
+        case collection
+        case caption
+        case visibility
+        case isVibed
+        case vibinCount
+        case recentVibers
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        type = try container.decodeIfPresent(String.self, forKey: .type) ?? ""
+        traveler = try container.decode(NativeTravelerSummary.self, forKey: .traveler)
+        timestampLabel = try container.decodeIfPresent(String.self, forKey: .timestampLabel) ?? ""
+        sortTimestamp = try container.decodeIfPresent(String.self, forKey: .sortTimestamp)
+        place = try? container.decodeIfPresent(NativePlace.self, forKey: .place)
+        collection = try? container.decodeIfPresent(NativeCollection.self, forKey: .collection)
+        caption = try container.decodeIfPresent(String.self, forKey: .caption)
+        visibility = try container.decodeIfPresent(String.self, forKey: .visibility)
+        isVibed = try container.decodeIfPresent(Bool.self, forKey: .isVibed)
+        vibinCount = try container.decodeIfPresent(Int.self, forKey: .vibinCount)
+        recentVibers = (try? container.decode([NativeLossyDecodable<NativeNotificationActor>].self, forKey: .recentVibers))?
+            .compactMap(\.value) ?? []
+    }
 }
 
 private struct NativeTravelerSearchResponse: Decodable {
@@ -4356,29 +4513,23 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         nativeLogger.log("apple login success user=\(response.user.username, privacy: .public)")
     }
 
-    func validateInviteCode(_ code: String) async throws -> NativeV2InviteCodeSummary {
-        let response = try await api.validateV2InviteCode(code)
-        return response.inviteCode
-    }
-
     func joinPhoneWaitlist(phoneNumber: String) async throws -> NativeV2PhoneWaitlistEntry {
         let response = try await api.joinV2Waitlist(phoneNumber: phoneNumber, source: "native-invite-gate")
         return response.entry
     }
 
-    func requestPhoneSignupOtp(phoneNumber: String, inviteCode: String) async throws -> NativeV2OtpRequestResponse {
-        try await api.requestV2Otp(phoneNumber: phoneNumber, inviteCode: inviteCode)
+    func requestPhoneSignupOtp(phoneNumber: String) async throws -> NativeV2OtpRequestResponse {
+        try await api.requestV2Otp(phoneNumber: phoneNumber)
     }
 
-    func verifyPhoneSignupOtp(otpRequestId: String, code: String, inviteCode: String) async throws -> NativeV2VerifyOtpResponse {
-        let response = try await api.verifyV2Otp(otpRequestId: otpRequestId, code: code, inviteCode: inviteCode)
+    func verifyPhoneSignupOtp(otpRequestId: String, code: String) async throws -> NativeV2VerifyOtpResponse {
+        let response = try await api.verifyV2Otp(otpRequestId: otpRequestId, code: code)
         authToken = response.token
         sessionFlavor = .v2
         syncCurrentUserFromV2Payload(response.user)
-        if response.user.onboardingCompleted == true
-            || response.onboarding?.currentStep == "COMPLETED"
-            || response.isExistingUser == true
-            || response.authPurpose == "SIGN_IN" {
+        // Only a fully finished onboarding should hide the gate again; an existing-but-incomplete
+        // user (e.g. verified phone before but never redeemed an invite) must resume, not skip.
+        if response.user.onboardingCompleted == true || response.onboarding?.currentStep == "COMPLETED" {
             markInviteOnboardingCompletedAfterAuth()
         } else {
             markInviteOnboardingRequired()
@@ -4391,6 +4542,10 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             await self?.syncPushTokenIfPossible()
         }
         return response
+    }
+
+    func redeemInviteCode(token: String, code: String) async throws -> NativeV2RedeemInviteCodeResponse {
+        try await api.redeemV2InviteCode(token: token, code: code)
     }
 
     func updateV2Profile(
@@ -4477,6 +4632,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         isHomepageTopPlacesLoading = true
         defer { isHomepageTopPlacesLoading = false }
         do {
+            nativeLogger.log("refreshHomepageTopPlaces start window=month limit=3")
             homepageTopPlaces = try await api.getV2TopPlaces(
                 token: token,
                 travelerId: nil,
@@ -4484,6 +4640,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 window: "month",
                 limit: 3
             )
+            nativeLogger.log("refreshHomepageTopPlaces success places=\(self.homepageTopPlaces?.places.count ?? 0, privacy: .public) cities=\(self.homepageTopPlaces?.cityOptions.count ?? 0, privacy: .public)")
             homepageTopPlacesErrorMessage = nil
         } catch {
             homepageTopPlacesErrorMessage = error.localizedDescription
@@ -4501,13 +4658,16 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw URLError(.userAuthenticationRequired)
         }
 
-        return try await api.getV2TopPlaces(
+        nativeLogger.log("fetchTopPlaces start travelerId=\(travelerId ?? "nil", privacy: .public) cityKey=\(cityKey ?? "nil", privacy: .public) window=\(window, privacy: .public) limit=\(limit ?? -1, privacy: .public)")
+        let payload = try await api.getV2TopPlaces(
             token: token,
             travelerId: travelerId,
             cityKey: cityKey,
             window: window,
             limit: limit
         )
+        nativeLogger.log("fetchTopPlaces success places=\(payload.places.count, privacy: .public) cities=\(payload.cityOptions.count, privacy: .public) tieGroups=\(payload.tieGroups.count, privacy: .public)")
+        return payload
     }
 
     func submitTopPlaceTieBreak(
@@ -5672,6 +5832,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             feedItems = response.items.compactMap(mapFeedItem)
             fallbackFeedItems = (response.fallbackItems ?? []).compactMap(mapFeedItem)
             suggestedFeedItems = (response.suggestedItems ?? []).compactMap(mapFeedItem)
+            nativeLogger.log(
+                "refreshFeed mapped items=\(self.feedItems.count, privacy: .public) fallback=\(self.fallbackFeedItems.count, privacy: .public) suggested=\(self.suggestedFeedItems.count, privacy: .public) rawItems=\(response.items.count, privacy: .public) rawSuggested=\((response.suggestedItems ?? []).count, privacy: .public)"
+            )
             syncFeedSeenState()
             refreshWidgetSnapshot()
             nativeLogger.log("refreshFeed success followed=\(self.followedTravelers.count, privacy: .public) suggested=\(self.suggestedTravelers.count, privacy: .public) items=\(self.feedItems.count, privacy: .public)")
@@ -7425,6 +7588,10 @@ private struct NativeAPIClient {
         let inviteCode: String?
     }
 
+    private struct V2RedeemInviteCodeBody: Encodable {
+        let code: String
+    }
+
     private struct V2UpdateProfileBody: Encodable {
         let displayName: String
         let username: String
@@ -7710,7 +7877,7 @@ private struct NativeAPIClient {
         )
     }
 
-    func requestV2Otp(phoneNumber: String, inviteCode: String) async throws -> NativeV2OtpRequestResponse {
+    func requestV2Otp(phoneNumber: String, inviteCode: String? = nil) async throws -> NativeV2OtpRequestResponse {
         try await request(
             path: "/api/v2/auth/otp/request",
             method: "POST",
@@ -7723,7 +7890,7 @@ private struct NativeAPIClient {
         )
     }
 
-    func verifyV2Otp(otpRequestId: String, code: String, inviteCode: String) async throws -> NativeV2VerifyOtpResponse {
+    func verifyV2Otp(otpRequestId: String, code: String, inviteCode: String? = nil) async throws -> NativeV2VerifyOtpResponse {
         try await request(
             path: "/api/v2/auth/otp/verify",
             method: "POST",
@@ -7733,6 +7900,15 @@ private struct NativeAPIClient {
                 code: code,
                 inviteCode: inviteCode
             )
+        )
+    }
+
+    func redeemV2InviteCode(token: String, code: String) async throws -> NativeV2RedeemInviteCodeResponse {
+        try await request(
+            path: "/api/v2/invite-codes/redeem",
+            method: "POST",
+            token: token,
+            body: V2RedeemInviteCodeBody(code: code)
         )
     }
 
@@ -9142,7 +9318,17 @@ private struct NativeAPIClient {
             return NativeEmptyResponse() as! T
         }
 
-        return try JSONDecoder().decode(T.self, from: data)
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            let responseText = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let requestHost = url.host ?? "unknown"
+            nativeLogger.error(
+                "API decode failed host=\(requestHost, privacy: .public) path=\(path, privacy: .public) type=\(String(describing: T.self), privacy: .public) error=\(nativeDescribeDecodingError(error), privacy: .public) body=\(responseText, privacy: .public)"
+            )
+            throw error
+        }
     }
 
     private func request<T: Decodable>(
@@ -14988,14 +15174,17 @@ private struct NativeTopPlacesScreen: View {
         defer { isLoading = false }
 
         do {
+            nativeLogger.log("NativeTopPlacesScreen load start mode=\(mode == .byYou ? "byYou" : "byFriends", privacy: .public) travelerId=\(activeTravelerId ?? "nil", privacy: .public) city=\(selectedCityId, privacy: .public)")
             payload = try await appState.fetchTopPlaces(
                 travelerId: activeTravelerId,
                 cityKey: selectedCityId == "all" ? nil : selectedCityId,
                 window: "all",
                 limit: 20
             )
+            nativeLogger.log("NativeTopPlacesScreen load success payloadPlaces=\(payload?.places.count ?? 0, privacy: .public)")
             errorMessage = nil
         } catch {
+            nativeLogger.error("NativeTopPlacesScreen load failed: \(error.localizedDescription, privacy: .public)")
             errorMessage = error.localizedDescription
         }
     }
@@ -16738,12 +16927,12 @@ private struct NativeAuthScreen: View {
 
     private enum Step {
         case welcome
+        case phoneEntry
+        case otpEntry
         case inviteCodeEntry
         case earlyAccessEntry
         case waitlistSuccessEntry
         case codeConfirmed
-        case phoneEntry
-        case otpEntry
         case profileEntry
         case cityEntry
         case contactsPermissionEntry
@@ -17835,7 +18024,7 @@ private struct NativeAuthScreen: View {
                     titleWeight: .black
                 ) {
                     withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                        step = .inviteCodeEntry
+                        step = .phoneEntry
                     }
                 }
 
@@ -17895,9 +18084,6 @@ private struct NativeAuthScreen: View {
                 .opacity(isSubmitting ? 0.45 : 1)
                 inlineErrorSnackbar
             }
-        }
-        .task {
-            await appState.kickoffBackendWarmupIfNeeded()
         }
     }
 
@@ -18072,6 +18258,9 @@ private struct NativeAuthScreen: View {
                 NativeAuthLegalText()
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+        .task {
+            await appState.kickoffBackendWarmupIfNeeded()
         }
     }
 
@@ -18957,14 +19146,14 @@ private struct NativeAuthScreen: View {
         Button {
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
                 switch step {
-                case .inviteCodeEntry, .earlyAccessEntry:
+                case .phoneEntry, .earlyAccessEntry:
                     step = .welcome
-                case .phoneEntry:
-                    step = .inviteCodeEntry
                 case .otpEntry:
                     step = .phoneEntry
-                case .profileEntry:
+                case .inviteCodeEntry:
                     step = .otpEntry
+                case .profileEntry:
+                    step = .inviteCodeEntry
                 case .cityEntry:
                     step = .profileEntry
                 case .contactsPermissionEntry:
@@ -19252,21 +19441,26 @@ private struct NativeAuthScreen: View {
     }
 
     private func submitInviteCode() async {
+        guard let verifiedV2Token else {
+            presentTransientErrorMessage("Session is missing.")
+            return
+        }
+
         errorMessage = nil
         isSubmitting = true
         defer { isSubmitting = false }
 
         do {
-            await appState.kickoffBackendWarmupIfNeeded()
-            validatedInvite = try await appState.validateInviteCode(inviteCode)
+            let response = try await appState.redeemInviteCode(token: verifiedV2Token, code: inviteCode)
+            validatedInvite = response.inviteCode
             appState.trackAnalytics(.inviteCodeValidated, properties: [
                 "inviter_user_id": validatedInvite?.inviter?.id ?? ""
             ])
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                step = .phoneEntry
+                step = .profileEntry
             }
         } catch {
-            nativeLogger.error("invite code validation failed \(nativeDescribeError(error), privacy: .public)")
+            nativeLogger.error("invite code redemption failed \(nativeDescribeError(error), privacy: .public)")
             presentTransientError(error)
         }
     }
@@ -19296,19 +19490,13 @@ private struct NativeAuthScreen: View {
     }
 
     private func submitPhoneNumber() async {
-        guard let inviteCode = validatedInvite?.code else {
-            presentTransientErrorMessage("Invite code is required.")
-            return
-        }
-
         errorMessage = nil
         isSubmitting = true
         defer { isSubmitting = false }
 
         do {
             let response = try await appState.requestPhoneSignupOtp(
-                phoneNumber: e164PhoneNumber(from: phoneNumber, country: signupPhoneCountry),
-                inviteCode: inviteCode
+                phoneNumber: e164PhoneNumber(from: phoneNumber, country: signupPhoneCountry)
             )
             otpRequestId = response.otpRequestId
             otpDestinationNumber = response.phoneNumber
@@ -19325,7 +19513,7 @@ private struct NativeAuthScreen: View {
     }
 
     private func submitOtpCode() async {
-        guard let inviteCode = validatedInvite?.code, let otpRequestId else {
+        guard let otpRequestId else {
             presentTransientErrorMessage("OTP request is missing.")
             return
         }
@@ -19337,15 +19525,12 @@ private struct NativeAuthScreen: View {
         do {
             let response = try await appState.verifyPhoneSignupOtp(
                 otpRequestId: otpRequestId,
-                code: otpCode,
-                inviteCode: inviteCode
+                code: otpCode
             )
             appState.trackAnalytics(.otpVerified)
-            let shouldSkipOnboarding = response.user.onboardingCompleted == true
+            let isFullyCompleted = response.user.onboardingCompleted == true
                 || response.onboarding?.currentStep == "COMPLETED"
-                || response.isExistingUser == true
-                || response.authPurpose == "SIGN_IN"
-            if shouldSkipOnboarding {
+            if isFullyCompleted {
                 return
             }
             verifiedV2Token = response.token
@@ -19356,12 +19541,37 @@ private struct NativeAuthScreen: View {
             hasCustomUsername = !resolvedUsername.isEmpty && resolvedUsername != suggestedUsername(from: resolvedDisplayName)
             profileAvatarURL = response.user.avatarUrl ?? ""
             cityLabel = response.user.cityLabel ?? appState.detectedLocationCityName ?? appState.selectedLocation.label
+            // Resume exactly where this account's onboarding state says it left off (e.g. a
+            // returning user who verified their phone before but never redeemed an invite code
+            // yet) instead of always restarting at invite-code entry.
+            let resumeStep = step(forOnboardingCurrentStep: response.onboarding?.currentStep) ?? .inviteCodeEntry
             withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                step = .profileEntry
+                step = resumeStep
             }
         } catch {
             nativeLogger.error("otp verify failed \(nativeDescribeError(error), privacy: .public)")
             presentTransientError(error)
+        }
+    }
+
+    private func step(forOnboardingCurrentStep currentStep: String?) -> Step? {
+        switch currentStep {
+        case "INVITE_CONFIRMED":
+            return .inviteCodeEntry
+        case "PROFILE":
+            return .profileEntry
+        case "LOCATION_PERMISSION":
+            return .cityEntry
+        case "CONTACTS_PERMISSION":
+            return .contactsPermissionEntry
+        case "FRIENDS":
+            return .friendsEntry
+        case "FIRST_PLACE":
+            return .firstPlaceEntry
+        case "INVITE_SHARE":
+            return .inviteShareEntry
+        default:
+            return nil
         }
     }
 
