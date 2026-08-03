@@ -11734,6 +11734,7 @@ async function createV2Notification(input: {
   type: 'FOLLOW' | 'COMMENT' | 'VIBIN' | 'INVITE_REDEEMED';
   targetType?: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION' | null;
   targetId?: string | null;
+  commentId?: string | null;
   title: string;
   body: string;
 }) {
@@ -11758,6 +11759,7 @@ async function createV2Notification(input: {
         type: input.type,
         ...(input.targetType ? { targetType: input.targetType } : {}),
         ...(input.targetId ? { targetId: input.targetId } : {}),
+        ...(input.commentId ? { commentId: input.commentId } : {}),
       },
     });
   } catch (error) {
@@ -11879,6 +11881,7 @@ async function notifyMentionedV2Users(input: {
   actorName: string;
   targetType: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
   targetId: string;
+  commentId: string;
   body: string;
   excludedUserIds: Set<string>;
 }) {
@@ -11892,6 +11895,7 @@ async function notifyMentionedV2Users(input: {
         type: 'COMMENT',
         targetType: input.targetType,
         targetId: input.targetId,
+        commentId: input.commentId,
         title: `${input.actorName} mentioned you in a comment`,
         body: input.body,
       })),
@@ -12393,6 +12397,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         type: 'COMMENT',
         targetType,
         targetId,
+        commentId: comment.id,
         title: `${actorName} commented on your moment`,
         body: comment.body,
       });
@@ -12410,6 +12415,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         type: 'COMMENT',
         targetType,
         targetId,
+        commentId: comment.id,
         title: `${actorName} replied to your comment`,
         body: comment.body,
       });
@@ -12422,6 +12428,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
       actorName,
       targetType,
       targetId,
+      commentId: comment.id,
       body: comment.body,
       excludedUserIds: notifiedUserIds,
     });
@@ -12724,7 +12731,21 @@ app.post('/api/v2/invite-codes/redeem', async (req: AuthenticatedRequest, res) =
     }
 
     const result = await redeemInviteCode({ userId: req.authV2UserId, code });
-    res.json(result);
+
+    if (result.ownerUserId !== result.redeemerUserId) {
+      void sendV2PushNotification({
+        userId: result.ownerUserId,
+        title: 'Someone joined with your invite',
+        body: 'Your invite brought a new person into Vibinn.',
+        data: {
+          type: 'INVITE_REDEEMED',
+          targetType: 'PROFILE',
+          targetId: result.redeemerUserId,
+        },
+      });
+    }
+
+    res.json({ inviteCode: result.inviteCode, onboarding: result.onboarding });
   } catch (error) {
     if (error instanceof AuthV2Error) {
       res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
@@ -17618,6 +17639,7 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
           type: 'COMMENT',
           targetType,
           targetId,
+          commentId: comment.id,
           title: `${actorName} commented on your moment`,
           body: comment.body,
         });
@@ -17635,6 +17657,7 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
           type: 'COMMENT',
           targetType,
           targetId,
+          commentId: comment.id,
           title: `${actorName} replied to your comment`,
           body: comment.body,
         });
@@ -17647,6 +17670,7 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
         actorName,
         targetType,
         targetId,
+        commentId: comment.id,
         body: comment.body,
         excludedUserIds: notifiedUserIds,
       });

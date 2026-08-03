@@ -72,6 +72,8 @@ private let nativeWidgetImageCacheDirectoryName = "widget-image-cache"
 private let nativePendingWidgetDeepLinkUserDefaultsKey = "vibinn_native_pending_widget_deep_link"
 private let nativeWidgetDeepLinkNotification = Notification.Name("NativeWidgetDeepLinkOpened")
 private let nativeForegroundPushNotification = Notification.Name("NativeForegroundPushReceived")
+private let nativePendingPushDeepLinkUserDefaultsKey = "vibinn_native_pending_push_deep_link"
+private let nativePushDeepLinkTappedNotification = Notification.Name("NativePushDeepLinkTapped")
 private let nativeLocationOptions = [
     NativeLocationOption(id: "boston", label: "Boston"),
     NativeLocationOption(id: "new-york", label: "New York"),
@@ -348,6 +350,16 @@ private enum NativePostAuthAction {
     case openPreferenceSetup
     case openTodayRecommendation
     case openCheckIn(place: NativePlace?)
+    case openPushDeepLink(type: String, targetType: String, targetId: String, commentId: String)
+}
+
+private struct NativePushProfileTarget: Identifiable {
+    let id: String
+}
+
+private struct NativePushMomentTarget: Identifiable {
+    let id: String
+    let anchorCommentId: String?
 }
 
 final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCenterDelegate, NativeMessagingDelegateProtocol {
@@ -476,6 +488,38 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             ]
         )
         completionHandler([.banner, .list, .badge, .sound])
+    }
+
+    func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping () -> Void
+    ) {
+        let content = response.notification.request.content
+        let pushType = (content.userInfo["type"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let targetType = (content.userInfo["targetType"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let targetId = (content.userInfo["targetId"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let commentId = (content.userInfo["commentId"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        if !pushType.isEmpty {
+            let payload: [String: String] = [
+                "type": pushType,
+                "targetType": targetType,
+                "targetId": targetId,
+                "commentId": commentId,
+            ]
+            UserDefaults.standard.set(payload, forKey: nativePendingPushDeepLinkUserDefaultsKey)
+            NotificationCenter.default.post(
+                name: nativePushDeepLinkTappedNotification,
+                object: nil,
+                userInfo: payload
+            )
+        }
+        completionHandler()
     }
 
     func application(
@@ -3808,6 +3852,9 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var checkInPrefilledImage: UIImage?
     @Published var checkInPrefilledVisitedDate: String?
     @Published var unsupportedCityGateEnabled = true
+    @Published var pendingPushProfileTarget: NativePushProfileTarget?
+    @Published var pendingPushMomentTarget: NativePushMomentTarget?
+    @Published var pendingFeedMomentAnchorId: String?
 
     private let api = NativeAPIClient()
     private let authTokenKey = "vibinn_native_auth_token"
@@ -3984,7 +4031,14 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             name: nativeForegroundPushNotification,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handlePushDeepLinkTapped(_:)),
+            name: nativePushDeepLinkTappedNotification,
+            object: nil
+        )
         handlePendingWidgetDeepLinkIfNeeded()
+        handlePendingPushDeepLinkIfNeeded()
         nativeLogger.log("NativeAppState init. location=\(self.selectedLocation.label, privacy: .public) onboarding=\(self.hasCompletedOnboarding, privacy: .public)")
     }
 
@@ -5122,6 +5176,8 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         case .openCheckIn(let place):
             checkInPrefilledPlace = place
             showCheckInSheet = true
+        case .openPushDeepLink(let type, let targetType, let targetId, let commentId):
+            handlePushDeepLink(type: type, targetType: targetType, targetId: targetId, commentId: commentId)
         }
     }
 
@@ -7164,6 +7220,60 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             }
         default:
             activeTab = .discover
+        }
+    }
+
+    @objc
+    private func handlePushDeepLinkTapped(_ notification: Notification) {
+        handlePushDeepLink(
+            type: (notification.userInfo?["type"] as? String) ?? "",
+            targetType: (notification.userInfo?["targetType"] as? String) ?? "",
+            targetId: (notification.userInfo?["targetId"] as? String) ?? "",
+            commentId: (notification.userInfo?["commentId"] as? String) ?? ""
+        )
+    }
+
+    private func handlePendingPushDeepLinkIfNeeded() {
+        guard let payload = UserDefaults.standard.dictionary(forKey: nativePendingPushDeepLinkUserDefaultsKey) as? [String: String] else {
+            return
+        }
+        UserDefaults.standard.removeObject(forKey: nativePendingPushDeepLinkUserDefaultsKey)
+        handlePushDeepLink(
+            type: payload["type"] ?? "",
+            targetType: payload["targetType"] ?? "",
+            targetId: payload["targetId"] ?? "",
+            commentId: payload["commentId"] ?? ""
+        )
+    }
+
+    private func handlePushDeepLink(type: String, targetType: String, targetId: String, commentId: String) {
+        guard !type.isEmpty, !targetId.isEmpty else { return }
+
+        if currentUser == nil {
+            presentAuthGate(
+                reason: "Log in to see what's new.",
+                postAuthAction: .openPushDeepLink(type: type, targetType: targetType, targetId: targetId, commentId: commentId)
+            )
+            return
+        }
+
+        switch type {
+        case "FOLLOW", "INVITE_REDEEMED":
+            pendingPushProfileTarget = NativePushProfileTarget(id: targetId)
+        case "VIBIN":
+            guard targetType == "MOMENT" else { return }
+            pendingPushMomentTarget = NativePushMomentTarget(id: targetId, anchorCommentId: nil)
+        case "COMMENT":
+            guard targetType == "MOMENT" else { return }
+            pendingPushMomentTarget = NativePushMomentTarget(
+                id: targetId,
+                anchorCommentId: commentId.isEmpty ? nil : commentId
+            )
+        case "MOMENT_POSTED":
+            activeTab = .feed
+            pendingFeedMomentAnchorId = targetId
+        default:
+            break
         }
     }
 
@@ -9385,6 +9495,32 @@ private struct NativeVibinnRootView: View {
             NativeSecondMemoryProfileShareSheet()
                 .environmentObject(appState)
                 .modifier(NativeBottomSheetPresentationModifier())
+        }
+        .fullScreenCover(item: $appState.pendingPushProfileTarget) { target in
+            NativeTravelerProfileScreen(
+                initialTraveler: NativeTravelerSummary(
+                    id: target.id,
+                    username: "",
+                    displayName: nil,
+                    avatar: nil,
+                    bio: nil,
+                    descriptor: nil,
+                    matchScore: nil,
+                    followersCount: nil,
+                    followingCount: nil,
+                    recentSavedPlaces: [],
+                    recentCollections: [],
+                    travelHistory: [],
+                    visitedPlacesCount: nil,
+                    savedPlacesCount: nil,
+                    collectionsCount: nil
+                )
+            )
+                .environmentObject(appState)
+        }
+        .fullScreenCover(item: $appState.pendingPushMomentTarget) { target in
+            NativeNotificationMomentDestination(momentId: target.id, anchorCommentId: target.anchorCommentId)
+                .environmentObject(appState)
         }
         .overlay(alignment: .bottom) {
             if let toast = appState.activeToast {
@@ -16606,6 +16742,7 @@ private struct NativeNotificationRow: View {
 private struct NativeNotificationMomentDestination: View {
     @EnvironmentObject private var appState: NativeAppState
     let momentId: String
+    var anchorCommentId: String? = nil
 
     @State private var moment: NativeMoment?
     @State private var errorMessage: String?
@@ -16613,7 +16750,7 @@ private struct NativeNotificationMomentDestination: View {
     var body: some View {
         Group {
             if let moment {
-                NativeNotificationMomentFullscreen(moment: moment)
+                NativeNotificationMomentFullscreen(moment: moment, anchorCommentId: anchorCommentId)
             } else if let errorMessage {
                 ZStack {
                     Color.black.ignoresSafeArea()
@@ -16651,6 +16788,7 @@ private struct NativeNotificationMomentFullscreen: View {
     @EnvironmentObject private var appState: NativeAppState
     @Environment(\.dismiss) private var dismiss
     let moment: NativeMoment
+    var anchorCommentId: String? = nil
 
     @State private var comments: [NativeComment] = []
     @State private var isCommentsLoading = false
@@ -16722,7 +16860,8 @@ private struct NativeNotificationMomentFullscreen: View {
             onReplyToComment: { comment in replyingToComment = comment },
             onCancelReply: { replyingToComment = nil },
             onPostComment: { Task { await postComment() } },
-            commentDraft: $commentDraft
+            commentDraft: $commentDraft,
+            anchorCommentId: anchorCommentId
         )
         .task {
             vibed = moment.isVibed ?? false
@@ -30714,6 +30853,7 @@ private struct NativeFeedScreen: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack(alignment: .bottom) {
+                ScrollViewReader { proxy in
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 18) {
                         HStack(alignment: .top, spacing: 14) {
@@ -30784,6 +30924,16 @@ private struct NativeFeedScreen: View {
                     await appState.refreshFeed()
                     await refreshFeedContactsIfPossible(force: true)
                     updateFeedMapRegion()
+                }
+                .onChange(of: appState.pendingFeedMomentAnchorId) { anchorId in
+                    guard let anchorId, !anchorId.isEmpty else { return }
+                    scrollToPendingFeedMoment(anchorId: anchorId, proxy: proxy)
+                }
+                .onAppear {
+                    if let anchorId = appState.pendingFeedMomentAnchorId, !anchorId.isEmpty {
+                        scrollToPendingFeedMoment(anchorId: anchorId, proxy: proxy)
+                    }
+                }
                 }
                 if showsFeedFloatingModePicker {
                     HStack {
@@ -30944,6 +31094,7 @@ private struct NativeFeedScreen: View {
                                     .frame(height: 1)
                             }
                         }
+                        .id(item.id)
                     }
                 }
             }
@@ -31444,6 +31595,28 @@ private struct NativeFeedScreen: View {
                 longitudeDelta: max((maxLon - minLon) * 1.6, 0.05)
             )
         )
+    }
+
+    private func scrollToPendingFeedMoment(anchorId: String, proxy: ScrollViewProxy, attempt: Int = 0) {
+        guard appState.pendingFeedMomentAnchorId == anchorId else { return }
+        let rowId = "visited-\(anchorId)"
+        guard followedFeedItems.contains(where: { $0.id == rowId }) else {
+            guard attempt < 10 else {
+                appState.pendingFeedMomentAnchorId = nil
+                return
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [self] in
+                scrollToPendingFeedMoment(anchorId: anchorId, proxy: proxy, attempt: attempt + 1)
+            }
+            return
+        }
+        activeFeedMode = .posts
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            withAnimation {
+                proxy.scrollTo(rowId, anchor: .top)
+            }
+            appState.pendingFeedMomentAnchorId = nil
+        }
     }
 
     private func ensureVisibleFeedMapRange() {
@@ -33815,6 +33988,7 @@ private struct NativeCommentThreadList: View {
                         .padding(.top, 2)
                 }
                 .padding(.leading, CGFloat(row.depth) * 22)
+                .id(row.id)
             }
         }
     }
@@ -42483,6 +42657,7 @@ private struct NativeMomentFullscreenScaffold: View {
     let onCancelReply: () -> Void
     let onPostComment: () -> Void
     @Binding var commentDraft: String
+    var anchorCommentId: String? = nil
 
     @FocusState private var isCommentFieldFocused: Bool
     @State private var selectedHeaderTraveler: NativeTravelerSummary?
@@ -42491,6 +42666,7 @@ private struct NativeMomentFullscreenScaffold: View {
         ZStack(alignment: .topTrailing) {
             Color.black.ignoresSafeArea()
 
+            ScrollViewReader { proxy in
             ScrollView(showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
                     Color.clear
@@ -42740,6 +42916,15 @@ private struct NativeMomentFullscreenScaffold: View {
                     UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
                 }
             )
+            .onChange(of: isCommentsLoading) { loading in
+                guard !loading, let anchorCommentId, !anchorCommentId.isEmpty else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    withAnimation {
+                        proxy.scrollTo(anchorCommentId, anchor: .center)
+                    }
+                }
+            }
+            }
 
             Button(action: onClose) {
                 Image(systemName: "xmark")

@@ -969,6 +969,8 @@ export async function redeemInviteCode(input: { userId: string; code: string }) 
   return {
     inviteCode: buildInviteCodeSummary(inviteCode),
     onboarding,
+    ownerUserId: inviteCode.ownerUserId,
+    redeemerUserId: user.id,
   };
 }
 
