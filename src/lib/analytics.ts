@@ -140,6 +140,11 @@ export function trackEvent(eventName: string, properties?: Record<string, unknow
   });
 }
 
+export function trackMetaPixelEvent(eventName: string, properties?: Record<string, unknown>) {
+  if (typeof window === 'undefined') return;
+  window.fbq?.('track', eventName, properties);
+}
+
 export function trackPageView(path: string, title?: string) {
   if (!isGoogleAnalyticsEnabled || typeof window === 'undefined') return;
   ensureGoogleAnalytics();

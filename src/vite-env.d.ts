@@ -12,4 +12,5 @@ interface ImportMeta {
 interface Window {
   dataLayer?: unknown[][];
   gtag?: (...args: unknown[]) => void;
+  fbq?: (...args: unknown[]) => void;
 }
