@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { motion, useAnimationFrame, useMotionValue } from 'motion/react';
 import { FileText, Heart, Smile, Sparkles, ThumbsDown } from 'lucide-react';
-import { trackEvent } from '../lib/analytics';
+import { trackEvent, trackMetaPixelEvent } from '../lib/analytics';
 import { api, resolveApiAssetUrl } from '../lib/api';
 import { MOCK_REVIEW_SCENARIO } from '../mockReviewData';
 
@@ -364,6 +364,7 @@ export default function LandingPage({
                     source: 'hero_primary',
                     ...(analyticsContextRef.current ?? {}),
                   });
+                  trackMetaPixelEvent('Lead', { source: 'hero_primary' });
                   onFloatingTryNow();
                 }}
                 className="inline-flex transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0"
