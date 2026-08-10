@@ -43410,6 +43410,7 @@ private struct NativeCheckInScreen: View {
     @State private var selectedPhotoAsset: NativePickedPhotoAsset?
     @State private var activeMediaPicker: NativeCheckInMediaPickerSource?
     @State private var pendingLibrarySelectionAnalysis = false
+    @State private var pendingCropAsset: NativePickedPhotoAsset?
     @StateObject private var inlineCamera = NativeInlineCameraController()
     @State private var reviewWordLimitMessage: String?
     @State private var isSearching = false
@@ -43613,14 +43614,11 @@ private struct NativeCheckInScreen: View {
             } else {
                 inlineCamera.stopSession()
             }
-            guard let _ = newValue else { return }
+            guard let newValue else { return }
             if pendingLibrarySelectionAnalysis || activeMediaPicker == .library {
                 pendingLibrarySelectionAnalysis = false
                 activeMediaPicker = nil
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 180_000_000)
-                    await analyzeSelectedCheckInPhoto()
-                }
+                pendingCropAsset = newValue
             }
         }
         .onChange(of: photoAuthorizationStatus) { _ in
@@ -43632,7 +43630,7 @@ private struct NativeCheckInScreen: View {
         .sheet(item: $activeMediaPicker) { source in
             switch source {
             case .library:
-                NativeSingleMetadataImagePicker(selection: $selectedPhotoAsset)
+                NativeSingleMetadataImagePicker(selection: $selectedPhotoAsset, cropsToSquare: false)
             case .camera:
                 NativeSingleImagePicker(
                     image: Binding(
@@ -43642,6 +43640,28 @@ private struct NativeCheckInScreen: View {
                     source: source
                 )
             }
+        }
+        .fullScreenCover(item: $pendingCropAsset) { asset in
+            NativePhotoCropScreen(
+                image: asset.image,
+                onCancel: {
+                    pendingCropAsset = nil
+                    selectedPhotoAsset = nil
+                    selectedImage = nil
+                },
+                onConfirm: { croppedImage in
+                    pendingCropAsset = nil
+                    selectedPhotoAsset = NativePickedPhotoAsset(
+                        image: croppedImage,
+                        latitude: asset.latitude,
+                        longitude: asset.longitude,
+                        capturedAt: asset.capturedAt
+                    )
+                    Task { @MainActor in
+                        await analyzeSelectedCheckInPhoto()
+                    }
+                }
+            )
         }
         .confirmationDialog(
             "Cancel check-in?",
@@ -43769,10 +43789,9 @@ private struct NativeCheckInScreen: View {
                                     .fixedSize(horizontal: false, vertical: true)
 
                                 Button {
-                                    guard let settingsURL = URL(string: UIApplication.openSettingsURLString) else { return }
-                                    UIApplication.shared.open(settingsURL)
+                                    appState.requestLocationAccessOrOpenSettings()
                                 } label: {
-                                    Text("Open Settings")
+                                    Text(appState.locationPermissionState == .denied ? "Open Settings" : "Allow Location")
                                         .font(nativeAppFont(size: 13, weight: .black))
                                         .foregroundStyle(.black)
                                         .padding(.horizontal, 12)
@@ -44580,6 +44599,198 @@ private func nativeNormalizedUIImage(_ image: UIImage) -> UIImage {
     }
 }
 
+private struct NativePhotoCropScreen: View {
+    let image: UIImage
+    let onCancel: () -> Void
+    let onConfirm: (UIImage) -> Void
+
+    private let maxZoom: CGFloat = 5
+
+    @State private var committedScale: CGFloat = 1
+    @State private var committedOffset: CGSize = .zero
+    @GestureState private var gestureScale: CGFloat = 1
+    @GestureState private var gestureOffset: CGSize = .zero
+    @State private var viewportSize: CGFloat = 0
+
+    private var currentScale: CGFloat {
+        committedScale * gestureScale
+    }
+
+    private var currentOffset: CGSize {
+        CGSize(
+            width: committedOffset.width + gestureOffset.width,
+            height: committedOffset.height + gestureOffset.height
+        )
+    }
+
+    private var baseScale: CGFloat {
+        guard image.size.width > 0, image.size.height > 0, viewportSize > 0 else { return 1 }
+        return max(viewportSize / image.size.width, viewportSize / image.size.height)
+    }
+
+    private var displayedSize: CGSize {
+        CGSize(
+            width: image.size.width * baseScale * currentScale,
+            height: image.size.height * baseScale * currentScale
+        )
+    }
+
+    private func clampedOffset(_ offset: CGSize, scale: CGFloat) -> CGSize {
+        let scaledWidth = image.size.width * baseScale * scale
+        let scaledHeight = image.size.height * baseScale * scale
+        let maxX = max(0, (scaledWidth - viewportSize) / 2)
+        let maxY = max(0, (scaledHeight - viewportSize) / 2)
+        return CGSize(
+            width: min(max(offset.width, -maxX), maxX),
+            height: min(max(offset.height, -maxY), maxY)
+        )
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                header
+
+                Spacer(minLength: 0)
+
+                GeometryReader { geometry in
+                    let side = min(geometry.size.width, geometry.size.height)
+
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: displayedSize.width, height: displayedSize.height)
+                        .offset(currentOffset)
+                        .frame(width: side, height: side)
+                        .clipShape(Rectangle())
+                        .overlay(
+                            Rectangle()
+                                .stroke(Color.white.opacity(0.85), lineWidth: 1)
+                        )
+                        .contentShape(Rectangle())
+                        .gesture(
+                            SimultaneousGesture(
+                                MagnificationGesture()
+                                    .updating($gestureScale) { value, state, _ in
+                                        state = value
+                                    }
+                                    .onEnded { value in
+                                        let proposedScale = committedScale * value
+                                        committedScale = min(max(proposedScale, 1), maxZoom)
+                                        committedOffset = clampedOffset(committedOffset, scale: committedScale)
+                                    },
+                                DragGesture()
+                                    .updating($gestureOffset) { value, state, _ in
+                                        state = value.translation
+                                    }
+                                    .onEnded { value in
+                                        let proposed = CGSize(
+                                            width: committedOffset.width + value.translation.width,
+                                            height: committedOffset.height + value.translation.height
+                                        )
+                                        committedOffset = clampedOffset(proposed, scale: committedScale)
+                                    }
+                            )
+                        )
+                        .onAppear {
+                            viewportSize = side
+                        }
+                        .frame(maxWidth: .infinity, alignment: .center)
+                }
+                .aspectRatio(1, contentMode: .fit)
+                .padding(.horizontal, 20)
+
+                Spacer(minLength: 0)
+
+                Text("Pinch to zoom, drag to reposition")
+                    .font(nativeAppFont(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.55))
+                    .padding(.bottom, 8)
+
+                confirmButton
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private var header: some View {
+        HStack {
+            Button(action: onCancel) {
+                Text("Cancel")
+                    .font(nativeAppFont(size: 15, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.8))
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            Text("Adjust photo")
+                .font(nativeAppFont(size: 16, weight: .black))
+                .foregroundStyle(.white)
+
+            Spacer()
+
+            Color.clear.frame(width: 44, height: 1)
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 18)
+        .padding(.bottom, 8)
+    }
+
+    private var confirmButton: some View {
+        Button {
+            onConfirm(croppedImage())
+        } label: {
+            Text("Confirm")
+                .font(nativeAppFont(size: 16, weight: .black))
+                .foregroundStyle(.black)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 16)
+                .background(nativeAccent)
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 20)
+        .padding(.bottom, 20)
+    }
+
+    private func croppedImage() -> UIImage {
+        let normalized = nativeNormalizedUIImage(image)
+        let scale = baseScale * committedScale
+        guard scale > 0, viewportSize > 0 else { return nativeSquareCroppedImage(normalized) }
+
+        let displayedWidth = normalized.size.width * scale
+        let displayedHeight = normalized.size.height * scale
+
+        let cropOriginXPoints = ((displayedWidth - viewportSize) / 2 - committedOffset.width) / scale
+        let cropOriginYPoints = ((displayedHeight - viewportSize) / 2 - committedOffset.height) / scale
+        let cropSidePoints = viewportSize / scale
+
+        let cropRect = CGRect(
+            x: cropOriginXPoints * normalized.scale,
+            y: cropOriginYPoints * normalized.scale,
+            width: cropSidePoints * normalized.scale,
+            height: cropSidePoints * normalized.scale
+        )
+
+        let imagePixelBounds = CGRect(
+            x: 0,
+            y: 0,
+            width: normalized.size.width * normalized.scale,
+            height: normalized.size.height * normalized.scale
+        )
+        let safeRect = cropRect.intersection(imagePixelBounds)
+
+        guard !safeRect.isNull, !safeRect.isEmpty, let cgImage = normalized.cgImage?.cropping(to: safeRect) else {
+            return nativeSquareCroppedImage(normalized)
+        }
+
+        return UIImage(cgImage: cgImage, scale: normalized.scale, orientation: .up)
+    }
+}
+
 private struct NativeCheckInProgressBar: View {
     let currentStep: Int
 
@@ -45119,9 +45330,10 @@ private struct NativeMultiImagePicker: UIViewControllerRepresentable {
 private struct NativeSingleMetadataImagePicker: UIViewControllerRepresentable {
     @Environment(\.dismiss) private var dismiss
     @Binding var selection: NativePickedPhotoAsset?
+    var cropsToSquare: Bool = true
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(selection: $selection) {
+        Coordinator(selection: $selection, cropsToSquare: cropsToSquare) {
             self.dismiss()
         }
     }
@@ -45139,14 +45351,17 @@ private struct NativeSingleMetadataImagePicker: UIViewControllerRepresentable {
 
     final class Coordinator: NSObject, PHPickerViewControllerDelegate {
         @Binding private var selection: NativePickedPhotoAsset?
+        private let cropsToSquare: Bool
         private let onFinish: @MainActor () -> Void
         private let maxImportedPixelSize: CGFloat = 1800
 
         init(
             selection: Binding<NativePickedPhotoAsset?>,
+            cropsToSquare: Bool,
             onFinish: @escaping @MainActor () -> Void
         ) {
             self._selection = selection
+            self.cropsToSquare = cropsToSquare
             self.onFinish = onFinish
         }
 
@@ -45190,7 +45405,7 @@ private struct NativeSingleMetadataImagePicker: UIViewControllerRepresentable {
                             let metadata = try Self.extractMetadata(from: temporaryURL)
                             try? FileManager.default.removeItem(at: temporaryURL)
                             continuation.resume(returning: NativePickedPhotoAsset(
-                                image: nativeSquareCroppedImage(image),
+                                image: self.cropsToSquare ? nativeSquareCroppedImage(image) : image,
                                 latitude: metadata.latitude,
                                 longitude: metadata.longitude,
                                 capturedAt: metadata.capturedAt
