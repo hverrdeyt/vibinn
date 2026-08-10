@@ -43552,13 +43552,9 @@ private struct NativeCheckInScreen: View {
         }
         .onAppear {
             if let prefilledPhotoAsset {
-                selectedPhotoAsset = prefilledPhotoAsset
-                selectedImage = prefilledPhotoAsset.image
                 step = .media
                 inlineCamera.stopSession()
-                Task { @MainActor in
-                    await analyzeSelectedCheckInPhoto()
-                }
+                pendingCropAsset = prefilledPhotoAsset
             } else if let prefilledPlace {
                 selectedPlace = prefilledPlace
                 if let prefilledImage {
@@ -44653,56 +44649,66 @@ private struct NativePhotoCropScreen: View {
             VStack(spacing: 0) {
                 header
 
-                Spacer(minLength: 0)
-
                 GeometryReader { geometry in
                     let side = min(geometry.size.width, geometry.size.height)
 
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: displayedSize.width, height: displayedSize.height)
-                        .offset(currentOffset)
-                        .frame(width: side, height: side)
-                        .clipShape(Rectangle())
-                        .overlay(
-                            Rectangle()
-                                .stroke(Color.white.opacity(0.85), lineWidth: 1)
-                        )
-                        .contentShape(Rectangle())
-                        .gesture(
-                            SimultaneousGesture(
-                                MagnificationGesture()
-                                    .updating($gestureScale) { value, state, _ in
-                                        state = value
-                                    }
-                                    .onEnded { value in
-                                        let proposedScale = committedScale * value
-                                        committedScale = min(max(proposedScale, 1), maxZoom)
-                                        committedOffset = clampedOffset(committedOffset, scale: committedScale)
-                                    },
-                                DragGesture()
-                                    .updating($gestureOffset) { value, state, _ in
-                                        state = value.translation
-                                    }
-                                    .onEnded { value in
-                                        let proposed = CGSize(
-                                            width: committedOffset.width + value.translation.width,
-                                            height: committedOffset.height + value.translation.height
-                                        )
-                                        committedOffset = clampedOffset(proposed, scale: committedScale)
-                                    }
-                            )
-                        )
-                        .onAppear {
-                            viewportSize = side
-                        }
-                        .frame(maxWidth: .infinity, alignment: .center)
-                }
-                .aspectRatio(1, contentMode: .fit)
-                .padding(.horizontal, 20)
+                    ZStack {
+                        // Full photo, dimmed, so the user can see what falls outside the crop.
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: displayedSize.width, height: displayedSize.height)
+                            .offset(currentOffset)
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .clipped()
+                            .opacity(0.35)
 
-                Spacer(minLength: 0)
+                        // Same photo again, clipped to the crop area at full brightness.
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: displayedSize.width, height: displayedSize.height)
+                            .offset(currentOffset)
+                            .frame(width: side, height: side)
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    .stroke(Color.white.opacity(0.85), lineWidth: 1.5)
+                            )
+                            .allowsHitTesting(false)
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        SimultaneousGesture(
+                            MagnificationGesture()
+                                .updating($gestureScale) { value, state, _ in
+                                    state = value
+                                }
+                                .onEnded { value in
+                                    let proposedScale = committedScale * value
+                                    committedScale = min(max(proposedScale, 1), maxZoom)
+                                    committedOffset = clampedOffset(committedOffset, scale: committedScale)
+                                },
+                            DragGesture()
+                                .updating($gestureOffset) { value, state, _ in
+                                    state = value.translation
+                                }
+                                .onEnded { value in
+                                    let proposed = CGSize(
+                                        width: committedOffset.width + value.translation.width,
+                                        height: committedOffset.height + value.translation.height
+                                    )
+                                    committedOffset = clampedOffset(proposed, scale: committedScale)
+                                }
+                        )
+                    )
+                    .onAppear {
+                        viewportSize = side
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.vertical, 10)
 
                 Text("Pinch to zoom, drag to reposition")
                     .font(nativeAppFont(size: 13, weight: .medium))
