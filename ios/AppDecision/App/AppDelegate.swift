@@ -11149,6 +11149,7 @@ private struct NativeHomepageShellScreen: View {
     @State private var showBuildYourCircleScreen = false
     @State private var showTopPlacesScreen = false
     @State private var selectedHeroPhoto: NativePickedPhotoAsset?
+    @State private var pendingHomepageCropAsset: NativePickedPhotoAsset?
     @State private var selectedHomepageMoment: NativeMoment?
     @State private var selectedHomepageFeedItem: NativeFeedItem?
     @State private var homepageInviteShareSummary: NativeV2InviteCodeSummary?
@@ -11259,7 +11260,7 @@ private struct NativeHomepageShellScreen: View {
         }
         .navigationBarHidden(true)
         .sheet(isPresented: $showHeroPhotoPicker) {
-            NativeSingleMetadataImagePicker(selection: $selectedHeroPhoto)
+            NativeSingleMetadataImagePicker(selection: $selectedHeroPhoto, cropsToSquare: false)
         }
         .sheet(isPresented: $showAllChallenges) {
             NativeHomepageChallengesSheet(
@@ -11354,9 +11355,26 @@ private struct NativeHomepageShellScreen: View {
             guard let newValue else { return }
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 180_000_000)
-                appState.presentCheckInFlow(prefilledPhotoAsset: newValue)
+                pendingHomepageCropAsset = newValue
                 selectedHeroPhoto = nil
             }
+        }
+        .fullScreenCover(item: $pendingHomepageCropAsset) { asset in
+            NativePhotoCropScreen(
+                image: asset.image,
+                onCancel: {
+                    pendingHomepageCropAsset = nil
+                },
+                onConfirm: { croppedImage in
+                    pendingHomepageCropAsset = nil
+                    appState.presentCheckInFlow(prefilledPhotoAsset: NativePickedPhotoAsset(
+                        image: croppedImage,
+                        latitude: asset.latitude,
+                        longitude: asset.longitude,
+                        capturedAt: asset.capturedAt
+                    ))
+                }
+            )
         }
     }
 
@@ -13939,7 +13957,7 @@ private struct NativeHomepageShellScreen: View {
                 "source": NativeAnalyticsSource.homepage,
                 "slot_index": index
             ])
-            appState.presentCheckInFlow(prefilledPhotoAsset: candidate.pickedPhoto)
+            pendingHomepageCropAsset = candidate.pickedPhoto
         } else {
             handleHeroActionTap()
         }
@@ -43552,9 +43570,13 @@ private struct NativeCheckInScreen: View {
         }
         .onAppear {
             if let prefilledPhotoAsset {
+                selectedPhotoAsset = prefilledPhotoAsset
+                selectedImage = prefilledPhotoAsset.image
                 step = .media
                 inlineCamera.stopSession()
-                pendingCropAsset = prefilledPhotoAsset
+                Task { @MainActor in
+                    await analyzeSelectedCheckInPhoto()
+                }
             } else if let prefilledPlace {
                 selectedPlace = prefilledPlace
                 if let prefilledImage {
