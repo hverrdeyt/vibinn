@@ -44665,13 +44665,15 @@ private struct NativePhotoCropScreen: View {
     }
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
+        GeometryReader { outerGeometry in
+            ZStack {
+                Color.black.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                header
+                VStack(spacing: 0) {
+                    header
+                        .padding(.top, outerGeometry.safeAreaInsets.top)
 
-                GeometryReader { geometry in
+                    GeometryReader { geometry in
                     let side = min(geometry.size.width, geometry.size.height)
 
                     ZStack {
@@ -44740,6 +44742,8 @@ private struct NativePhotoCropScreen: View {
                 confirmButton
             }
         }
+        }
+        .ignoresSafeArea()
         .preferredColorScheme(.dark)
     }
 
