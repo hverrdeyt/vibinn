@@ -2802,7 +2802,11 @@ private func nativeHomepageResolveAssets(with localIdentifiers: [String]) -> [PH
     return localIdentifiers.compactMap { resolvedByID[$0] }
 }
 
-private func nativeHomepageLoadImageSync(for asset: PHAsset, targetSize: CGSize) -> UIImage? {
+private func nativeHomepageLoadImageSync(
+    for asset: PHAsset,
+    targetSize: CGSize,
+    contentMode: PHImageContentMode = .aspectFill
+) -> UIImage? {
     let options = PHImageRequestOptions()
     options.deliveryMode = .highQualityFormat
     options.resizeMode = .fast
@@ -2813,12 +2817,21 @@ private func nativeHomepageLoadImageSync(for asset: PHAsset, targetSize: CGSize)
     PHCachingImageManager().requestImage(
         for: asset,
         targetSize: targetSize,
-        contentMode: .aspectFill,
+        contentMode: contentMode,
         options: options
     ) { image, _ in
         resolved = image.map(nativeNormalizedUIImage)
     }
     return resolved
+}
+
+private func nativeHomepageFullUploadTargetSize(for asset: PHAsset) -> CGSize {
+    let maxDimension: CGFloat = 1600
+    let width = CGFloat(asset.pixelWidth)
+    let height = CGFloat(asset.pixelHeight)
+    guard width > 0, height > 0 else { return CGSize(width: maxDimension, height: maxDimension) }
+    let scale = min(1, maxDimension / max(width, height))
+    return CGSize(width: (width * scale).rounded(), height: (height * scale).rounded())
 }
 
 private func nativeHomepageBuildUploadCandidateSync(
@@ -2833,11 +2846,16 @@ private func nativeHomepageBuildUploadCandidateSync(
     }
 
     let cropped = nativeSquareCroppedImage(image)
+    let fullImage = nativeHomepageLoadImageSync(
+        for: asset,
+        targetSize: nativeHomepageFullUploadTargetSize(for: asset),
+        contentMode: .default
+    ) ?? image
     return NativeHomepageUploadCandidate(
         id: asset.localIdentifier,
         preview: cropped,
         pickedPhoto: NativePickedPhotoAsset(
-            image: cropped,
+            image: fullImage,
             latitude: asset.location?.coordinate.latitude,
             longitude: asset.location?.coordinate.longitude,
             capturedAt: asset.creationDate
@@ -2900,12 +2918,17 @@ private func nativeHomepageScanFoodUploadCandidatesSync(
     for result in sorted {
         guard seen.insert(result.1.localIdentifier).inserted else { continue }
         let cropped = nativeSquareCroppedImage(result.2)
+        let fullImage = nativeHomepageLoadImageSync(
+            for: result.1,
+            targetSize: nativeHomepageFullUploadTargetSize(for: result.1),
+            contentMode: .default
+        ) ?? result.2
         candidates.append(
             NativeHomepageUploadCandidate(
                 id: result.1.localIdentifier,
                 preview: cropped,
                 pickedPhoto: NativePickedPhotoAsset(
-                    image: cropped,
+                    image: fullImage,
                     latitude: result.1.location?.coordinate.latitude,
                     longitude: result.1.location?.coordinate.longitude,
                     capturedAt: result.1.creationDate
@@ -14166,11 +14189,16 @@ private struct NativeHomepageShellScreen: View {
         }
 
         let cropped = nativeSquareCroppedImage(image)
+        let fullImage = await homepageLoadImage(
+            for: asset,
+            targetSize: nativeHomepageFullUploadTargetSize(for: asset),
+            contentMode: .default
+        ) ?? image
         let candidate = NativeHomepageUploadCandidate(
             id: asset.localIdentifier,
             preview: cropped,
             pickedPhoto: NativePickedPhotoAsset(
-                image: cropped,
+                image: fullImage,
                 latitude: asset.location?.coordinate.latitude,
                 longitude: asset.location?.coordinate.longitude,
                 capturedAt: asset.creationDate
@@ -14183,7 +14211,11 @@ private struct NativeHomepageShellScreen: View {
         return candidate
     }
 
-    private func homepageLoadImage(for asset: PHAsset, targetSize: CGSize) async -> UIImage? {
+    private func homepageLoadImage(
+        for asset: PHAsset,
+        targetSize: CGSize,
+        contentMode: PHImageContentMode = .aspectFill
+    ) async -> UIImage? {
         await withCheckedContinuation { continuation in
             let options = PHImageRequestOptions()
             options.deliveryMode = .highQualityFormat
@@ -14194,7 +14226,7 @@ private struct NativeHomepageShellScreen: View {
             PHCachingImageManager().requestImage(
                 for: asset,
                 targetSize: targetSize,
-                contentMode: .aspectFill,
+                contentMode: contentMode,
                 options: options
             ) { image, _ in
                 continuation.resume(returning: image.map(nativeNormalizedUIImage))
@@ -14242,12 +14274,17 @@ private struct NativeHomepageShellScreen: View {
         for result in sorted {
             guard seen.insert(result.1.localIdentifier).inserted else { continue }
             let cropped = nativeSquareCroppedImage(result.2)
+            let fullImage = await homepageLoadImage(
+                for: result.1,
+                targetSize: nativeHomepageFullUploadTargetSize(for: result.1),
+                contentMode: .default
+            ) ?? result.2
             candidates.append(
                 NativeHomepageUploadCandidate(
                     id: result.1.localIdentifier,
                     preview: cropped,
                     pickedPhoto: NativePickedPhotoAsset(
-                        image: cropped,
+                        image: fullImage,
                         latitude: result.1.location?.coordinate.latitude,
                         longitude: result.1.location?.coordinate.longitude,
                         capturedAt: result.1.creationDate
