@@ -2907,10 +2907,7 @@ private func nativeHomepageScanFoodUploadCandidatesSync(
     }
 
     let sorted = scannedResults.sorted { lhs, rhs in
-        if abs(lhs.3.score - rhs.3.score) > 0.001 {
-            return lhs.3.score > rhs.3.score
-        }
-        return lhs.0 < rhs.0
+        lhs.0 < rhs.0
     }
 
     var seen = Set<String>()
@@ -11164,6 +11161,7 @@ private struct NativeHomepageShellScreen: View {
     @State private var homepageFoodPhotoCandidates: [NativeHomepageUploadCandidate] = []
     @State private var homepageUploadRefreshID = UUID()
     @State private var homepageLastUploadCandidatesRefreshAt: Date?
+    @State private var isHomepageFoodScanInProgress = false
     @State private var showHeroPhotoPicker = false
     @State private var showAllChallenges = false
     @State private var showNotificationsSheet = false
@@ -11483,6 +11481,13 @@ private struct NativeHomepageShellScreen: View {
                         Image(uiImage: image)
                             .resizable()
                             .scaledToFill()
+                    } else if isHomepageFoodScanInProgress {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color.white.opacity(0.08))
+                            .overlay(
+                                ProgressView()
+                                    .tint(.white.opacity(0.6))
+                            )
                     } else {
                         RoundedRectangle(cornerRadius: 14, style: .continuous)
                             .fill(Color.white.opacity(0.08))
@@ -13916,7 +13921,7 @@ private struct NativeHomepageShellScreen: View {
         var resolved: [NativeHomepageUploadCandidate] = []
         var seen = Set<String>()
 
-        for candidate in homepageFoodPhotoCandidates + homepageRecentPhotoCandidates {
+        for candidate in homepageFoodPhotoCandidates {
             guard seen.insert(candidate.id).inserted else { continue }
             resolved.append(candidate)
             if resolved.count == 3 { break }
@@ -14010,10 +14015,12 @@ private struct NativeHomepageShellScreen: View {
             recentPhotoPreviews = []
             homepageRecentPhotoCandidates = []
             homepageFoodPhotoCandidates = []
+            isHomepageFoodScanInProgress = false
             return
         }
 
         homepageLastUploadCandidatesRefreshAt = Date()
+        isHomepageFoodScanInProgress = true
         let refreshID = UUID()
         homepageUploadRefreshID = refreshID
 
@@ -14122,6 +14129,7 @@ private struct NativeHomepageShellScreen: View {
                     forKey: nativeHomepageFoodPhotoAssetIDsDefaultsKey
                 )
             }
+            isHomepageFoodScanInProgress = false
         }
     }
 
@@ -14270,10 +14278,7 @@ private struct NativeHomepageShellScreen: View {
         }
 
         let sorted = scannedResults.sorted { lhs, rhs in
-            if abs(lhs.3.score - rhs.3.score) > 0.001 {
-                return lhs.3.score > rhs.3.score
-            }
-            return lhs.0 < rhs.0
+            lhs.0 < rhs.0
         }
 
         var candidates: [NativeHomepageUploadCandidate] = []
