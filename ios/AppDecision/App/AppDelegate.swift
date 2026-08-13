@@ -11163,6 +11163,7 @@ private struct NativeHomepageShellScreen: View {
     @State private var homepageRecentPhotoCandidates: [NativeHomepageUploadCandidate] = []
     @State private var homepageFoodPhotoCandidates: [NativeHomepageUploadCandidate] = []
     @State private var homepageUploadRefreshID = UUID()
+    @State private var homepageLastUploadCandidatesRefreshAt: Date?
     @State private var showHeroPhotoPicker = false
     @State private var showAllChallenges = false
     @State private var showNotificationsSheet = false
@@ -11332,6 +11333,7 @@ private struct NativeHomepageShellScreen: View {
                     homepageStageReady = true
                 }
             }
+            refreshHomepageUploadCandidatesIfIdle()
             guard !hasBootstrappedHomepage else { return }
             hasBootstrappedHomepage = true
             trackHomepageViewed()
@@ -11346,10 +11348,6 @@ private struct NativeHomepageShellScreen: View {
                     homepageMonthlyShareMessage = homepageMonthlyRecapShareMessage
                 }
             }
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 350_000_000)
-                refreshHomepagePhotoPreviewIfNeeded()
-            }
             Task {
                 try? await Task.sleep(nanoseconds: 700_000_000)
                 await appState.refreshFeed()
@@ -11360,8 +11358,7 @@ private struct NativeHomepageShellScreen: View {
             refreshHomepagePhotoPreviewIfNeeded()
         }
         .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
-            guard hasHomepagePhotoAccess else { return }
-            refreshHomepagePhotoPreviewIfNeeded()
+            refreshHomepageUploadCandidatesIfIdle()
         }
         .onChange(of: homepageStageProgress) { newValue in
             let targetIndex = Int(newValue.rounded())
@@ -14016,11 +14013,23 @@ private struct NativeHomepageShellScreen: View {
             return
         }
 
+        homepageLastUploadCandidatesRefreshAt = Date()
         let refreshID = UUID()
         homepageUploadRefreshID = refreshID
 
         Task {
             await refreshHomepageUploadCandidates(refreshID: refreshID)
+        }
+    }
+
+    private func refreshHomepageUploadCandidatesIfIdle() {
+        let idleThreshold: TimeInterval = 60
+        if let last = homepageLastUploadCandidatesRefreshAt, Date().timeIntervalSince(last) < idleThreshold {
+            return
+        }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            refreshHomepagePhotoPreviewIfNeeded()
         }
     }
 
@@ -14104,8 +14113,10 @@ private struct NativeHomepageShellScreen: View {
         guard await homepageUploadRefreshIsCurrent(refreshID) else { return }
 
         await MainActor.run {
-            if !scannedFoodCandidates.isEmpty {
-                homepageFoodPhotoCandidates = Array(scannedFoodCandidates.prefix(3))
+            homepageFoodPhotoCandidates = Array(scannedFoodCandidates.prefix(3))
+            if scannedFoodCandidates.isEmpty {
+                UserDefaults.standard.removeObject(forKey: nativeHomepageFoodPhotoAssetIDsDefaultsKey)
+            } else {
                 UserDefaults.standard.set(
                     Array(scannedFoodCandidates.prefix(3)).map(\.id),
                     forKey: nativeHomepageFoodPhotoAssetIDsDefaultsKey
