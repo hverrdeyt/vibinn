@@ -2730,18 +2730,17 @@ private let nativeHomepageFoodPhotoAssetIDsDefaultsKey = "club.vibinn.homepage.f
 private let nativeHomepageFoodPhotoScanLimit = 180
 private let nativeHomepageRecentPhotoPreviewLimit = 12
 private let nativeHomepageFoodKeywords = [
-    "food", "dish", "meal", "plate", "cuisine", "restaurant", "brunch", "breakfast",
-    "lunch", "dinner", "dessert", "snack", "drink", "beverage", "coffee", "tea",
+    "food", "dish", "meal", "cuisine", "brunch", "breakfast",
+    "lunch", "dinner", "dessert", "snack food", "drink", "beverage", "coffee", "tea",
     "pizza", "burger", "sandwich", "taco", "burrito", "ramen", "noodle", "pasta",
     "sushi", "salad", "soup", "cake", "bread", "pastry", "ice cream", "rice", "stew",
-    "entree", "appetizer", "platter", "bowl", "sauce", "bakery", "baked", "cookie",
-    "chocolate", "fruit", "vegetable", "produce", "smoothie", "cocktail", "beer",
-    "wine", "espresso", "latte", "cappuccino", "cafe", "dining table", "tableware",
-    "cutlery", "menu item", "fast food", "street food", "fried food", "seafood",
-    "recipe", "cup", "mug", "glass", "charcuterie", "steak", "sweets", "pastries",
-    "dumpling", "sashimi", "omelet", "toast", "grill", "barbecue", "bento", "croissant",
-    "plated food", "dishware", "table", "dining", "buffet", "banquet", "brasserie",
-    "cafeteria", "takeout", "takeaway", "snack food", "serving tray", "tray"
+    "entree", "appetizer", "platter", "sauce", "bakery", "baked good", "cookie",
+    "chocolate", "fruit", "vegetable", "produce", "smoothie", "cocktail", "beer", "wine",
+    "espresso", "latte", "cappuccino",
+    "fast food", "street food", "fried food", "seafood",
+    "charcuterie", "steak", "sweets", "pastries",
+    "dumpling", "sashimi", "omelet", "toast", "barbecue", "bento", "croissant",
+    "plated food", "takeout", "takeaway"
 ]
 
 private func nativeHomepageFoodDetectionResult(for image: UIImage) -> NativeHomepageFoodDetectionResult? {
@@ -2764,6 +2763,7 @@ private func nativeHomepageFoodDetectionResult(for image: UIImage) -> NativeHome
     }
 
     for (index, observation) in labels.prefix(40).enumerated() {
+        guard observation.confidence >= 0.2 else { continue }
         let normalized = observation.identifier.lowercased().replacingOccurrences(of: "_", with: " ")
         guard nativeHomepageFoodKeywords.contains(where: { normalized.contains($0) }) else { continue }
         let rankBoost = max(0.0, 1.0 - (Double(index) * 0.08))
@@ -2771,7 +2771,7 @@ private func nativeHomepageFoodDetectionResult(for image: UIImage) -> NativeHome
         matchedLabels.append("\(observation.identifier) \(Int((observation.confidence * 100).rounded()))%")
     }
 
-    guard bestScore > 0 else { return nil }
+    guard bestScore > 0.15 else { return nil }
 
     return NativeHomepageFoodDetectionResult(
         score: bestScore,
