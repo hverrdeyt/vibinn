@@ -11282,7 +11282,11 @@ private struct NativeHomepageShellScreen: View {
             }
         }
         .navigationBarHidden(true)
-        .sheet(isPresented: $showHeroPhotoPicker) {
+        .sheet(isPresented: $showHeroPhotoPicker, onDismiss: {
+            guard let picked = selectedHeroPhoto else { return }
+            selectedHeroPhoto = nil
+            pendingHomepageCropAsset = picked
+        }) {
             NativeSingleMetadataImagePicker(selection: $selectedHeroPhoto, cropsToSquare: false)
         }
         .sheet(isPresented: $showAllChallenges) {
@@ -11373,14 +11377,6 @@ private struct NativeHomepageShellScreen: View {
         }
         .onReceive(Timer.publish(every: 3, on: .main, in: .common).autoconnect()) { _ in
             homepageMonthlyShareIconIndex = (homepageMonthlyShareIconIndex + 1) % homepageMonthlyShareBadges.count
-        }
-        .onChange(of: selectedHeroPhoto) { newValue in
-            guard let newValue else { return }
-            Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 180_000_000)
-                pendingHomepageCropAsset = newValue
-                selectedHeroPhoto = nil
-            }
         }
         .fullScreenCover(item: $pendingHomepageCropAsset) { asset in
             NativePhotoCropScreen(
@@ -44797,7 +44793,7 @@ private struct NativePhotoCropScreen: View {
             Color.clear.frame(width: 44, height: 1)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 54)
+        .padding(.top, 18)
         .padding(.bottom, 8)
     }
 
