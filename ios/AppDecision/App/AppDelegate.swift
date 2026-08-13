@@ -44797,7 +44797,7 @@ private struct NativePhotoCropScreen: View {
             Color.clear.frame(width: 44, height: 1)
         }
         .padding(.horizontal, 20)
-        .padding(.top, 18)
+        .padding(.top, 54)
         .padding(.bottom, 8)
     }
 
