@@ -452,6 +452,7 @@ model Moment {
   rating                   Int?
   ratingLabel              String?
   wouldRevisit             String?
+  isHomemade               Boolean          @default(false)
   visibility               MomentVisibility @default(PUBLIC)
   vibeTags                 String[]         @default([])
   createdAt                DateTime         @default(now())
