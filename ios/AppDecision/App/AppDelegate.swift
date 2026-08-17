@@ -40,10 +40,12 @@ private let nativePlaceDetailLayoutDebugMode = false
 private let nativePreferenceLayoutDebugMode = false
 private let nativeAuthLayoutDebugMode = false
 private let nativeAuthPositionDebugMode = false
-private let nativeAuthShowsWelcomeStickers = true
 private let nativeAuthHeroImageDebugMode = false
 private let nativeDecisionLayoutDebugMode = false
 private let nativeHomepageLayoutDebugMode = false
+/// Experiment: full-width homepage stage cards with the scroll-indicator rail hidden.
+/// Flip back to `false` to instantly revert to the original rail + inset card width.
+private let nativeHomepageStageFullWidthEnabled = true
 private let nativeHomepageStageGestureIsolationDisableCard3PostRows = false
 private let nativeHomepageStageGestureIsolationDisableCard4RowButtons = false
 private let nativeMyProfileDebugMode = false
@@ -74,6 +76,7 @@ private let nativeWidgetDeepLinkNotification = Notification.Name("NativeWidgetDe
 private let nativeForegroundPushNotification = Notification.Name("NativeForegroundPushReceived")
 private let nativePendingPushDeepLinkUserDefaultsKey = "vibinn_native_pending_push_deep_link"
 private let nativePushDeepLinkTappedNotification = Notification.Name("NativePushDeepLinkTapped")
+
 private let nativeLocationOptions = [
     NativeLocationOption(id: "boston", label: "Boston"),
     NativeLocationOption(id: "new-york", label: "New York"),
@@ -102,11 +105,8 @@ private let nativePushTokenUserDefaultsKey = "vibinn_native_push_token"
 private let nativeAPIBaseURLUserDefaultsKey = "vibinn_native_api_base_url"
 private let nativeAppStoreURL = "https://apps.apple.com/us/app/vibinn/id6762061149"
 
-private func nativeInviteShareMessage(code: String?) -> String {
-    if let code, !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        return "Join me on Vibinn. Use my code \(code) to join my circle. Download it here: \(nativeAppStoreURL)"
-    }
-    return "Join me on Vibinn. Download it here: \(nativeAppStoreURL)"
+private func nativeInviteShareMessage() -> String {
+    "Join me on Vibinn, create a food photo journal. Download it here: \(nativeAppStoreURL)"
 }
 
 private func nativeMyProfileShareMessage(username: String?) -> String {
@@ -361,6 +361,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         #endif
         registerForRemoteNotificationsIfAuthorized(application: application)
         application.setMinimumBackgroundFetchInterval(UIApplication.backgroundFetchIntervalMinimum)
+        if let launchURL = launchOptions?[.url] as? URL,
+           launchURL.scheme?.caseInsensitiveCompare("vibinn") == .orderedSame {
+            UserDefaults.standard.set(launchURL.absoluteString, forKey: nativePendingWidgetDeepLinkUserDefaultsKey)
+        }
         return true
     }
 
@@ -573,6 +577,7 @@ private enum NativeAnalyticsEvent: String {
     case shareMyTopPlace = "Share my top place"
     case viewCardFriends = "View card friends"
     case viewCardYourCode = "View card your code"
+    case viewCardReadyToLog = "View card ready to log"
     case clickShareCode = "Click share code"
     case viewCardSuggestion = "View card suggestion"
     case chooseImageFromHomepage = "Choose image from homepage"
@@ -1026,11 +1031,18 @@ private struct VibinnNativeApp: App {
 
     var body: some Scene {
         WindowGroup {
-            if useNativeIOSShell {
-                NativeVibinnRootView()
-            } else {
-                Color.black
-                    .ignoresSafeArea()
+            Group {
+                if useNativeIOSShell {
+                    NativeVibinnRootView()
+                } else {
+                    Color.black
+                        .ignoresSafeArea()
+                }
+            }
+            .onOpenURL { url in
+                guard url.scheme?.caseInsensitiveCompare("vibinn") == .orderedSame else { return }
+                UserDefaults.standard.set(url.absoluteString, forKey: nativePendingWidgetDeepLinkUserDefaultsKey)
+                NotificationCenter.default.post(name: nativeWidgetDeepLinkNotification, object: url)
             }
         }
     }
@@ -2725,6 +2737,16 @@ private struct NativeHomepageFoodDetectionResult {
 
 private let nativeHomepageFoodPhotoAssetIDsDefaultsKey = "club.vibinn.homepage.food-photo-asset-ids"
 private let nativeHomepageFoodPhotoScanLimit = 180
+private let nativeHomepageReadyToLogScanLimit = 300
+private let nativeHomepageReadyToLogMaxResults = 20
+private let nativeHomepageReadyToLogPhotoAspectRatio: CGFloat = 0.8
+private let nativeHomepageReadyToLogDateFormatter: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = .current
+    formatter.dateFormat = "d MMM, HH:mm"
+    return formatter
+}()
 private let nativeHomepageRecentPhotoPreviewLimit = 12
 private let nativeHomepageFoodKeywords = [
     "food", "dish", "meal", "cuisine", "brunch", "breakfast",
@@ -2889,12 +2911,14 @@ private func nativeHomepageBuildUploadCandidatesSync(
 
 private func nativeHomepageScanFoodUploadCandidatesSync(
     in assets: [PHAsset],
+    scanLimit: Int = nativeHomepageFoodPhotoScanLimit,
+    maxResults: Int = 3,
     debugTimestamp: (Date?) -> String,
     debugDetailsBuilder: (NativeHomepageFoodDetectionResult, Date?) -> String
 ) -> [NativeHomepageUploadCandidate] {
     var scannedResults: [(Int, PHAsset, UIImage, NativeHomepageFoodDetectionResult)] = []
 
-    for (index, asset) in assets.prefix(nativeHomepageFoodPhotoScanLimit).enumerated() {
+    for (index, asset) in assets.prefix(scanLimit).enumerated() {
         guard let image = nativeHomepageLoadImageSync(for: asset, targetSize: CGSize(width: 512, height: 512)),
               let result = nativeHomepageFoodDetectionResult(for: image),
               result.score > 0 else {
@@ -2933,7 +2957,7 @@ private func nativeHomepageScanFoodUploadCandidatesSync(
                 debugDetails: debugDetailsBuilder(result.3, result.1.creationDate)
             )
         )
-        if candidates.count == 3 { break }
+        if candidates.count == maxResults { break }
     }
 
     return candidates
@@ -3126,6 +3150,7 @@ private func nativePlaceApplyingMoment(_ moment: NativeMoment) -> NativePlace {
         momentWouldRevisit: moment.wouldRevisit,
         momentRating: moment.rating,
         momentRatingLabel: moment.ratingLabel,
+        momentIsHomemade: moment.place.momentIsHomemade,
         followedVisitorCount: moment.place.followedVisitorCount,
         traitSource: moment.place.traitSource,
         archetype: moment.place.archetype,
@@ -3676,30 +3701,20 @@ private struct NativeCompatibilityBadgeMeta {
     let background: Color
 }
 
-private struct NativeWidgetGallerySnapshot: Codable {
+private struct NativeWidgetMemorySnapshot: Codable {
     let id: String
-    let username: String
-    let displayName: String?
-    let avatarURL: String?
     let mediaURL: String?
     let localMediaPath: String?
-    let postedLabel: String
-}
-
-private struct NativeWidgetRecommendationSnapshot: Codable {
-    let placeId: String
-    let placeName: String
-    let backgroundImageURL: String?
-    let localBackgroundImagePath: String?
-    let distanceLabel: String
-    let hasGeneratedRecommendation: Bool
+    let caption: String?
+    let avatarURL: String?
+    let localAvatarPath: String?
+    let avatarFallbackName: String?
 }
 
 private struct NativeWidgetSnapshot: Codable {
     let generatedAt: Date
-    let hasFriends: Bool
-    let gallery: NativeWidgetGallerySnapshot?
-    let recommendation: NativeWidgetRecommendationSnapshot?
+    let myMemories: [NativeWidgetMemorySnapshot]
+    let feedMemory: NativeWidgetMemorySnapshot?
 }
 
 private enum NativeWidgetSnapshotStore {
@@ -3724,6 +3739,22 @@ private enum NativeWidgetSnapshotStore {
     static func clear() {
         guard let fileURL else { return }
         try? FileManager.default.removeItem(at: fileURL)
+    }
+}
+
+private func nativeDownsampledWidgetImage(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+    let size = image.size
+    guard size.width > maxDimension || size.height > maxDimension else { return image }
+
+    let scale = maxDimension / max(size.width, size.height)
+    let targetSize = CGSize(width: size.width * scale, height: size.height * scale)
+
+    let format = UIGraphicsImageRendererFormat()
+    format.scale = 1
+    format.opaque = false
+    let renderer = UIGraphicsImageRenderer(size: targetSize, format: format)
+    return renderer.image { _ in
+        image.draw(in: CGRect(origin: .zero, size: targetSize))
     }
 }
 
@@ -3775,10 +3806,14 @@ private enum NativeWidgetImageCacheStore {
                 return nil
             }
 
-            guard let image = UIImage(data: data) else {
+            guard let decodedImage = UIImage(data: data) else {
                 nativeLogger.error("widget image cache decode failed for: \(resolved, privacy: .public)")
                 return nil
             }
+            // WidgetKit rejects archiving a widget whose images exceed a small total pixel-area
+            // budget (roughly 1034x1034 for a small widget). Downsample before caching so the
+            // widget doesn't silently fail to render.
+            let image = nativeDownsampledWidgetImage(decodedImage, maxDimension: 400)
 
             let hasAlpha = image.cgImage?.alphaInfo == .premultipliedFirst
                 || image.cgImage?.alphaInfo == .premultipliedLast
@@ -3911,6 +3946,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     @Published var showCheckInSheet = false
     @Published var showDecisionLocationPermissionSheet = false
     @Published var showSecondMemoryProfileSharePrompt = false
+    @Published var showWidgetOnboardingCTASheet = false
     @Published var checkInPrefilledPlace: NativePlace?
     @Published var checkInPrefilledPhotoAsset: NativePickedPhotoAsset?
     @Published var checkInPrefilledImage: UIImage?
@@ -3933,6 +3969,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private let syncedPushTokenKey = "vibinn_native_synced_push_token"
     private let hasPromptedForPushAfterContentActionKeyPrefix = "vibinn_native_push_prompt_after_content_action"
     private let hasShownSecondMemoryProfileSharePromptKeyPrefix = "vibinn_native_second_memory_profile_share_prompt"
+    private let hasShownWidgetOnboardingCTASheetKeyPrefix = "vibinn_native_widget_onboarding_cta_prompt"
     private let dismissedSuggestedTravelerIdsKeyPrefix = "vibinn_native_dismissed_suggested_travelers"
     private let lastSeenFeedTimestampKeyPrefix = "vibinn_native_last_seen_feed_timestamp"
     private let locationManager = CLLocationManager()
@@ -4923,7 +4960,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             throw URLError(.userAuthenticationRequired)
         }
         let summary = try await loadOrCreateMyInviteCode(token: token)
-        return nativeInviteShareMessage(code: summary.code)
+        return nativeInviteShareMessage()
     }
 
     func loadCurrentInviteCodeSummary() async throws -> NativeV2InviteCodeSummary {
@@ -5198,7 +5235,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         checkInPrefilledPlace = prefilledPlace
         checkInPrefilledPhotoAsset = prefilledPhotoAsset
         checkInPrefilledImage = prefilledImage ?? prefilledPhotoAsset?.image
-        checkInPrefilledVisitedDate = prefilledVisitedDate ?? prefilledPhotoAsset?.capturedAt.map { NativeCheckInScreen.isoDayString(from: $0) }
+        checkInPrefilledVisitedDate = prefilledVisitedDate ?? prefilledPhotoAsset?.capturedAt.map { ISO8601DateFormatter().string(from: $0) }
         showCheckInSheet = true
     }
 
@@ -6161,6 +6198,7 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         nativeLogger.log("submitCheckIn local moment insert complete count=\(self.myMoments.count, privacy: .public)")
         maybePresentSecondMemoryProfileSharePrompt()
         presentDiaryCelebration(ratingLabel: createdMoment.ratingLabel ?? ratingLabel)
+        refreshWidgetSnapshot()
         rebuildOwnFeedItems()
         nativeLogger.log("submitCheckIn own feed rebuild complete count=\(self.ownFeedItemsCache.count, privacy: .public)")
         clearDecisionSessionState()
@@ -6432,6 +6470,33 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         showSecondMemoryProfileSharePrompt = false
     }
 
+    private func maybePresentWidgetOnboardingCTASheet() {
+        guard let userId = currentUser?.id else { return }
+
+        let key = "\(hasShownWidgetOnboardingCTASheetKeyPrefix)_\(userId)"
+        guard UserDefaults.standard.bool(forKey: key) == false else { return }
+
+        WidgetCenter.shared.getCurrentConfigurations { [weak self] result in
+            guard let self else { return }
+
+            let hasFeedWidget: Bool
+            switch result {
+            case .success(let widgets):
+                hasFeedWidget = widgets.contains { $0.kind == "VibinnFeedMemoryWidget" }
+            case .failure:
+                hasFeedWidget = false
+            }
+
+            DispatchQueue.main.async {
+                guard self.currentUser?.id == userId else { return }
+                guard !hasFeedWidget else { return }
+
+                UserDefaults.standard.set(true, forKey: key)
+                self.showWidgetOnboardingCTASheet = true
+            }
+        }
+    }
+
     private func maybePresentSecondMemoryProfileSharePrompt() {
         guard hasCompletedInviteOnboarding else { return }
         guard let userId = currentUser?.id else { return }
@@ -6592,10 +6657,14 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
             : api.toggleFollow(token: token, targetUserId: traveler.id))
 
         if result.active {
+            let wasEmpty = followedTravelers.isEmpty
             if !followedTravelers.contains(where: { $0.id == traveler.id }) {
                 followedTravelers.insert(traveler, at: 0)
             }
             suggestedTravelers.removeAll(where: { $0.id == traveler.id })
+            if wasEmpty && followedTravelers.count == 1 {
+                maybePresentWidgetOnboardingCTASheet()
+            }
         } else {
             followedTravelers.removeAll(where: { $0.id == traveler.id })
             if !suggestedTravelers.contains(where: { $0.id == traveler.id }) {
@@ -7252,12 +7321,18 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private func handleWidgetDeepLink(_ url: URL?) {
         guard let url else { return }
         switch url.host?.lowercased() {
-        case "feed":
+        case "diary":
             if currentUser == nil {
-                presentAuthGate(reason: "Log in to open your today feed.")
+                presentAuthGate(reason: "Log in to open your diary.")
                 return
             }
             activeTab = .feed
+        case "feed":
+            if currentUser == nil {
+                presentAuthGate(reason: "Log in to see your friends' feed.")
+                return
+            }
+            activeTab = .chat
         case "discover":
             activeTab = .discover
         case "today-recommendation":
@@ -7393,26 +7468,24 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
     private func refreshWidgetSnapshotSync(_ snapshot: NativeWidgetSnapshot) {
         NativeWidgetSnapshotStore.save(snapshot)
 #if canImport(WidgetKit)
-        WidgetCenter.shared.reloadTimelines(ofKind: "VibinnGalleryWidget")
-        WidgetCenter.shared.reloadTimelines(ofKind: "VibinnRecommendationWidget")
-        WidgetCenter.shared.reloadTimelines(ofKind: "VibinnComboWidget")
+        WidgetCenter.shared.reloadTimelines(ofKind: "VibinnMyMemoryWidget")
+        WidgetCenter.shared.reloadTimelines(ofKind: "VibinnFeedMemoryWidget")
         WidgetCenter.shared.reloadAllTimelines()
 #endif
     }
 
     private func refreshWidgetSnapshotAsync() async {
-        let gallerySnapshot = await nativeWidgetGallerySnapshot
-        let recommendationSnapshot = await nativeWidgetRecommendationSnapshot
+        let myMemorySnapshots = await nativeWidgetMyMemorySnapshots
+        let feedMemorySnapshot = await nativeWidgetFeedMemorySnapshot
 
         nativeLogger.log(
-            "widget snapshot build galleryURL=\(gallerySnapshot?.mediaURL ?? "nil", privacy: .public) galleryLocal=\(gallerySnapshot?.localMediaPath ?? "nil", privacy: .public) recoURL=\(recommendationSnapshot?.backgroundImageURL ?? "nil", privacy: .public) recoLocal=\(recommendationSnapshot?.localBackgroundImagePath ?? "nil", privacy: .public)"
+            "widget snapshot build myMemoryCount=\(myMemorySnapshots.count, privacy: .public) feedMemoryURL=\(feedMemorySnapshot?.mediaURL ?? "nil", privacy: .public) feedMemoryLocal=\(feedMemorySnapshot?.localMediaPath ?? "nil", privacy: .public)"
         )
 
         let snapshot = NativeWidgetSnapshot(
             generatedAt: Date(),
-            hasFriends: !followedTravelers.isEmpty,
-            gallery: gallerySnapshot,
-            recommendation: recommendationSnapshot
+            myMemories: myMemorySnapshots,
+            feedMemory: feedMemorySnapshot
         )
         refreshWidgetSnapshotSync(snapshot)
     }
@@ -7421,21 +7494,43 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
         NativeWidgetSnapshotStore.clear()
         NativeWidgetImageCacheStore.clear()
 #if canImport(WidgetKit)
-        WidgetCenter.shared.reloadTimelines(ofKind: "VibinnGalleryWidget")
-        WidgetCenter.shared.reloadTimelines(ofKind: "VibinnRecommendationWidget")
-        WidgetCenter.shared.reloadTimelines(ofKind: "VibinnComboWidget")
+        WidgetCenter.shared.reloadTimelines(ofKind: "VibinnMyMemoryWidget")
+        WidgetCenter.shared.reloadTimelines(ofKind: "VibinnFeedMemoryWidget")
         WidgetCenter.shared.reloadAllTimelines()
 #endif
     }
 
-    private var nativeWidgetGallerySnapshot: NativeWidgetGallerySnapshot? {
+    private var nativeWidgetMyMemorySnapshots: [NativeWidgetMemorySnapshot] {
         get async {
-            let sourceItem: NativeFeedItem?
-            if !followedTravelers.isEmpty {
-                sourceItem = feedItems.first ?? fallbackFeedItems.first
-            } else {
-                sourceItem = suggestedFeedItems.first
+            var snapshots: [NativeWidgetMemorySnapshot] = []
+            for moment in diaryMoments.prefix(3) {
+                let mediaURL = moment.uploadedMedia?.first(where: { !$0.isEmpty })
+                let localMediaPath = await NativeWidgetImageCacheStore.cacheImage(
+                    from: mediaURL,
+                    cacheKey: "my-memory-\(moment.id)"
+                )
+                let trimmedCaption = moment.caption?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                snapshots.append(
+                    NativeWidgetMemorySnapshot(
+                        id: moment.id,
+                        mediaURL: mediaURL,
+                        localMediaPath: localMediaPath,
+                        caption: (trimmedCaption?.isEmpty == false) ? trimmedCaption : nil,
+                        avatarURL: nil,
+                        localAvatarPath: nil,
+                        avatarFallbackName: nil
+                    )
+                )
             }
+            return snapshots
+        }
+    }
+
+    private var nativeWidgetFeedMemorySnapshot: NativeWidgetMemorySnapshot? {
+        get async {
+            guard !followedTravelers.isEmpty else { return nil }
+            let sourceItem = feedItems.first ?? fallbackFeedItems.first
 
             guard let item = sourceItem else { return nil }
             let mediaURL =
@@ -7446,91 +7541,24 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 ?? item.place?.images?.first
             let localMediaPath = await NativeWidgetImageCacheStore.cacheImage(
                 from: mediaURL,
-                cacheKey: "gallery-\(item.id)"
+                cacheKey: "feed-memory-\(item.id)"
             )
+            let localAvatarPath = await NativeWidgetImageCacheStore.cacheImage(
+                from: item.traveler.avatar,
+                cacheKey: "feed-avatar-\(item.traveler.id)"
+            )
+            let trimmedCaption = item.caption?.trimmingCharacters(in: .whitespacesAndNewlines)
 
-            return NativeWidgetGallerySnapshot(
+            return NativeWidgetMemorySnapshot(
                 id: item.id,
-                username: item.traveler.username,
-                displayName: item.traveler.displayName,
-                avatarURL: item.traveler.avatar,
                 mediaURL: mediaURL,
                 localMediaPath: localMediaPath,
-                postedLabel: item.timestampLabel
+                caption: (trimmedCaption?.isEmpty == false) ? trimmedCaption : nil,
+                avatarURL: item.traveler.avatar,
+                localAvatarPath: localAvatarPath,
+                avatarFallbackName: item.traveler.displayName ?? item.traveler.username
             )
         }
-    }
-
-    private var nativeWidgetRecommendationSnapshot: NativeWidgetRecommendationSnapshot? {
-        get async {
-            if let recommendation = todayRecommendation {
-                let imageURL =
-                    recommendation.place.image
-                    ?? recommendation.place.images?.first
-                    ?? recommendation.place.userMediaUrls?.first
-                    ?? recommendation.place.momentMedia?.first?.url
-                let localBackgroundImagePath = await NativeWidgetImageCacheStore.cacheImage(
-                    from: imageURL,
-                    cacheKey: "recommendation-\(recommendation.place.id)"
-                )
-
-                let distanceLabel: String
-                if recommendation.distanceMiles < 0.2 {
-                    distanceLabel = "Nearby"
-                } else {
-                    distanceLabel = String(format: "%.1f mi away", recommendation.distanceMiles)
-                }
-
-                return NativeWidgetRecommendationSnapshot(
-                    placeId: recommendation.place.id,
-                    placeName: recommendation.place.name,
-                    backgroundImageURL: imageURL,
-                    localBackgroundImagePath: localBackgroundImagePath,
-                    distanceLabel: distanceLabel,
-                    hasGeneratedRecommendation: true
-                )
-            }
-
-            if let option = nativeWidgetDecisionRecommendationOption {
-                let imageURL = option.place.thumbnailUrl
-                let localBackgroundImagePath = await NativeWidgetImageCacheStore.cacheImage(
-                    from: imageURL,
-                    cacheKey: "decision-\(option.place.id)"
-                )
-                let distanceLabel = option.place.travelTimeLabel?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                return NativeWidgetRecommendationSnapshot(
-                    placeId: option.place.id,
-                    placeName: option.place.name,
-                    backgroundImageURL: imageURL,
-                    localBackgroundImagePath: localBackgroundImagePath,
-                    distanceLabel: (distanceLabel?.isEmpty == false ? distanceLabel! : "Open your picks"),
-                    hasGeneratedRecommendation: true
-                )
-            }
-
-            return NativeWidgetRecommendationSnapshot(
-                placeId: "",
-                placeName: "Pick for me",
-                backgroundImageURL: nil,
-                localBackgroundImagePath: nil,
-                distanceLabel: "Generate today’s pick",
-                hasGeneratedRecommendation: false
-            )
-        }
-    }
-
-    private var nativeWidgetDecisionRecommendationOption: NativeDecisionSessionOption? {
-        guard let session = decisionSession else { return nil }
-        if let selected = session.options.first(where: { $0.isSelected }) {
-            return selected
-        }
-        let rankedVisible = session.options
-            .filter { $0.isVisible && !$0.isSkipped }
-            .sorted { $0.rank < $1.rank }
-        if let firstVisible = rankedVisible.first {
-            return firstVisible
-        }
-        return session.options.sorted { $0.rank < $1.rank }.first
     }
 
     func performWidgetBackgroundRefresh() async -> UIBackgroundFetchResult {
@@ -9506,6 +9534,11 @@ private struct NativeVibinnRootView: View {
                 .environmentObject(appState)
                 .modifier(NativeBottomSheetPresentationModifier())
         }
+        .sheet(isPresented: $appState.showWidgetOnboardingCTASheet) {
+            NativeWidgetOnboardingCTASheet()
+                .environmentObject(appState)
+                .modifier(NativeWidgetOnboardingCTAPresentationModifier())
+        }
         .fullScreenCover(item: $appState.pendingPushProfileTarget) { target in
             NativeTravelerProfileScreen(
                 initialTraveler: NativeTravelerSummary(
@@ -10511,13 +10544,21 @@ private struct NativeDiaryScreen: View {
                         Button {
                             activeCityFilter = city
                         } label: {
-                            Text(city)
-                                .font(nativeAppFont(size: 12, weight: .bold))
-                                .foregroundStyle(activeCityFilter == city ? .black : .white.opacity(0.72))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .background(activeCityFilter == city ? nativeAccent : Color.white.opacity(0.06))
-                                .clipShape(Capsule())
+                            HStack(spacing: 6) {
+                                if city == nativeHomemadeCityKey {
+                                    Image("ChefHatIcon")
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: 12, height: 12)
+                                }
+                                Text(city)
+                                    .font(nativeAppFont(size: 12, weight: .bold))
+                            }
+                            .foregroundStyle(activeCityFilter == city ? .black : .white.opacity(0.72))
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .background(activeCityFilter == city ? nativeAccent : Color.white.opacity(0.06))
+                            .clipShape(Capsule())
                         }
                         .buttonStyle(.plain)
                     }
@@ -11169,6 +11210,10 @@ private struct NativeHomepageShellScreen: View {
     @State private var recentPhotoPreviews: [UIImage] = []
     @State private var homepageRecentPhotoCandidates: [NativeHomepageUploadCandidate] = []
     @State private var homepageFoodPhotoCandidates: [NativeHomepageUploadCandidate] = []
+    @State private var homepageReadyToLogCandidates: [NativeHomepageUploadCandidate] = []
+    @State private var homepageReadyToLogPlaceLabels: [String: String] = [:]
+    @State private var isHomepageReadyToLogScanInProgress = false
+    @State private var hasStartedHomepageReadyToLogScan = false
     @State private var homepageUploadRefreshID = UUID()
     @State private var homepageLastUploadCandidatesRefreshAt: Date?
     @State private var isHomepageFoodScanInProgress = false
@@ -11184,9 +11229,6 @@ private struct NativeHomepageShellScreen: View {
     @State private var pendingHomepageCropAsset: NativePickedPhotoAsset?
     @State private var selectedHomepageMoment: NativeMoment?
     @State private var selectedHomepageFeedItem: NativeFeedItem?
-    @State private var homepageInviteShareSummary: NativeV2InviteCodeSummary?
-    @State private var homepageInviteRedeemedActors: [NativeNotificationActor] = []
-    @State private var homepageInviteShareMessage = nativeInviteShareMessage(code: nil)
     @State private var homepageMonthlyShareMessage = "Check out my food memories on Vibinn: https://vibinn.club"
     @State private var homepageTopPlacesShareMessage = "Check out my top places on Vibinn: https://vibinn.club"
     @State private var activeHomepageStage: HomepageStage = .recap
@@ -11203,7 +11245,7 @@ private struct NativeHomepageShellScreen: View {
         case recap
         case places
         case updates
-        case invite
+        case readyToLog
         case challenges
     }
 
@@ -11342,6 +11384,7 @@ private struct NativeHomepageShellScreen: View {
                 }
             }
             refreshHomepageUploadCandidatesIfIdle()
+            refreshHomepageReadyToLogCandidatesIfNeeded()
             appState.photoLibraryGateAuthorizationStatus = photoAuthorizationStatus
             guard !hasBootstrappedHomepage else { return }
             hasBootstrappedHomepage = true
@@ -11352,7 +11395,6 @@ private struct NativeHomepageShellScreen: View {
                 await appState.refreshHomepageTopPlaces()
                 await appState.refreshV2DiaryMoments()
                 await appState.refreshNotificationUnreadCount()
-                await loadHomepageInviteModule()
                 await MainActor.run {
                     homepageMonthlyShareMessage = homepageMonthlyRecapShareMessage
                 }
@@ -11366,6 +11408,7 @@ private struct NativeHomepageShellScreen: View {
         .onChange(of: photoAuthorizationStatus) { newValue in
             appState.photoLibraryGateAuthorizationStatus = newValue
             refreshHomepagePhotoPreviewIfNeeded()
+            refreshHomepageReadyToLogCandidatesIfNeeded()
         }
         .onChange(of: appState.photoLibraryGateAuthorizationStatus) { newValue in
             guard photoAuthorizationStatus != newValue else { return }
@@ -11430,7 +11473,7 @@ private struct NativeHomepageShellScreen: View {
 
     private var homepageUploadShortcutCard: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Upload your meal photo")
+            Text("Quick add")
                 .font(nativeAppFont(size: 18, weight: .black))
                 .foregroundStyle(.white)
 
@@ -11545,7 +11588,7 @@ private struct NativeHomepageShellScreen: View {
             let viewportWidth = proxy.size.width
             let viewportTopInset: CGFloat = 12
             let contentViewportHeight = max(240, viewportHeight - viewportTopInset)
-            let railWidth: CGFloat = 28
+            let railWidth: CGFloat = nativeHomepageStageFullWidthEnabled ? 0 : 28
             let railGap = homepageStageRailGap()
             let railInset: CGFloat = 0
             let ghostGap = homepageStageGhostGap()
@@ -11628,11 +11671,13 @@ private struct NativeHomepageShellScreen: View {
                     .frame(width: viewportWidth, height: virtualContentHeight, alignment: .topLeading)
                 }
 
-                homepageCameraModeRail(progress: railProgress)
-                    .frame(width: railWidth)
-                    .frame(height: viewportHeight, alignment: .center)
-                    .padding(.trailing, railInset)
-                    .frame(maxWidth: .infinity, alignment: .trailing)
+                if !nativeHomepageStageFullWidthEnabled {
+                    homepageCameraModeRail(progress: railProgress)
+                        .frame(width: railWidth)
+                        .frame(height: viewportHeight, alignment: .center)
+                        .padding(.trailing, railInset)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                }
             }
             .overlay {
                 if nativeHomepageLayoutDebugMode {
@@ -11645,7 +11690,9 @@ private struct NativeHomepageShellScreen: View {
         }
     }
 
-    private func homepageStageRailGap() -> CGFloat { 18 }
+    private func homepageStageRailGap() -> CGFloat {
+        nativeHomepageStageFullWidthEnabled ? 0 : 18
+    }
 
     private func homepageStageGhostRegionHeight(viewportHeight: CGFloat) -> CGFloat {
         max(28, viewportHeight * 0.05)
@@ -11793,7 +11840,7 @@ private struct NativeHomepageShellScreen: View {
     }
 
     private var homepageStages: [HomepageStage] {
-        [.recap, .places, .updates, .invite, .challenges]
+        [.recap, .updates, .readyToLog, .places, .challenges]
     }
 
     private var activeHomepageStageIndex: Int {
@@ -11817,8 +11864,8 @@ private struct NativeHomepageShellScreen: View {
             return "TOP PLACES"
         case .updates:
             return "FRIENDS"
-        case .invite:
-            return "YOUR CODE"
+        case .readyToLog:
+            return "READY TO LOG"
         case .challenges:
             return "SUGGESTED\nPOSTS"
         }
@@ -11826,7 +11873,7 @@ private struct NativeHomepageShellScreen: View {
 
     private func homepageStageStyle(for stage: HomepageStage) -> HomepageStageCardStyle {
         switch stage {
-        case .updates, .invite, .challenges:
+        case .updates, .readyToLog, .challenges:
             return .dark
         case .recap, .places:
             return .accent
@@ -11848,7 +11895,7 @@ private struct NativeHomepageShellScreen: View {
             style: style,
             isCurrent: mode == .current,
             topPadding: index == 0 ? 24 : 18,
-            titleSpacing: stage == .updates ? 12 : ((stage == .invite || stage == .challenges) ? 8 : 18),
+            titleSpacing: stage == .updates ? 12 : ((stage == .readyToLog || stage == .challenges) ? 8 : 18),
             titleLineLimit: (stage == .updates || stage == .challenges) ? 2 : 1
         ) {
             homepageStageContent(for: stage, style: style)
@@ -11916,8 +11963,8 @@ private struct NativeHomepageShellScreen: View {
             homepageTopPlacesCard
         case .updates:
             homepageCircleUpdatesCard
-        case .invite:
-            homepageInviteProgressCard
+        case .readyToLog:
+            homepageReadyToLogCard
         case .challenges:
             homepageSuggestedPostsCard
         }
@@ -12291,8 +12338,12 @@ private struct NativeHomepageShellScreen: View {
     }
 
     private var homepageMonthlyRecapFilledState: some View {
+        GeometryReader { proxy in
         VStack(alignment: .leading, spacing: 12) {
-            homepageMonthlyThumbnailStrip(memories: Array(homepageCurrentMonthMoments.prefix(5)))
+            homepageMonthlyThumbnailStrip(
+                memories: Array(homepageCurrentMonthMoments.prefix(5)),
+                maxContentWidth: proxy.size.width
+            )
 
             homepageMonthlySummaryText
 
@@ -12305,6 +12356,7 @@ private struct NativeHomepageShellScreen: View {
             Spacer(minLength: 0)
 
             homepageMonthlyRecapFooter
+        }
         }
     }
 
@@ -12376,11 +12428,10 @@ private struct NativeHomepageShellScreen: View {
         }
     }
 
-    private func homepageMonthlyThumbnailStrip(memories: [NativeMoment]) -> some View {
+    private func homepageMonthlyThumbnailStrip(memories: [NativeMoment], maxContentWidth: CGFloat) -> some View {
         let display = Array(memories.prefix(5))
         let thumbnailSize: CGFloat = 124
         let thumbHeight: CGFloat = 124
-        let maxContentWidth: CGFloat = 318 - (18 * 2)
         let revealWidth = homepageMonthlyThumbnailRevealWidth(
             count: display.count,
             thumbnailSize: thumbnailSize,
@@ -12391,11 +12442,17 @@ private struct NativeHomepageShellScreen: View {
 
         return HStack(spacing: overlapSpacing) {
             ForEach(Array(display.enumerated()), id: \.element.id) { item in
-                homepageMonthlyThumbnail(
-                    item.element,
-                    width: thumbnailSize,
-                    showsRatingBadge: item.offset == 0
-                )
+                Button {
+                    nativeHaptic(.selection)
+                    appState.activeTab = .feed
+                } label: {
+                    homepageMonthlyThumbnail(
+                        item.element,
+                        width: thumbnailSize,
+                        showsRatingBadge: item.offset == 0
+                    )
+                }
+                .buttonStyle(.plain)
                 .zIndex(Double(display.count - item.offset))
             }
         }
@@ -12798,10 +12855,10 @@ private struct NativeHomepageShellScreen: View {
     private var homepageHeader: some View {
         HStack(alignment: .top) {
             HStack(spacing: 10) {
-                Image("VibinnAuthLogoIcon")
+                Image("VibinnHomepageLogoIcon")
                     .resizable()
                     .scaledToFit()
-                    .frame(width: 28, height: 28)
+                    .frame(width: 34, height: 34)
                     .rotationEffect(.degrees(-8))
 
                 Text("Vibinn")
@@ -12824,11 +12881,6 @@ private struct NativeHomepageShellScreen: View {
                     Image(systemName: "bell.fill")
                         .font(nativeAppFont(size: 16, weight: .black))
                         .foregroundStyle(.white)
-                        .frame(width: 42, height: 42)
-                        .background(nativeSurface)
-                        .overlay(
-                            Circle().stroke(nativeBorder, lineWidth: 1)
-                        )
                         .overlay(alignment: .topTrailing) {
                             if appState.notificationUnreadCount > 0 {
                                 Circle()
@@ -12838,9 +12890,14 @@ private struct NativeHomepageShellScreen: View {
                                         Circle()
                                             .stroke(Color.black.opacity(0.28), lineWidth: 1)
                                     )
-                                    .offset(x: 1, y: -1)
+                                    .offset(x: 7, y: -7)
                             }
                         }
+                        .frame(width: 42, height: 42)
+                        .background(nativeSurface)
+                        .overlay(
+                            Circle().stroke(nativeBorder, lineWidth: 1)
+                        )
                         .clipShape(Circle())
                 }
             }
@@ -12891,49 +12948,6 @@ private struct NativeHomepageShellScreen: View {
         }
     }
 
-    private var homepageInviteCodeString: String {
-        homepageInviteShareSummary?.code ?? "------"
-    }
-
-    private var homepageInviteCodeSection: some View {
-        NativeSurfaceCard {
-            VStack(alignment: .leading, spacing: 14) {
-                HStack(alignment: .top, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Your invite code")
-                            .font(nativeAppFont(size: 12, weight: .black))
-                            .foregroundStyle(.white.opacity(0.45))
-                            .textCase(.uppercase)
-
-                        Text(homepageInviteCodeString)
-                            .font(nativeAppFont(size: 24, weight: .black))
-                            .foregroundStyle(.white)
-                    }
-
-                    Spacer(minLength: 0)
-
-                    Button {
-                        UIPasteboard.general.string = homepageInviteShareMessageResolved
-                        appState.showToast(message: "Invite text copied", icon: "doc.on.doc.fill")
-                    } label: {
-                        Image(systemName: "doc.on.doc")
-                            .font(nativeAppFont(size: 16, weight: .black))
-                            .foregroundStyle(.black)
-                            .frame(width: 42, height: 42)
-                            .background(nativeAccent)
-                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-                    }
-                    .buttonStyle(.plain)
-                }
-
-                Text("Copy and send your invite text to bring more friends into your circle.")
-                    .font(nativeAppFont(size: 13, weight: .medium))
-                    .foregroundStyle(.white.opacity(0.62))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
 
     private var recentMemoriesSection: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -13164,7 +13178,7 @@ private struct NativeHomepageShellScreen: View {
                 NativeRemoteImage(url: avatarURL)
             } else {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
                             .font(nativeAppFont(size: 12, weight: .black))
@@ -13221,188 +13235,162 @@ private struct NativeHomepageShellScreen: View {
             .map { $0 }
     }
 
-    private var homepageInviteUsageLimit: Int {
-        let resolved = homepageInviteShareSummary?.usageLimit
-            ?? homepageInviteShareSummary?.remainingUses.map { $0 + (homepageInviteShareSummary?.usageCount ?? 0) }
-            ?? 5
-        return max(1, resolved)
-    }
+    private var homepageReadyToLogCard: some View {
+        GeometryReader { proxy in
+            let photoHeight = max(140, proxy.size.height - 96)
+            let photoWidth = photoHeight * nativeHomepageReadyToLogPhotoAspectRatio
 
-    private var homepageInviteUsedCount: Int {
-        max(homepageInviteShareSummary?.usageCount ?? homepageInviteRedeemedActors.count, homepageInviteRedeemedActors.count)
-    }
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Food photos from your gallery, ready to become a memory.")
+                    .font(nativeAppFont(size: 14, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .fixedSize(horizontal: false, vertical: true)
 
-    private var homepageInviteSlotIndices: [Int] {
-        Array(0..<homepageInviteUsageLimit)
-    }
+                if photoAuthorizationStatus == .denied
+                    || photoAuthorizationStatus == .restricted
+                    || photoAuthorizationStatus == .limited {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(photoAuthorizationStatus == .limited
+                            ? "You've only given limited photo access. Allow full access to see more suggestions here."
+                            : "Allow photo access to see gallery suggestions here.")
+                            .font(nativeAppFont(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.62))
+                            .fixedSize(horizontal: false, vertical: true)
 
-    private var homepageInviteProgressCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("Vibinn is for limited user only, but you can help your friend to join by using your code.")
-                .font(nativeAppFont(size: 14, weight: .medium))
-                .foregroundStyle(.white.opacity(0.5))
-                .fixedSize(horizontal: false, vertical: true)
-
-            HStack(spacing: 12) {
-                Text(homepageInviteCodeString)
-                    .font(nativeAppFont(size: 20, weight: .medium))
-                    .foregroundStyle(.white)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .padding(.leading, 18)
-                    .padding(.trailing, 116)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .frame(height: 64)
-                    .background(Color.white.opacity(0.14))
-                    .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
-                    .overlay(alignment: .trailing) {
-                Button {
-                    appState.trackAnalytics(.clickShareCode, properties: ["source": NativeAnalyticsSource.homepage])
-                    homepageShareSheetItems = [homepageInviteShareMessageResolved]
-                    showHomepageShareSheet = true
-                } label: {
-                    Text("Share")
-                        .font(nativeAppFont(size: 14, weight: .black))
-                        .foregroundStyle(.black)
-                        .padding(.horizontal, 22)
-                        .frame(height: 48)
-                        .background(nativeAccent)
-                        .clipShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                    .padding(.trailing, 8)
+                        Button {
+                            appState.openSystemSettings()
+                        } label: {
+                            Text("Open Settings")
+                                .font(nativeAppFont(size: 13, weight: .black))
+                                .foregroundStyle(.black)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 9)
+                                .background(nativeAccent)
+                                .clipShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
                     }
-            }
-
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Joined friend")
-                    .font(nativeAppFont(size: 16, weight: .black))
-                    .foregroundStyle(.white)
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 18) {
-                        ForEach(homepageInviteSlotIndices, id: \.self) { index in
-                            homepageInviteSlotView(index: index)
+                } else if !hasHomepagePhotoAccess {
+                    Text("Allow photo access to see gallery suggestions here.")
+                        .font(nativeAppFont(size: 14, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.42))
+                } else if homepageReadyToLogCandidates.isEmpty {
+                    if isHomepageReadyToLogScanInProgress {
+                        HStack {
+                            Spacer()
+                            ProgressView()
+                                .tint(nativeAccent)
+                            Spacer()
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 120)
+                    } else {
+                        Text("No food photos found in your recent gallery yet.")
+                            .font(nativeAppFont(size: 14, weight: .medium))
+                            .foregroundStyle(.white.opacity(0.42))
+                    }
+                } else {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(alignment: .top, spacing: 18) {
+                            ForEach(homepageReadyToLogCandidates) { candidate in
+                                Button {
+                                    nativeHaptic(.selection)
+                                    pendingHomepageCropAsset = candidate.pickedPhoto
+                                } label: {
+                                    homepageReadyToLogItem(candidate, width: photoWidth, height: photoHeight)
+                                }
+                                .buttonStyle(.plain)
+                            }
                         }
                     }
+                    .padding(.horizontal, -18)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private func homepageReadyToLogItem(_ candidate: NativeHomepageUploadCandidate, width: CGFloat, height: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            ZStack {
+                Image(uiImage: candidate.preview)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: width, height: height)
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    .clipped()
+
+                homepageUploadBadge(symbol: "plus", symbolSize: 16, diameter: 34)
+            }
+            .frame(width: width, height: height)
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(homepageReadyToLogDateLabel(for: candidate))
+                    .font(nativeAppFont(size: 12, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                Text(homepageReadyToLogPlaceLabels[candidate.id] ?? "Unknown location")
+                    .font(nativeAppFont(size: 11, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.5))
+                    .lineLimit(1)
+            }
+            .frame(width: width, alignment: .leading)
+        }
+        .frame(width: width, alignment: .top)
+    }
+
+    private func homepageReadyToLogDateLabel(for candidate: NativeHomepageUploadCandidate) -> String {
+        guard let capturedAt = candidate.pickedPhoto.capturedAt else { return "Unknown date" }
+        return nativeHomepageReadyToLogDateFormatter.string(from: capturedAt)
+    }
+
+    private func refreshHomepageReadyToLogCandidatesIfNeeded() {
+        guard hasHomepagePhotoAccess, !hasStartedHomepageReadyToLogScan else { return }
+        hasStartedHomepageReadyToLogScan = true
+        isHomepageReadyToLogScanInProgress = true
+        Task {
+            await refreshHomepageReadyToLogCandidates()
+        }
+    }
+
+    private func refreshHomepageReadyToLogCandidates() async {
+        let recentAssets: [PHAsset] = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: nativeHomepageFetchRecentAssets(limit: nativeHomepageReadyToLogScanLimit))
+            }
+        }
+
+        let scanned: [NativeHomepageUploadCandidate] = await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let candidates = nativeHomepageScanFoodUploadCandidatesSync(
+                    in: recentAssets,
+                    scanLimit: nativeHomepageReadyToLogScanLimit,
+                    maxResults: nativeHomepageReadyToLogMaxResults,
+                    debugTimestamp: { _ in "" },
+                    debugDetailsBuilder: { _, _ in "" }
+                )
+                continuation.resume(returning: candidates)
+            }
+        }
+
+        await MainActor.run {
+            homepageReadyToLogCandidates = scanned
+            isHomepageReadyToLogScanInProgress = false
+        }
+
+        for candidate in scanned {
+            guard let latitude = candidate.pickedPhoto.latitude,
+                  let longitude = candidate.pickedPhoto.longitude else { continue }
+            let location = CLLocation(latitude: latitude, longitude: longitude)
+            CLGeocoder().reverseGeocodeLocation(location) { placemarks, _ in
+                guard let label = placemarks?.first.flatMap({ $0.locality ?? $0.administrativeArea ?? $0.country }) else { return }
+                Task { @MainActor in
+                    homepageReadyToLogPlaceLabels[candidate.id] = label
                 }
             }
-
-            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    @ViewBuilder
-    private func homepageInviteSlotView(index: Int) -> some View {
-        if let actor = homepageInviteRedeemedActors[safe: index] {
-            NavigationLink {
-                NativeTravelerProfileScreen(
-                    initialTraveler: NativeTravelerSummary(
-                        id: actor.id,
-                        username: actor.username,
-                        displayName: actor.displayName,
-                        avatar: actor.avatar,
-                        bio: nil,
-                        descriptor: nil,
-                        matchScore: nil,
-                        followersCount: nil,
-                        followingCount: nil,
-                        recentSavedPlaces: [],
-                        recentCollections: [],
-                        travelHistory: [],
-                        visitedPlacesCount: nil,
-                        savedPlacesCount: nil,
-                        collectionsCount: nil
-                    )
-                )
-            } label: {
-                homepageInviteRedeemedSlot(actor: actor)
-            }
-            .buttonStyle(.plain)
-        } else if index < homepageInviteUsedCount {
-            homepageInviteUnknownRedeemedSlot(index: index)
-        } else {
-            homepageInviteOpenSlot(index: index)
-        }
-    }
-
-    private func homepageInviteRedeemedSlot(actor: NativeNotificationActor) -> some View {
-        let trimmedDisplayName = actor.displayName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let label = trimmedDisplayName.isEmpty ? actor.username : trimmedDisplayName
-
-        return VStack(alignment: .leading, spacing: 8) {
-            Group {
-                if let avatar = actor.avatar, !avatar.isEmpty {
-                    NativeRemoteImage(url: avatar)
-                } else {
-                    RoundedRectangle(cornerRadius: 20, style: .continuous)
-                        .fill(Color.white.opacity(0.12))
-                        .overlay(
-                            Text(nativeAvatarInitials(from: actor.displayName ?? actor.username))
-                                .font(nativeAppFont(size: 22, weight: .black))
-                                .foregroundStyle(.white)
-                        )
-                }
-            }
-            .frame(width: 72, height: 72)
-            .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
-
-            Text(label)
-                .font(nativeAppFont(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .frame(width: 72, alignment: .center)
-        }
-        .frame(width: 72, alignment: .top)
-    }
-
-    private func homepageInviteUnknownRedeemedSlot(index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .fill(Color.white.opacity(0.08))
-                .frame(width: 72, height: 72)
-                .overlay(
-                    Image(systemName: "checkmark")
-                        .font(nativeAppFont(size: 22, weight: .black))
-                        .foregroundStyle(nativeAccent)
-                )
-
-            Text("Joined")
-                .font(nativeAppFont(size: 12, weight: .semibold))
-                .foregroundStyle(.white)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .frame(width: 72, alignment: .center)
-        }
-        .frame(width: 72, alignment: .top)
-    }
-
-    private func homepageInviteOpenSlot(index: Int) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            RoundedRectangle(cornerRadius: 20, style: .continuous)
-                .stroke(style: StrokeStyle(lineWidth: 3, dash: [8, 7]))
-                .foregroundStyle(Color.white.opacity(0.38))
-                .frame(width: 72, height: 72)
-                .overlay(
-                    Image(systemName: "plus")
-                        .font(nativeAppFont(size: 22, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.62))
-                )
-
-            Text("Invite \(index + 1)")
-                .font(nativeAppFont(size: 12, weight: .medium))
-                .foregroundStyle(.white.opacity(0.6))
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-                .frame(width: 72, alignment: .center)
-        }
-        .frame(width: 72, alignment: .top)
-    }
-
-    private var homepageInviteShareMessageResolved: String {
-        "Try Vibinn to create a food diary. Use my code to sign up: \(homepageInviteCodeString). Download: \(nativeAppStoreURL)"
     }
 
     private var homepageSuggestedPostsCard: some View {
@@ -13639,7 +13627,7 @@ private struct NativeHomepageShellScreen: View {
                 NativeRemoteImage(url: avatar)
             } else {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
                             .font(nativeAppFont(size: 14, weight: .black))
@@ -13712,52 +13700,6 @@ private struct NativeHomepageShellScreen: View {
     private func refreshHomepageSuggestedTravelers() async {
         let phoneNumbers = await nativeLoadAuthorizedContactPhoneNumbersAsync(limit: 400)
         await appState.refreshSuggestedTravelers(phoneNumbers: phoneNumbers.isEmpty ? nil : phoneNumbers)
-    }
-
-    private func loadHomepageInviteModule() async {
-        do {
-            async let shareMessage = appState.loadCurrentInviteShareMessage()
-            async let inviteSummary = appState.loadCurrentInviteCodeSummary()
-            let (message, summary) = try await (shareMessage, inviteSummary)
-            await MainActor.run {
-                homepageInviteShareMessage = message
-                homepageInviteShareSummary = summary
-            }
-        } catch {
-            nativeLogger.error("homepage invite module failed \(nativeDescribeError(error), privacy: .public)")
-        }
-
-        do {
-            let notifications = try await appState.fetchNotifications()
-            await MainActor.run {
-                homepageInviteRedeemedActors = homepageInviteActors(from: notifications)
-            }
-        } catch {
-            nativeLogger.error("homepage invite notifications failed \(nativeDescribeError(error), privacy: .public)")
-        }
-    }
-
-    private func homepageInviteActors(from notifications: [NativeNotificationItem]) -> [NativeNotificationActor] {
-        var orderedActors: [NativeNotificationActor] = []
-        var seenActorIDs: Set<String> = []
-
-        let sortedNotifications = notifications.sorted { lhs, rhs in
-            let lhsDate = NativeAppState.date(from: lhs.createdAt ?? lhs.time) ?? .distantPast
-            let rhsDate = NativeAppState.date(from: rhs.createdAt ?? rhs.time) ?? .distantPast
-            return lhsDate > rhsDate
-        }
-
-        for notification in sortedNotifications {
-            let isInviteRedeemed = notification.messageKind == "invite_redeemed"
-                || notification.notificationType == "INVITE_REDEEMED"
-            guard isInviteRedeemed else { continue }
-            guard let actor = notification.traveler ?? notification.actor else { continue }
-            guard !seenActorIDs.contains(actor.id) else { continue }
-            seenActorIDs.insert(actor.id)
-            orderedActors.append(actor)
-        }
-
-        return orderedActors
     }
 
     private func homepageCircleFeedCard(_ item: NativeFeedItem) -> some View {
@@ -14685,7 +14627,7 @@ private struct NativeHomepageShellScreen: View {
                 NativeRemoteImage(url: avatarURL)
             } else {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: name ?? username ?? "V"))
                             .font(nativeAppFont(size: 15, weight: .black))
@@ -14834,8 +14776,8 @@ private struct NativeHomepageShellScreen: View {
             appState.trackAnalytics(.viewCardMyTopPlaces, properties: ["source": NativeAnalyticsSource.homepage])
         case .updates:
             appState.trackAnalytics(.viewCardFriends, properties: ["source": NativeAnalyticsSource.homepage])
-        case .invite:
-            appState.trackAnalytics(.viewCardYourCode, properties: ["source": NativeAnalyticsSource.homepage])
+        case .readyToLog:
+            appState.trackAnalytics(.viewCardReadyToLog, properties: ["source": NativeAnalyticsSource.homepage])
         case .challenges:
             appState.trackAnalytics(.viewCardSuggestion, properties: ["source": NativeAnalyticsSource.homepage])
         }
@@ -14863,13 +14805,22 @@ private struct NativeHomemadeMomentsScreen: View {
         payload?.traveler.username ?? initialUsername
     }
 
+    private var displayAvatarURL: String? {
+        payload?.traveler.avatar
+    }
+
+    private var dishCount: Int {
+        payload?.moments.count ?? 0
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             Color.black.ignoresSafeArea()
 
             ScrollView(.vertical, showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 20) {
                     titleHeader
+                    profileHeader
                     content
                 }
                 .padding(.horizontal, 20)
@@ -14881,6 +14832,8 @@ private struct NativeHomemadeMomentsScreen: View {
                 .padding(.leading, 20)
                 .padding(.top, 18)
         }
+        .navigationBarHidden(true)
+        .navigationBarBackButtonHidden(true)
         .task {
             await load()
         }
@@ -14888,6 +14841,12 @@ private struct NativeHomemadeMomentsScreen: View {
             NativeDecisionHistoryMomentFullscreen(moment: moment)
                 .environmentObject(appState)
         }
+    }
+
+    private var titleHeader: some View {
+        Text("HOMEMADE")
+            .font(nativePixelAccentFont(size: 22))
+            .foregroundStyle(nativeAccent)
     }
 
     private var backButton: some View {
@@ -14906,20 +14865,48 @@ private struct NativeHomemadeMomentsScreen: View {
         .buttonStyle(.plain)
     }
 
-    private var titleHeader: some View {
-        HStack(spacing: 10) {
-            Image("ChefHatIcon")
-                .renderingMode(.template)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 22, height: 22)
-                .foregroundStyle(nativeAccent)
+    private var profileHeader: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 12) {
+                Group {
+                    if let displayAvatarURL, !displayAvatarURL.isEmpty {
+                        NativeRemoteImage(url: displayAvatarURL)
+                    } else {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(Color.black)
+                            .overlay(
+                                Text(nativeAvatarInitials(from: displayUsername))
+                                    .font(nativeAppFont(size: 16, weight: .black))
+                                    .foregroundStyle(.white)
+                            )
+                    }
+                }
+                .frame(width: 52, height: 52)
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
 
-            Text("\(displayUsername)'s Homemade")
-                .font(nativePixelAccentFont(size: 22))
-                .foregroundStyle(nativeAccent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("@\(displayUsername)")
+                        .font(nativeAppFont(size: 16, weight: .black))
+                        .foregroundStyle(.white)
 
-            Spacer(minLength: 0)
+                    Text("Food made by \(displayUsername)")
+                        .font(nativeAppFont(size: 13, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.58))
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 8) {
+                Image("ChefHatIcon")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 16, height: 16)
+
+                Text("\(dishCount) \(dishCount == 1 ? "dish" : "dishes") made")
+                    .font(nativeAppFont(size: 13, weight: .black))
+                    .foregroundStyle(nativeAccent)
+            }
         }
     }
 
@@ -14940,14 +14927,14 @@ private struct NativeHomemadeMomentsScreen: View {
                 .foregroundStyle(.white.opacity(0.6))
         } else if let payload {
             LazyVGrid(
-                columns: [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)],
-                spacing: 4
+                columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                spacing: 8
             ) {
                 ForEach(payload.moments) { moment in
                     Button {
                         selectedMoment = moment
                     } label: {
-                        homemadeThumb(moment)
+                        homemadeGalleryCard(moment)
                     }
                     .buttonStyle(.plain)
                 }
@@ -14955,22 +14942,48 @@ private struct NativeHomemadeMomentsScreen: View {
         }
     }
 
-    private func homemadeThumb(_ moment: NativeMoment) -> some View {
-        Group {
-            if let url = moment.uploadedMedia?.first, !url.isEmpty {
-                NativeRemoteImage(url: url)
-            } else {
-                Rectangle()
-                    .fill(Color.white.opacity(0.08))
-                    .overlay(
-                        Image(systemName: "photo")
-                            .font(nativeAppFont(size: 16, weight: .black))
-                            .foregroundStyle(.white.opacity(0.28))
-                    )
+    private func homemadeGalleryCard(_ moment: NativeMoment) -> some View {
+        let ratingMeta = nativeMomentRatingMeta(label: moment.ratingLabel, fallbackRating: moment.rating)
+        return ZStack {
+            Group {
+                if let url = moment.uploadedMedia?.first(where: { !$0.isEmpty }) {
+                    NativeRemoteImage(url: url)
+                } else {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(Color.white.opacity(0.06))
+                        .overlay(
+                            Image(systemName: "photo")
+                                .font(nativeAppFont(size: 22, weight: .black))
+                                .foregroundStyle(.white.opacity(0.3))
+                        )
+                }
+            }
+            .aspectRatio(1, contentMode: .fill)
+
+            if let ratingMeta {
+                ZStack {
+                    Group {
+                        Image(systemName: ratingMeta.icon)
+                        Image(systemName: ratingMeta.icon).offset(x: -2, y: 0)
+                        Image(systemName: ratingMeta.icon).offset(x: 2, y: 0)
+                        Image(systemName: ratingMeta.icon).offset(x: 0, y: -2)
+                        Image(systemName: ratingMeta.icon).offset(x: 0, y: 2)
+                    }
+                    .font(nativeAppFont(size: 22, weight: .black))
+                    .foregroundStyle(.black)
+
+                    Image(systemName: ratingMeta.icon)
+                        .font(nativeAppFont(size: 22, weight: .black))
+                        .foregroundStyle(nativeAccent)
+                }
             }
         }
-        .aspectRatio(1, contentMode: .fill)
-        .clipped()
+        .frame(maxWidth: .infinity)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.08), lineWidth: 1)
+        )
     }
 
     private func load() async {
@@ -15198,7 +15211,7 @@ private struct NativeTopPlacesScreen: View {
                                             NativeRemoteImage(url: avatar)
                                         } else {
                                             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                                                .fill(Color.white.opacity(0.08))
+                                                .fill(Color.black)
                                                 .overlay(
                                                     Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
                                                         .font(nativeAppFont(size: 16, weight: .black))
@@ -15256,6 +15269,12 @@ private struct NativeTopPlacesScreen: View {
         }
     }
 
+    private var availableRatingChoices: Set<NativeMomentRatingChoice> {
+        guard let payload else { return [] }
+        let entries = topPlacesDisplayEntries(payload: payload)
+        return Set(entries.map { nativeMomentRatingChoice(for: $0.place.dominantRatingLabel) })
+    }
+
     private var ratingFilterSelector: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 12) {
@@ -15263,7 +15282,7 @@ private struct NativeTopPlacesScreen: View {
                     selectedRatingFilter = nil
                 }
 
-                ForEach(NativeMomentRatingChoice.allCases.reversed()) { choice in
+                ForEach(NativeMomentRatingChoice.allCases.reversed().filter { availableRatingChoices.contains($0) }) { choice in
                     ratingFilterButton(title: choice.label, isActive: selectedRatingFilter == choice) {
                         selectedRatingFilter = choice
                     }
@@ -15365,7 +15384,7 @@ private struct NativeTopPlacesScreen: View {
                     NativeRemoteImage(url: avatar)
                 } else {
                     RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color.white.opacity(0.08))
+                        .fill(Color.black)
                         .overlay(
                             Text(nativeAvatarInitials(from: payload.traveler.displayName ?? payload.traveler.username))
                                 .font(nativeAppFont(size: 18, weight: .black))
@@ -15813,8 +15832,13 @@ private func nativeFlagEmoji(for countryName: String?) -> String? {
     }
 }
 
+private let nativeHomemadeCityKey = "Homemade"
+
 private func nativeCityKey(for place: NativePlace) -> String? {
-    nativePrimaryCity(from: place.location)
+    if place.momentIsHomemade == true {
+        return nativeHomemadeCityKey
+    }
+    return nativePrimaryCity(from: place.location)
 }
 
 private func nativeCityKey(for moment: NativeMoment) -> String? {
@@ -16298,6 +16322,24 @@ private struct NativeBottomSheetPresentationModifier: ViewModifier {
         } else if #available(iOS 16.0, *) {
             content
                 .presentationDetents([.height(320)])
+                .presentationDragIndicator(.visible)
+        } else {
+            content
+        }
+    }
+}
+
+private struct NativeWidgetOnboardingCTAPresentationModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.4, *) {
+            content
+                .presentationDetents([.height(520)])
+                .presentationDragIndicator(.visible)
+                .presentationCornerRadius(28)
+        } else if #available(iOS 16.0, *) {
+            content
+                .presentationDetents([.height(520)])
                 .presentationDragIndicator(.visible)
         } else {
             content
@@ -17331,8 +17373,7 @@ private struct NativeAuthScreen: View {
     @State private var contactsPermissionGranted = false
     @State private var step: Step = .welcome
     @State private var typedTagline = ""
-    @State private var showsLogo = false
-    @State private var visibleStickerCount = 0
+    @State private var visibleIllustrationCount = 0
     @State private var showsActions = false
     @State private var hasBootstrapped = false
     @FocusState private var focusedField: FocusField?
@@ -17414,13 +17455,6 @@ private struct NativeAuthScreen: View {
                             .ignoresSafeArea()
                     }
 
-                    NativeAuthStickerStage(
-                        visibleStickerCount: visibleStickerCount,
-                        showsLogo: showsLogo
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .ignoresSafeArea(.container, edges: .top)
-
                     if nativeAuthPositionDebugMode {
                         NativeAuthPositionDebugOverlay()
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -17429,32 +17463,54 @@ private struct NativeAuthScreen: View {
                     }
 
                     VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-
-                        Text(typedTagline.isEmpty ? " " : typedTagline)
-                            .font(nativeAppFont(size: 38, weight: .black))
-                            .multilineTextAlignment(.center)
+                        Text("VIBINN")
+                            .font(nativePixelAccentFont(size: 14))
                             .foregroundStyle(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.horizontal, 28)
-                            .padding(.bottom, showsActions ? 22 : 50)
+                            .padding(.bottom, 8)
 
-                    VStack(spacing: 10) {
-                        welcomeCard
+                        Spacer(minLength: 16)
+
+                        VStack(spacing: 0) {
+                            NativeAuthOnboardingIllustration(visibleCount: visibleIllustrationCount)
+                                .frame(
+                                    width: NativeAuthOnboardingIllustration.boundingSize.width,
+                                    height: NativeAuthOnboardingIllustration.boundingSize.height
+                                )
+                                .frame(maxWidth: .infinity)
+
+                            Image("AuthOnboardingRoundLogo")
+                                .resizable()
+                                .scaledToFit()
+                                .frame(width: 48, height: 48)
+                                .padding(.top, 6)
+
+                            Text(typedTagline.isEmpty ? " " : typedTagline)
+                                .padding(.top, 20)
+                                .font(nativeAppFont(size: 32, weight: .black))
+                                .multilineTextAlignment(.center)
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity)
+                                .padding(.horizontal, 28)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        .offset(y: -10)
+
+                        Spacer(minLength: 16)
+
+                        welcomeActions
+                            .opacity(showsActions ? 1 : 0)
+                            .offset(y: showsActions ? 0 : 24)
+                            .allowsHitTesting(showsActions)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, nativeAuthActionsBottomPadding)
                     }
-                        .opacity(showsActions ? 1 : 0)
-                        .offset(y: showsActions ? 0 : 32)
-                        .allowsHitTesting(showsActions)
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, nativeAuthActionsBottomPadding)
-                    }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
 
                     if nativeAuthLayoutDebugMode {
                         VStack(alignment: .leading, spacing: 4) {
                             Text("AUTH DEBUG")
                             Text("safeTop=\(Int(safeTop)) safeBottom=\(Int(safeBottom)) usedBottom=\(Int(nativeAuthActionsBottomPadding))")
-                            Text("typed=\(typedTagline.count) logo=\(showsLogo ? 1 : 0) stickers=\(visibleStickerCount)")
+                            Text("typed=\(typedTagline.count) illustration=\(visibleIllustrationCount)")
                         }
                         .font(nativeAppFont(size: 11, weight: .black))
                         .foregroundStyle(.black)
@@ -17571,33 +17627,22 @@ private struct NativeAuthScreen: View {
         ])
 
         typedTagline = ""
-        showsLogo = false
-        visibleStickerCount = 0
+        visibleIllustrationCount = 0
         showsActions = false
 
-        let fullText = "Every meal.\nRemembered."
+        let fullText = "Remember the\nfood you love"
         for character in fullText {
             typedTagline.append(character)
-            if character == "\n" {
-                nativeHaptic(.light)
-                try? await Task.sleep(nanoseconds: 280_000_000)
-            } else {
-                if !character.isWhitespace {
-                    nativeHaptic(.selection)
-                }
-                try? await Task.sleep(nanoseconds: 82_000_000)
+            if !character.isWhitespace {
+                nativeHaptic(.selection)
             }
+            try? await Task.sleep(nanoseconds: 82_000_000)
         }
 
         try? await Task.sleep(nanoseconds: 220_000_000)
-        withAnimation(.easeOut(duration: 0.32)) {
-            showsLogo = true
-        }
-
-        try? await Task.sleep(nanoseconds: 160_000_000)
-        for index in 1...6 {
+        for index in 1...4 {
             withAnimation(.spring(response: 0.34, dampingFraction: 0.78)) {
-                visibleStickerCount = index
+                visibleIllustrationCount = index
             }
             nativePopupSound()
             nativeHaptic(.heavy)
@@ -17806,31 +17851,27 @@ private struct NativeAuthScreen: View {
         }
     }
 
-    private var welcomeCard: some View {
-        NativeSurfaceCard(
-            fill: AnyShapeStyle(Color.white.opacity(0.06)),
-            stroke: Color.white.opacity(0.08)
-        ) {
-            VStack(alignment: .center, spacing: 14) {
-                Text("Welcome to your food diary.")
+    private var welcomeActions: some View {
+        VStack(alignment: .center, spacing: 40) {
+            Text("Turn your food photos into memories\nfor yourself and close friends.")
                 .font(nativeAppFont(size: 15, weight: .regular))
                 .foregroundStyle(.white.opacity(0.78))
                 .multilineTextAlignment(.center)
 
-                NativeAuthLandingButton(
-                    title: "Sign Up",
-                    icon: .system("person.crop.circle.badge.plus"),
-                    isLoading: false,
-                    style: .light,
-                    titleWeight: .black
-                ) {
-                    withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-                        step = .phoneEntry
-                    }
+            NativeAuthLandingButton(
+                title: "Get Started",
+                icon: .none,
+                isLoading: false,
+                style: .light,
+                titleWeight: .black,
+                titleFontSize: 16
+            ) {
+                withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+                    step = .phoneEntry
                 }
             }
-            .frame(maxWidth: .infinity)
         }
+        .frame(maxWidth: .infinity)
         .onLongPressGesture(minimumDuration: 1.1) {
             guard onboardingDebugAvailable else { return }
             showOnboardingDebugSheet = true
@@ -18878,87 +18919,47 @@ private struct NativePhoneCountry: Identifiable, CaseIterable, Equatable {
     }
 }
 
-private struct NativeAuthStickerStage: View {
-    let visibleStickerCount: Int
-    let showsLogo: Bool
+private struct NativeAuthOnboardingIllustrationLayer {
+    let assetName: String
+    let width: CGFloat
+    let height: CGFloat
+    let offsetX: CGFloat
+    let offsetY: CGFloat
+}
 
-    private let referenceFrame = CGSize(width: 402, height: 871)
-    private let stickers: [NativeAuthWelcomeStickerDescriptor] = [
-        .init(assetName: "AuthStickerLayer6", x: 13, y: 2, width: 151, height: 100, rotation: -9),
-        .init(assetName: "AuthStickerLayer2", x: 213, y: 0, width: 137, height: 92, rotation: 8),
-        .init(assetName: "AuthStickerLayer4", x: -10, y: 126, width: 178, height: 118, rotation: -7),
-        .init(assetName: "AuthStickerLayer5", x: 4, y: 310, width: 148, height: 104, rotation: -7),
-        .init(assetName: "AuthStickerLayer3", x: 288, y: 104, width: 118, height: 82, rotation: 7),
-        .init(assetName: "AuthStickerLayer7", x: 244, y: 286, width: 160, height: 108, rotation: 6),
+/// Fixed, unrotated layout: each card is used exactly as exported (no `.rotationEffect`),
+/// since the source PNGs already carry their own baked-in tilt. Sizes/offsets are literal
+/// points around layer 3 (the sandwich card) as the anchor, matching the design's exact
+/// measurements rather than a device-relative reference frame.
+private struct NativeAuthOnboardingIllustration: View {
+    let visibleCount: Int
+
+    static let boundingSize = CGSize(width: 400, height: 320)
+
+    private let layers: [NativeAuthOnboardingIllustrationLayer] = [
+        .init(assetName: "AuthOnboardingCardSoup", width: 246.79, height: 232.85, offsetX: 70, offsetY: 25),
+        .init(assetName: "AuthOnboardingCardTaco", width: 232.85, height: 232.85, offsetX: -70, offsetY: 25),
+        .init(assetName: "AuthOnboardingCardSandwich", width: 201, height: 201, offsetX: 0, offsetY: 0),
+        .init(assetName: "AuthOnboardingTagPureComfort", width: 137.56, height: 53.98, offsetX: -75, offsetY: -110),
     ]
 
     var body: some View {
-        GeometryReader { proxy in
-            let stageWidth = proxy.size.width
-            let stageHeight = proxy.size.height
+        ZStack {
+            ForEach(Array(layers.enumerated()), id: \.offset) { index, layer in
+                let isVisible = visibleCount > index
 
-            ZStack {
-                ForEach(Array(stickers.enumerated()), id: \.offset) { index, sticker in
-                    let isVisible = visibleStickerCount > index
-                    let targetWidth = stageWidth * (sticker.width / referenceFrame.width)
-                    let targetHeight = stageHeight * (sticker.height / referenceFrame.height)
-
-                    Image(sticker.assetName)
-                        .resizable()
-                        .scaledToFit()
-                        .frame(width: targetWidth, height: targetHeight)
-                        .rotationEffect(.degrees(sticker.rotation))
-                        .shadow(color: .black.opacity(0.18), radius: 10, x: 0, y: 5)
-                        .scaleEffect(isVisible ? 1 : 0.72)
-                        .opacity(nativeAuthShowsWelcomeStickers && isVisible ? 1 : 0)
-                        .position(
-                            x: stageWidth * ((sticker.x + (sticker.width / 2)) / referenceFrame.width),
-                            y: stageHeight * ((sticker.y + (sticker.height / 2)) / referenceFrame.height)
-                        )
-                }
-
-                let iconWidthInReference: CGFloat = 61
-                let wordmarkWidthInReference: CGFloat = 149
-                let wordmarkHeightInReference: CGFloat = wordmarkWidthInReference * (32.0 / 357.0)
-
-                Image("VibinnAuthLogoIcon")
+                Image(layer.assetName)
                     .resizable()
                     .scaledToFit()
-                    .frame(
-                        width: stageWidth * (iconWidthInReference / referenceFrame.width),
-                        height: stageWidth * (iconWidthInReference / referenceFrame.width)
-                    )
-                    .opacity(showsLogo ? 1 : 0)
-                    .scaleEffect(showsLogo ? 1 : 0.9)
-                    .position(
-                        x: stageWidth * ((170 + (iconWidthInReference / 2)) / referenceFrame.width),
-                        y: stageHeight * ((153 + (iconWidthInReference / 2)) / referenceFrame.height)
-                    )
-
-                Image("VibinnAuthWordmark")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: stageWidth * (wordmarkWidthInReference / referenceFrame.width))
-                    .opacity(showsLogo ? 1 : 0)
-                    .scaleEffect(showsLogo ? 1 : 0.9)
-                    .position(
-                        x: stageWidth * ((126 + (wordmarkWidthInReference / 2)) / referenceFrame.width),
-                        y: stageHeight * ((231 + (wordmarkHeightInReference / 2)) / referenceFrame.height)
-                    )
+                    .frame(width: layer.width, height: layer.height)
+                    .shadow(color: .black.opacity(0.22), radius: 12, x: 0, y: 6)
+                    .scaleEffect(isVisible ? 1 : 0.72)
+                    .opacity(isVisible ? 1 : 0)
+                    .offset(x: layer.offsetX, y: layer.offsetY)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .animation(.easeOut(duration: 0.24), value: showsLogo)
+        .frame(width: Self.boundingSize.width, height: Self.boundingSize.height)
     }
-}
-
-private struct NativeAuthWelcomeStickerDescriptor {
-    let assetName: String
-    let x: CGFloat
-    let y: CGFloat
-    let width: CGFloat
-    let height: CGFloat
-    let rotation: Double
 }
 
 private struct NativeAuthPositionDebugOverlay: View {
@@ -19306,6 +19307,7 @@ private struct NativeAuthLandingButton: View {
     let isLoading: Bool
     let style: Style
     let titleWeight: Font.Weight
+    let titleFontSize: CGFloat
     let action: () -> Void
 
     init(
@@ -19314,6 +19316,7 @@ private struct NativeAuthLandingButton: View {
         isLoading: Bool,
         style: Style,
         titleWeight: Font.Weight? = nil,
+        titleFontSize: CGFloat = 15,
         action: @escaping () -> Void
     ) {
         self.title = title
@@ -19321,6 +19324,7 @@ private struct NativeAuthLandingButton: View {
         self.isLoading = isLoading
         self.style = style
         self.titleWeight = titleWeight ?? (style == .light ? .bold : .regular)
+        self.titleFontSize = titleFontSize
         self.action = action
     }
 
@@ -19345,7 +19349,7 @@ private struct NativeAuthLandingButton: View {
                     }
                 }
                 Text(title)
-                    .font(nativeAppFont(size: 15, weight: titleWeight))
+                    .font(nativeAppFont(size: titleFontSize, weight: titleWeight))
             }
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 18)
@@ -21235,9 +21239,8 @@ private struct NativeFloatingTabBar: View {
         } label: {
             if item.isPrimary {
                 animatedAddTabIcon
-                    .frame(width: 42, height: 42)
             } else {
-                ZStack {
+                ZStack(alignment: .topTrailing) {
                     if item.tab == .profile {
                         profileTabAvatar(isActive: activeTab == item.tab)
                     } else {
@@ -21250,7 +21253,7 @@ private struct NativeFloatingTabBar: View {
                         Circle()
                             .fill(Color.red)
                             .frame(width: 8, height: 8)
-                            .offset(y: 14)
+                            .offset(x: 4, y: -4)
                     }
                 }
                 .frame(width: 42, height: 42)
@@ -21264,18 +21267,23 @@ private struct NativeFloatingTabBar: View {
     @ViewBuilder
     private var animatedAddTabIcon: some View {
         ZStack {
+            Circle()
+                .fill(nativeAccent)
+                .shadow(color: nativeAccent.opacity(0.45), radius: 10, x: 0, y: 4)
+
             if currentAddTabEmoji == nil {
                 Image(systemName: "camera.fill")
-                    .font(nativeAppFont(size: 20, weight: .black))
-                    .foregroundStyle(.white)
+                    .font(nativeAppFont(size: 22, weight: .black))
+                    .foregroundStyle(.black)
                     .transition(.opacity.combined(with: .scale(scale: 0.92)))
             } else if let emoji = currentAddTabEmoji {
                 Text(emoji)
-                    .font(.system(size: 20))
+                    .font(.system(size: 22))
                     .transition(.opacity.combined(with: .scale(scale: 0.92)))
             }
         }
-        .frame(width: 42, height: 42)
+        .frame(width: 58, height: 58)
+        .offset(y: -16)
         .animation(.easeInOut(duration: 0.22), value: currentAddTabEmoji ?? "camera")
     }
 
@@ -21291,7 +21299,7 @@ private struct NativeFloatingTabBar: View {
                 )
         } else {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(Color.white.opacity(0.08))
+                .fill(Color.black)
                 .overlay(
                     Text(nativeAvatarInitials(from: appState.currentUser?.displayName ?? appState.currentUser?.username ?? "Me"))
                         .font(nativeAppFont(size: 10, weight: .black))
@@ -28950,7 +28958,7 @@ private struct NativeFeedScreen: View {
     @State private var showShareSheet = false
     @State private var showBuildYourCircleScreen = false
     @State private var inviteSMSContact: NativeInviteContact?
-    @State private var inviteShareMessage = nativeInviteShareMessage(code: nil)
+    @State private var inviteShareMessage = nativeInviteShareMessage()
     @State private var contactsAuthorizationStatus: CNAuthorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
     @State private var matchedContacts: [(contact: NativeInviteContact, match: NativeMatchedFeedContact)] = []
     @State private var unmatchedContacts: [NativeInviteContact] = []
@@ -29257,7 +29265,7 @@ private struct NativeFeedScreen: View {
         do {
             inviteShareMessage = try await appState.loadCurrentInviteShareMessage()
         } catch {
-            inviteShareMessage = nativeInviteShareMessage(code: nil)
+            inviteShareMessage = nativeInviteShareMessage()
         }
     }
 
@@ -29432,7 +29440,7 @@ private struct NativeFeedScreen: View {
                 NativeRemoteImage(url: avatarURL)
             } else {
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
                             .font(nativeAppFont(size: 12, weight: .black))
@@ -29677,7 +29685,7 @@ private struct NativeFeedScreen: View {
                 NativeRemoteImage(url: avatar)
             } else {
                 RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
                             .font(nativeAppFont(size: 14, weight: .black))
@@ -30306,7 +30314,7 @@ private struct NativeBuildYourCircleScreen: View {
     let source: String
 
     @State private var inviteShareSummary: NativeV2InviteCodeSummary?
-    @State private var inviteShareMessage = nativeInviteShareMessage(code: nil)
+    @State private var inviteShareMessage = nativeInviteShareMessage()
     @State private var contactsAuthorizationStatus: CNAuthorizationStatus = CNContactStore.authorizationStatus(for: .contacts)
     @State private var contactsPermissionGranted = false
     @State private var skippedContacts = false
@@ -30846,7 +30854,7 @@ private struct NativeBuildYourCircleScreen: View {
             inviteShareMessage = try await appState.loadCurrentInviteShareMessage()
             inviteShareSummary = try await appState.loadCurrentInviteCodeSummary()
         } catch {
-            inviteShareMessage = nativeInviteShareMessage(code: nil)
+            inviteShareMessage = nativeInviteShareMessage()
         }
     }
 
@@ -32309,7 +32317,7 @@ private struct NativeCommentThreadList: View {
                 NativeRemoteImage(url: avatarURL)
             } else {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.black)
 
                 Text(nativeAvatarInitials(from: comment.user))
                     .font(nativeAppFont(size: 12, weight: .black))
@@ -32767,7 +32775,7 @@ private struct NativeCommentSheet: View {
                 NativeRemoteImage(url: avatarURL)
             } else {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: appState.currentUser?.displayName ?? appState.currentUser?.username ?? "You"))
                             .font(nativeAppFont(size: 12, weight: .black))
@@ -34439,7 +34447,7 @@ private struct NativeMonthlyRecapAnimatedPoster: View {
                 NativeRemoteImage(url: avatarURL)
             } else {
                 RoundedRectangle(cornerRadius: scaledLength(16), style: .continuous)
-                    .fill(Color.white.opacity(0.22))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: avatarFallback))
                             .font(nativeAppFont(size: scaledFont(16), weight: .black))
@@ -35095,7 +35103,7 @@ private struct NativeTopPlacesPoster: View {
                 NativeRemoteImage(url: avatar)
             } else {
                 RoundedRectangle(cornerRadius: scaledLength(12), style: .continuous)
-                    .fill(Color.white.opacity(0.1))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: traveler.displayName ?? traveler.username))
                             .font(nativeAppFont(size: scaledFont(14), weight: .black))
@@ -35311,6 +35319,48 @@ private struct NativeTopPlacesPoster: View {
 
     private func scaledFont(_ value: Double) -> CGFloat {
         scaledLength(value)
+    }
+}
+
+private struct NativeWidgetOnboardingCTASheet: View {
+    @EnvironmentObject private var appState: NativeAppState
+
+    var body: some View {
+        VStack(alignment: .center, spacing: 20) {
+            Text("Fun fact: Widget")
+                .font(nativeAppFont(size: 24, weight: .black))
+                .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
+                .padding(.top, 20)
+
+            Text("You can add widget on your homescreen to view updates from your close friends.")
+                .font(nativeAppFont(size: 15, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.78))
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 12)
+
+            Image("WidgetOnboardingCTAIllustration")
+                .resizable()
+                .scaledToFit()
+                .frame(maxWidth: 220)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+
+            NativeAuthLandingButton(
+                title: "Got it!",
+                icon: .none,
+                isLoading: false,
+                style: .light,
+                titleWeight: .black,
+                titleFontSize: 16
+            ) {
+                appState.showWidgetOnboardingCTASheet = false
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 18)
+        .background(Color.black.ignoresSafeArea())
     }
 }
 
@@ -35695,7 +35745,7 @@ private struct NativePeopleSearchScreen: View {
     @State private var errorMessage: String?
     @State private var searchTask: Task<Void, Never>?
     @State private var showShareSheet = false
-    @State private var inviteShareMessage = nativeInviteShareMessage(code: nil)
+    @State private var inviteShareMessage = nativeInviteShareMessage()
     @FocusState private var isSearchFieldFocused: Bool
 
     private var trimmedQuery: String {
@@ -35830,7 +35880,7 @@ private struct NativePeopleSearchScreen: View {
         do {
             inviteShareMessage = try await appState.loadCurrentInviteShareMessage()
         } catch {
-            inviteShareMessage = nativeInviteShareMessage(code: nil)
+            inviteShareMessage = nativeInviteShareMessage()
         }
     }
 }
@@ -36341,6 +36391,12 @@ private struct NativeTravelerProfileScreen: View {
             .onDisappear {
                 if !isOwnProfilePresentation {
                     appState.popFloatingTabBarHidden()
+                }
+                if appState.showWidgetOnboardingCTASheet {
+                    appState.showWidgetOnboardingCTASheet = false
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                        appState.showWidgetOnboardingCTASheet = true
+                    }
                 }
             }
             .sheet(isPresented: $showShareSheet) {
@@ -40595,14 +40651,9 @@ private struct NativeHomemadeBadge: View {
     var body: some View {
         HStack(alignment: .center, spacing: 12) {
             Image("ChefHatIcon")
-                .renderingMode(.template)
                 .resizable()
                 .scaledToFit()
-                .frame(width: 22, height: 22)
-                .foregroundStyle(.white)
-                .padding(12)
-                .background(Color.white.opacity(0.1))
-                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .frame(width: 26, height: 26)
 
             Text("Made by \(username)")
                 .font(nativeAppFont(size: 14, weight: .black))
@@ -40652,7 +40703,7 @@ private struct NativeMomentLikerAvatarStack: View {
                 NativeRemoteImage(url: avatar)
             } else {
                 RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .fill(Color.white.opacity(0.1))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: actor.displayName ?? actor.username))
                             .font(nativeAppFont(size: 10, weight: .black))
@@ -40869,7 +40920,7 @@ private struct NativeVisitedMomentPostCard<HeaderTrailing: View, PlaceSection: V
                 NativeRemoteImage(url: avatarURL)
             } else {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: avatarFallback))
                             .font(nativeAppFont(size: 15, weight: .black))
@@ -41292,7 +41343,7 @@ private struct NativeMomentFullscreenScaffold: View {
                 NativeRemoteImage(url: avatarURL)
             } else {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(Color.white.opacity(0.08))
+                    .fill(Color.black)
                     .overlay(
                         Text(nativeAvatarInitials(from: avatarFallback))
                             .font(nativeAppFont(size: 15, weight: .black))
@@ -41745,9 +41796,9 @@ private struct NativeCheckInScreen: View {
             return prefilledVisitedDate
         }
         if let capturedAt = selectedPhotoAsset?.capturedAt {
-            return Self.isoDayString(from: capturedAt)
+            return ISO8601DateFormatter().string(from: capturedAt)
         }
-        return Self.isoDayString(from: Date())
+        return ISO8601DateFormatter().string(from: Date())
     }
 
     private var nextButtonDisabled: Bool {
@@ -42029,6 +42080,26 @@ private struct NativeCheckInScreen: View {
                 .font(nativeAppFont(size: 24, weight: .black))
                 .foregroundStyle(.white)
 
+            if let selectedPhotoAsset {
+                NativeSurfaceCard {
+                    HStack(spacing: 14) {
+                        Image(uiImage: selectedPhotoAsset.image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 64, height: 64)
+                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(selectedMomentDateLabel)
+                                .font(nativeAppFont(size: 15, weight: .black))
+                                .foregroundStyle(.white)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     isHomemade.toggle()
@@ -42061,26 +42132,6 @@ private struct NativeCheckInScreen: View {
             .buttonStyle(.plain)
 
             if !isHomemade {
-            if let selectedPhotoAsset {
-                NativeSurfaceCard {
-                    HStack(spacing: 14) {
-                        Image(uiImage: selectedPhotoAsset.image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 64, height: 64)
-                            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
-
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(selectedMomentDateLabel)
-                                .font(nativeAppFont(size: 15, weight: .black))
-                                .foregroundStyle(.white)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-
             if isAnalyzingPlace {
                 NativeSurfaceCard {
                     HStack(spacing: 12) {
@@ -42407,7 +42458,33 @@ private struct NativeCheckInScreen: View {
                 .font(nativeAppFont(size: 24, weight: .black))
                 .foregroundStyle(.white)
 
-            if let selectedPlace {
+            if isHomemade {
+                NativeSurfaceCard {
+                    HStack(spacing: 14) {
+                        Group {
+                            if let selectedImage {
+                                Image(uiImage: selectedImage)
+                                    .resizable()
+                                    .scaledToFill()
+                            }
+                        }
+                        .frame(width: 64, height: 64)
+                        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(selectedMomentDateLabel)
+                                .font(nativeAppFont(size: 13, weight: .black))
+                                .foregroundStyle(nativeAccent)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("Homemade")
+                                .font(nativeAppFont(size: 18, weight: .black))
+                                .foregroundStyle(.white)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else if let selectedPlace {
                 selectedPlaceSummary(place: selectedPlace, showsMomentThumbnail: true)
             }
 
@@ -43834,12 +43911,34 @@ private struct NativeSingleMetadataImagePicker: UIViewControllerRepresentable {
             let rawDate =
                 (exif?[kCGImagePropertyExifDateTimeOriginal] as? String)
                 ?? (tiff?[kCGImagePropertyTIFFDateTime] as? String)
+            let rawOffset =
+                (exif?[kCGImagePropertyExifOffsetTimeOriginal] as? String)
+                ?? (exif?[kCGImagePropertyExifOffsetTimeDigitized] as? String)
+                ?? (exif?[kCGImagePropertyExifOffsetTime] as? String)
             let formatter = DateFormatter()
             formatter.locale = Locale(identifier: "en_US_POSIX")
             formatter.dateFormat = "yyyy:MM:dd HH:mm:ss"
+            // EXIF's DateTimeOriginal has no timezone of its own; OffsetTimeOriginal (when the
+            // camera/app wrote it) gives the actual UTC offset at capture. Without it we can only
+            // fall back to assuming the device's current timezone, which is wrong if the photo was
+            // taken while traveling and uploaded after the device's timezone changed.
+            formatter.timeZone = rawOffset.flatMap(timeZone(fromExifOffset:)) ?? .current
             let capturedAt = rawDate.flatMap { formatter.date(from: $0) }
 
             return (latitude, longitude, capturedAt)
+        }
+
+        private static func timeZone(fromExifOffset raw: String) -> TimeZone? {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            guard !trimmed.isEmpty else { return nil }
+            if trimmed == "Z" { return TimeZone(identifier: "UTC") }
+            guard let signCharacter = trimmed.first, signCharacter == "+" || signCharacter == "-" else { return nil }
+            let sign = signCharacter == "-" ? -1 : 1
+            let digitsOnly = trimmed.dropFirst().replacingOccurrences(of: ":", with: "")
+            guard digitsOnly.count == 4, let combined = Int(digitsOnly) else { return nil }
+            let hours = combined / 100
+            let minutes = combined % 100
+            return TimeZone(secondsFromGMT: sign * (hours * 3600 + minutes * 60))
         }
     }
 }

@@ -27,7 +27,32 @@
 		81F0AA0F8BDA4C26816CA530 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = 81F0AA0E8BDA4C26816CA530 /* FirebaseMessaging */; };
 		81F0AA118BDA4C26816CA530 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 81F0AA108BDA4C26816CA530 /* GoogleService-Info.plist */; };
 		A9F6B201B4D14B5A9B4A1001 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = A9F6B201B4D14B5A9B4A1002 /* GoogleSignIn */; };
+		77E930F811C00E0D2AEDF8B7 /* VibinnWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 6A1C10021A1C100100100001 /* VibinnWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A06C7ABBBBC274890492B31C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 504EC2FC1FED79650016851F /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 6A1C100E1A1C100100100001;
+			remoteInfo = VibinnWidgets;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		847852BF3D4C2BA72E9E00AE /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				77E930F811C00E0D2AEDF8B7 /* VibinnWidgets.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		2FAD9762203C412B000D30F8 /* config.xml */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = config.xml; sourceTree = "<group>"; };
@@ -157,10 +182,12 @@
 				504EC3001FED79650016851F /* Sources */,
 				504EC3011FED79650016851F /* Frameworks */,
 				504EC3021FED79650016851F /* Resources */,
+				847852BF3D4C2BA72E9E00AE /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				90C669F5116FC98A2CE876F7 /* PBXTargetDependency */,
 			);
 			name = App;
 			packageProductDependencies = (
@@ -286,6 +313,14 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		90C669F5116FC98A2CE876F7 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 6A1C100E1A1C100100100001 /* VibinnWidgets */;
+			targetProxy = A06C7ABBBBC274890492B31C /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXVariantGroup section */
 		504EC3101FED79650016851F /* LaunchScreen.storyboard */ = {
