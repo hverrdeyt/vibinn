@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { NodeHttpHandler } from '@smithy/node-http-handler';
 import { cert, getApps, initializeApp as initializeFirebaseAdminApp } from 'firebase-admin/app';
 import { getMessaging } from 'firebase-admin/messaging';
 import { Prisma, NotificationType, TargetType } from '@prisma/client';
@@ -182,6 +183,14 @@ const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R
         accessKeyId: R2_ACCESS_KEY_ID,
         secretAccessKey: R2_SECRET_ACCESS_KEY,
       },
+      // Without explicit timeouts the underlying socket has none (Smithy defaults to 0 = disabled),
+      // so a stalled connection to R2 hangs forever instead of failing — our own withTimeout() only
+      // stops us from awaiting it, it doesn't free the socket, so stalls pile up and starve the pool.
+      requestHandler: new NodeHttpHandler({
+        connectionTimeout: 5000,
+        requestTimeout: R2_OPERATION_TIMEOUT_MS,
+        throwOnRequestTimeout: true,
+      }),
     })
   : null;
 const DISCOVERY_POOL_MIN_CANDIDATES = 80;
@@ -613,6 +622,7 @@ function mapV2MomentForClient(moment: {
   rating: number | null;
   ratingLabel: string | null;
   wouldRevisit?: string | null;
+  isHomemade: boolean;
   visibility?: 'PUBLIC' | 'FRIENDS' | 'PRIVATE' | null;
   placeName: string;
   placeLocation: string;
@@ -697,6 +707,7 @@ function mapV2MomentForClient(moment: {
       momentWouldRevisit: moment.wouldRevisit ?? undefined,
       momentRating: moment.rating ?? undefined,
       momentRatingLabel: moment.ratingLabel ?? undefined,
+      momentIsHomemade: moment.isHomemade ?? false,
       followedVisitorCount: placeContext?.followedVisitorCount ?? 0,
     },
   };
@@ -1190,7 +1201,7 @@ async function buildV2SuggestedTravelerRecommendations(
   });
   const visitedCountMap = new Map(visitedCounts.map((item) => [item.userId, item._count._all]));
 
-  const recommendations = users
+  const recommendations = shuffleArray(users
     .map((user) => {
       let priority = 4;
       let reason = `${followerCountMap.get(user.id) ?? 0} followers`;
@@ -1224,10 +1235,11 @@ async function buildV2SuggestedTravelerRecommendations(
         ),
         priority,
         mutualCount: mutualCountMap.get(user.id) ?? 0,
-        followersCount: followerCountMap.get(user.id) ?? 0,
-        updatedAt: user.updatedAt.getTime(),
       };
-    })
+    }))
+    // Ties within the same priority/mutualCount tier are broken by the shuffle above
+    // instead of a fixed field, so repeated calls surface a different mix of equally
+    // relevant candidates instead of always the same top N.
     .sort((left, right) => {
       if (left.priority !== right.priority) {
         return left.priority - right.priority;
@@ -1235,10 +1247,7 @@ async function buildV2SuggestedTravelerRecommendations(
       if (left.priority === 3 && left.mutualCount !== right.mutualCount) {
         return right.mutualCount - left.mutualCount;
       }
-      if (left.followersCount !== right.followersCount) {
-        return right.followersCount - left.followersCount;
-      }
-      return right.updatedAt - left.updatedAt;
+      return 0;
     })
     .slice(0, limit)
     .map((item) => item.traveler);
@@ -2370,6 +2379,7 @@ type V2TopPlaceMomentRow = {
   rating: number | null;
   ratingLabel: string | null;
   wouldRevisit: string | null;
+  isHomemade: boolean;
   visibility: 'PUBLIC' | 'FRIENDS' | 'PRIVATE';
   createdAt: Date;
   placeRecord: {
@@ -2453,6 +2463,7 @@ async function buildV2TopPlacesPayload(input: {
     prismaV2.moment.findMany({
       where: {
         userId: resolvedTravelerId,
+        isHomemade: false,
         ...(visitedAtFilter ? { visitedAt: visitedAtFilter } : {}),
       },
       orderBy: [
@@ -2972,6 +2983,40 @@ async function buildV2DiaryMoments(userId: string, requestOrigin?: string) {
         ),
       };
     }),
+  };
+}
+
+async function buildV2HomemadeMoments(travelerId: string, viewerUserId: string, requestOrigin?: string) {
+  const traveler = await prismaV2.user.findUnique({
+    where: { id: travelerId },
+    select: { id: true, username: true, displayName: true, avatarUrl: true },
+  });
+  if (!traveler) {
+    return null;
+  }
+
+  const moments = await prismaV2.moment.findMany({
+    where: { userId: travelerId, isHomemade: true },
+    orderBy: [
+      { visitedAt: 'desc' },
+      { createdAt: 'desc' },
+    ],
+  });
+  const social = await loadV2MomentSocialState(moments.map((moment) => moment.id), viewerUserId);
+
+  return {
+    traveler: {
+      id: traveler.id,
+      username: traveler.username,
+      displayName: traveler.displayName,
+      avatar: traveler.avatarUrl,
+    },
+    moments: moments.map((moment) => mapV2MomentForClient(moment, requestOrigin, {
+      commentCount: social.commentCounts[moment.id] ?? 0,
+      likeCount: social.likeCounts[moment.id] ?? 0,
+      isVibed: social.vibedMomentIds.has(moment.id),
+      recentVibers: social.recentVibersByMoment.get(moment.id) ?? [],
+    }, social.latestCommentByMoment.get(moment.id) ?? null)),
   };
 }
 
@@ -5734,21 +5779,9 @@ async function mapGoogleSearchPlaceToInternalPlace(rawPlace: GoogleTextSearchPla
   };
   const locationBits = parseLocationBits(effectiveAddress);
   const category = (effectivePrimaryType ?? effectiveTypes?.[0] ?? 'recommended spot').replace(/_/g, ' ');
-  const existingPlace = await prisma.place.findUnique({
-    where: { googlePlaceId: rawPlace.id },
-    select: { id: true },
-  });
-  const isNewPlace = !existingPlace;
-  // Resolve a small number of renderable photo URLs only when the place is first
-  // acquired. Existing places keep their current media to avoid recurring photo
-  // requests on later query runs.
-  const photoUris = isNewPlace && effectivePhotoRefs.length
-    ? await fetchGooglePhotoUris(effectivePhotoRefs.map((photo) => photo.name), 3).catch((error) => {
-        console.error(error);
-        return [];
-      })
-    : [];
-  const photoUri = photoUris[0] ?? null;
+  // Google Places photos are no longer fetched or stored; only user-uploaded media is kept.
+  const photoUris: string[] = [];
+  const photoUri: string | null = null;
   const neighborhoodBits = extractNeighborhoodFromAddressComponents(rawPlace.addressComponents);
 
   const place = await prisma.place.upsert({
@@ -5990,14 +6023,9 @@ async function acquireCheckInPlaceFromGoogleDetails(input: {
     ...mapGooglePlaceDetailColumns(details),
   };
 
-  const shouldFetchPhotos = !existingPlace || (!existingPlace.primaryImageUrl && existingPlace.media.length === 0);
-  const photoUris = shouldFetchPhotos && effectivePhotoRefs.length > 0
-    ? await fetchGooglePhotoUris(effectivePhotoRefs.map((photo) => photo.name), 3).catch((error) => {
-        console.error(error);
-        return [];
-      })
-    : [];
-  const photoUri = photoUris[0] ?? null;
+  // Google Places photos are no longer fetched or stored; only user-uploaded media is kept.
+  const photoUris: string[] = [];
+  const photoUri: string | null = null;
 
   const place = await prisma.place.upsert({
     where: { googlePlaceId },
@@ -6152,19 +6180,12 @@ async function acquireCheckInPlaceFromGoogleDetailsV2(input: {
   const effectiveRating = details.rating ?? null;
   const effectiveUserRatingCount = details.userRatingCount ?? null;
   const effectivePriceLevel = mapGooglePriceLevel(details.priceLevel);
-  const effectivePhotoRefs = details.photos ?? [];
   const locationBits = parseLocationBits(effectiveAddress);
   const neighborhoodBits = extractNeighborhoodFromAddressComponents(details.addressComponents);
   const category = (effectivePrimaryType ?? effectiveTypes?.[0] ?? 'recommended spot').replace(/_/g, ' ');
 
-  const shouldFetchPhotos = !existingPlace || !existingPlace.primaryImageUrl;
-  const photoUris = shouldFetchPhotos && effectivePhotoRefs.length > 0
-    ? await fetchGooglePhotoUris(effectivePhotoRefs.map((photo) => photo.name), 1).catch((error) => {
-        console.error(error);
-        return [];
-      })
-    : [];
-  const primaryImageUrl = photoUris[0] ?? existingPlace?.primaryImageUrl ?? null;
+  // Google Places photos are no longer fetched or stored; only user-uploaded media is kept.
+  const primaryImageUrl: string | null = null;
 
   return prismaV2.place.upsert({
     where: { googlePlaceId },
@@ -7752,34 +7773,6 @@ function extractNeighborhoodFromAddressComponents(components: Array<{
   return { neighborhood, adminAreaLevel4 };
 }
 
-async function fetchGooglePhotoUri(photoName: string) {
-  if (!GOOGLE_MAPS_API_KEY) return null;
-
-  const response = await fetch(
-    `https://places.googleapis.com/v1/${photoName}/media?key=${GOOGLE_MAPS_API_KEY}&maxWidthPx=1200&skipHttpRedirect=true`,
-  );
-
-  if (!response.ok) {
-    throw new Error(`Google Place Photo failed with ${response.status}`);
-  }
-
-  const data = await response.json() as { photoUri?: string };
-  return data.photoUri ?? null;
-}
-
-async function fetchGooglePhotoUris(photoNames: string[], limit = 5) {
-  const uniquePhotoNames = Array.from(new Set(photoNames.filter(Boolean))).slice(0, limit);
-  if (uniquePhotoNames.length === 0) return [];
-
-  const results = await Promise.allSettled(
-    uniquePhotoNames.map((photoName) => fetchGooglePhotoUri(photoName)),
-  );
-
-  return results
-    .map((result) => (result.status === 'fulfilled' ? result.value : null))
-    .filter((value): value is string => typeof value === 'string' && value.length > 0);
-}
-
 async function ensurePlaceAiEnrichment(placeId: string) {
   const existingTask = placeEnrichmentInflight.get(placeId);
   if (existingTask) {
@@ -8894,6 +8887,15 @@ function pickRandomTodayRecommendationCandidate<T>(candidates: T[]): T | null {
   if (candidates.length === 0) return null;
   const index = Math.floor(Math.random() * candidates.length);
   return candidates[index] ?? null;
+}
+
+function shuffleArray<T>(items: T[]): T[] {
+  const shuffled = [...items];
+  for (let i = shuffled.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+  return shuffled;
 }
 
 async function getUserRecommendationContext(userId: string): Promise<RecommendationContext> {
@@ -11134,7 +11136,7 @@ app.get('/api/v2/auth/config', (_req, res) => {
     appEnv: APP_ENV,
     otpProvider: USE_STAGING_FIXED_OTP ? 'fixed_code' : 'vonage_verify',
     enabled: VONAGE_VERIFY_ENABLED,
-    inviteRequired: true,
+    inviteRequired: false,
     codeLength: V2_OTP_CODE_LENGTH,
     fixedCodeEnabled: USE_STAGING_FIXED_OTP,
   });
@@ -11710,6 +11712,24 @@ app.get('/api/v2/travelers/:id/following', requireV2Auth, async (req: Authentica
   }
 });
 
+app.get('/api/v2/travelers/:id/homemade-moments', requireV2Auth, async (req: AuthenticatedRequest, res) => {
+  try {
+    if (!req.authV2UserId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    const requestOrigin = `${getRequestOrigin(req)}`;
+    const payload = await buildV2HomemadeMoments(req.params.id, req.authV2UserId, requestOrigin);
+    if (!payload) {
+      res.status(404).json({ error: 'Traveler not found' });
+      return;
+    }
+    res.json(payload);
+  } catch (error) {
+    handleError(res, error);
+  }
+});
+
 async function resolveV2TargetOwner(targetType: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION', targetId: string) {
   if (targetType === 'PROFILE') {
     return targetId;
@@ -11734,6 +11754,7 @@ async function createV2Notification(input: {
   type: 'FOLLOW' | 'COMMENT' | 'VIBIN' | 'INVITE_REDEEMED';
   targetType?: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION' | null;
   targetId?: string | null;
+  commentId?: string | null;
   title: string;
   body: string;
 }) {
@@ -11758,6 +11779,7 @@ async function createV2Notification(input: {
         type: input.type,
         ...(input.targetType ? { targetType: input.targetType } : {}),
         ...(input.targetId ? { targetId: input.targetId } : {}),
+        ...(input.commentId ? { commentId: input.commentId } : {}),
       },
     });
   } catch (error) {
@@ -11879,6 +11901,7 @@ async function notifyMentionedV2Users(input: {
   actorName: string;
   targetType: 'PROFILE' | 'MOMENT' | 'PLACE' | 'PLACE_VISIT' | 'COLLECTION';
   targetId: string;
+  commentId: string;
   body: string;
   excludedUserIds: Set<string>;
 }) {
@@ -11892,6 +11915,7 @@ async function notifyMentionedV2Users(input: {
         type: 'COMMENT',
         targetType: input.targetType,
         targetId: input.targetId,
+        commentId: input.commentId,
         title: `${input.actorName} mentioned you in a comment`,
         body: input.body,
       })),
@@ -12393,6 +12417,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         type: 'COMMENT',
         targetType,
         targetId,
+        commentId: comment.id,
         title: `${actorName} commented on your moment`,
         body: comment.body,
       });
@@ -12410,6 +12435,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
         type: 'COMMENT',
         targetType,
         targetId,
+        commentId: comment.id,
         title: `${actorName} replied to your comment`,
         body: comment.body,
       });
@@ -12422,6 +12448,7 @@ app.post('/api/v2/comments', requireV2Auth, async (req: AuthenticatedRequest, re
       actorName,
       targetType,
       targetId,
+      commentId: comment.id,
       body: comment.body,
       excludedUserIds: notifiedUserIds,
     });
@@ -12621,11 +12648,9 @@ app.post('/api/v2/auth/otp/request', async (req, res) => {
     const {
       phoneNumber,
       purpose,
-      inviteCode,
     } = req.body as {
       phoneNumber?: string;
       purpose?: 'SIGN_UP' | 'SIGN_IN';
-      inviteCode?: string;
     };
 
     if (!phoneNumber?.trim()) {
@@ -12636,7 +12661,6 @@ app.post('/api/v2/auth/otp/request', async (req, res) => {
     const response = await requestOtp({
       phoneNumber,
       purpose: purpose === 'SIGN_UP' ? 'SIGN_UP' : 'SIGN_IN',
-      inviteCode,
     });
 
     res.status(201).json(response);
@@ -12654,12 +12678,10 @@ app.post('/api/v2/auth/otp/verify', async (req, res) => {
     const {
       otpRequestId,
       code,
-      inviteCode,
       displayName,
     } = req.body as {
       otpRequestId?: string;
       code?: string;
-      inviteCode?: string;
       displayName?: string;
     };
 
@@ -12671,7 +12693,6 @@ app.post('/api/v2/auth/otp/verify', async (req, res) => {
     const response = await verifyOtp({
       otpRequestId,
       code,
-      inviteCode,
       displayName,
     });
 
@@ -12724,7 +12745,21 @@ app.post('/api/v2/invite-codes/redeem', async (req: AuthenticatedRequest, res) =
     }
 
     const result = await redeemInviteCode({ userId: req.authV2UserId, code });
-    res.json(result);
+
+    if (result.ownerUserId !== result.redeemerUserId) {
+      void sendV2PushNotification({
+        userId: result.ownerUserId,
+        title: 'Someone joined with your invite',
+        body: 'Your invite brought a new person into Vibinn.',
+        data: {
+          type: 'INVITE_REDEEMED',
+          targetType: 'PROFILE',
+          targetId: result.redeemerUserId,
+        },
+      });
+    }
+
+    res.json({ inviteCode: result.inviteCode, onboarding: result.onboarding });
   } catch (error) {
     if (error instanceof AuthV2Error) {
       res.status(getAuthV2ErrorStatus(error)).json({ error: error.message, code: error.code });
@@ -14243,6 +14278,7 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
     }
 
     const payload = { ...req.body };
+    const isHomemade = payload.isHomemade === true;
     const placeId = typeof payload.placeId === 'string' ? payload.placeId.trim() : '';
     const placeName = typeof payload.placeName === 'string' ? payload.placeName.trim() : '';
     const uploadedMedia = Array.isArray(payload.uploadedMedia)
@@ -14251,8 +14287,12 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
     const visitedDate = typeof payload.visitedDate === 'string' ? payload.visitedDate.trim() : '';
     const caption = typeof payload.caption === 'string' ? payload.caption.trim() : '';
 
-    if (!placeId || !placeName || !visitedDate) {
-      res.status(400).json({ error: 'placeId, placeName, and visitedDate are required' });
+    if (!visitedDate) {
+      res.status(400).json({ error: 'visitedDate is required' });
+      return;
+    }
+    if (!isHomemade && (!placeId || !placeName)) {
+      res.status(400).json({ error: 'placeId and placeName are required' });
       return;
     }
 
@@ -14275,7 +14315,23 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
     let resolvedPlaceLatitude = typeof payload.placeLatitude === 'number' ? payload.placeLatitude : null;
     let resolvedPlaceLongitude = typeof payload.placeLongitude === 'number' ? payload.placeLongitude : null;
 
-    if (googlePlaceId) {
+    if (isHomemade) {
+      const homemadeUser = await prismaV2.user.findUnique({
+        where: { id: req.authV2UserId },
+        select: { username: true },
+      });
+      const homemadeLabel = `${homemadeUser?.username ?? 'Homemade'}'s Kitchen`;
+      const persistedPlace = await ensureManualV2PlaceRecord({
+        name: homemadeLabel,
+        address: null,
+        category: 'homemade',
+        latitude: null,
+        longitude: null,
+      });
+      resolvedPlaceId = persistedPlace.id;
+      resolvedPlaceName = homemadeLabel;
+      resolvedPlaceLocation = 'Homemade';
+    } else if (googlePlaceId) {
       const canonicalPlace = await acquireCheckInPlaceFromGoogleDetailsV2({
         googlePlaceId,
         sessionToken: autocompleteSessionToken,
@@ -14365,6 +14421,7 @@ app.post('/api/v2/moments', async (req: AuthenticatedRequest, res) => {
         rating: typeof payload.rating === 'number' ? payload.rating : null,
         ratingLabel: typeof payload.ratingLabel === 'string' ? payload.ratingLabel.trim() || null : null,
         wouldRevisit,
+        isHomemade,
         visibility,
         vibeTags: Array.isArray(payload.vibeTags)
           ? payload.vibeTags.filter((value: unknown): value is string => typeof value === 'string' && value.trim().length > 0)
@@ -14862,50 +14919,6 @@ async function incrementNearbyDetectionUsage(userId: string, monthKey: string, c
     },
   });
 }
-
-app.get('/api/v2/onboarding/photo-places/reverse', async (req: AuthenticatedRequest, res) => {
-  try {
-    console.warn('Photo place reverse endpoint called while disabled', {
-      userId: req.authV2UserId ?? null,
-      latitude: req.query.lat ?? null,
-      longitude: req.query.lon ?? null,
-    });
-    res.status(410).json({
-      error: 'Photo auto-detect disabled',
-      places: [],
-      limitReached: false,
-      message: 'Photo location auto-detect is disabled. Search manually instead.',
-    });
-  } catch (error) {
-    handleError(res, error);
-  }
-});
-
-app.get('/api/v2/onboarding/photo-places/search', async (req, res) => {
-  try {
-    const query = String(req.query.q ?? '').trim();
-    const sessionToken = String(req.query.sessionToken ?? crypto.randomUUID()).trim();
-    const originLat = Number(req.query.originLat);
-    const originLon = Number(req.query.originLon);
-
-    if (query.length < 2) {
-      res.json({ places: [] });
-      return;
-    }
-
-    const origin = Number.isFinite(originLat) && Number.isFinite(originLon)
-      ? { latitude: originLat, longitude: originLon }
-      : null;
-    const places = await searchUnifiedCheckInPlaces(query, {
-      sessionToken,
-      origin,
-    });
-
-    res.json({ places });
-  } catch (error) {
-    handleError(res, error);
-  }
-});
 
 app.get('/api/lookups/places', (req, res) => {
   const q = String(req.query.q || '').trim();
@@ -17618,6 +17631,7 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
           type: 'COMMENT',
           targetType,
           targetId,
+          commentId: comment.id,
           title: `${actorName} commented on your moment`,
           body: comment.body,
         });
@@ -17635,6 +17649,7 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
           type: 'COMMENT',
           targetType,
           targetId,
+          commentId: comment.id,
           title: `${actorName} replied to your comment`,
           body: comment.body,
         });
@@ -17647,6 +17662,7 @@ app.post('/api/comments', requireSessionAuth, async (req: AuthenticatedRequest, 
         actorName,
         targetType,
         targetId,
+        commentId: comment.id,
         body: comment.body,
         excludedUserIds: notifiedUserIds,
       });

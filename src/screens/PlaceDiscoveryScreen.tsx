@@ -558,21 +558,6 @@ export default function PlaceDiscoveryScreen({
 
   useEffect(() => {
     if (!canLoadMore) return;
-
-    const handleWindowScroll = () => {
-      if (!canLoadMore) return;
-      const remaining = document.documentElement.scrollHeight - (window.innerHeight + window.scrollY);
-      if (remaining < 520) {
-        triggerLoadMore();
-      }
-    };
-
-    window.addEventListener('scroll', handleWindowScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleWindowScroll);
-  }, [canLoadMore]);
-
-  useEffect(() => {
-    if (!canLoadMore) return;
     if (mixedDiscoveryItems.length === 0) return;
 
     const attemptAutoFill = () => {

@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE "Moment" ADD COLUMN IF NOT EXISTS "isHomemade" BOOLEAN NOT NULL DEFAULT false;

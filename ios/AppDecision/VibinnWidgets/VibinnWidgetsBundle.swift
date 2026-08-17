@@ -5,33 +5,34 @@ import os
 
 private let nativeWidgetAppGroupIdentifier = "group.club.vibinn.ios"
 private let nativeWidgetSnapshotFileName = "vibinn-widget-snapshot.json"
-private let nativeWidgetImageCacheDirectoryName = "widget-image-cache"
 private let nativeWidgetLogger = Logger(subsystem: "club.vibinn.ios.widgets", category: "Widget")
 
-private struct NativeWidgetGallerySnapshot: Codable {
+private struct NativeWidgetMemorySnapshot: Codable {
     let id: String
-    let username: String
-    let displayName: String?
-    let avatarURL: String?
     let mediaURL: String?
     let localMediaPath: String?
-    let postedLabel: String
+    let caption: String?
+    let avatarURL: String?
+    let localAvatarPath: String?
+    let avatarFallbackName: String?
 }
 
-private struct NativeWidgetRecommendationSnapshot: Codable {
-    let placeId: String
-    let placeName: String
-    let backgroundImageURL: String?
-    let localBackgroundImagePath: String?
-    let distanceLabel: String
-    let hasGeneratedRecommendation: Bool
+private func nativeWidgetAvatarInitials(from raw: String?) -> String {
+    guard let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "?" }
+    let tokens = raw.split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+    if tokens.count >= 2 {
+        return (String(tokens[0].prefix(1)) + String(tokens[1].prefix(1))).uppercased()
+    }
+    if let first = tokens.first {
+        return String(first.prefix(1)).uppercased()
+    }
+    return "?"
 }
 
 private struct NativeWidgetSnapshot: Codable {
     let generatedAt: Date
-    let hasFriends: Bool
-    let gallery: NativeWidgetGallerySnapshot?
-    let recommendation: NativeWidgetRecommendationSnapshot?
+    let myMemories: [NativeWidgetMemorySnapshot]
+    let feedMemory: NativeWidgetMemorySnapshot?
 }
 
 private enum NativeWidgetSnapshotStore {
@@ -48,11 +49,7 @@ private enum NativeWidgetSnapshotStore {
             return nil
         }
         let snapshot = try? JSONDecoder().decode(NativeWidgetSnapshot.self, from: data)
-        if let snapshot {
-            nativeWidgetLogger.log(
-                "snapshot loaded galleryLocal=\(snapshot.gallery?.localMediaPath ?? "nil", privacy: .public) galleryURL=\(snapshot.gallery?.mediaURL ?? "nil", privacy: .public) recoLocal=\(snapshot.recommendation?.localBackgroundImagePath ?? "nil", privacy: .public)"
-            )
-        } else {
+        if snapshot == nil {
             nativeWidgetLogger.error("snapshot decode failed")
         }
         return snapshot
@@ -87,6 +84,7 @@ private func nativeResolvedWidgetImageURL(_ url: String?) -> String? {
 private struct VibinnWidgetEntry: TimelineEntry {
     let date: Date
     let snapshot: NativeWidgetSnapshot?
+    let myMemoryIndex: Int
 }
 
 private extension View {
@@ -102,28 +100,12 @@ private extension View {
     }
 }
 
-private struct VibinnCoffeeFallbackBackground: View {
-    let entry: VibinnWidgetEntry
-
-    var body: some View {
-        ZStack {
-            if UIImage(named: "good_coffee") != nil {
-                Image("good_coffee")
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                VibinnRemoteWidgetImage(
-                    urlString: entry.snapshot?.gallery?.mediaURL,
-                    localRelativePath: entry.snapshot?.gallery?.localMediaPath
-                )
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .blur(radius: 18)
-        .overlay(Color.black.opacity(0.45))
-        .clipped()
-    }
-}
+/// Memories rotate within a single timeline instead of triggering repeated reloads: WidgetKit
+/// lets a provider hand back several dated entries in one `getTimeline` call, and the system
+/// switches between them locally at each entry's date for free, with no extra refresh-budget
+/// cost. Rotating hourly keeps the last few memories visible over a normal day without ever
+/// needing the app to refresh the snapshot mid-rotation.
+private let nativeWidgetMemoryRotationInterval: TimeInterval = 60 * 60
 
 private struct VibinnWidgetProvider: TimelineProvider {
     func placeholder(in context: Context) -> VibinnWidgetEntry {
@@ -131,48 +113,64 @@ private struct VibinnWidgetProvider: TimelineProvider {
             date: Date(),
             snapshot: NativeWidgetSnapshot(
                 generatedAt: Date(),
-                hasFriends: true,
-                gallery: NativeWidgetGallerySnapshot(
-                    id: "sample",
-                    username: "fauzan",
-                    displayName: "Fauzan",
-                    avatarURL: nil,
+                myMemories: [
+                    NativeWidgetMemorySnapshot(
+                        id: "sample-my-memory",
+                        mediaURL: nil,
+                        localMediaPath: nil,
+                        caption: "Best ramen in town",
+                        avatarURL: nil,
+                        localAvatarPath: nil,
+                        avatarFallbackName: nil
+                    )
+                ],
+                feedMemory: NativeWidgetMemorySnapshot(
+                    id: "sample-feed-memory",
                     mediaURL: nil,
                     localMediaPath: nil,
-                    postedLabel: "2h ago"
-                ),
-                recommendation: NativeWidgetRecommendationSnapshot(
-                    placeId: "sample-place",
-                    placeName: "Gracenote Coffee",
-                    backgroundImageURL: nil,
-                    localBackgroundImagePath: nil,
-                    distanceLabel: "6 mins away",
-                    hasGeneratedRecommendation: true
+                    caption: "Sunday brunch spot",
+                    avatarURL: nil,
+                    localAvatarPath: nil,
+                    avatarFallbackName: "Vibinn Traveler"
                 )
-            )
+            ),
+            myMemoryIndex: 0
         )
     }
 
     func getSnapshot(in context: Context, completion: @escaping (VibinnWidgetEntry) -> Void) {
         Task {
-            completion(await loadEntry())
+            let snapshot = loadSnapshot()
+            completion(VibinnWidgetEntry(date: Date(), snapshot: snapshot, myMemoryIndex: 0))
         }
     }
 
     func getTimeline(in context: Context, completion: @escaping (Timeline<VibinnWidgetEntry>) -> Void) {
         Task {
-            let entry = await loadEntry()
-            let nextRefresh = Calendar.current.date(byAdding: .minute, value: 5, to: Date()) ?? Date().addingTimeInterval(300)
-            completion(Timeline(entries: [entry], policy: .after(nextRefresh)))
+            let snapshot = loadSnapshot()
+            let memoryCount = max(snapshot?.myMemories.count ?? 0, 1)
+            let now = Date()
+            let entries = (0..<memoryCount).map { index in
+                VibinnWidgetEntry(
+                    date: now.addingTimeInterval(Double(index) * nativeWidgetMemoryRotationInterval),
+                    snapshot: snapshot,
+                    myMemoryIndex: index
+                )
+            }
+            let nextRefresh = now.addingTimeInterval(Double(memoryCount) * nativeWidgetMemoryRotationInterval)
+            completion(Timeline(entries: entries, policy: .after(nextRefresh)))
         }
     }
 
-    private func loadEntry() async -> VibinnWidgetEntry {
+    private func loadSnapshot() -> NativeWidgetSnapshot? {
+        let containerURL = FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: nativeWidgetAppGroupIdentifier)
+        print("[VIBINN-WIDGET-DIAGNOSTIC] containerURL=\(String(describing: containerURL))")
         let snapshot = NativeWidgetSnapshotStore.load()
+        print("[VIBINN-WIDGET-DIAGNOSTIC] myMemoriesCount=\(snapshot?.myMemories.count ?? 0) feedMemoryExists=\(snapshot?.feedMemory != nil)")
         nativeWidgetLogger.log(
-            "timeline entry galleryExists=\(snapshot?.gallery != nil) recoExists=\(snapshot?.recommendation != nil)"
+            "timeline entry myMemoriesCount=\(snapshot?.myMemories.count ?? 0) feedMemoryExists=\(snapshot?.feedMemory != nil)"
         )
-        return VibinnWidgetEntry(date: Date(), snapshot: snapshot)
+        return snapshot
     }
 }
 
@@ -184,31 +182,25 @@ private struct VibinnRemoteWidgetImage: View {
         if let localRelativePath,
            let fileURL = NativeWidgetSnapshotStore.localFileURL(for: localRelativePath),
            let uiImage = UIImage(contentsOfFile: fileURL.path) {
-            let _ = nativeWidgetLogger.log("widget image local hit path=\(localRelativePath, privacy: .public)")
             Image(uiImage: uiImage)
                 .resizable()
                 .scaledToFill()
                 .clipped()
-        } else
-        if let resolved = nativeResolvedWidgetImageURL(urlString), let url = URL(string: resolved) {
-            let _ = nativeWidgetLogger.log("widget image remote fallback url=\(resolved, privacy: .public)")
+        } else if let resolved = nativeResolvedWidgetImageURL(urlString), let url = URL(string: resolved) {
             AsyncImage(url: url) { phase in
                 switch phase {
                 case .success(let image):
-                    let _ = nativeWidgetLogger.log("widget image remote success")
                     image
                         .resizable()
                         .scaledToFill()
                         .clipped()
                 case .failure, .empty:
-                    let _ = nativeWidgetLogger.error("widget image remote unavailable")
                     placeholder
                 @unknown default:
                     placeholder
                 }
             }
         } else {
-            let _ = nativeWidgetLogger.error("widget image placeholder only localPath=\(localRelativePath ?? "nil", privacy: .public) url=\(urlString ?? "nil", privacy: .public)")
             placeholder
         }
     }
@@ -223,202 +215,192 @@ private struct VibinnRemoteWidgetImage: View {
     }
 }
 
-private extension View {
-    func vibinnWidgetCard() -> some View {
-        self
-            .background(
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
-                    .fill(Color(red: 18 / 255, green: 18 / 255, blue: 22 / 255))
-            )
-            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-    }
-}
-
-private struct VibinnGalleryPanel: View {
-    let entry: VibinnWidgetEntry
-
+/// Blurred placeholder used behind empty states that should read as "an image is there,
+/// just not loaded yet" rather than a flat empty tile.
+private struct VibinnBlurredPlaceholderBackground: View {
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            VibinnRemoteWidgetImage(
-                urlString: entry.snapshot?.gallery?.mediaURL,
-                localRelativePath: entry.snapshot?.gallery?.localMediaPath
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        ZStack {
             LinearGradient(
-                colors: [Color.black.opacity(0.0), Color.black.opacity(0.88)],
-                startPoint: .center,
-                endPoint: .bottom
+                colors: [
+                    Color(red: 20 / 255, green: 26 / 255, blue: 30 / 255),
+                    Color(red: 92 / 255, green: 130 / 255, blue: 118 / 255),
+                    Color(red: 58 / 255, green: 40 / 255, blue: 46 / 255)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            VStack(alignment: .leading, spacing: 4) {
-                if let gallery = entry.snapshot?.gallery {
-                    Text(gallery.displayName ?? "@\(gallery.username)")
-                        .font(.system(size: 15, weight: .black))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    Text(gallery.postedLabel)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.74))
-                } else {
-                    Text("No posts yet")
-                        .font(.system(size: 15, weight: .black))
-                        .foregroundStyle(.white)
-                    Text("Open Vibinn to see today.")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.74))
-                }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            Circle()
+                .fill(Color(red: 8 / 255, green: 10 / 255, blue: 14 / 255))
+                .frame(width: 140, height: 140)
+                .offset(x: -70, y: -90)
+                .blur(radius: 36)
+            Circle()
+                .fill(Color(red: 132 / 255, green: 46 / 255, blue: 58 / 255))
+                .frame(width: 130, height: 130)
+                .offset(x: 50, y: 80)
+                .blur(radius: 36)
         }
-        .vibinnWidgetCard()
     }
 }
 
-private struct VibinnGalleryWidgetView: View {
-    let entry: VibinnWidgetEntry
+/// Shared layout for both memory widgets: thumbnail fills the whole tile, an optional
+/// square-rounded avatar sits top-leading (feed memory only), and the caption sits
+/// bottom-leading, omitted entirely when the moment has no caption. When there's no
+/// memory at all, `emptyTitle == nil` switches to the blurred-placeholder empty state
+/// (feed widget); a non-nil title keeps the flat-background empty state (my-memory widget).
+private struct VibinnMemoryPanel: View {
+    let memory: NativeWidgetMemorySnapshot?
+    let showsAvatar: Bool
+    let emptyTitle: String?
+    let emptySubtitle: String
 
     var body: some View {
-        VibinnGalleryPanel(entry: entry)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .widgetURL(URL(string: "vibinn://feed"))
-        .vibinnWidgetBackground()
-    }
-}
+        ZStack(alignment: .topLeading) {
+            if let memory {
+                VibinnRemoteWidgetImage(
+                    urlString: memory.mediaURL,
+                    localRelativePath: memory.localMediaPath
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
 
-private struct VibinnRecommendationPanel: View {
-    let entry: VibinnWidgetEntry
+                if showsAvatar {
+                    Group {
+                        if memory.avatarURL != nil || memory.localAvatarPath != nil {
+                            VibinnRemoteWidgetImage(
+                                urlString: memory.avatarURL,
+                                localRelativePath: memory.localAvatarPath
+                            )
+                        } else {
+                            ZStack {
+                                Color.black
+                                Text(nativeWidgetAvatarInitials(from: memory.avatarFallbackName))
+                                    .font(.system(size: 13, weight: .black))
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                    }
+                    .frame(width: 32, height: 32)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.black, lineWidth: 1.5)
+                    )
+                    .padding(12)
+                }
 
-    var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            recommendationBackground
-            LinearGradient(
-                colors: [Color.black.opacity(0.12), Color.black.opacity(0.9)],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("TODAY’S PICK")
-                    .font(.system(size: 10, weight: .black))
-                    .foregroundStyle(Color(red: 211 / 255, green: 1, blue: 72 / 255))
-
-                if let recommendation = entry.snapshot?.recommendation,
-                   recommendation.hasGeneratedRecommendation {
-                    Spacer(minLength: 0)
-                    Text(recommendation.placeName)
-                        .font(.system(size: 15, weight: .black))
+                if let caption = memory.caption?.trimmingCharacters(in: .whitespacesAndNewlines), !caption.isEmpty {
+                    Text(caption)
+                        .font(.system(size: 11, weight: .regular))
                         .foregroundStyle(.white)
                         .lineLimit(2)
-                    Text(recommendation.distanceLabel)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.76))
-                } else {
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(12)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+                }
+            } else if let emptyTitle {
+                ZStack {
+                    Color(red: 18 / 255, green: 18 / 255, blue: 22 / 255)
+                    Rectangle()
+                        .fill(.ultraThinMaterial)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                VStack(alignment: .leading, spacing: 4) {
                     Spacer(minLength: 0)
-                    Text("Where to today?")
+                    Text(emptyTitle)
                         .font(.system(size: 15, weight: .black))
                         .foregroundStyle(.white)
-                    Text("Pick your vibe")
+                    Text(emptySubtitle)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.6))
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
+            } else {
+                VibinnBlurredPlaceholderBackground()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+                HStack(alignment: .top, spacing: 4) {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                    Text(emptySubtitle)
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.76))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .multilineTextAlignment(.trailing)
                 }
+                .padding(14)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomLeading)
         }
-        .vibinnWidgetCard()
+        .clipped()
+    }
+}
+
+private struct VibinnMyMemoryWidgetView: View {
+    let entry: VibinnWidgetEntry
+
+    private var currentMemory: NativeWidgetMemorySnapshot? {
+        guard let memories = entry.snapshot?.myMemories, !memories.isEmpty else { return nil }
+        return memories[entry.myMemoryIndex % memories.count]
     }
 
-    @ViewBuilder
-    private var recommendationBackground: some View {
-        if entry.snapshot?.recommendation?.hasGeneratedRecommendation == true {
-            VibinnRemoteWidgetImage(
-                urlString: entry.snapshot?.recommendation?.backgroundImageURL,
-                localRelativePath: entry.snapshot?.recommendation?.localBackgroundImagePath
+    var body: some View {
+        Link(destination: URL(string: "vibinn://diary")!) {
+            VibinnMemoryPanel(
+                memory: currentMemory,
+                showsAvatar: false,
+                emptyTitle: "No memories yet",
+                emptySubtitle: "Log a meal to see it here."
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            VibinnCoffeeFallbackBackground(entry: entry)
         }
-    }
-}
-
-private struct VibinnRecommendationWidgetView: View {
-    let entry: VibinnWidgetEntry
-
-    var body: some View {
-        VibinnRecommendationPanel(entry: entry)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .widgetURL(URL(string: "vibinn://discover"))
+        .buttonStyle(.plain)
         .vibinnWidgetBackground()
     }
 }
 
-private struct VibinnMediumComboWidgetView: View {
+private struct VibinnFeedMemoryWidgetView: View {
     let entry: VibinnWidgetEntry
 
     var body: some View {
-        GeometryReader { geometry in
-            let panelWidth = max((geometry.size.width - 10) / 2, 0)
-
-            HStack(spacing: 10) {
-                Link(destination: URL(string: "vibinn://feed")!) {
-                    VibinnGalleryPanel(entry: entry)
-                        .frame(width: panelWidth, height: geometry.size.height)
-                }
-                .buttonStyle(.plain)
-
-                Link(destination: URL(string: "vibinn://discover")!) {
-                    VibinnRecommendationPanel(entry: entry)
-                        .frame(width: panelWidth, height: geometry.size.height)
-                }
-                .buttonStyle(.plain)
-            }
-            .frame(width: geometry.size.width, height: geometry.size.height, alignment: .center)
+        Link(destination: URL(string: "vibinn://feed")!) {
+            VibinnMemoryPanel(
+                memory: entry.snapshot?.feedMemory,
+                showsAvatar: true,
+                emptyTitle: nil,
+                emptySubtitle: "Invite friends to see them here"
+            )
         }
+        .buttonStyle(.plain)
         .vibinnWidgetBackground()
     }
 }
 
-struct VibinnGalleryWidget: Widget {
-    let kind = "VibinnGalleryWidget"
+struct VibinnMyMemoryWidget: Widget {
+    let kind = "VibinnMyMemoryWidget"
 
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: VibinnWidgetProvider()) { entry in
-            VibinnGalleryWidgetView(entry: entry)
+            VibinnMyMemoryWidgetView(entry: entry)
         }
-        .configurationDisplayName("Gallery")
-        .description("Latest friend or suggested moment.")
+        .configurationDisplayName("My Memory")
+        .description("Your latest food diary memory.")
         .supportedFamilies([.systemSmall])
         .contentMarginsDisabled()
     }
 }
 
-struct VibinnRecommendationWidget: Widget {
-    let kind = "VibinnRecommendationWidget"
+struct VibinnFeedMemoryWidget: Widget {
+    let kind = "VibinnFeedMemoryWidget"
 
     var body: some WidgetConfiguration {
         StaticConfiguration(kind: kind, provider: VibinnWidgetProvider()) { entry in
-            VibinnRecommendationWidgetView(entry: entry)
+            VibinnFeedMemoryWidgetView(entry: entry)
         }
-        .configurationDisplayName("Recommendation")
-        .description("Today’s pick or a quick CTA to generate one.")
+        .configurationDisplayName("Feed Memory")
+        .description("The latest memory from people you follow.")
         .supportedFamilies([.systemSmall])
-        .contentMarginsDisabled()
-    }
-}
-
-struct VibinnComboWidget: Widget {
-    let kind = "VibinnComboWidget"
-
-    var body: some WidgetConfiguration {
-        StaticConfiguration(kind: kind, provider: VibinnWidgetProvider()) { entry in
-            VibinnMediumComboWidgetView(entry: entry)
-        }
-        .configurationDisplayName("Gallery + Recommendation")
-        .description("A compact blend of your latest moment and today’s pick.")
-        .supportedFamilies([.systemMedium])
         .contentMarginsDisabled()
     }
 }
@@ -426,8 +408,7 @@ struct VibinnComboWidget: Widget {
 @main
 struct VibinnWidgetsBundle: WidgetBundle {
     var body: some Widget {
-        VibinnGalleryWidget()
-        VibinnRecommendationWidget()
-        VibinnComboWidget()
+        VibinnMyMemoryWidget()
+        VibinnFeedMemoryWidget()
     }
 }

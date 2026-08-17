@@ -24,13 +24,11 @@ type AuthPurpose = 'SIGN_UP' | 'SIGN_IN';
 type RequestOtpInput = {
   phoneNumber: string;
   purpose: AuthPurpose;
-  inviteCode?: string;
 };
 
 type VerifyOtpInput = {
   otpRequestId: string;
   code: string;
-  inviteCode?: string;
   displayName?: string;
 };
 
@@ -969,6 +967,8 @@ export async function redeemInviteCode(input: { userId: string; code: string }) 
   return {
     inviteCode: buildInviteCodeSummary(inviteCode),
     onboarding,
+    ownerUserId: inviteCode.ownerUserId,
+    redeemerUserId: user.id,
   };
 }
 
@@ -1181,8 +1181,8 @@ export async function verifyOtp(input: VerifyOtpInput) {
       onboardingState = await tx.userOnboardingState.create({
         data: {
           userId: user.id,
-          currentStep: 'INVITE_CONFIRMED',
-          completedSteps: ['PHONE_VERIFICATION'],
+          currentStep: 'PROFILE',
+          completedSteps: ['INVITE_CONFIRMED', 'PHONE_VERIFICATION'],
           phoneVerifiedAt: now,
         },
       });
@@ -1209,8 +1209,6 @@ export async function verifyOtp(input: VerifyOtpInput) {
             completedSteps: {
               set: Array.from(new Set([...existingState.completedSteps, 'PHONE_VERIFICATION'])),
             },
-            inviteCodeValidated: existingState.inviteCodeValidated || Boolean(input.inviteCode?.trim()),
-            inviteCodeValidatedAt: existingState.inviteCodeValidatedAt ?? (input.inviteCode?.trim() ? now : null),
             phoneVerifiedAt: now,
           },
         });
@@ -1229,8 +1227,6 @@ export async function verifyOtp(input: VerifyOtpInput) {
             userId: user.id,
             currentStep,
             completedSteps,
-            inviteCodeValidated: Boolean(input.inviteCode?.trim()),
-            inviteCodeValidatedAt: input.inviteCode?.trim() ? now : null,
             phoneVerifiedAt: now,
             profileCompletedAt: completedSteps.includes('PROFILE') ? now : null,
             locationDecisionAt: completedSteps.includes('LOCATION_PERMISSION') ? now : null,
