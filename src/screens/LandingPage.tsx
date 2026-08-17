@@ -151,16 +151,27 @@ function intersectsSafeZone(x: number, y: number, size: number, safeZone: Landin
   );
 }
 
+const LANDING_MOBILE_BREAKPOINT = 640;
+
 function determineLane(
   point: { x: number; y: number },
   viewport: LandingViewport,
   safeZone: LandingHeroSafeZone,
+  verticalLanesOnly = false,
 ): LandingRoamLane {
   const centerX = point.x / Math.max(viewport.width, 1);
   const centerY = point.y / Math.max(viewport.height, 1);
 
   if (centerY < LANDING_SAFE_ZONE.topRatio) return 'top';
   if (centerY > LANDING_SAFE_ZONE.bottomRatio) return 'bottom';
+
+  // On narrow viewports the hero text spans nearly the full width, so a
+  // left/right lane card would still roam across the vertical middle where
+  // the text sits. Keep every card confined to a strip above or below it.
+  if (verticalLanesOnly) {
+    return centerY < 0.5 ? 'top' : 'bottom';
+  }
+
   if (centerX < LANDING_SAFE_ZONE.leftRatio) return 'left';
   if (centerX > LANDING_SAFE_ZONE.rightRatio) return 'right';
 
@@ -477,7 +488,8 @@ function LandingRoamingPost({
   useEffect(() => {
     if (!viewport) return;
     const safeZone = buildHeroSafeZone(viewport);
-    const lane = determineLane({ x: card.x, y: card.y }, viewport, safeZone);
+    const isMobileViewport = viewport.width < LANDING_MOBILE_BREAKPOINT;
+    const lane = determineLane({ x: card.x, y: card.y }, viewport, safeZone, isMobileViewport);
     const bounds = getLaneBounds(lane, viewport, card.width);
     const clampedX = Math.min(Math.max(card.x, bounds.minX), bounds.maxX);
     const clampedY = Math.min(Math.max(card.y, bounds.minY), bounds.maxY);
