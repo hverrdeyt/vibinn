@@ -191,6 +191,10 @@ const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R
         requestTimeout: R2_OPERATION_TIMEOUT_MS,
         throwOnRequestTimeout: true,
       }),
+      // A single dropped/slow TCP handshake to R2 was taking down the whole request with no
+      // second chance. Retry a few times with backoff so a few-second connectivity blip
+      // self-heals within the request instead of surfacing as a hard failure.
+      maxAttempts: 4,
     })
   : null;
 const DISCOVERY_POOL_MIN_CANDIDATES = 80;
@@ -14757,6 +14761,11 @@ app.get('/api/media', async (req, res) => {
     const localPath = path.join(UPLOADS_DIR, path.basename(key));
     res.sendFile(localPath);
   } catch (error) {
+    const errorName = (error as { name?: string } | undefined)?.name;
+    if (errorName === 'NoSuchKey' || errorName === 'NotFound') {
+      res.status(404).json({ error: 'Media not found' });
+      return;
+    }
     handleError(res, error);
   }
 });
