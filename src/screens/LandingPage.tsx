@@ -341,19 +341,19 @@ export default function LandingPage({
 
         <div className="relative z-10 mx-auto flex min-h-[calc(100svh-9rem)] w-full max-w-6xl flex-col items-center justify-center">
           <div className="max-w-3xl text-center">
-            <h1 className="mx-auto mt-5 max-w-[12ch] text-balance text-[2.8rem] font-black leading-[0.9] tracking-[-0.08em] text-white sm:text-[4.6rem]">
-              <span className="block text-black font-medium">Share your</span>
+            <h1 className="mx-auto mt-5 max-w-[20ch] text-balance text-[2.1rem] font-black leading-[0.9] tracking-[-0.08em] text-white sm:text-[4.6rem]">
+              <span className="block text-black font-medium [word-spacing:0.18em]">Your food photos,</span>
               <span className="block h-3 sm:h-4" />
               <span className="landing-bbh-bartle block text-[0.82em] leading-[0.82] text-black">
-                Food
+                your
               </span>
-              <span className="landing-bbh-bartle block text-[0.82em] leading-[0.82] text-black">
-                life
+              <span className="landing-bbh-bartle mt-1.5 block text-[0.82em] leading-[0.82] text-black sm:mt-2">
+                memories
               </span>
             </h1>
             <p className="mx-auto mt-6 max-w-2xl text-lg font-semibold leading-relaxed text-black/72 sm:text-[1.55rem]">
-              <span className="block">Save every meal you eat.</span>
-              <span className="block">Share with closest friends.</span>
+              <span className="block">Turn your food photos into</span>
+              <span className="block">memories for yourself and close friends.</span>
             </p>
 
             <div className="mt-9 flex justify-center">
