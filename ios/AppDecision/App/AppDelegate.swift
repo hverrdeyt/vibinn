@@ -3173,7 +3173,6 @@ private struct NativeHomepageRecentMemoriesResponse: Decodable {
 
 private enum NativeDiaryViewMode: String, CaseIterable, Identifiable {
     case gallery = "Gallery"
-    case timeline = "Timeline"
     case maps = "Maps"
 
     var id: String { rawValue }
@@ -7333,6 +7332,15 @@ private final class NativeAppState: NSObject, ObservableObject, CLLocationManage
                 return
             }
             activeTab = .chat
+        case "camera":
+            if currentUser == nil {
+                presentAuthGate(
+                    reason: "Log in to take a photo.",
+                    postAuthAction: .openCheckIn(place: nil)
+                )
+                return
+            }
+            presentCheckInFlow()
         case "discover":
             activeTab = .discover
         case "today-recommendation":
@@ -10273,13 +10281,14 @@ private struct NativeDiaryScreen: View {
     @State private var activeMode: NativeDiaryViewMode = .gallery
     @State private var activeTimeFilter: NativeDiaryTimeFilter = .thisWeek
     @State private var activeGalleryGrouping: NativeDiaryGalleryGrouping = .byDate
-    @State private var activeCityFilter: String = "All cities"
     @State private var gallerySearchText = ""
     @State private var selectedGalleryRatingFilters: Set<String> = []
     @State private var selectedGalleryRevisitFilters: Set<String> = []
     @State private var openGalleryFilterPanel: NativeDiaryGalleryFilterPanel? = nil
     @State private var isKeyboardVisible = false
     @State private var selectedMoment: NativeMoment?
+    @State private var selectedGalleryMomentId: String?
+    @State private var galleryMomentToEdit: NativeMoment?
     @State private var selectedHomemadeTraveler: NativeHomemadeTravelerRef?
     @State private var showTopPlacesScreen = false
     @State private var mapRegion = MKCoordinateRegion(
@@ -10295,10 +10304,6 @@ private struct NativeDiaryScreen: View {
 
     private var allMoments: [NativeMoment] {
         nativeStableSortedMomentsNewestFirst(appState.diaryMoments)
-    }
-
-    private var availableCities: [String] {
-        ["All cities"] + Array(Set(allMoments.compactMap(nativeCityKey(for:)))).sorted()
     }
 
     private var galleryMoments: [NativeMoment] {
@@ -10320,13 +10325,6 @@ private struct NativeDiaryScreen: View {
         case .byCity:
             return gallerySectionsByCity()
         }
-    }
-
-    private var timelineMoments: [NativeMoment] {
-        let filtered = activeCityFilter == "All cities"
-            ? allMoments
-            : allMoments.filter { nativeCityKey(for: $0) == activeCityFilter }
-        return filtered
     }
 
     private var mapMoments: [NativeMoment] {
@@ -10412,6 +10410,33 @@ private struct NativeDiaryScreen: View {
             .fullScreenCover(item: $selectedMoment) { moment in
                 NativeDecisionHistoryMomentFullscreen(moment: moment)
             }
+            .fullScreenCover(isPresented: Binding(
+                get: { selectedGalleryMomentId != nil },
+                set: { isPresented in
+                    if !isPresented { selectedGalleryMomentId = nil }
+                }
+            )) {
+                if let selectedGalleryMomentId {
+                    NativeMomentFeedScrollDetail(
+                        items: galleryMoments.map(diaryTimelineFeedItem(for:)),
+                        initialItemId: selectedGalleryMomentId,
+                        onDeletePost: { item in
+                            guard let momentId = item.place?.momentId ?? item.place?.id else { return }
+                            Task {
+                                try? await appState.deleteMoment(id: momentId)
+                            }
+                        },
+                        onEditPost: { item in
+                            let momentId = item.place?.momentId ?? item.place?.id
+                            galleryMomentToEdit = allMoments.first { $0.id == momentId }
+                        }
+                    )
+                }
+            }
+            .sheet(item: $galleryMomentToEdit) { moment in
+                NativeMomentEditSheet(moment: moment) { _ in }
+                    .environmentObject(appState)
+            }
             .fullScreenCover(isPresented: $showTopPlacesScreen) {
                 NativeTopPlacesScreen(initialMode: .byYou)
                     .environmentObject(appState)
@@ -10458,8 +10483,6 @@ private struct NativeDiaryScreen: View {
         switch mode {
         case .gallery:
             return "FloatingModeGallery"
-        case .timeline:
-            return "FloatingModeTimeline"
         case .maps:
             return "FloatingModeMaps"
         }
@@ -10537,33 +10560,6 @@ private struct NativeDiaryScreen: View {
                     }
                 }
             }
-        case .timeline:
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(availableCities, id: \.self) { city in
-                        Button {
-                            activeCityFilter = city
-                        } label: {
-                            HStack(spacing: 6) {
-                                if city == nativeHomemadeCityKey {
-                                    Image("ChefHatIcon")
-                                        .resizable()
-                                        .scaledToFit()
-                                        .frame(width: 12, height: 12)
-                                }
-                                Text(city)
-                                    .font(nativeAppFont(size: 12, weight: .bold))
-                            }
-                            .foregroundStyle(activeCityFilter == city ? .black : .white.opacity(0.72))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 9)
-                            .background(activeCityFilter == city ? nativeAccent : Color.white.opacity(0.06))
-                            .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
         }
     }
 
@@ -10591,43 +10587,12 @@ private struct NativeDiaryScreen: View {
                             ], spacing: 8) {
                                 ForEach(section.moments) { moment in
                                     Button {
-                                        selectedMoment = moment
+                                        selectedGalleryMomentId = moment.id
                                     } label: {
                                         diaryGalleryCard(moment)
                                     }
                                     .buttonStyle(.plain)
                                 }
-                            }
-                        }
-                    }
-                }
-            }
-        case .timeline:
-            if let errorMessage = appState.diaryMomentsErrorMessage, !errorMessage.isEmpty, timelineMoments.isEmpty {
-                diaryEmptyState("Could not load memories right now.")
-            } else
-            if timelineMoments.isEmpty {
-                diaryEmptyState("No memories for this city yet.")
-            } else {
-                LazyVStack(spacing: 22) {
-                    ForEach(Array(timelineMoments.enumerated()), id: \.element.id) { index, moment in
-                        VStack(spacing: 22) {
-                            NativeFeedCard(
-                                item: diaryTimelineFeedItem(for: moment),
-                                onDeletePost: { item in
-                                    guard let momentId = item.place?.momentId ?? item.place?.id else { return }
-                                    Task {
-                                        try? await appState.deleteMoment(id: momentId)
-                                    }
-                                },
-                                onEditPost: { _ in
-                                    selectedMoment = moment
-                                }
-                            )
-                            if index < timelineMoments.count - 1 {
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.08))
-                                    .frame(height: 1)
                             }
                         }
                     }
@@ -24311,6 +24276,91 @@ private struct NativeDecisionHistoryMomentFullscreen: View {
     }
 }
 
+/// Opened from a gallery grid tap (Diary, and a traveler's profile). Renders every item in the
+/// same feed-card style as the main Feed, pre-scrolled to the tapped post, so the user can keep
+/// scrolling through the rest of the gallery instead of being stuck on a single post. A Back
+/// button returns to the gallery grid rather than the "close" affordance used elsewhere, since
+/// this is browsing within the same collection, not dismissing an unrelated overlay.
+private struct NativeMomentFeedScrollDetail: View {
+    let items: [NativeFeedItem]
+    let initialItemId: String
+    var onDeletePost: ((NativeFeedItem) -> Void)? = nil
+    var onEditPost: ((NativeFeedItem) -> Void)? = nil
+
+    @EnvironmentObject private var appState: NativeAppState
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            ZStack(alignment: .topLeading) {
+                ScrollViewReader { proxy in
+                    ScrollView(showsIndicators: false) {
+                        LazyVStack(spacing: 22) {
+                            ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                                VStack(spacing: 22) {
+                                    NativeFeedCard(
+                                        item: item,
+                                        onDeletePost: onDeletePost,
+                                        onEditPost: onEditPost
+                                    )
+                                    .id(item.id)
+                                    if index < items.count - 1 {
+                                        Rectangle()
+                                            .fill(Color.white.opacity(0.08))
+                                            .frame(height: 1)
+                                    }
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.top, 88)
+                        .padding(.bottom, 32)
+                    }
+                    .onAppear {
+                        DispatchQueue.main.async {
+                            proxy.scrollTo(initialItemId, anchor: .top)
+                        }
+                    }
+                }
+                .background(Color.black.ignoresSafeArea())
+
+                Button {
+                    dismiss()
+                } label: {
+                    Circle()
+                        .fill(Color.white.opacity(0.09))
+                        .frame(width: 52, height: 52)
+                        .overlay(
+                            Image(systemName: "arrow.left")
+                                .font(nativeAppFont(size: 20, weight: .black))
+                                .foregroundStyle(.white)
+                        )
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 16)
+                .padding(.leading, 20)
+            }
+            .background(Color.black.ignoresSafeArea())
+            .navigationBarHidden(true)
+            // Edge-swipe back: fullScreenCover has no built-in swipe-to-dismiss (unlike .sheet),
+            // so mimic iOS's native left-edge back gesture. Scoped to a swipe that both starts
+            // near the left edge and travels mostly horizontally, so it doesn't fight the
+            // ScrollView's vertical panning anywhere else on screen.
+            .gesture(
+                DragGesture(minimumDistance: 20, coordinateSpace: .local)
+                    .onEnded { value in
+                        guard value.startLocation.x < 32 else { return }
+                        guard value.translation.width > 60 else { return }
+                        guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                        dismiss()
+                    }
+            )
+        }
+        .navigationViewStyle(.stack)
+        .environmentObject(appState)
+    }
+}
+
 private struct NativeMomentEditSheet: View {
     let moment: NativeMoment
     let onSaved: (NativeMoment) -> Void
@@ -36256,6 +36306,7 @@ private struct NativeTravelerProfileScreen: View {
     @State private var isUpdatingFollow = false
     @State private var showShareSheet = false
     @State private var selectedProfileFeedItem: NativeFeedItem?
+    @State private var selectedGalleryFeedItemId: String?
     @State private var showReportAccountDialog = false
     @State private var showBlockAccountDialog = false
     @State private var showEditProfileSheet = false
@@ -36270,7 +36321,6 @@ private struct NativeTravelerProfileScreen: View {
     @State private var selectedProfileGalleryRatingFilters: Set<String> = []
     @State private var selectedProfileGalleryRevisitFilters: Set<String> = []
     @State private var openProfileGalleryFilterPanel: NativeDiaryGalleryFilterPanel? = nil
-    @State private var activePostsCityFilter: String = "All cities"
     @State private var activeMapTimeFilter: NativeTravelerProfileMapTimeFilter = .thisWeek
     @State private var isKeyboardVisible = false
     @State private var mapRegion = MKCoordinateRegion(
@@ -36287,7 +36337,6 @@ private struct NativeTravelerProfileScreen: View {
 
     private enum NativeTravelerProfileContentMode: String, CaseIterable, Identifiable {
         case gallery = "Gallery"
-        case posts = "Posts"
         case map = "Map"
 
         var id: String { rawValue }
@@ -36431,6 +36480,26 @@ private struct NativeTravelerProfileScreen: View {
             .fullScreenCover(item: $selectedProfileFeedItem) { item in
                 NativeFeedMomentFullscreen(item: item)
                     .environmentObject(appState)
+            }
+            .fullScreenCover(isPresented: Binding(
+                get: { selectedGalleryFeedItemId != nil },
+                set: { isPresented in
+                    if !isPresented { selectedGalleryFeedItemId = nil }
+                }
+            )) {
+                if let selectedGalleryFeedItemId {
+                    NativeMomentFeedScrollDetail(
+                        items: filteredProfileGalleryMoments.map(feedItem(for:)),
+                        initialItemId: selectedGalleryFeedItemId,
+                        onDeletePost: { item in
+                            guard let momentId = item.place?.momentId ?? item.place?.id else { return }
+                            Task {
+                                try? await appState.deleteMoment(id: momentId)
+                            }
+                        }
+                    )
+                    .environmentObject(appState)
+                }
             }
             .confirmationDialog("Report account", isPresented: $showReportAccountDialog, titleVisibility: .visible) {
                 ForEach(NativeReportReason.allCases) { reason in
@@ -36766,25 +36835,6 @@ private struct NativeTravelerProfileScreen: View {
                     }
                 }
             }
-        case .posts:
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(profileAvailableCities, id: \.self) { city in
-                        Button {
-                            activePostsCityFilter = city
-                        } label: {
-                            Text(city)
-                                .font(nativeAppFont(size: 12, weight: .bold))
-                                .foregroundStyle(activePostsCityFilter == city ? .black : .white.opacity(0.72))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 9)
-                                .background(activePostsCityFilter == city ? nativeAccent : Color.white.opacity(0.06))
-                                .clipShape(Capsule())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
         case .map:
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
@@ -36810,27 +36860,6 @@ private struct NativeTravelerProfileScreen: View {
     @ViewBuilder
     private var travelerModeContent: some View {
         switch activeMode {
-        case .posts:
-            if profileFeedItems.isEmpty {
-                NativeSurfaceCard {
-                    Text(hasProfileMoments ? "No posts in this city yet." : "No posts yet.")
-                        .font(nativeAppFont(size: 15, weight: .medium))
-                        .foregroundStyle(.white.opacity(0.6))
-                }
-            } else {
-                LazyVStack(spacing: 22) {
-                    ForEach(Array(profileFeedItems.enumerated()), id: \.element.id) { index, item in
-                        VStack(spacing: 22) {
-                            NativeFeedCard(item: item)
-                            if index < profileFeedItems.count - 1 {
-                                Rectangle()
-                                    .fill(Color.white.opacity(0.08))
-                                    .frame(height: 1)
-                            }
-                        }
-                    }
-                }
-            }
         case .gallery:
             if gallerySections.isEmpty {
                 NativeSurfaceCard {
@@ -36849,7 +36878,7 @@ private struct NativeTravelerProfileScreen: View {
                             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
                                 ForEach(section.moments) { moment in
                                     Button {
-                                        selectedProfileFeedItem = feedItem(for: moment)
+                                        selectedGalleryFeedItemId = moment.id
                                     } label: {
                                         profileGalleryThumb(moment)
                                     }
@@ -36911,10 +36940,6 @@ private struct NativeTravelerProfileScreen: View {
         nativeStableSortedMomentsNewestFirst(moments)
     }
 
-    private var profileAvailableCities: [String] {
-        ["All cities"] + Array(Set(profileMoments.compactMap(nativeCityKey(for:)))).sorted()
-    }
-
     private var gallerySections: [GallerySection] {
         switch activeGalleryGrouping {
         case .byDate:
@@ -36924,23 +36949,12 @@ private struct NativeTravelerProfileScreen: View {
         }
     }
 
-    private var filteredPostMoments: [NativeMoment] {
-        if activePostsCityFilter == "All cities" {
-            return profileMoments
-        }
-        return profileMoments.filter { nativeCityKey(for: $0) == activePostsCityFilter }
-    }
-
     private var filteredProfileGalleryMoments: [NativeMoment] {
         profileMoments.filter { moment in
             profileGalleryMatchesSearch(moment)
                 && profileGalleryMatchesRatingFilters(moment)
                 && profileGalleryMatchesRevisitFilters(moment)
         }
-    }
-
-    private var profileFeedItems: [NativeFeedItem] {
-        filteredPostMoments.map(feedItem(for:))
     }
 
     private var allProfileFeedItems: [NativeFeedItem] {
@@ -37230,7 +37244,6 @@ private struct NativeTravelerProfileScreen: View {
             traveler = response.traveler
             moments = response.moments
             errorMessage = nil
-            normalizeProfileFilters()
             updateMapRegion()
         } catch {
             errorMessage = "Could not load this profile right now."
@@ -37305,8 +37318,6 @@ private struct NativeTravelerProfileScreen: View {
 
     private func travelerModeAssetName(for mode: NativeTravelerProfileContentMode) -> String {
         switch mode {
-        case .posts:
-            return "FloatingModeTimeline"
         case .gallery:
             return "FloatingModeGallery"
         case .map:
@@ -37341,19 +37352,12 @@ private struct NativeTravelerProfileScreen: View {
     }
 
     private func handleProfileMomentsChanged() {
-        normalizeProfileFilters()
         updateMapRegion()
     }
 
     private func refreshMapRegionIfNeeded() {
         guard activeMode == .map else { return }
         updateMapRegion()
-    }
-
-    private func normalizeProfileFilters() {
-        if !profileAvailableCities.contains(activePostsCityFilter) {
-            activePostsCityFilter = "All cities"
-        }
     }
 
     private func feedItem(for moment: NativeMoment) -> NativeFeedItem {

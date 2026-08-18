@@ -377,6 +377,59 @@ private struct VibinnFeedMemoryWidgetView: View {
     }
 }
 
+private struct VibinnCameraWidgetEntry: TimelineEntry {
+    let date: Date
+}
+
+/// Static shortcut widget: no snapshot data to load, so the timeline never needs a
+/// second entry — one placeholder-equivalent entry with `.never` is enough.
+private struct VibinnCameraWidgetProvider: TimelineProvider {
+    func placeholder(in context: Context) -> VibinnCameraWidgetEntry {
+        VibinnCameraWidgetEntry(date: Date())
+    }
+
+    func getSnapshot(in context: Context, completion: @escaping (VibinnCameraWidgetEntry) -> Void) {
+        completion(VibinnCameraWidgetEntry(date: Date()))
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<VibinnCameraWidgetEntry>) -> Void) {
+        completion(Timeline(entries: [VibinnCameraWidgetEntry(date: Date())], policy: .never))
+    }
+}
+
+private struct VibinnCameraWidgetView: View {
+    let entry: VibinnCameraWidgetEntry
+
+    var body: some View {
+        Link(destination: URL(string: "vibinn://camera")!) {
+            ZStack {
+                Image("WidgetCameraIcon")
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 46, weight: .black))
+                    .foregroundStyle(.white)
+            }
+        }
+        .buttonStyle(.plain)
+        .vibinnWidgetBackground()
+    }
+}
+
+struct VibinnCameraWidget: Widget {
+    let kind = "VibinnCameraWidget"
+
+    var body: some WidgetConfiguration {
+        StaticConfiguration(kind: kind, provider: VibinnCameraWidgetProvider()) { entry in
+            VibinnCameraWidgetView(entry: entry)
+        }
+        .configurationDisplayName("Food Camera")
+        .description("Jump straight into the camera to log a meal.")
+        .supportedFamilies([.systemSmall])
+        .contentMarginsDisabled()
+    }
+}
+
 struct VibinnMyMemoryWidget: Widget {
     let kind = "VibinnMyMemoryWidget"
 
@@ -410,5 +463,6 @@ struct VibinnWidgetsBundle: WidgetBundle {
     var body: some Widget {
         VibinnMyMemoryWidget()
         VibinnFeedMemoryWidget()
+        VibinnCameraWidget()
     }
 }

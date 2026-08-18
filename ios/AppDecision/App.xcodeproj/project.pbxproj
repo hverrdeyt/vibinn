@@ -15,7 +15,9 @@
 		504EC3121FED79650016851F /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 504EC3101FED79650016851F /* LaunchScreen.storyboard */; };
 		50B271D11FEDC1A000F3C39B /* public in Resources */ = {isa = PBXBuildFile; fileRef = 50B271D01FEDC1A000F3C39B /* public */; };
 		6A1C10051A1C100100100001 /* VibinnWidgetsBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A1C10041A1C100100100001 /* VibinnWidgetsBundle.swift */; };
+		6A1C10161A1C100100100001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 504EC30E1FED79650016851F /* Assets.xcassets */; };
 		6C11C0014C9D300300DEC001 /* BBHBartle-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 6C11C0024C9D300300DEC001 /* BBHBartle-Regular.ttf */; };
+		77E930F811C00E0D2AEDF8B7 /* VibinnWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 6A1C10021A1C100100100001 /* VibinnWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		7B22A1002B9D100100DEC001 /* PixelifySans-Regular.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7B22A1012B9D100100DEC001 /* PixelifySans-Regular.ttf */; };
 		7B22A1022B9D100100DEC001 /* PixelifySans-Bold.ttf in Resources */ = {isa = PBXBuildFile; fileRef = 7B22A1032B9D100100DEC001 /* PixelifySans-Bold.ttf */; };
 		7B22A1052B9D100100DEC001 /* sad.png in Resources */ = {isa = PBXBuildFile; fileRef = 7B22A1062B9D100100DEC001 /* sad.png */; };
@@ -27,7 +29,6 @@
 		81F0AA0F8BDA4C26816CA530 /* FirebaseMessaging in Frameworks */ = {isa = PBXBuildFile; productRef = 81F0AA0E8BDA4C26816CA530 /* FirebaseMessaging */; };
 		81F0AA118BDA4C26816CA530 /* GoogleService-Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = 81F0AA108BDA4C26816CA530 /* GoogleService-Info.plist */; };
 		A9F6B201B4D14B5A9B4A1001 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = A9F6B201B4D14B5A9B4A1002 /* GoogleSignIn */; };
-		77E930F811C00E0D2AEDF8B7 /* VibinnWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 6A1C10021A1C100100100001 /* VibinnWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -290,6 +291,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				6A1C10161A1C100100100001 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
