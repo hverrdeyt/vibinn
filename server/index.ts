@@ -315,6 +315,28 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
   }
 }
 
+const R2_SEND_MAX_ATTEMPTS = 3;
+const R2_SEND_RETRY_DELAY_MS = 400;
+
+// A raw TCP-connect timeout to R2 (no HTTP response at all) isn't reliably classified as
+// retryable by the SDK's own retry strategy, so `maxAttempts` on the S3Client alone wasn't
+// enough — this manually retries the whole operation (including a fresh connectionTimeout
+// budget per attempt) so a several-second connectivity blip doesn't fail the request outright.
+async function r2SendWithRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= R2_SEND_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await withTimeout(operation(), R2_OPERATION_TIMEOUT_MS, `${label} (attempt ${attempt})`);
+    } catch (error) {
+      lastError = error;
+      if (attempt < R2_SEND_MAX_ATTEMPTS) {
+        await new Promise((resolve) => setTimeout(resolve, R2_SEND_RETRY_DELAY_MS * attempt));
+      }
+    }
+  }
+  throw lastError;
+}
+
 function getAllowedGoogleClientIds() {
   return Array.from(
     new Set(
@@ -14734,12 +14756,11 @@ app.get('/api/media', async (req, res) => {
     }
 
     if (r2Client && R2_BUCKET_NAME) {
-      const object = await withTimeout(
-        r2Client.send(new GetObjectCommand({
+      const object = await r2SendWithRetry(
+        () => r2Client.send(new GetObjectCommand({
           Bucket: R2_BUCKET_NAME,
           Key: key,
         })),
-        R2_OPERATION_TIMEOUT_MS,
         `R2 GetObject ${key}`,
       );
 
@@ -14804,15 +14825,14 @@ app.post('/api/uploads/media', requireSessionAuth, async (req: AuthenticatedRequ
       const objectKey = buildMomentObjectKey(uploadUserId, storageName);
 
       if (r2Client && R2_BUCKET_NAME) {
-        await withTimeout(
-          r2Client.send(new PutObjectCommand({
+        await r2SendWithRetry(
+          () => r2Client.send(new PutObjectCommand({
             Bucket: R2_BUCKET_NAME,
             Key: objectKey,
             Body: parsed.buffer,
             ContentType: file.mimeType ?? parsed.mimeType,
             CacheControl: 'public, max-age=31536000, immutable',
           })),
-          R2_OPERATION_TIMEOUT_MS,
           `R2 PutObject ${objectKey}`,
         );
       } else {
@@ -14867,15 +14887,14 @@ app.post('/api/v2/uploads/media', async (req: AuthenticatedRequest, res) => {
       const objectKey = buildMomentObjectKey(req.authV2UserId, storageName);
 
       if (r2Client && R2_BUCKET_NAME) {
-        await withTimeout(
-          r2Client.send(new PutObjectCommand({
+        await r2SendWithRetry(
+          () => r2Client.send(new PutObjectCommand({
             Bucket: R2_BUCKET_NAME,
             Key: objectKey,
             Body: parsed.buffer,
             ContentType: file.mimeType ?? parsed.mimeType,
             CacheControl: 'public, max-age=31536000, immutable',
           })),
-          R2_OPERATION_TIMEOUT_MS,
           `R2 PutObject ${objectKey}`,
         );
       } else {
