@@ -315,13 +315,17 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: str
   }
 }
 
-const R2_SEND_MAX_ATTEMPTS = 3;
-const R2_SEND_RETRY_DELAY_MS = 400;
+const R2_SEND_MAX_ATTEMPTS = 6;
+const R2_SEND_RETRY_DELAY_MS = 500;
+const R2_SEND_RETRY_DELAY_MAX_MS = 3000;
 
 // A raw TCP-connect timeout to R2 (no HTTP response at all) isn't reliably classified as
 // retryable by the SDK's own retry strategy, so `maxAttempts` on the S3Client alone wasn't
 // enough — this manually retries the whole operation (including a fresh connectionTimeout
-// budget per attempt) so a several-second connectivity blip doesn't fail the request outright.
+// budget per attempt) so a connectivity gap doesn't fail the request outright. 6 attempts with
+// growing backoff gives roughly a 35-40s window (vs. the original 3 attempts / ~16s), since a
+// live outage has been observed to outlast the shorter window while still clearing within a
+// minute.
 async function r2SendWithRetry<T>(operation: () => Promise<T>, label: string): Promise<T> {
   let lastError: unknown;
   for (let attempt = 1; attempt <= R2_SEND_MAX_ATTEMPTS; attempt += 1) {
@@ -330,7 +334,8 @@ async function r2SendWithRetry<T>(operation: () => Promise<T>, label: string): P
     } catch (error) {
       lastError = error;
       if (attempt < R2_SEND_MAX_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, R2_SEND_RETRY_DELAY_MS * attempt));
+        const delay = Math.min(R2_SEND_RETRY_DELAY_MS * attempt, R2_SEND_RETRY_DELAY_MAX_MS);
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
   }
