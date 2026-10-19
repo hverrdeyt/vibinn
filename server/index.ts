@@ -84,8 +84,16 @@ import {
   verifyOtp,
 } from './authV2';
 import { APP_ENV } from './env';
+import {
+  installSlackErrorAlerts,
+  notifyServerStarted,
+  slackErrorMiddleware,
+  slackRequestContextMiddleware,
+} from './slackAlerts';
 
+installSlackErrorAlerts();
 const app = express();
+app.use(slackRequestContextMiddleware);
 const port = Number(process.env.PORT || process.env.API_PORT || 3001);
 const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;
 const GOOGLE_MAPS_API_KEY = process.env.GOOGLE_MAPS_API_KEY;
@@ -17917,6 +17925,9 @@ app.use((req, res, next) => {
   res.send('');
 });
 
+app.use(slackErrorMiddleware);
+
 app.listen(port, () => {
   console.log(`API server listening on http://localhost:${port}`);
+  notifyServerStarted();
 });

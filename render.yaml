@@ -85,6 +85,8 @@ services:
         sync: false
       - key: UNSUPPORTED_CITY_GATE_ENABLED
         value: "false"
+      - key: SLACK_ERROR_WEBHOOK_URL
+        sync: false
 
   - type: web
     name: vibecheck-web

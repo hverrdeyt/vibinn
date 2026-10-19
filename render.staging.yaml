@@ -81,3 +81,5 @@ services:
         sync: false
       - key: UNSUPPORTED_CITY_GATE_ENABLED
         value: "true"
+      - key: SLACK_ERROR_WEBHOOK_URL
+        sync: false
