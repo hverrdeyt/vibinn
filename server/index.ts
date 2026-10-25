@@ -198,6 +198,12 @@ const r2Client = R2_BUCKET_NAME && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R
         connectionTimeout: 5000,
         requestTimeout: R2_OPERATION_TIMEOUT_MS,
         throwOnRequestTimeout: true,
+        // Default pool caps at 50 sockets, shared by every R2 call this process makes
+        // (GET /api/media alone can mean dozens of concurrent requests — one per image in
+        // a feed). Once the pool is full, a new request queues for a socket and can time
+        // out via connectionTimeout above even though R2 itself is reachable. Give it more
+        // headroom so upload/download don't starve each other under normal feed traffic.
+        httpsAgent: { maxSockets: 200 },
       }),
       // A single dropped/slow TCP handshake to R2 was taking down the whole request with no
       // second chance. Retry a few times with backoff so a few-second connectivity blip
@@ -14782,11 +14788,20 @@ app.get('/api/media', async (req, res) => {
       }
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
 
-      const body = object.Body as NodeJS.ReadableStream | undefined;
+      const body = object.Body as (NodeJS.ReadableStream & { destroy?: (error?: Error) => void }) | undefined;
       if (!body) {
         res.status(404).json({ error: 'Media not found' });
         return;
       }
+
+      // If the client disconnects mid-stream (e.g. fast-scrolling past an image), pipe()
+      // doesn't destroy the source on its own — the R2 socket would otherwise sit there
+      // until it times out instead of being freed back into the pool for other requests.
+      res.on('close', () => {
+        if (!res.writableEnded) {
+          body.destroy?.();
+        }
+      });
 
       body.pipe(res);
       return;
