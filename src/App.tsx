@@ -5549,7 +5549,7 @@ export default function App() {
 
   if (isPublicWebMode) {
     return (
-      <div className="app-shell app-screen-shell relative overflow-hidden bg-zinc-950">
+      <div className="app-shell app-screen-shell relative overflow-clip bg-zinc-950">
         <AnimatePresence mode="wait">
           <motion.div
             key={currentScreen}
@@ -5568,7 +5568,7 @@ export default function App() {
 
   return (
     <div className={currentScreen === 'landing'
-      ? 'app-shell app-screen-shell bg-zinc-950 relative overflow-hidden'
+      ? 'app-shell app-screen-shell bg-zinc-950 relative overflow-clip'
       : `${isNativeApp() ? 'app-shell native-app-shell' : 'app-shell max-w-md mx-auto shadow-2xl border-x border-white/8'} bg-zinc-950 relative overflow-hidden`}
     >
       {mockReviewMode ? (

@@ -1,264 +1,170 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { motion, useAnimationFrame, useMotionValue } from 'motion/react';
-import { FileText, Heart, Smile, Sparkles, ThumbsDown } from 'lucide-react';
+import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { trackEvent, trackMetaPixelEvent } from '../lib/analytics';
-import { api, resolveApiAssetUrl } from '../lib/api';
-import { MOCK_REVIEW_SCENARIO } from '../mockReviewData';
 
 type LandingPageProps = {
   onHeaderTryNow: () => void;
   onFloatingTryNow: () => void;
-  onOpenFounderLetter: () => void;
+  onOpenFounderLetter?: () => void;
   analyticsContext?: Record<string, unknown>;
 };
 
-type FloatingPostConfig = {
-  image: string;
-  avatar: string;
-  rating: 'disliked' | 'not_bad' | 'liked' | 'recommended';
-  x: number;
-  y: number;
-  width: number;
-  rotation: number;
-  delay?: number;
+type HeadlineLine = {
+  text: string;
+  accent?: boolean;
+  // Complete Tailwind font-size classes (mobile + lg), kept per line so each line can be tuned alone.
+  sizeClass: string;
+  // Forces the line onto one row; the size classes are tuned so it still fits down to a 320px screen.
+  nowrap?: boolean;
 };
 
-type LandingPublicPost = {
+const HEADLINE_SIZE = {
+  homeRegular: 'text-[clamp(1.5rem,7.6vw,2.4rem)] lg:text-[clamp(2rem,3.7vw,2.75rem)]',
+  homeAccent: 'text-[clamp(1.2rem,6.4vw,2.1rem)] lg:text-[clamp(1.8rem,3.2vw,2.4rem)]',
+  featureRegular: 'text-[clamp(1.35rem,6.8vw,2.2rem)] lg:text-[clamp(2rem,3.4vw,2.6rem)]',
+  featureAccent: 'text-[clamp(1.596rem,6.888vw,2.184rem)] lg:text-[clamp(2.352rem,3.864vw,3.864rem)]',
+  // "your food": ~10.7em wide in BBH, so it needs a smaller size than the single-word accents to stay on one row.
+  featureAccentWide: 'text-[clamp(1.35rem,6.888vw,2.184rem)] lg:text-[clamp(2rem,3.7vw,2.8rem)]',
+  featureAccentOneLine: 'text-[clamp(0.9rem,4.6vw,1.7rem)] lg:text-[clamp(1.3rem,2.4vw,1.75rem)]',
+};
+
+type StickerSpec = {
+  file: string;
+  // Positioned relative to the phone (percentages of its width), so stickers hug the device at every size.
+  className: string;
+  rotate: number;
+};
+
+type SectionTone = 'light' | 'dark';
+
+type LandingSection = {
   id: string;
-  imageUrl: string;
-  avatarUrl: string;
-  ratingLabel: 'disliked' | 'not_bad' | 'liked' | 'recommended';
+  headline: HeadlineLine[];
+  subheadline: string;
+  demoSrc: string;
+  tone: SectionTone;
+  surfaceClass: string;
+  accentClass: string;
+  subClass: string;
+  stickers: StickerSpec[];
 };
 
-type IconButtonProps = {
-  label: string;
-  onClick: () => void;
-  icon?: ReactNode;
-  className?: string;
-};
+// Mouse/trackpad devices: after the user stops scrolling, settle onto the next section if they moved at all.
+// Native scroll is never intercepted (see the effect below). Set to false to use plain scroll-snap on desktop.
+const DESKTOP_SECTION_ASSIST = true;
 
-type SocialLink = {
-  href: string;
-  label: string;
-  icon: ReactNode;
-};
+// Social icons and the founder-letter link under the homepage CTA. Hidden for now; flip to bring them back.
+const SHOW_HOME_SOCIALS = false;
 
-const fallbackLandingPosts: LandingPublicPost[] = [
-  ...MOCK_REVIEW_SCENARIO.followedTravelers,
-  ...MOCK_REVIEW_SCENARIO.similarTravelers,
-]
-  .flatMap((traveler) => (traveler.travelHistory ?? []).flatMap((trip) =>
-    (trip.places ?? []).map((place) => ({
-      id: place.momentId ?? `${traveler.id}-${place.id}`,
-      imageUrl: place.momentMedia?.[0]?.url ?? place.image,
-      avatarUrl: traveler.avatar,
-      ratingLabel:
-        (place.momentRatingLabel as LandingPublicPost['ratingLabel'] | undefined)
-        ?? ((place.momentRating ?? 5) >= 5 ? 'recommended' : 'liked'),
-    })),
-  ))
-  .slice(0, 14);
+// Screen recordings live in public/landing-assets/demo/ (GIFs here; an .mp4 or .webp path works too,
+// see PhoneDemo). Until a file exists the phone shows a placeholder screen.
+const DEMO_BASE = '/landing-assets/demo';
 
-const landingCardSeeds: Array<Omit<FloatingPostConfig, 'image' | 'avatar' | 'rating'>> = Array.from(
-  { length: 14 },
-  (_, index) => {
-    const laneIndex = index % 4;
-    const laneSlot = Math.floor(index / 4);
-    const widthOptions = [68, 71, 73, 74, 77, 79, 82, 83];
-    const rotationOptions = [-16, -12, -8, -7, 6, 10, 14, 16];
-    const horizontalX = 28 + (laneSlot % 6) * 210 + (laneIndex % 2) * 22;
-    const verticalY = 58 + (laneSlot % 6) * 166 + (laneIndex % 2) * 18;
-
-    switch (laneIndex) {
-      case 0:
-        return {
-          x: horizontalX,
-          y: 44 + laneSlot * 10,
-          width: widthOptions[index % widthOptions.length],
-          rotation: rotationOptions[index % rotationOptions.length],
-          delay: index * 0.08,
-        };
-      case 1:
-        return {
-          x: 1120 + (laneSlot % 2) * 42,
-          y: verticalY,
-          width: widthOptions[(index + 2) % widthOptions.length],
-          rotation: rotationOptions[(index + 3) % rotationOptions.length],
-          delay: index * 0.08,
-        };
-      case 2:
-        return {
-          x: 94 + (laneSlot % 6) * 188,
-          y: 900 + laneSlot * 12,
-          width: widthOptions[(index + 4) % widthOptions.length],
-          rotation: rotationOptions[(index + 5) % rotationOptions.length],
-          delay: index * 0.08,
-        };
-      default:
-        return {
-          x: 22 + (laneSlot % 2) * 28,
-          y: 170 + laneSlot * 148,
-          width: widthOptions[(index + 1) % widthOptions.length],
-          rotation: rotationOptions[(index + 6) % rotationOptions.length],
-          delay: index * 0.08,
-        };
-    }
-  },
-);
-
-const LANDING_POST_REFERENCE_WIDTH = 132;
-
-type LandingViewport = {
-  width: number;
-  height: number;
-};
-
-type LandingHeroSafeZone = {
-  left: number;
-  right: number;
-  top: number;
-  bottom: number;
-};
-
-type LandingRoamLane = 'top' | 'right' | 'bottom' | 'left';
-
-const LANDING_SAFE_ZONE = {
-  leftRatio: 0.21,
-  rightRatio: 0.79,
-  topRatio: 0.19,
-  bottomRatio: 0.76,
-};
-
-function randomBetween(min: number, max: number) {
-  return min + Math.random() * (max - min);
-}
-
-function buildHeroSafeZone(viewport: LandingViewport): LandingHeroSafeZone {
-  return {
-    left: viewport.width * LANDING_SAFE_ZONE.leftRatio,
-    right: viewport.width * LANDING_SAFE_ZONE.rightRatio,
-    top: viewport.height * LANDING_SAFE_ZONE.topRatio,
-    bottom: viewport.height * LANDING_SAFE_ZONE.bottomRatio,
-  };
-}
-
-function intersectsSafeZone(x: number, y: number, size: number, safeZone: LandingHeroSafeZone) {
-  return (
-    x < safeZone.right &&
-    x + size > safeZone.left &&
-    y < safeZone.bottom &&
-    y + size > safeZone.top
-  );
-}
-
-const LANDING_MOBILE_BREAKPOINT = 640;
-
-function determineLane(
-  point: { x: number; y: number },
-  viewport: LandingViewport,
-  safeZone: LandingHeroSafeZone,
-  verticalLanesOnly = false,
-): LandingRoamLane {
-  const centerX = point.x / Math.max(viewport.width, 1);
-  const centerY = point.y / Math.max(viewport.height, 1);
-
-  if (centerY < LANDING_SAFE_ZONE.topRatio) return 'top';
-  if (centerY > LANDING_SAFE_ZONE.bottomRatio) return 'bottom';
-
-  // On narrow viewports the hero text spans nearly the full width, so a
-  // left/right lane card would still roam across the vertical middle where
-  // the text sits. Keep every card confined to a strip above or below it.
-  if (verticalLanesOnly) {
-    return centerY < 0.5 ? 'top' : 'bottom';
-  }
-
-  if (centerX < LANDING_SAFE_ZONE.leftRatio) return 'left';
-  if (centerX > LANDING_SAFE_ZONE.rightRatio) return 'right';
-
-  const distances = [
-    { lane: 'top' as const, value: Math.abs(point.y - safeZone.top) },
-    { lane: 'bottom' as const, value: Math.abs(point.y - safeZone.bottom) },
-    { lane: 'left' as const, value: Math.abs(point.x - safeZone.left) },
-    { lane: 'right' as const, value: Math.abs(point.x - safeZone.right) },
-  ];
-
-  return distances.sort((first, second) => first.value - second.value)[0].lane;
-}
-
-function getLaneBounds(
-  lane: LandingRoamLane,
-  viewport: LandingViewport,
-  size: number,
-) {
-  const safeZone = buildHeroSafeZone(viewport);
-  const padding = 18;
-  const leftMin = padding;
-  const leftMax = Math.max(padding, safeZone.left - size - padding);
-  const rightMin = Math.min(Math.max(padding, safeZone.right + padding), viewport.width - size - padding);
-  const rightMax = Math.max(rightMin, viewport.width - size - padding);
-  const topMin = padding;
-  const topMax = Math.max(padding, safeZone.top - size - padding);
-  const bottomMin = Math.min(Math.max(padding, safeZone.bottom + padding), viewport.height - size - padding);
-  const bottomMax = Math.max(bottomMin, viewport.height - size - padding);
-
-  switch (lane) {
-    case 'top':
-      return {
-        minX: padding,
-        maxX: Math.max(padding, viewport.width - size - padding),
-        minY: padding,
-        maxY: topMax,
-      };
-    case 'bottom':
-      return {
-        minX: padding,
-        maxX: Math.max(padding, viewport.width - size - padding),
-        minY: bottomMin,
-        maxY: bottomMax,
-      };
-    case 'left':
-      return {
-        minX: leftMin,
-        maxX: leftMax,
-        minY: padding,
-        maxY: Math.max(padding, viewport.height - size - padding),
-      };
-    case 'right':
-      return {
-        minX: rightMin,
-        maxX: rightMax,
-        minY: padding,
-        maxY: Math.max(padding, viewport.height - size - padding),
-      };
-  }
-}
-
-const socialLinks: SocialLink[] = [
+const SECTIONS: LandingSection[] = [
   {
-    href: 'https://www.tiktok.com/@vibinnfood',
-    label: 'TikTok',
-    icon: <TikTokIcon />,
+    id: 'home',
+    headline: [
+      { text: 'More than a', sizeClass: HEADLINE_SIZE.homeRegular },
+      { text: 'food photo', accent: true, nowrap: true, sizeClass: HEADLINE_SIZE.homeAccent },
+    ],
+    subheadline: 'vibinn turns your food photos into memories worth keeping.',
+    demoSrc: `${DEMO_BASE}/home.gif`,
+    tone: 'light',
+    surfaceClass: 'bg-[#D3FF48] text-black',
+    accentClass: 'text-black',
+    subClass: 'text-black/70',
+    stickers: [
+      { file: 'matcha', className: 'left-[-24%] top-[8%] w-[34%]', rotate: -12 },
+      { file: 'cheesecake', className: 'right-[-30%] top-[24%] w-[50%]', rotate: 9 },
+      { file: 'croissant', className: 'left-[-28%] top-[58%] w-[46%]', rotate: -14 },
+      { file: 'latte-pour', className: 'right-[-26%] bottom-[6%] w-[44%]', rotate: 7 },
+    ],
   },
   {
-    href: 'https://www.instagram.com/vibinnfood',
-    label: 'Instagram',
-    icon: <InstagramIcon />,
+    id: 'memories',
+    headline: [
+      { text: 'Add memories to', sizeClass: HEADLINE_SIZE.featureRegular },
+      { text: 'your food', accent: true, nowrap: true, sizeClass: HEADLINE_SIZE.featureAccentWide },
+    ],
+    subheadline: 'Pick a photo, rate it, say it in three words. Your month in food, summed up.',
+    demoSrc: `${DEMO_BASE}/feature-memories.gif`,
+    tone: 'dark',
+    surfaceClass: 'bg-[#0B0B0B] text-white',
+    accentClass: 'text-[#D3FF48]',
+    subClass: 'text-white/70',
+    stickers: [
+      { file: 'receipt', className: 'left-[-24%] top-[16%] w-[38%]', rotate: -8 },
+      { file: 'map-pin', className: 'right-[-26%] top-[52%] w-[46%]', rotate: 8 },
+      { file: 'croissant', className: 'left-[-22%] bottom-[6%] w-[40%]', rotate: -12 },
+    ],
   },
   {
-    href: 'https://www.threads.com/@vibinnfood',
-    label: 'Threads',
-    icon: <ThreadsIcon />,
+    id: 'gallery',
+    headline: [
+      { text: 'Your gallery, filtered for', nowrap: true, sizeClass: HEADLINE_SIZE.featureRegular },
+      { text: 'food', accent: true, sizeClass: HEADLINE_SIZE.featureAccent },
+    ],
+    subheadline: 'vibinn detects food photos in your camera roll. Just tap to log.',
+    demoSrc: `${DEMO_BASE}/feature-gallery.gif`,
+    tone: 'light',
+    surfaceClass: 'bg-[#F5F1E8] text-black',
+    accentClass: 'text-black',
+    subClass: 'text-black/65',
+    stickers: [
+      { file: 'cheesecake', className: 'left-[-28%] top-[14%] w-[46%]', rotate: -9 },
+      { file: 'matcha', className: 'right-[-22%] top-[42%] w-[34%]', rotate: 10 },
+      { file: 'latte', className: 'left-[-26%] bottom-[8%] w-[40%]', rotate: -6 },
+    ],
+  },
+  {
+    id: 'friends',
+    headline: [
+      { text: 'Not for everyone.', sizeClass: HEADLINE_SIZE.featureRegular },
+      { text: 'Just for them.', accent: true, nowrap: true, sizeClass: HEADLINE_SIZE.featureAccentOneLine },
+    ],
+    subheadline: 'See where your friends are eating. No public posts, no pressure.',
+    demoSrc: `${DEMO_BASE}/feature-friends.gif`,
+    tone: 'light',
+    surfaceClass: 'bg-[#D3FF48] text-black',
+    accentClass: 'text-black',
+    subClass: 'text-black/70',
+    stickers: [
+      { file: 'friends', className: 'left-[-28%] top-[60%] w-[62%]', rotate: -5 },
+      { file: 'latte-pour', className: 'right-[-26%] top-[10%] w-[44%]', rotate: 9 },
+      { file: 'matcha', className: 'right-[-20%] bottom-[8%] w-[32%]', rotate: -8 },
+    ],
   },
 ];
 
+const socialLinks: Array<{ href: string; label: string; icon: ReactNode }> = [
+  { href: 'https://www.tiktok.com/@vibinnfood', label: 'TikTok', icon: <TikTokIcon /> },
+  { href: 'https://www.instagram.com/vibinnfood', label: 'Instagram', icon: <InstagramIcon /> },
+  { href: 'https://www.threads.com/@vibinnfood', label: 'Threads', icon: <ThreadsIcon /> },
+];
+
+function usePrefersReducedMotion() {
+  const [reduced, setReduced] = useState(false);
+
+  useEffect(() => {
+    const query = window.matchMedia('(prefers-reduced-motion: reduce)');
+    setReduced(query.matches);
+    const onChange = (event: MediaQueryListEvent) => setReduced(event.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+
+  return reduced;
+}
+
 export default function LandingPage({
+  onHeaderTryNow,
   onFloatingTryNow,
   onOpenFounderLetter,
   analyticsContext,
 }: LandingPageProps) {
   const analyticsContextRef = useRef<Record<string, unknown> | undefined>(analyticsContext);
-  const [landingPosts, setLandingPosts] = useState<LandingPublicPost[]>(fallbackLandingPosts);
-  const [viewport, setViewport] = useState<LandingViewport | null>(null);
+  const sentinelRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [furthestIndex, setFurthestIndex] = useState(0);
 
   useEffect(() => {
     analyticsContextRef.current = analyticsContext;
@@ -290,143 +196,529 @@ export default function LandingPage({
     };
   }, []);
 
+  // Sections are sticky and stack on top of each other, so a section stays "in view" after the next
+  // one slides over it. Sentinels laid out in normal flow (one viewport tall each) tell us which
+  // section the user is actually on: the one whose slot covers more than half of the viewport.
   useEffect(() => {
-    const controller = new AbortController();
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.intersectionRatio < 0.5) return;
+          const index = Number((entry.target as HTMLElement).dataset.landingIndex);
+          if (Number.isNaN(index)) return;
+          setActiveIndex(index);
+          setFurthestIndex((current) => Math.max(current, index));
+        });
+      },
+      { threshold: [0.5] },
+    );
 
-    void fetch('/api/public/landing-posts', {
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        if (!response.ok) return null;
-        return response.json() as Promise<{ posts?: LandingPublicPost[] }>;
-      })
-      .then((payload) => {
-        if (!payload?.posts?.length) return;
-        setLandingPosts(payload.posts);
-      })
-      .catch(() => {});
-
-    return () => controller.abort();
+    sentinelRefs.current.forEach((node) => {
+      if (node) observer.observe(node);
+    });
+    return () => observer.disconnect();
   }, []);
 
+  // Desktop paging that leaves scrolling entirely to the browser (passive listeners only, nothing is ever
+  // preventDefault'ed, so it stays on the fast threaded path). Once the user has stopped for a moment, a
+  // section is chosen from where the page last rested: moved a little (>= 5% of a section) -> next/previous
+  // section, at most one section per wheel/trackpad gesture; a big non-wheel jump (scrollbar drag, Home/End)
+  // -> nearest section. The glide is a scripted rAF animation instead of scrollTo({behavior:'smooth'}):
+  // Safari cancels native smooth scrolls whenever a trailing momentum event arrives. "Stopped" means no
+  // scroll AND no wheel event for 160ms, so the momentum tail has finished. Native mandatory snap is
+  // switched off on these devices (.landing-assist in index.css) so the two don't fight; touch-first
+  // devices keep native snap.
   useEffect(() => {
-    const syncViewport = () => {
-      setViewport({
-        width: window.innerWidth,
-        height: window.innerHeight,
-      });
+    if (!DESKTOP_SECTION_ASSIST) return;
+    if (window.matchMedia('(pointer: coarse)').matches) return;
+
+    const html = document.documentElement;
+    html.classList.add('landing-assist');
+
+    const lastIndex = SECTIONS.length - 1;
+    const clampIndex = (value: number) => Math.min(lastIndex, Math.max(0, value));
+    const sectionHeight = () => sentinelRefs.current[0]?.offsetHeight || window.innerHeight;
+
+    // Where the page last came to rest. The gesture's starting point comes from here, never from reading
+    // scrollY inside an input handler: with threaded scrolling the page can already have moved by then.
+    let restY = Math.round(window.scrollY / sectionHeight()) * sectionHeight();
+    let lastAnimatedY = restY;
+    let timer: number | undefined;
+    let frame = 0;
+    let animating = false;
+    let usedWheelOrTouch = false;
+
+    const stopAnimation = () => {
+      if (animating) restY = lastAnimatedY;
+      if (frame) window.cancelAnimationFrame(frame);
+      frame = 0;
+      animating = false;
     };
 
-    syncViewport();
-    window.addEventListener('resize', syncViewport);
-    return () => window.removeEventListener('resize', syncViewport);
+    const animateTo = (top: number) => {
+      stopAnimation();
+      const from = window.scrollY;
+      const distance = top - from;
+      if (Math.abs(distance) < 1) {
+        restY = top;
+        return;
+      }
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        window.scrollTo(0, top);
+        restY = top;
+        return;
+      }
+
+      const duration = Math.min(700, 320 + Math.abs(distance) * 0.25);
+      const startedAt = performance.now();
+      animating = true;
+      const step = (now: number) => {
+        const progress = Math.min(1, (now - startedAt) / duration);
+        lastAnimatedY = from + distance * (1 - Math.pow(1 - progress, 3));
+        window.scrollTo(0, lastAnimatedY);
+        if (progress < 1) {
+          frame = window.requestAnimationFrame(step);
+        } else {
+          frame = 0;
+          animating = false;
+          restY = top;
+        }
+      };
+      frame = window.requestAnimationFrame(step);
+    };
+
+    const settle = () => {
+      const height = sectionHeight();
+      const y = window.scrollY;
+      const startY = restY;
+      const moved = y - startY;
+      const wheelGesture = usedWheelOrTouch;
+      usedWheelOrTouch = false;
+
+      let target: number;
+      if (!wheelGesture && Math.abs(moved) >= height * 1.5) {
+        target = Math.round(y / height);
+      } else if (moved >= height * 0.05) {
+        target = Math.min(Math.ceil(y / height - 0.001), Math.floor(startY / height + 0.001) + 1);
+      } else if (moved <= -height * 0.05) {
+        target = Math.max(Math.floor(y / height + 0.001), Math.ceil(startY / height - 0.001) - 1);
+      } else {
+        target = Math.round(y / height);
+      }
+      animateTo(clampIndex(target) * height);
+    };
+
+    const schedule = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(settle, 160);
+    };
+
+    const onUserInput = (viaWheelOrTouch: boolean) => {
+      stopAnimation();
+      if (viaWheelOrTouch) usedWheelOrTouch = true;
+      schedule();
+    };
+    const onWheel = () => onUserInput(true);
+    const onTouchStart = () => onUserInput(true);
+    const onKeyDown = () => onUserInput(false);
+    const onScroll = () => {
+      if (animating) return;
+      schedule();
+    };
+    const onResize = () => {
+      restY = window.scrollY;
+    };
+
+    window.addEventListener('wheel', onWheel, { passive: true });
+    window.addEventListener('touchstart', onTouchStart, { passive: true });
+    window.addEventListener('keydown', onKeyDown);
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('wheel', onWheel);
+      window.removeEventListener('touchstart', onTouchStart);
+      window.removeEventListener('keydown', onKeyDown);
+      window.removeEventListener('scroll', onScroll);
+      window.clearTimeout(timer);
+      stopAnimation();
+      html.classList.remove('landing-assist');
+    };
   }, []);
 
-  const animatedLandingCards = useMemo(() => {
-    return landingCardSeeds.map((template, index) => {
-      const source = landingPosts[index % landingPosts.length] ?? fallbackLandingPosts[index % fallbackLandingPosts.length];
-      return {
-        ...template,
-        image: resolveApiAssetUrl(source?.imageUrl ?? fallbackLandingPosts[0].imageUrl),
-        avatar: resolveApiAssetUrl(source?.avatarUrl ?? fallbackLandingPosts[0].avatarUrl),
-        rating: source?.ratingLabel ?? 'liked',
-      } satisfies FloatingPostConfig;
+  const trackCta = (source: string) => {
+    trackEvent('Landing CTA tapped', {
+      source,
+      ...(analyticsContextRef.current ?? {}),
     });
-  }, [landingPosts]);
+    trackMetaPixelEvent('Lead', { source });
+  };
 
   return (
-    <div className="relative min-h-[100svh] overflow-hidden bg-[#D3FF48] text-black">
-      <LandingHeader onOpenFounderLetter={onOpenFounderLetter} />
+    <div className="relative bg-[#D3FF48] text-black">
+      <LandingHeader
+        onDownload={() => {
+          trackCta('header');
+          onHeaderTryNow();
+        }}
+      />
 
-      <section className="relative min-h-[100svh] overflow-hidden px-6 pb-12 pt-28 sm:px-10 sm:pt-32">
-        <div className="pointer-events-none absolute inset-0">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(255,255,255,0.36),_transparent_34%),radial-gradient(circle_at_bottom_left,_rgba(0,0,0,0.08),_transparent_38%)]" />
-          {animatedLandingCards.map((card, index) => (
-            <LandingRoamingPost
-              key={`${card.image}-${index}`}
-              card={card}
-              viewport={viewport}
+      <main className="relative">
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 flex flex-col">
+          {SECTIONS.map((section, index) => (
+            <div
+              key={`${section.id}-slot`}
+              ref={(node) => {
+                sentinelRefs.current[index] = node;
+              }}
+              data-landing-index={index}
+              className="landing-section landing-snap-slot w-full shrink-0"
             />
           ))}
         </div>
 
-        <div className="relative z-10 mx-auto flex min-h-[calc(100svh-9rem)] w-full max-w-6xl flex-col items-center justify-center">
-          <div className="max-w-3xl text-center">
-            <h1 className="mx-auto mt-5 max-w-[20ch] text-balance text-[2.1rem] font-black leading-[0.9] tracking-[-0.08em] text-white sm:text-[4.6rem]">
-              <span className="block text-black font-medium [word-spacing:0.18em]">Your food photos,</span>
-              <span className="block h-3 sm:h-4" />
-              <span className="landing-bbh-bartle block text-[0.82em] leading-[0.82] text-black">
-                your
-              </span>
-              <span className="landing-bbh-bartle mt-1.5 block text-[0.82em] leading-[0.82] text-black sm:mt-2">
-                memories
-              </span>
-            </h1>
-            <p className="mx-auto mt-6 max-w-2xl text-lg font-semibold leading-relaxed text-black/72 sm:text-[1.55rem]">
-              <span className="block">Turn your food photos into</span>
-              <span className="block">memories for yourself and close friends.</span>
-            </p>
-
-            <div className="mt-9 flex justify-center">
-              <button
-                type="button"
-                onClick={() => {
-                  trackEvent('Landing CTA tapped', {
-                    source: 'hero_primary',
-                    ...(analyticsContextRef.current ?? {}),
-                  });
-                  trackMetaPixelEvent('Lead', { source: 'hero_primary' });
-                  onFloatingTryNow();
-                }}
-                className="inline-flex transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0"
-                aria-label="Download on the App Store"
-              >
-                <img
-                  src="/landing-assets/app-store-download.avif"
-                  alt="Download on the App Store"
-                  className="h-[56px] w-auto rounded-[14px] object-contain shadow-[0_16px_40px_rgba(0,0,0,0.42)] sm:h-[64px]"
-                  draggable={false}
-                />
-              </button>
-            </div>
-          </div>
-
-          <LandingFooter />
-        </div>
-      </section>
+        {SECTIONS.map((section, index) => (
+          <LandingSectionView
+            key={section.id}
+            section={section}
+            index={index}
+            isActive={activeIndex === index}
+            shouldLoadDemo={index <= furthestIndex + 1}
+          >
+            {index === 0 ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    trackCta('hero_primary');
+                    onFloatingTryNow();
+                  }}
+                  className="mt-9 inline-flex transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0 lg:mt-12"
+                  aria-label="Download on the App Store"
+                >
+                  <img
+                    src="/landing-assets/app-store-download.avif"
+                    alt="Download on the App Store"
+                    className="h-[52px] w-auto rounded-[14px] object-contain shadow-[0_16px_40px_rgba(0,0,0,0.42)] sm:h-[60px]"
+                    draggable={false}
+                  />
+                </button>
+                {SHOW_HOME_SOCIALS ? <LandingFooter onOpenFounderLetter={onOpenFounderLetter} /> : null}
+              </>
+            ) : null}
+          </LandingSectionView>
+        ))}
+      </main>
     </div>
   );
 }
 
-function LandingHeader({ onOpenFounderLetter }: { onOpenFounderLetter: () => void }) {
+function LandingHeader({ onDownload }: { onDownload: () => void }) {
   return (
-    <div className="pointer-events-none absolute inset-x-0 top-0 z-40 px-4 pt-4 sm:px-6">
-      <div className="pointer-events-auto mx-auto flex w-full max-w-6xl items-center justify-between rounded-full border border-black/10 bg-white/28 px-4 py-3 backdrop-blur-md sm:px-5">
+    <header className="pointer-events-none fixed inset-x-0 top-0 z-[100] px-4 pt-[max(1rem,env(safe-area-inset-top))] sm:px-6">
+      <div className="pointer-events-auto mx-auto flex w-full max-w-6xl items-center justify-between rounded-full border border-black/10 bg-white/70 py-2 pl-4 pr-2 backdrop-blur-md sm:pl-5">
         <div className="flex items-center gap-2.5">
           <img
             src="/brand/vibinn-logo-icon.png"
-            alt="Vibinn logo"
+            alt=""
             className="h-7 w-7 rotate-[-8deg] object-contain"
             draggable={false}
           />
-          <div className="landing-bbh-bartle text-[0.92rem] leading-none text-black">
-            Vibinn
-          </div>
+          <div className="landing-bbh-bartle text-[0.92rem] leading-none text-black">Vibinn</div>
         </div>
-        <IconButton
-          label="A letter from founder"
-          onClick={onOpenFounderLetter}
-          className="h-11 w-11 rounded-full border-black/12 bg-white/70 text-black hover:bg-white/86"
-          icon={<FileText size={17} />}
-        />
+        <button
+          type="button"
+          onClick={onDownload}
+          className="rounded-full bg-black px-4 py-2.5 text-sm font-semibold leading-none text-white transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0 sm:px-5"
+        >
+          Download
+        </button>
       </div>
+    </header>
+  );
+}
+
+function LandingSectionView({
+  section,
+  index,
+  isActive,
+  shouldLoadDemo,
+  children,
+}: {
+  section: LandingSection;
+  index: number;
+  isActive: boolean;
+  shouldLoadDemo: boolean;
+  children?: ReactNode;
+}) {
+  const isHome = index === 0;
+  const headingId = `landing-${section.id}-title`;
+  const headlineText = section.headline.map((line) => line.text).join(' ');
+  const HeadingTag = isHome ? 'h1' : 'h2';
+
+  return (
+    <section
+      aria-labelledby={headingId}
+      className={`landing-section sticky top-0 w-full overflow-hidden ${section.surfaceClass} ${
+        isHome ? '' : 'rounded-t-[2rem] shadow-[0_-18px_40px_rgba(0,0,0,0.18)]'
+      }`}
+      style={{ zIndex: index + 1 }}
+    >
+      <div className="landing-section-inner mx-auto flex h-full w-full max-w-6xl flex-col gap-4 px-6 pt-[5.5rem] sm:px-10 lg:grid lg:grid-cols-2 lg:grid-rows-[minmax(0,1fr)] lg:gap-10 lg:pt-24">
+        <div className="shrink-0 text-center lg:flex lg:flex-col lg:items-start lg:justify-center lg:text-left">
+          <HeadingTag
+            id={headingId}
+            aria-label={headlineText}
+            className={`font-extrabold tracking-[-0.03em] [word-spacing:0.08em] ${
+              isHome ? 'leading-[0.94]' : 'leading-[1]'
+            }`}
+          >
+            {section.headline.map((line, lineIndex) => (
+              <span
+                key={line.text}
+                aria-hidden="true"
+                className={`block ${lineIndex > 0 ? 'mt-2 lg:mt-3' : ''} ${line.nowrap ? 'whitespace-nowrap' : 'text-balance'} ${line.sizeClass} ${
+                  line.accent
+                    ? `landing-bbh-bartle font-normal leading-[0.92] tracking-normal ${section.accentClass}`
+                    : ''
+                }`}
+              >
+                {line.text}
+              </span>
+            ))}
+          </HeadingTag>
+          <p
+            className={`mx-auto mt-3 max-w-md text-[0.98rem] font-medium leading-snug sm:text-lg lg:mx-0 lg:mt-5 lg:max-w-lg lg:text-xl ${section.subClass}`}
+          >
+            {section.subheadline}
+          </p>
+          {children ? <div className="flex flex-col items-center lg:items-start">{children}</div> : null}
+        </div>
+
+        <div className="relative flex min-h-0 flex-1 items-end justify-center lg:items-center">
+          <PhoneDemo
+            src={section.demoSrc}
+            isActive={isActive}
+            shouldLoad={shouldLoadDemo}
+            tone={section.tone}
+            stickers={section.stickers}
+          />
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Animated image (GIF/WebP) that restarts from its first frame every time `animate` turns on, in every
+ * browser. Browsers share the decoded animation between <img> elements that use the same URL, so
+ * remounting the element does not reliably restart it (Safari in particular). Instead the file is fetched
+ * once and each activation gets a brand-new object URL, which is always decoded from frame 0 without
+ * downloading again. While inactive, a still of the first frame is shown, so nothing animates behind the
+ * stacked sections and a section that is being revealed already shows its opening frame.
+ */
+function RestartingImage({
+  src,
+  animate,
+  onReady,
+  onError,
+  className,
+}: {
+  src: string;
+  animate: boolean;
+  onReady: () => void;
+  onError: () => void;
+  className: string;
+}) {
+  const blobRef = useRef<Blob | null>(null);
+  const [blobReady, setBlobReady] = useState(false);
+  const [stillUrl, setStillUrl] = useState<string | null>(null);
+  const [playUrl, setPlayUrl] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let createdStill: string | null = null;
+
+    (async () => {
+      try {
+        const response = await fetch(src);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const blob = await response.blob();
+        if (cancelled) return;
+        blobRef.current = blob;
+
+        try {
+          const bitmap = await createImageBitmap(blob);
+          const canvas = document.createElement('canvas');
+          canvas.width = bitmap.width;
+          canvas.height = bitmap.height;
+          canvas.getContext('2d')?.drawImage(bitmap, 0, 0);
+          bitmap.close();
+          const still = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.92));
+          if (still && !cancelled) {
+            createdStill = URL.createObjectURL(still);
+            setStillUrl(createdStill);
+          }
+        } catch {
+          // No still available: the animation itself is shown instead whenever it is allowed to play.
+        }
+        if (!cancelled) setBlobReady(true);
+      } catch {
+        if (!cancelled) onError();
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (createdStill) URL.revokeObjectURL(createdStill);
+    };
+    // onError only flips a flag in the parent; it must not restart the download.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [src]);
+
+  useEffect(() => {
+    if (!animate || !blobReady || !blobRef.current) {
+      setPlayUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(blobRef.current);
+    setPlayUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [animate, blobReady]);
+
+  const shown = playUrl ?? stillUrl;
+  if (!shown) return null;
+
+  return <img src={shown} alt="" draggable={false} onLoad={onReady} onError={onError} className={className} />;
+}
+
+function PhoneDemo({
+  src,
+  isActive,
+  shouldLoad,
+  tone,
+  stickers,
+}: {
+  src: string;
+  isActive: boolean;
+  shouldLoad: boolean;
+  tone: SectionTone;
+  stickers: StickerSpec[];
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [ready, setReady] = useState(false);
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const isImage = /\.(gif|webp|apng)(\?.*)?$/i.test(src);
+
+  // Restart from the first frame every time the section comes into view, pause while it isn't.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    // loadeddata can fire before React has attached its listener (fast/cached files), so also
+    // reconcile from the element's own state here and on canplay/playing below.
+    if (video.readyState >= 2) setReady(true);
+    if (isActive && !prefersReducedMotion) {
+      video.muted = true;
+      video.currentTime = 0;
+      void video.play().catch(() => {});
+    } else {
+      video.pause();
+    }
+  }, [isActive, prefersReducedMotion, shouldLoad, failed]);
+
+  return (
+    <div className="relative aspect-[9/19.5] h-full max-h-[min(46rem,134vw)]">
+      <div
+        className={`relative h-full w-full rounded-[17%/8%] bg-[#111] p-[3%] shadow-[0_30px_70px_rgba(0,0,0,0.35)] ring-[3px] ${
+          tone === 'dark' ? 'ring-white/25' : 'ring-black'
+        }`}
+      >
+        <div className="relative h-full w-full overflow-hidden rounded-[14%/6.6%] bg-neutral-900">
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-gradient-to-b from-neutral-800 to-neutral-950 text-center">
+            <img
+              src="/brand/vibinn-logo-icon.png"
+              alt=""
+              className="h-[16%] w-auto rotate-[-8deg] object-contain opacity-90"
+              draggable={false}
+            />
+            <span className="text-[0.7rem] font-semibold uppercase tracking-[0.18em] text-white/40">Demo</span>
+          </div>
+
+          {shouldLoad && !failed ? (
+            isImage ? (
+              <RestartingImage
+                src={src}
+                animate={isActive && !prefersReducedMotion}
+                onReady={() => setReady(true)}
+                onError={() => setFailed(true)}
+                className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${
+                  ready ? 'opacity-100' : 'opacity-0'
+                }`}
+              />
+            ) : (
+              <video
+                ref={videoRef}
+                src={src}
+                muted
+                loop
+                playsInline
+                preload="auto"
+                disablePictureInPicture
+                disableRemotePlayback
+                tabIndex={-1}
+                aria-hidden="true"
+                onLoadedData={() => setReady(true)}
+                onCanPlay={() => setReady(true)}
+                onPlaying={() => setReady(true)}
+                onError={() => setFailed(true)}
+                className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-300 ${
+                  ready ? 'opacity-100' : 'opacity-0'
+                }`}
+              />
+            )
+          ) : null}
+
+          {/* Screen recordings from iPhones with a Dynamic Island include the expanded island with the red
+              recording dot; the black pill grows to cover it. Without media it stays a normal-sized island. */}
+          <div
+            className={`pointer-events-none absolute left-1/2 -translate-x-1/2 rounded-full bg-black transition-all duration-300 ${
+              shouldLoad && ready && !failed ? 'top-[1.2%] h-[5%] w-[47%]' : 'top-[1.8%] h-[2.6%] w-[28%]'
+            }`}
+          />
+        </div>
+      </div>
+
+      {stickers.map((sticker, index) => (
+        <img
+          key={`${sticker.file}-${sticker.className}`}
+          src={`/landing-assets/stickers/${sticker.file}.png`}
+          alt=""
+          aria-hidden="true"
+          draggable={false}
+          loading="lazy"
+          className={`landing-sticker pointer-events-none absolute select-none drop-shadow-[0_14px_22px_rgba(0,0,0,0.25)] ${sticker.className}`}
+          style={
+            {
+              '--r': `${sticker.rotate}deg`,
+              '--fx': `${index % 2 === 0 ? 3 : -3}px`,
+              '--fy': `${-(7 + (index % 3) * 2)}px`,
+              '--fr': `${index % 2 === 0 ? 2 : -2}deg`,
+              '--fd': `${5 + (index % 4) * 0.8}s`,
+              '--fdelay': `${-index * 1.1}s`,
+              // Sections stacked underneath the active one are not visible, so don't animate them.
+              animationPlayState: isActive ? 'running' : 'paused',
+            } as CSSProperties
+          }
+        />
+      ))}
     </div>
   );
 }
 
-function LandingFooter() {
+function LandingFooter({ onOpenFounderLetter }: { onOpenFounderLetter?: () => void }) {
   return (
-    <div className="pointer-events-auto mt-14 flex items-center gap-3">
+    <div className="pointer-events-auto mt-4 flex flex-wrap items-center justify-center gap-3 lg:mt-7 lg:justify-start">
       {socialLinks.map((link) => (
         <a
           key={link.label}
@@ -434,221 +726,20 @@ function LandingFooter() {
           target="_blank"
           rel="noreferrer"
           aria-label={link.label}
-          className="inline-flex h-11 w-11 items-center justify-center rounded-full border-2 border-black bg-white/75 text-black shadow-[3px_3px_0_#000] transition-transform duration-200 hover:-translate-y-0.5"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-full border-2 border-black bg-white/75 text-black shadow-[3px_3px_0_#000] transition-transform duration-200 hover:-translate-y-0.5 sm:h-11 sm:w-11"
         >
           {link.icon}
         </a>
       ))}
-    </div>
-  );
-}
-
-function IconButton({ label, onClick, icon, className = '' }: IconButtonProps) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-label={label}
-      title={label}
-      className={`inline-flex items-center justify-center transition-transform duration-200 hover:-translate-y-0.5 active:translate-y-0 ${className}`}
-    >
-      {icon}
-    </button>
-  );
-}
-
-function LandingRoamingPost({
-  card,
-  viewport,
-}: {
-  card: FloatingPostConfig;
-  viewport: LandingViewport | null;
-}) {
-  const x = useMotionValue(card.x);
-  const y = useMotionValue(card.y);
-  const rotate = useMotionValue(card.rotation);
-  const scale = useMotionValue(1);
-  const motionConfigRef = useRef({
-    lane: 'top' as LandingRoamLane,
-    orbitSpeed: 0.00022,
-    driftSpeed: 0.00011,
-    amplitudeX: 40,
-    amplitudeY: 20,
-    rotationAmplitude: 8,
-    phase: 0,
-    driftPhase: 0,
-    centerX: card.x,
-    centerY: card.y,
-    minX: 18,
-    maxX: 18,
-    minY: 18,
-    maxY: 18,
-  });
-
-  useEffect(() => {
-    if (!viewport) return;
-    const safeZone = buildHeroSafeZone(viewport);
-    const isMobileViewport = viewport.width < LANDING_MOBILE_BREAKPOINT;
-    const lane = determineLane({ x: card.x, y: card.y }, viewport, safeZone, isMobileViewport);
-    const bounds = getLaneBounds(lane, viewport, card.width);
-    const clampedX = Math.min(Math.max(card.x, bounds.minX), bounds.maxX);
-    const clampedY = Math.min(Math.max(card.y, bounds.minY), bounds.maxY);
-
-    motionConfigRef.current = {
-      lane,
-      orbitSpeed: randomBetween(0.00014, 0.00026),
-      driftSpeed: randomBetween(0.00006, 0.00014),
-      amplitudeX: 20,
-      amplitudeY: 20,
-      rotationAmplitude: randomBetween(5, 11),
-      phase: randomBetween(0, Math.PI * 2),
-      driftPhase: randomBetween(0, Math.PI * 2),
-      centerX: clampedX,
-      centerY: clampedY,
-      minX: bounds.minX,
-      maxX: bounds.maxX,
-      minY: bounds.minY,
-      maxY: bounds.maxY,
-    };
-
-    const horizontalRoom = Math.max(0, (bounds.maxX - bounds.minX) * 0.5);
-    const verticalRoom = Math.max(0, (bounds.maxY - bounds.minY) * 0.5);
-    motionConfigRef.current.amplitudeX = Math.min(
-      lane === 'left' || lane === 'right' ? Math.max(10, horizontalRoom * 0.7) : Math.max(24, horizontalRoom * 0.82),
-      140,
-    );
-    motionConfigRef.current.amplitudeY = Math.min(
-      lane === 'top' || lane === 'bottom' ? Math.max(10, verticalRoom * 0.72) : Math.max(24, verticalRoom * 0.82),
-      96,
-    );
-
-    x.set(clampedX);
-    y.set(clampedY);
-    rotate.set(card.rotation);
-    scale.set(randomBetween(0.985, 1.03));
-  }, [card.rotation, card.width, card.x, card.y, rotate, scale, viewport, x, y]);
-
-  useAnimationFrame((time) => {
-    if (!viewport) return;
-    const config = motionConfigRef.current;
-    const orbit = time * config.orbitSpeed + config.phase;
-    const drift = time * config.driftSpeed + config.driftPhase;
-    const nextX = config.centerX
-      + Math.cos(orbit) * config.amplitudeX
-      + Math.cos(drift) * Math.min(18, config.amplitudeX * 0.18);
-    const nextY = config.centerY
-      + Math.sin(orbit * 1.08) * config.amplitudeY
-      + Math.sin(drift * 1.3) * Math.min(12, config.amplitudeY * 0.16);
-
-    x.set(Math.min(config.maxX, Math.max(config.minX, nextX)));
-    y.set(Math.min(config.maxY, Math.max(config.minY, nextY)));
-    rotate.set(card.rotation + Math.sin(orbit * 0.9) * config.rotationAmplitude);
-    scale.set(1 + Math.sin(orbit * 0.7 + config.phase) * 0.018);
-  });
-
-  return (
-    <motion.div
-      className="landing-floating-post absolute left-0 top-0 select-none"
-      initial={false}
-      style={{ width: `${card.width}px`, x, y, rotate, scale }}
-    >
-      <LandingFloatingPostCard
-        image={card.image}
-        avatar={card.avatar}
-        rating={card.rating}
-        width={card.width}
-      />
-    </motion.div>
-  );
-}
-
-function LandingFloatingPostCard({
-  image,
-  avatar,
-  rating,
-  width,
-}: {
-  image: string;
-  avatar: string;
-  rating: 'disliked' | 'not_bad' | 'liked' | 'recommended';
-  width: number;
-}) {
-  const ratingMeta = {
-    disliked: { Icon: ThumbsDown },
-    not_bad: { Icon: Smile },
-    liked: { Icon: Heart },
-    recommended: { Icon: Sparkles },
-  }[rating];
-  const RatingIcon = ratingMeta.Icon;
-  const scaleRatio = width / LANDING_POST_REFERENCE_WIDTH;
-  const outerRadius = Math.max(14, Math.round(22 * scaleRatio));
-  const innerRadius = Math.max(12, Math.round(20 * scaleRatio));
-  const framePadding = Math.max(2, 0.5 * scaleRatio);
-  const avatarOffset = Math.max(6, 10 * scaleRatio);
-  const avatarFrameRadius = Math.max(7, Math.round(10 * scaleRatio));
-  const avatarImageRadius = Math.max(6, Math.round(8 * scaleRatio));
-  const avatarSize = Math.max(16, Math.round(28 * scaleRatio));
-  const avatarShadowY = Math.max(4, Math.round(6 * scaleRatio));
-  const avatarShadowBlur = Math.max(10, Math.round(14 * scaleRatio));
-  const ratingSize = Math.max(21, Math.round(36 * scaleRatio));
-  const ratingIconSize = Math.max(10, Math.round(16 * scaleRatio));
-  const ratingShadowY = Math.max(5, Math.round(8 * scaleRatio));
-  const ratingShadowBlur = Math.max(10, Math.round(16 * scaleRatio));
-  const cardShadowY = Math.max(12, Math.round(18 * scaleRatio));
-  const cardShadowBlur = Math.max(20, Math.round(32 * scaleRatio));
-
-  return (
-    <div
-      className="relative overflow-hidden bg-black"
-      style={{
-        borderRadius: `${outerRadius}px`,
-        padding: `${framePadding}px`,
-        boxShadow: `0 ${cardShadowY}px ${cardShadowBlur}px rgba(0,0,0,0.2)`,
-      }}
-    >
-      <div className="relative overflow-hidden" style={{ borderRadius: `${innerRadius}px` }}>
-        <img
-          src={image}
-          alt=""
-          className="aspect-square w-full object-cover"
-          draggable={false}
-          referrerPolicy="no-referrer"
-        />
-        <div
-          className="absolute overflow-hidden bg-black"
-          style={{
-            left: `${avatarOffset}px`,
-            top: `${avatarOffset}px`,
-            borderRadius: `${avatarFrameRadius}px`,
-            boxShadow: `0 ${avatarShadowY}px ${avatarShadowBlur}px rgba(0,0,0,0.28)`,
-          }}
+      {onOpenFounderLetter ? (
+        <button
+          type="button"
+          onClick={onOpenFounderLetter}
+          className="ml-1 text-sm font-semibold text-black/70 underline decoration-black/30 underline-offset-4 transition-colors hover:text-black"
         >
-          <img
-            src={avatar}
-            alt=""
-            className="object-cover"
-            style={{
-              width: `${avatarSize}px`,
-              height: `${avatarSize}px`,
-              borderRadius: `${avatarImageRadius}px`,
-            }}
-            draggable={false}
-            referrerPolicy="no-referrer"
-          />
-        </div>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div
-            className="flex items-center justify-center rounded-full bg-[#CCFF00] text-black"
-            style={{
-              width: `${ratingSize}px`,
-              height: `${ratingSize}px`,
-              boxShadow: `0 ${ratingShadowY}px ${ratingShadowBlur}px rgba(0,0,0,0.28)`,
-            }}
-          >
-            <RatingIcon size={ratingIconSize} className={rating === 'liked' ? 'fill-current' : ''} />
-          </div>
-        </div>
-      </div>
+          A letter from the founder
+        </button>
+      ) : null}
     </div>
   );
 }

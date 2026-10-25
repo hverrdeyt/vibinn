@@ -181,6 +181,62 @@
   }
 }
 
+/* Landing sticker illustrations: a slow, small float (a few px of drift and ~2deg of tilt). The per-sticker
+   values (--r base tilt, --fx/--fy drift, --fr extra tilt, --fd duration, --fdelay phase) are set inline. */
+@keyframes landing-sticker-float {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0) rotate(var(--r));
+  }
+  50% {
+    transform: translate3d(var(--fx), var(--fy), 0) rotate(calc(var(--r) + var(--fr)));
+  }
+}
+
+.landing-sticker {
+  transform: rotate(var(--r));
+  animation: landing-sticker-float var(--fd) ease-in-out var(--fdelay) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-sticker {
+    animation: none;
+  }
+}
+
+/* Landing page: one section per screen with snap-to-section scrolling. Heights use lvh so they stay
+   stable while mobile browser toolbars show/hide; the inner padding keeps content above the toolbar. */
+html.landing-shell {
+  scroll-snap-type: y mandatory;
+}
+
+/* Mouse/trackpad devices page via script after scrolling stops; native snap would fight it. */
+html.landing-shell.landing-assist {
+  scroll-snap-type: none;
+}
+
+.landing-section {
+  height: 100vh;
+  height: 100lvh;
+}
+
+.landing-snap-slot {
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+}
+
+.landing-section-inner {
+  padding-bottom: 1.25rem;
+  padding-bottom: calc(100lvh - 100svh + 1.25rem);
+}
+
+@media (min-width: 1024px) {
+  .landing-section-inner {
+    padding-bottom: 2rem;
+    padding-bottom: calc(100lvh - 100svh + 2rem);
+  }
+}
+
 .landing-bbh-bartle {
   font-family: "BBH Bartle", "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
   letter-spacing: 0.01em;
